@@ -174,9 +174,7 @@ impl ChallengeBook {
         if c.consumed {
             return Err(ChallengeError::AlreadyConsumed);
         }
-        if c.device_id != resp.device_id
-            || c.session_id != resp.session_id
-            || c.event != resp.event
+        if c.device_id != resp.device_id || c.session_id != resp.session_id || c.event != resp.event
         {
             return Err(ChallengeError::BindingMismatch);
         }

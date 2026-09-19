@@ -10,11 +10,24 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "build": "tsc -p tsconfig.build.json",
+    "serve": "node dist/server.js",
+    "db:generate": "drizzle-kit generate --config=drizzle.config.ts",
+    "db:generate:sqlite": "drizzle-kit generate --config=drizzle.sqlite.config.ts",
+    "db:check": "drizzle-kit check --config=drizzle.config.ts",
+    "db:check:sqlite": "drizzle-kit check --config=drizzle.sqlite.config.ts"
   },
   "devDependencies": {
     "@types/node": "22.10.5",
+    "@types/pg": "^8.15.6",
+    "drizzle-kit": "^0.31.4",
     "typescript": "5.7.3",
     "vitest": "^3.2.4"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.4.1",
+    "drizzle-orm": "^0.45.2",
+    "pg": "^8.16.3"
   }
 }

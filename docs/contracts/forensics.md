@@ -9,8 +9,10 @@
 
 Parties: `kiwi-forensics` (producer) → reports/UI/admin ingest (consumers);
 adapters (PCAP ingest, live `kiwi-mail` transport, test fixtures) feed
-`ConnectionSecurityEvent` in. `kiwi-forensics` owns *findings*; the
-live-session trust decision stays with `kiwi-core` (`security-session.md`).
+`ConnectionSecurityEvent` in. Concrete entry points: `pcap::PcapReader`
+(frames) → `analyzers::analyze` (traces → events, with protocol sniffing)
+→ `RuleEngine` → `report::ReportBuilder`. `kiwi-forensics` owns *findings*;
+the live-session trust decision stays with `kiwi-core` (`security-session.md`).
 
 ## 1. Invariants (binding on all parties)
 

@@ -221,12 +221,44 @@ IMAP: LIST (when `folders` omitted) → register → incremental
   "downloaded": 0, "deletedRemote": 0 }
 ```
 
+## 6b. Commands — message actions **[gated]** (T-146)
+
+### `kiwi_update_message(accountId, folderId, uid, patch) → MessageUpdateView`
+Tri-state patch — `{seen?, starred?, archived?}`, each absent = unchanged.
+`seen`→`\Seen`, `starred`→`\Flagged`. Write-through order: live IMAP
+`UID STORE` first (IMAP accounts only), then local store — POP3 is
+local-only by nature. `archived: true` moves to the account's `Archive`
+folder (IMAP `UID MOVE` with COPY+DELETE+EXPUNGE fallback; the mailbox is
+created if absent), `archived: false` moves back to `INBOX`; locally the
+row + body file move with it. Returns `{folderId, uid, flags,
+movedToFolderId}` — `folderId` is the *source* the caller passed. Audited.
+
+### `kiwi_download_attachment(accountId, folderId, uid, attachmentIndex, destPath) → AttachmentSavedView`
+Extracts part N of the stored MIME body to `destPath` (the UI save-dialog
+path; parents created as needed). Bound: decoded bytes ≤50 MiB. `destPath`
+inside the app data dir is refused. `filename`/`contentType` come from the
+MIME part — never the caller. Audited (`attachment-saved`).
+
+### `kiwi_render_body(accountId, folderId, uid) → RenderedBodyView`
+Sanitized HTML fragment for the webview — ammonia strict allowlist
+(scripts/styles/iframes/forms/remote styles never survive). `img src` is
+filtered per-URL: `cid:`/`data:`/relative always pass; remote `http(s)`
+sources pass **only** when the account's remote-content opt-in is on —
+otherwise stripped and counted (`remoteImagesStripped`, so the UI can show
+"N blocked — allow remote content?"). `html: null` for text-only or
+unfetched bodies. Output capped at 8 MiB.
+
+### `kiwi_set_remote_content(accountId, allowed) → RemoteContentView`
+Per-account opt-in for remote resources in rendered bodies — default off
+(tracking surface). Persisted in the sidecar index, audited.
+
 ## 7. Commands — send / outbox **[gated]**
 
 ### `kiwi_send_message(accountId, message: ComposeInput, options?) → SendReceipt`
 Validates + MIME-builds + enqueues. Delivery is async via the background
 dispatcher (1 s tick); undo-send grace (`undoGraceSecs`, default 10, clamp
-0–120) and send-later (`sendAtUnix`) are real.
+0–120) and send-later (`sendAtUnix`) are real. Queued sends persist to
+disk (`outbox/<queueId>.{json,eml}`) and reload on restart (T-142).
 
 ```jsonc
 // message
@@ -259,8 +291,10 @@ Force-drain everything (explicit "send now" — skips remaining grace).
 `{ queueId, accountId, status: "sent|held|blocked|failed", detail, atUnix }`
 
 ### Policy bridge behavior (admin-api §10)
-When an org is bound (`kiwi_set_org_binding`), each send is evaluated by the
-local admin service *after* connect+auth with the observed TLS version:
+The admin endpoint resolves: org binding (`kiwi_set_org_binding`, config) →
+`KIWI_ADMIN_URL` + `KIWI_ADMIN_ORG` env vars → none. Non-loopback URLs are
+refused from either source (B5). When an org-bound endpoint exists, each
+send is evaluated *after* connect+auth with the observed TLS version:
 
 - `overall == "block"` → send dropped, audited (`send-blocked` with
   per-recipient reasons), `kiwi://outbox` emits `blocked`.
@@ -268,6 +302,32 @@ local admin service *after* connect+auth with the observed TLS version:
   `held` + linear backoff (30 s × attempt, max 5 attempts).
 - transport/auth failure → `held` (retried), terminal at 5 attempts.
 - While locked, the dispatcher holds everything (no credential use).
+- **No endpoint configured at all** (neither binding nor env) → the check
+  is skipped with a once-per-process warn (stderr + `policy-bridge-absent`
+  audit record) — the local-first dev degrade. An endpoint with no org id
+  (`KIWI_ADMIN_ORG` unset) warns once similarly (`policy-no-org`); policy
+  evaluation is skipped but mailflow emission still runs.
+
+### Mailflow events (admin-api §11)
+When an admin endpoint is resolvable, the backend POSTs §6 `MailflowEvent`s
+to `/api/v1/mailflow/events` — metadata only (no subject/body anywhere):
+
+- **post-send-attempt**: one outbound event per recipient, on every
+  outcome (sent, blocked, failed). `policy_verdict` comes from the §10
+  verdict (`unknown` when no evaluation ran); `message_id` is the MIME
+  Message-ID; `tls_version` is the observed transport label.
+- **post-receive-sync**: one inbound event per *newly synced* message
+  (UID-set delta per folder, ≤200/sync). `org_id` may be null inbound;
+  `policy_verdict` is always `unknown`; messages without a From address
+  are skipped (§6 requires non-empty sender).
+- `security_status` maps observed session findings only — never the policy
+  verdict: no findings → `clean`, medium/low → `warn`, high/critical →
+  `suspicious`, nothing observed → `unknown`.
+- Emit failures never fail send/sync — undelivered events queue in-process
+  (`mailflow_pending`, 512 max, drop-oldest) and retry on the next
+  emission opportunity.
+- Requests carry dev-auth headers (`x-kiwi-subject: kiwi-client`,
+  `x-kiwi-roles: org_admin`, `x-kiwi-org`) per §12 — loopback only.
 
 ## 8. Commands — security data **[gated]**
 
@@ -320,7 +380,9 @@ into the next trust evaluation.
 ### `kiwi_set_org_binding(orgId?, baseUrl?) → OrgBindingView | null`
 Both args required to set; both omitted (`null`) clears. `baseUrl` must be
 `http://{localhost|127.0.0.1|[::1]}:<port>` — non-loopback fails with
-`policy-unavailable` at config time. Audited.
+`policy-unavailable` at config time. Audited. Equivalent env fallback when
+no binding exists: `KIWI_ADMIN_URL` (+ optional `KIWI_ADMIN_ORG`) — same
+loopback rule applies.
 
 ## 10. Commands — endpoint signals **[exempt]** (T-121)
 
@@ -379,9 +441,13 @@ Collection caps at 32 observations per run.
 
 - `MailStore` has no `delete_account`/`list_accounts`; account removal is
   effective via the sidecar index (orphaned row, documented).
-- `SendQueue` has no item iterator; `outbox_meta` (in-process) backs
-  `kiwi_list_outbox`. Outbox is **in-memory** — pending sends do not
-  survive a restart (documented limitation).
+- `SendQueue` has no item iterator; `outbox_meta` backs `kiwi_list_outbox`.
+  Outbox **persists** across restarts (T-142): each send is
+  `data_dir/outbox/<queueId>.json` (meta) + `.eml` (MIME), reloaded on
+  boot (≤256 items, ≤32 MiB each, ≤100 MiB total; malformed files skipped).
+  Expired undo windows simply aren't cancelable after restart. The
+  mailflow pending queue (§11 retry) is in-memory only — events queued
+  while the admin service is down are lost on restart.
 - `device_id` on `SecuritySession` is `null` (endpoint binds the session,
   not a device); challenge `sessionId` binds to the boot session.
 - Session/findings journals are bounded in-memory rings (512 / 4096).

@@ -5,7 +5,6 @@
 import type { CSSProperties, ReactNode } from "react";
 import type { AccountInfo, TrustState } from "../kiwi";
 import { severityGlyph, severityLabel } from "../kiwi";
-import { DEMO_FOLDERS } from "../mock";
 import { navigate } from "../router";
 
 const layout: CSSProperties = { display: "grid", gridTemplateRows: "auto 1fr auto", height: "100vh" };
@@ -69,7 +68,7 @@ interface TopBarProps {
 export function TopBar({ trust, demo, query, onQuery, theme, onTheme }: TopBarProps) {
   return (
     <header style={topbarStyle}>
-      <strong aria-label="KIWI home" style={{ color: "var(--kiwi-brand-ink)" }}>
+      <strong aria-label="KIWI home" className="kiwi-brand">
         KIWI
       </strong>
       <div role="search" style={{ flex: 1, display: "flex", gap: "0.4rem" }}>
@@ -104,16 +103,17 @@ export function TopBar({ trust, demo, query, onQuery, theme, onTheme }: TopBarPr
 }
 
 interface SidebarProps {
+  folders: { id: string; label: string }[];
   accounts: AccountInfo[];
   activeFolder: string;
   unreadByFolder: Record<string, number>;
 }
 
-export function Sidebar({ accounts, activeFolder, unreadByFolder }: SidebarProps) {
+export function Sidebar({ folders, accounts, activeFolder, unreadByFolder }: SidebarProps) {
   return (
     <nav style={sidebarStyle} aria-label="Accounts and folders">
       <div style={{ display: "flex", flexDirection: "column", gap: "0.15rem" }} role="tree" aria-label="Folders">
-        {DEMO_FOLDERS.map((f) => {
+        {folders.map((f) => {
           const active = activeFolder === f.id;
           const unread = unreadByFolder[f.id] ?? 0;
           return (
@@ -121,15 +121,10 @@ export function Sidebar({ accounts, activeFolder, unreadByFolder }: SidebarProps
               key={f.id}
               type="button"
               role="treeitem"
+              className="kiwi-tree-item"
               aria-selected={active}
               aria-label={`${f.label}${unread > 0 ? `, ${unread} unread` : ""}`}
               onClick={() => navigate({ name: "mail", folder: f.id })}
-              style={{
-                textAlign: "left",
-                fontWeight: active ? 700 : 400,
-                background: active ? "var(--kiwi-surface)" : "transparent",
-                borderColor: active ? "var(--kiwi-border)" : "transparent",
-              }}
             >
               {f.label}
               {unread > 0 && <span aria-hidden="true"> ({unread})</span>}
@@ -137,10 +132,10 @@ export function Sidebar({ accounts, activeFolder, unreadByFolder }: SidebarProps
           );
         })}
       </div>
-      <h2 style={{ fontSize: "0.75rem", textTransform: "uppercase", color: "var(--kiwi-text-secondary)" }}>Accounts</h2>
+      <h2 className="kiwi-section-label">Accounts</h2>
       <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
         {accounts.map((a) => (
-          <li key={a.id} style={{ display: "flex", alignItems: "center", gap: "0.4rem", padding: "0.25rem 0" }}>
+          <li key={a.id} className="kiwi-account">
             <span
               aria-hidden="true"
               style={{ width: "0.6rem", height: "0.6rem", borderRadius: "50%", background: a.color }}
@@ -156,13 +151,13 @@ export function Sidebar({ accounts, activeFolder, unreadByFolder }: SidebarProps
         ))}
       </ul>
       <div style={{ display: "flex", flexDirection: "column", gap: "0.3rem", marginTop: "0.8rem" }}>
-        <button type="button" onClick={() => navigate({ name: "compose" })}>
+        <button type="button" className="kiwi-nav-btn kiwi-btn-primary" onClick={() => navigate({ name: "compose" })}>
           ✎ Compose
         </button>
-        <button type="button" onClick={() => navigate({ name: "security" })}>
+        <button type="button" className="kiwi-nav-btn" onClick={() => navigate({ name: "security" })}>
           🛡 Security
         </button>
-        <button type="button" onClick={() => navigate({ name: "settings" })}>
+        <button type="button" className="kiwi-nav-btn" onClick={() => navigate({ name: "settings" })}>
           ⚙ Settings
         </button>
       </div>

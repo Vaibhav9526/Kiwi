@@ -80,7 +80,6 @@ impl MockResolver {
         self
     }
 
-
     /// MX exchange hosts at `name`.
     pub fn with_mx(mut self, name: &str, hosts: &[&str]) -> Self {
         let parsed: Vec<DomainName> = hosts
@@ -115,15 +114,24 @@ impl MockResolver {
 impl DnsResolver for MockResolver {
     fn lookup_txt(&self, name: &DomainName) -> Result<Vec<String>, DnsError> {
         self.check_temp(name)?;
-        self.txt.get(name.as_str()).cloned().ok_or(DnsError::NxDomain)
+        self.txt
+            .get(name.as_str())
+            .cloned()
+            .ok_or(DnsError::NxDomain)
     }
     fn lookup_host(&self, name: &DomainName) -> Result<Vec<IpAddr>, DnsError> {
         self.check_temp(name)?;
-        self.host.get(name.as_str()).cloned().ok_or(DnsError::NxDomain)
+        self.host
+            .get(name.as_str())
+            .cloned()
+            .ok_or(DnsError::NxDomain)
     }
     fn lookup_mx(&self, name: &DomainName) -> Result<Vec<DomainName>, DnsError> {
         self.check_temp(name)?;
-        self.mx.get(name.as_str()).cloned().ok_or(DnsError::NxDomain)
+        self.mx
+            .get(name.as_str())
+            .cloned()
+            .ok_or(DnsError::NxDomain)
     }
     fn lookup_ptr(&self, ip: IpAddr) -> Result<Vec<DomainName>, DnsError> {
         self.ptr.get(&ip).cloned().ok_or(DnsError::NxDomain)

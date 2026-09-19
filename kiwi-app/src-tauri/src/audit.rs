@@ -12,12 +12,12 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::error::{CmdResult, IpcError};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct AuditRecord {
     seq: u64,
     ts_unix: i64,
@@ -96,6 +96,7 @@ impl AuditLog {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn len(&self) -> u64 {
         self.seq
     }

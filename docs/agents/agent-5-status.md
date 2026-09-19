@@ -279,3 +279,101 @@
   actors (Phase 3+). (3) Async service unification for PG (prior flag stands).
 - **Next:** T-112 IPC bindings when Agent 2 lands mail IPC.
 
+## 2026-09-20 — T-143 frontend bound to kiwi.ipc/1 (branch release/v0.1.0)
+
+- **Status:** all kiwi-app views now consume Agent 7's 27-command surface via
+  typed wrappers; local stubs replaced wherever a command exists. `npm run
+  build` green (tsc strict + vite, 42 modules). `src-tauri/` untouched.
+  No commits made.
+- **Foundation:**
+  - `kiwi.ts` — backend view types (AppInfo, SecurityStatus, Account, Folder,
+    Message, Body, Challenge, Device, Outbox, VerifyResult…) + total mappers
+    (`toTrustState`, `trustTokenToSeverity`, `eventSeverityToSeverity`,
+    `findingToInfo`, `eventToRow`, `unixToIso`). Renderer never crashes on
+    missing fields — unknown/stale instead (fail-closed display).
+  - `ipc.ts` — all 27 wrappers, camelCase args per contract. Error split:
+    transport failure → `BackendUnavailableError` (labeled demo fallback);
+    backend `{code, message}` → `IpcError` (`locked` included → lock UI,
+    never demo-as-real).
+- **Views wired:**
+  - Mailbox: live folders/messages/body, per-account sync with new-count note,
+    outbox pseudo-folder (cancel/flush + `kiwi://outbox` live refresh),
+    account-trust pills (honest summary: per-message session attribution not
+    yet exposed — no invented verdicts). Star/read stay local-only, labeled
+    (no flag command in kiwi.ipc/1). HTML bodies intentionally not rendered
+    (remote content stays blocked); attachment download noted missing.
+  - Compose: account selector, real `kiwi_send_message` (b64 attachments,
+    25 MB cap), receipt-driven undo countdown + `kiwi_cancel_send`, send-later
+    via `sendAtUnix`, Ctrl+Enter. No client policy invention — server
+    `policy-blocked`/`policy-unavailable` outcomes render as the S-07 banner.
+  - Security: live events/findings, finding dialog via mapper, session-detail
+    dialog (`kiwi_session_detail`), JSON report export. Demo keeps fixtures.
+  - Settings: live accounts (test/remove + verify-step detail), devices
+    (list/revoke), org binding set/clear (loopback only), endpoint-signal
+    collection display, Lock-now. Prefs sections untouched.
+  - Setup: incoming+outgoing `kiwi_verify_server` probes with step detail and
+    recorded-observation note, then `kiwi_add_account`; secret sent once,
+    cleared from state after Add; plaintext ack retained.
+- **App orchestration:** probe (ping + appInfo + status + accounts + devices),
+  15 s trust re-poll, per-scope message/body loading with locked-gate
+  handling, real challenge flow (active device → `kiwi_request_challenge`
+  unlock → dialog with challengeId + expiry → 3 s status poll → approve/
+  expired; UI-never-signs noted in-dialog), demo auto-approve retained.
+  Status bar shows contract version, session count, score, required action.
+- **Commands run:** `npm run build` (green after 2 fix rounds: readonly-tuple,
+  demo fixture shape drift — both frontend-side). rg secret scan: password
+  only in setup state → single IPC send → cleared; no logs/storage.
+- **Assumptions/limits:** backend trusted for shapes; per-message trust =
+  account trust until session attribution lands; outbox in-memory (backend
+  limitation, surfaced in-view); recovery/elevated-action unsupported-event
+  untouched; `submitChallenge` wrapped but uncalled (no local signing, ever).
+- **Needs:** (1) Agent 7 T-144 (bridge/emitter wiring affects send outcomes —
+  UI already renders both codes). (2) Future commands for flags, attachment
+  download, sanitized-HTML render (tracked gaps, stated in-view).
+- **Next:** manual click-through against the Tauri shell once Agent 7's build
+  is runnable here; a11y re-audit of the rewired views (Agent 6 T-113).
+
+## 2026-09-20 — T-145 UI elevation pass (branch release/v0.1.0)
+
+- **Status:** operate-mode surface only — zero function/route/data/IPC changes
+  (same 42 modules, `npm run build` green). `src-tauri/` untouched.
+  No commits made.
+- **Direction executed:** deep-black flagship (`#0e0e12` base, layered
+  `#15151c/#0a0a0e` surfaces, hairline `#2a2a35` borders — no flat gray);
+  orange→pink gradient (`#EAA132→#E580CC`) rationed to wordmark, one primary
+  action per surface (Compose nav, Send, Add-account), secure/lock accents,
+  reader top-line, selected markers. Light theme kept + refined (warm paper,
+  dark-amber focus), still user-selectable.
+- **Type:** Inter-first stack, tight-tracked 650-weight headings, 1.55 body
+  rhythm, uppercase micro section labels, gradient KIWI wordmark.
+- **States everywhere:** buttons/inputs/rows/tree/nav share 120 ms
+  hover/focus/selected motion; focus rings amber with soft halo; message rows
+  lift on hover, amber inset bar when selected; inputs glow on focus;
+  thin branded scrollbars; `::selection` tint.
+- **Pills/badges:** secure (emerald + soft glow), warning (amber), danger
+  (red + glow), unknown (muted), locked (gradient-border) — glyph + text
+  always, never color-only. Banners gained accent left-bars.
+- **Loading/empty:** shimmer skeleton rows (list) + skeleton text (reader),
+  designed empty states (mailbox, outbox); static fallback under
+  `prefers-reduced-motion`.
+- **Lock overlay:** radial amber/pink glow, gradient-ring lock mark with halo,
+  elevated blurred dialog.
+- **Default theme now dark** (fresh installs land on the flagship; saved prefs
+  respected; toggle unchanged in TopBar + Settings).
+- **Evidence:** headless Edge screenshots, `artifacts/ui/` (gitignored):
+  before `t145-before-{mail,compose,security}.png` (old dist, dark-forced);
+  after `t145-after-{mail,compose,security,settings}.png` (dark default) +
+  `t145-after-mail-light.png` (light verified via temporary default flip,
+  reverted + rebuilt — final dist is dark-default, JS hash `xKtivQ8Q`).
+  Reviewed after-shots: hierarchy, pills, gradient line, selected row, Send
+  gradient all render; light theme clean.
+- **Commands run:** `npm run build` ×3 (green; one interim build for the
+  light check only); python http.server + Edge `--headless=new --screenshot`
+  (task-provider ERROR lines in stderr are benign headless noise).
+- **Assumptions/limits:** no bundled Inter file (stack falls back to system —
+  shipping a font asset is a follow-up if the owner wants pixel-identical
+  type); sidebar All-Inboxes unread-vs-total count labeling is pre-existing,
+  left untouched per operate-mode rules.
+- **Next:** owner visual review of the screenshots; any taste deltas go
+  through another operate-mode pass (tokens/classes only).
+

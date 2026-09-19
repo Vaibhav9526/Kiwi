@@ -1,166 +1,292 @@
-/* KIWI theme tokens (T-112) — derived from images/ brand palette (ui-spec §10).
- * Sampled PNG buckets (approx): near-white #f0f0f0, black #000000,
- * amber #e0b030, red-orange #d05030, greys #606060/#808080.
- * Final brand hexes to be lifted from SVG sources; severity is never
- * color-only (icon shape + text label carry meaning). */
+/* KIWI premium theme (T-145) — deep-black flagship + refined light.
+ * Brand: orange→pink gradient (#EAA132→#E580CC), used SPARINGLY (wordmark,
+ * primary actions, secure/lock accents, selected markers). Severity is never
+ * color-only (glyph + text label carry meaning in every pill).
+ * Operate-mode surface: tokens + classes only — no function/route changes. */
 
 :root,
 [data-theme="light"] {
   color-scheme: light;
-  --kiwi-bg: #f4f2ec;
-  --kiwi-surface: #ffffff;
-  --kiwi-sidebar: #ebe7db;
-  --kiwi-card: #ffffff;
-  --kiwi-input: #ffffff;
-  --kiwi-border: #d8d3c4;
-  --kiwi-text: #1b1a17;
-  --kiwi-text-secondary: #5c584c;
-  --kiwi-text-disabled: #8a8574;
-  --kiwi-brand: #e0b030;
-  --kiwi-brand-ink: #7a5b00;
-  --kiwi-focus: #2563eb;
-  --kiwi-secure: #1f7a3d;
-  --kiwi-secure-bg: #e2f2e7;
+  --kiwi-bg: #f4f2eb;
+  --kiwi-surface: #fffdf7;
+  --kiwi-sidebar: #ebe5d4;
+  --kiwi-card: #fffdf7;
+  --kiwi-input: #fffdf7;
+  --kiwi-border: #ddd3bd;
+  --kiwi-border-soft: #e8e1cf;
+  --kiwi-text: #1d1a14;
+  --kiwi-text-secondary: #5e594b;
+  --kiwi-text-disabled: #8d8672;
+  --kiwi-accent-from: #eaa132;
+  --kiwi-accent-to: #d16fb5;
+  --kiwi-gradient: linear-gradient(135deg, #eaa132, #e580cc);
+  --kiwi-brand: #eaa132;
+  --kiwi-brand-ink: #8a5a06;
+  --kiwi-focus: #b45309;
+  --kiwi-focus-ring: rgba(180, 83, 9, 0.22);
+  --kiwi-secure: #0e7a3d;
+  --kiwi-secure-bg: #e2f3e9;
+  --kiwi-secure-border: rgba(14, 122, 61, 0.5);
   --kiwi-warning: #8a5f00;
-  --kiwi-warning-bg: #fbf0cd;
-  --kiwi-danger: #b23a22;
-  --kiwi-danger-bg: #f9e2da;
-  --kiwi-unknown: #606060;
-  --kiwi-unknown-bg: #e8e6e0;
-  --kiwi-lock: #3a2d00;
-  --kiwi-lock-bg: #f3e3ac;
+  --kiwi-warning-bg: #faf0d0;
+  --kiwi-warning-border: rgba(138, 95, 0, 0.5);
+  --kiwi-danger: #b3261e;
+  --kiwi-danger-bg: #f9e3e0;
+  --kiwi-danger-border: rgba(179, 38, 30, 0.5);
+  --kiwi-unknown: #5f5d6e;
+  --kiwi-unknown-bg: #e9e6da;
+  --kiwi-unknown-border: rgba(95, 93, 110, 0.5);
+  --kiwi-lock: #8a5a06;
+  --kiwi-lock-bg: #f6e8c4;
+  --kiwi-hover-bg: rgba(138, 90, 6, 0.06);
+  --kiwi-shadow: 0 18px 48px rgba(60, 45, 10, 0.18);
+  --kiwi-shimmer: rgba(138, 90, 6, 0.08);
 }
 
 [data-theme="dark"] {
   color-scheme: dark;
-  --kiwi-bg: #141311;
-  --kiwi-surface: #1e1d1a;
-  --kiwi-sidebar: #191813;
-  --kiwi-card: #232219;
-  --kiwi-input: #26251d;
-  --kiwi-border: #3d3a2e;
-  --kiwi-text: #f0ede2;
-  --kiwi-text-secondary: #b8b2a1;
-  --kiwi-text-disabled: #7c7767;
-  --kiwi-brand: #e8b93a;
-  --kiwi-brand-ink: #f2cd6b;
-  --kiwi-focus: #7aa7ff;
-  --kiwi-secure: #4cc06e;
-  --kiwi-secure-bg: #14301d;
-  --kiwi-warning: #e0b030;
-  --kiwi-warning-bg: #33290a;
-  --kiwi-danger: #e8704f;
-  --kiwi-danger-bg: #3a1c12;
-  --kiwi-unknown: #a09a89;
-  --kiwi-unknown-bg: #2a2822;
-  --kiwi-lock: #f2cd6b;
-  --kiwi-lock-bg: #33290a;
+  --kiwi-bg: #0e0e12;
+  --kiwi-surface: #15151c;
+  --kiwi-sidebar: #0a0a0e;
+  --kiwi-card: #17171f;
+  --kiwi-input: #0f0f15;
+  --kiwi-border: #2a2a35;
+  --kiwi-border-soft: #1d1d25;
+  --kiwi-text: #f4f2f9;
+  --kiwi-text-secondary: #a9a7bd;
+  --kiwi-text-disabled: #5e5c72;
+  --kiwi-accent-from: #eaa132;
+  --kiwi-accent-to: #e580cc;
+  --kiwi-gradient: linear-gradient(135deg, #eaa132, #e580cc);
+  --kiwi-brand: #eaa132;
+  --kiwi-brand-ink: #f2c063;
+  --kiwi-focus: #f0a83c;
+  --kiwi-focus-ring: rgba(234, 161, 50, 0.25);
+  --kiwi-secure: #34d399;
+  --kiwi-secure-bg: #0b231b;
+  --kiwi-secure-border: rgba(52, 211, 153, 0.45);
+  --kiwi-warning: #eaa132;
+  --kiwi-warning-bg: #251b0b;
+  --kiwi-warning-border: rgba(234, 161, 50, 0.45);
+  --kiwi-danger: #f26d6d;
+  --kiwi-danger-bg: #290f15;
+  --kiwi-danger-border: rgba(242, 109, 109, 0.5);
+  --kiwi-unknown: #8e8ca3;
+  --kiwi-unknown-bg: #17171e;
+  --kiwi-unknown-border: rgba(142, 140, 163, 0.4);
+  --kiwi-lock: #f2c063;
+  --kiwi-lock-bg: #241b0b;
+  --kiwi-hover-bg: rgba(255, 255, 255, 0.035);
+  --kiwi-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+  --kiwi-shimmer: rgba(255, 255, 255, 0.06);
 }
 
-* {
-  box-sizing: border-box;
-}
+* { box-sizing: border-box; }
+
+::selection { background: rgba(234, 161, 50, 0.32); }
 
 body {
   margin: 0;
   background: var(--kiwi-bg);
   color: var(--kiwi-text);
-  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-family: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
 }
+
+h1, h2, h3 {
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+  font-weight: 650;
+}
+h1 { font-size: 1.35rem; }
+h2 { font-size: 1.02rem; }
 
 :focus-visible {
   outline: 2px solid var(--kiwi-focus);
   outline-offset: 2px;
-  border-radius: 4px;
+  border-radius: 6px;
+}
+
+button, input, select, textarea, .kiwi-row, .kiwi-tree-item, .kiwi-nav-btn {
+  transition: background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease,
+    box-shadow 0.12s ease, transform 0.12s ease;
 }
 
 button {
   font: inherit;
+  font-weight: 550;
   color: inherit;
   background: var(--kiwi-surface);
   border: 1px solid var(--kiwi-border);
-  border-radius: 6px;
-  padding: 0.35rem 0.7rem;
+  border-radius: 8px;
+  padding: 0.4rem 0.8rem;
   cursor: pointer;
 }
-
+button:hover:not(:disabled):not([aria-disabled="true"]) {
+  border-color: var(--kiwi-brand);
+  background: var(--kiwi-card);
+}
+button:active:not(:disabled) { transform: translateY(1px); }
 button:disabled,
 button[aria-disabled="true"] {
   cursor: not-allowed;
   color: var(--kiwi-text-disabled);
+  opacity: 0.75;
 }
 
-input,
-select,
-textarea {
+/* Primary gradient action — reserved for the one main action per surface. */
+.kiwi-btn-primary {
+  background: var(--kiwi-gradient);
+  border: none;
+  color: #1c1204;
+  font-weight: 700;
+  box-shadow: 0 4px 18px rgba(234, 161, 50, 0.28);
+}
+.kiwi-btn-primary:hover:not(:disabled) {
+  background: var(--kiwi-gradient);
+  filter: brightness(1.07);
+  border: none;
+}
+
+input, select, textarea {
   font: inherit;
   color: var(--kiwi-text);
   background: var(--kiwi-input);
   border: 1px solid var(--kiwi-border);
-  border-radius: 6px;
-  padding: 0.35rem 0.5rem;
+  border-radius: 8px;
+  padding: 0.4rem 0.55rem;
 }
+input:focus, select:focus, textarea:focus {
+  border-color: var(--kiwi-brand);
+  box-shadow: 0 0 0 3px var(--kiwi-focus-ring);
+  outline: none;
+}
+
+/* Gradient wordmark — the single brand moment in the top bar. */
+.kiwi-brand {
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  background: var(--kiwi-gradient);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* ---------- pills: distinct treatments per state ---------- */
 
 .kiwi-pill {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
   border-radius: 999px;
-  padding: 0.15rem 0.6rem;
-  font-size: 0.8rem;
-  font-weight: 600;
+  padding: 0.2rem 0.65rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
   border: 1px solid transparent;
   white-space: nowrap;
 }
-
-.kiwi-pill.secure { color: var(--kiwi-secure); background: var(--kiwi-secure-bg); border-color: var(--kiwi-secure); }
-.kiwi-pill.warning { color: var(--kiwi-warning); background: var(--kiwi-warning-bg); border-color: var(--kiwi-warning); }
-.kiwi-pill.danger { color: var(--kiwi-danger); background: var(--kiwi-danger-bg); border-color: var(--kiwi-danger); }
-.kiwi-pill.unknown { color: var(--kiwi-unknown); background: var(--kiwi-unknown-bg); border-color: var(--kiwi-unknown); }
-.kiwi-pill.locked { color: var(--kiwi-lock); background: var(--kiwi-lock-bg); border-color: var(--kiwi-lock); }
-
-.kiwi-banner {
-  border-radius: 8px;
-  padding: 0.6rem 0.8rem;
-  margin-bottom: 0.6rem;
-  border: 1px solid;
+.kiwi-pill.secure, .kiwi-pill.allow {
+  color: var(--kiwi-secure);
+  background: var(--kiwi-secure-bg);
+  border-color: var(--kiwi-secure-border);
+  box-shadow: 0 0 12px rgba(52, 211, 153, 0.12);
+}
+.kiwi-pill.warning, .kiwi-pill.warn {
+  color: var(--kiwi-warning);
+  background: var(--kiwi-warning-bg);
+  border-color: var(--kiwi-warning-border);
+}
+.kiwi-pill.danger, .kiwi-pill.block, .kiwi-pill.denied {
+  color: var(--kiwi-danger);
+  background: var(--kiwi-danger-bg);
+  border-color: var(--kiwi-danger-border);
+  box-shadow: 0 0 12px rgba(242, 109, 109, 0.14);
+}
+.kiwi-pill.unknown {
+  color: var(--kiwi-unknown);
+  background: var(--kiwi-unknown-bg);
+  border-color: var(--kiwi-unknown-border);
+}
+.kiwi-pill.locked {
+  color: var(--kiwi-lock);
+  background: linear-gradient(var(--kiwi-lock-bg), var(--kiwi-lock-bg)) padding-box,
+    var(--kiwi-gradient) border-box;
+  border: 1px solid transparent;
 }
 
-.kiwi-banner.warn { color: var(--kiwi-warning); background: var(--kiwi-warning-bg); border-color: var(--kiwi-warning); }
-.kiwi-banner.block { color: var(--kiwi-danger); background: var(--kiwi-danger-bg); border-color: var(--kiwi-danger); }
+/* ---------- banners / cards / dialogs ---------- */
+
+.kiwi-banner {
+  border-radius: 10px;
+  padding: 0.65rem 0.85rem;
+  margin-bottom: 0.7rem;
+  border: 1px solid;
+  border-left-width: 3px;
+}
+.kiwi-banner.warn { color: var(--kiwi-warning); background: var(--kiwi-warning-bg); border-color: var(--kiwi-warning-border); }
+.kiwi-banner.block, .kiwi-banner.error { color: var(--kiwi-danger); background: var(--kiwi-danger-bg); border-color: var(--kiwi-danger-border); }
+
+.kiwi-card {
+  background: var(--kiwi-card);
+  border: 1px solid var(--kiwi-border-soft);
+  border-radius: 12px;
+  padding: 0.9rem 1rem;
+  margin-bottom: 0.8rem;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset;
+}
 
 .kiwi-dialog-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.45);
+  background: rgba(4, 4, 8, 0.6);
+  backdrop-filter: blur(3px);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 50;
 }
-
 .kiwi-dialog {
   background: var(--kiwi-surface);
   color: var(--kiwi-text);
   border: 1px solid var(--kiwi-border);
-  border-radius: 10px;
-  padding: 1.25rem;
+  border-radius: 14px;
+  padding: 1.4rem;
   max-width: 640px;
   width: calc(100vw - 3rem);
   max-height: calc(100vh - 4rem);
   overflow: auto;
+  box-shadow: var(--kiwi-shadow);
 }
 
 .kiwi-lock-overlay {
   position: fixed;
   inset: 0;
-  background: var(--kiwi-bg);
   z-index: 100;
   display: flex;
   align-items: center;
   justify-content: center;
   text-align: center;
+  background:
+    radial-gradient(640px 420px at 50% 36%, rgba(234, 161, 50, 0.13), transparent 70%),
+    radial-gradient(500px 380px at 50% 40%, rgba(229, 128, 204, 0.07), transparent 70%),
+    var(--kiwi-bg);
+}
+.kiwi-lock-mark {
+  width: 96px;
+  height: 96px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 2.6rem;
+  border-radius: 50%;
+  background: linear-gradient(var(--kiwi-surface), var(--kiwi-surface)) padding-box,
+    var(--kiwi-gradient) border-box;
+  border: 2px solid transparent;
+  box-shadow: 0 0 42px rgba(234, 161, 50, 0.25);
 }
 
 .kiwi-evidence {
@@ -168,12 +294,116 @@ textarea {
   font-size: 0.8rem;
   background: var(--kiwi-unknown-bg);
   border: 1px solid var(--kiwi-border);
-  border-radius: 6px;
-  padding: 0.6rem;
+  border-radius: 8px;
+  padding: 0.65rem;
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* ---------- mail surfaces: rows, tree, reader, accounts ---------- */
+
+.kiwi-row {
+  border: 1px solid var(--kiwi-border-soft);
+  border-radius: 10px;
+  padding: 0.55rem 0.65rem;
+  background: transparent;
+  cursor: pointer;
+}
+.kiwi-row:hover { border-color: var(--kiwi-border); background: var(--kiwi-hover-bg); }
+.kiwi-row[aria-selected="true"] {
+  background: var(--kiwi-surface);
+  border-color: rgba(234, 161, 50, 0.45);
+  box-shadow: inset 2px 0 0 var(--kiwi-brand), 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+.kiwi-row.is-unread { font-weight: 700; }
+
+.kiwi-tree-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font-weight: 400;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 0.4rem 0.6rem;
+  color: var(--kiwi-text-secondary);
+}
+.kiwi-tree-item:hover { background: var(--kiwi-hover-bg); color: var(--kiwi-text); border-color: transparent; }
+.kiwi-tree-item[aria-selected="true"] {
+  background: var(--kiwi-surface);
+  color: var(--kiwi-text);
+  font-weight: 700;
+  border-color: var(--kiwi-border-soft);
+  box-shadow: inset 2px 0 0 var(--kiwi-brand);
+}
+
+.kiwi-account {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.35rem 0.45rem;
+  border-radius: 8px;
+}
+.kiwi-account:hover { background: var(--kiwi-hover-bg); }
+
+.kiwi-nav-btn { width: 100%; text-align: left; margin-bottom: 0.3rem; }
+.kiwi-nav-btn:hover { transform: translateY(-1px); }
+
+.kiwi-reader {
+  position: relative;
+  background: var(--kiwi-surface);
+  border: 1px solid var(--kiwi-border-soft);
+  border-radius: 12px;
+  padding: 1rem 1.1rem;
+  overflow-y: auto;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22);
+}
+.kiwi-reader::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 14px;
+  right: 14px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--kiwi-gradient);
+  opacity: 0.75;
+}
+
+.kiwi-section-label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--kiwi-text-secondary);
+  margin: 0.9rem 0 0.35rem;
+}
+
+/* ---------- skeleton + empty states ---------- */
+
+@keyframes kiwi-shimmer {
+  0% { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+.kiwi-skeleton {
+  border-radius: 10px;
+  min-height: 64px;
+  margin-bottom: 0.4rem;
+  background: linear-gradient(100deg, transparent 30%, var(--kiwi-shimmer) 50%, transparent 70%),
+    var(--kiwi-surface);
+  background-size: 400px 100%;
+  animation: kiwi-shimmer 1.4s ease-in-out infinite;
+  border: 1px solid var(--kiwi-border-soft);
+}
+.kiwi-skeleton.text { min-height: 0.9rem; }
+
+.kiwi-empty {
+  text-align: center;
+  padding: 2.2rem 1rem;
+  color: var(--kiwi-text-secondary);
+}
+.kiwi-empty-icon { font-size: 2rem; display: block; margin-bottom: 0.5rem; }
+.kiwi-empty strong { display: block; color: var(--kiwi-text); letter-spacing: -0.01em; }
 
 .kiwi-sr-only {
   position: absolute;
@@ -183,9 +413,16 @@ textarea {
   clip: rect(0 0 0 0);
 }
 
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--kiwi-border);
+  border-radius: 6px;
+  border: 2px solid var(--kiwi-bg);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--kiwi-brand); }
+
 @media (prefers-reduced-motion: reduce) {
-  * {
-    animation: none !important;
-    transition: none !important;
-  }
+  * { animation: none !important; transition: none !important; }
+  .kiwi-skeleton { background: var(--kiwi-surface); }
 }

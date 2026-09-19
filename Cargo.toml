@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "kiwi-autoconfig",
     "kiwi-core",
     "kiwi-forensics",
     "kiwi-mail",

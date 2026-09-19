@@ -5,7 +5,6 @@
  * via Esc-to-close and return focus to the invoker (handled by callers).
  */
 import { useEffect, useRef } from "react";
-import type { CSSProperties } from "react";
 import type { FindingInfo, PolicyBannerVerdict, Severity } from "../kiwi";
 import { severityGlyph, severityLabel } from "../kiwi";
 
@@ -142,8 +141,6 @@ export function FindingDialog({
   );
 }
 
-const lockMark: CSSProperties = { fontSize: "4rem", lineHeight: 1 };
-
 export function LockOverlay({
   reason,
   busy,
@@ -160,7 +157,7 @@ export function LockOverlay({
   return (
     <div className="kiwi-lock-overlay" role="alertdialog" aria-modal="true" aria-labelledby="lock-title">
       <div>
-        <div style={lockMark} aria-hidden="true">
+        <div className="kiwi-lock-mark" aria-hidden="true">
           🔒
         </div>
         <h1 id="lock-title">Mailbox locked</h1>
@@ -190,6 +187,7 @@ export function AuthenticatorDialog({
   secondsLeft,
   status,
   onCancel,
+  detail,
 }: {
   eventLabel: string;
   deviceName: string;
@@ -197,6 +195,8 @@ export function AuthenticatorDialog({
   secondsLeft: number;
   status: AuthStatus;
   onCancel: () => void;
+  /** Optional challenge identifier line (live mode: real challengeId). */
+  detail?: string;
 }) {
   useEsc(onCancel);
   return (
@@ -212,6 +212,13 @@ export function AuthenticatorDialog({
         <p>
           Approve on your KIWI authenticator: <strong>{deviceName}</strong> · ends {fpTail}
         </p>
+        {detail && (
+          <p>
+            <small>
+              Challenge <code>{detail}</code> — the UI cannot approve on your behalf; use the paired device.
+            </small>
+          </p>
+        )}
         <p role="status">
           {status === "waiting" && `Waiting for device… ${secondsLeft}s remaining.`}
           {status === "approved" && "Approved — continuing."}

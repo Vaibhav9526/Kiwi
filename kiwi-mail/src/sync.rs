@@ -71,7 +71,10 @@ pub async fn sync_folder(
     for chunk in new_uids.chunks(FETCH_CHUNK) {
         let set = uid_set(chunk);
         let items = client
-            .uid_fetch(&set, &["UID", "FLAGS", "ENVELOPE", "RFC822.SIZE", "INTERNALDATE"])
+            .uid_fetch(
+                &set,
+                &["UID", "FLAGS", "ENVELOPE", "RFC822.SIZE", "INTERNALDATE"],
+            )
             .await?;
         for item in &items {
             store.upsert_message(folder_id, &to_meta(item), now)?;
@@ -226,15 +229,11 @@ fn has_attachment_parts(bs: &crate::imap::BodyStructure) -> bool {
     match bs {
         Multi { parts, .. } => parts.iter().any(has_attachment_parts),
         Single {
-            media_type,
-            params,
-            ..
+            media_type, params, ..
         } => {
             // Heuristic: non-text leaf with a filename param, or any
             // application/* / image/* leaf not inline text.
-            let has_filename = params
-                .iter()
-                .any(|(k, _)| k.eq_ignore_ascii_case("name"));
+            let has_filename = params.iter().any(|(k, _)| k.eq_ignore_ascii_case("name"));
             let non_text = !media_type.eq_ignore_ascii_case("text");
             has_filename || non_text
         }

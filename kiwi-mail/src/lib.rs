@@ -16,11 +16,13 @@
 
 pub mod account;
 pub mod error;
-pub mod lines;
 pub mod imap;
+pub mod lines;
 pub mod mime;
 pub mod pop3;
 pub mod smtp;
 pub mod store;
 pub mod sync;
+#[cfg(test)]
+pub mod testutil;
 pub mod transport;

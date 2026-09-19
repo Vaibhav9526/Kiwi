@@ -33,6 +33,12 @@ keyring = "3.6"
 # Challenge-response signature verification for authenticator-bound unlock
 # (contracts/security-session.md §6).
 ed25519-dalek = "2"
+# HTML sanitization for the rendered message view (strict allowlist —
+# scripts, remote resources, and forms never reach the webview).
+ammonia = "4"
+# Same mail-parser version kiwi-mail uses — attachment byte extraction for
+# the download command reads the stored MIME directly.
+mail-parser = "0.11"
 
 [lints]
 workspace = true

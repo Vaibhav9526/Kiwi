@@ -304,26 +304,50 @@ type ContFn<'a> = &'a mut dyn FnMut(&[u8]) -> Vec<u8>;
 
 pub struct ImapClient {
     t: Transport,
+    config: ImapConfig,
     tag_counter: u32,
     capabilities: BTreeSet<String>,
     scratch: Vec<u8>,
 }
 
+/// Client policy. Plaintext auth is refused unless explicitly opted in —
+/// same posture as `SmtpConfig`/`Pop3Config`.
+#[derive(Debug, Clone, Default)]
+pub struct ImapConfig {
+    /// Allow LOGIN/AUTHENTICATE over an unencrypted transport. Default false.
+    pub allow_plaintext_auth: bool,
+}
+
 /// Login/authenticate credential forms. Secrets are zeroizing.
 pub enum ImapAuth {
-    Login { user: String, password: Zeroizing<String> },
+    Login {
+        user: String,
+        password: Zeroizing<String>,
+    },
     /// AUTHENTICATE XOAUTH2 (works with/without SASL-IR).
-    XOAuth2 { user: String, token: Zeroizing<String> },
+    XOAuth2 {
+        user: String,
+        token: Zeroizing<String>,
+    },
     /// AUTHENTICATE PLAIN.
-    Plain { user: String, password: Zeroizing<String> },
+    Plain {
+        user: String,
+        password: Zeroizing<String>,
+    },
 }
 
 impl ImapClient {
     /// Connect: consume the greeting (`* OK`/`PREAUTH`/`BYE`), fetch
     /// CAPABILITY, and perform STLS when the socket is `StartTls`.
     pub async fn connect(t: Transport) -> Result<Self> {
+        Self::connect_with(t, ImapConfig::default()).await
+    }
+
+    /// Connect with explicit policy (e.g. test/local plaintext opt-in).
+    pub async fn connect_with(t: Transport, config: ImapConfig) -> Result<Self> {
         let mut c = Self {
             t,
+            config,
             tag_counter: 0,
             capabilities: BTreeSet::new(),
             scratch: Vec::new(),
@@ -331,7 +355,9 @@ impl ImapClient {
         // Greeting: single untagged line.
         let line = c.read_response_line().await?;
         let text = String::from_utf8_lossy(&line).to_string();
-        if !text.to_ascii_uppercase().contains(" OK") && !text.to_ascii_uppercase().contains("PREAUTH") {
+        if !text.to_ascii_uppercase().contains(" OK")
+            && !text.to_ascii_uppercase().contains("PREAUTH")
+        {
             return Err(MailError::ServerReject {
                 command: "connect".into(),
                 reply: text,
@@ -421,7 +447,10 @@ impl ImapClient {
             let line = tokio::time::timeout(CMD_TIMEOUT, self.read_response_line())
                 .await
                 .map_err(|_| {
-                    MailError::Io(std::io::Error::new(std::io::ErrorKind::TimedOut, "imap timeout"))
+                    MailError::Io(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "imap timeout",
+                    ))
                 })??;
             if line.starts_with(b"* ") {
                 untagged.push(line[2..].to_vec());
@@ -434,7 +463,9 @@ impl ImapClient {
                     None => return Err(proto_err("unexpected continuation")),
                 }
             } else if line.starts_with(tag.as_bytes()) {
-                let rest = String::from_utf8_lossy(&line[tag.len()..]).trim().to_string();
+                let rest = String::from_utf8_lossy(&line[tag.len()..])
+                    .trim()
+                    .to_string();
                 let upper = rest.to_ascii_uppercase();
                 let (code, text) = if upper.starts_with("OK") {
                     (TaggedCode::Ok, rest[2..].trim().to_string())
@@ -445,7 +476,11 @@ impl ImapClient {
                 } else {
                     return Err(proto_err(format!("bad tagged reply: {rest}")));
                 };
-                return Ok(CommandOutcome { code, untagged, text });
+                return Ok(CommandOutcome {
+                    code,
+                    untagged,
+                    text,
+                });
             } else {
                 return Err(proto_err(format!(
                     "unrecognized response line: {}",
@@ -485,26 +520,22 @@ impl ImapClient {
     }
 
     pub async fn authenticate(&mut self, auth: &ImapAuth) -> Result<()> {
-        if !self.t.is_encrypted() {
+        if !self.t.is_encrypted() && !self.config.allow_plaintext_auth {
             return Err(proto_err(
-                "refusing to send credentials over plaintext transport",
+                "refusing to send credentials over plaintext transport \
+                 (allow_plaintext_auth is off)",
             ));
         }
         let enc = base64::engine::general_purpose::STANDARD;
         match auth {
             ImapAuth::Login { user, password } => {
                 let out = self
-                    .command(&format!(
-                        "LOGIN {} {}",
-                        quoted(user),
-                        quoted(password)
-                    ))
+                    .command(&format!("LOGIN {} {}", quoted(user), quoted(password)))
                     .await?;
                 Self::ok_or_reject(out, "LOGIN")?;
             }
             ImapAuth::Plain { user, password } => {
-                let payload =
-                    Zeroizing::new(format!("\0{user}\0{}", password.as_str()));
+                let payload = Zeroizing::new(format!("\0{user}\0{}", password.as_str()));
                 if self.has_capability("SASL-IR") {
                     let b64 = enc.encode(payload.as_bytes());
                     let out = self.command(&format!("AUTHENTICATE PLAIN {b64}")).await?;
@@ -527,10 +558,7 @@ impl ImapClient {
                 ));
                 let b64 = enc.encode(sasl.as_bytes()).into_bytes();
                 let out = self
-                    .command_cont(
-                        "AUTHENTICATE XOAUTH2",
-                        Some(&mut move |_| b64.clone()),
-                    )
+                    .command_cont("AUTHENTICATE XOAUTH2", Some(&mut move |_| b64.clone()))
                     .await?;
                 Self::ok_or_reject(out, "AUTHENTICATE XOAUTH2")?;
             }
@@ -600,11 +628,8 @@ impl ImapClient {
             let text = String::from_utf8_lossy(line);
             if let Some(rest) = text.to_ascii_uppercase().strip_prefix("LIST ") {
                 // LIST (flags) "delim" name
-                if let Ok(SExp::List(flags)) =
-                    parse_sexp(rest.trim_start().as_bytes())
-                {
-                    let flags: Vec<String> =
-                        flags.iter().filter_map(|f| f.as_str()).collect();
+                if let Ok(SExp::List(flags)) = parse_sexp(rest.trim_start().as_bytes()) {
+                    let flags: Vec<String> = flags.iter().filter_map(|f| f.as_str()).collect();
                     // naive tail parse: after the flags list, ` "delim" name`
                     let tail_start = rest.find(')').map(|i| i + 1).unwrap_or(0);
                     let tail = rest[tail_start..].trim();
@@ -659,11 +684,7 @@ impl ImapClient {
     }
 
     /// STATUS mailbox (items…) → (item, value) pairs. Doesn't SELECT.
-    pub async fn status(
-        &mut self,
-        mailbox: &str,
-        items: &[&str],
-    ) -> Result<Vec<(String, u64)>> {
+    pub async fn status(&mut self, mailbox: &str, items: &[&str]) -> Result<Vec<(String, u64)>> {
         let list = items.join(" ");
         let out = Self::ok_or_reject(
             self.command(&format!("STATUS {} ({list})", quoted(mailbox)))
@@ -677,8 +698,7 @@ impl ImapClient {
                 && let Ok(SExp::List(items)) = parse_sexp(text[open..].trim_end().as_bytes())
             {
                 for kv in items.chunks(2) {
-                    if let (Some(k), Some(v)) =
-                        (kv[0].as_str(), kv.get(1).and_then(|v| v.as_u64()))
+                    if let (Some(k), Some(v)) = (kv[0].as_str(), kv.get(1).and_then(|v| v.as_u64()))
                     {
                         pairs.push((k.to_ascii_uppercase(), v));
                     }
@@ -742,12 +762,7 @@ impl ImapClient {
     }
 
     /// `UID STORE set +FLAGS|−FLAGS[.SILENT] (…)` — flag mutations.
-    pub async fn uid_store(
-        &mut self,
-        uid_set: &str,
-        op: &str,
-        flags: &[&str],
-    ) -> Result<()> {
+    pub async fn uid_store(&mut self, uid_set: &str, op: &str, flags: &[&str]) -> Result<()> {
         let flag_list = flags.join(" ");
         let out = Self::ok_or_reject(
             self.command(&format!("UID STORE {uid_set} {op} ({flag_list})"))
@@ -773,7 +788,8 @@ impl ImapClient {
     pub async fn uid_move(&mut self, uid_set: &str, mailbox: &str) -> Result<()> {
         if !self.has_capability("MOVE") {
             self.uid_copy(uid_set, mailbox).await?;
-            self.uid_store(uid_set, "+FLAGS.SILENT", &["\\Deleted"]).await?;
+            self.uid_store(uid_set, "+FLAGS.SILENT", &["\\Deleted"])
+                .await?;
             return self.expunge().await;
         }
         Self::ok_or_reject(
@@ -785,12 +801,7 @@ impl ImapClient {
     }
 
     /// APPEND a fully-formed RFC 5322 message to a mailbox (sent-mail save).
-    pub async fn append(
-        &mut self,
-        mailbox: &str,
-        flags: &[&str],
-        message: &[u8],
-    ) -> Result<()> {
+    pub async fn append(&mut self, mailbox: &str, flags: &[&str], message: &[u8]) -> Result<()> {
         if message.len() > MAX_RESPONSE {
             return Err(proto_err("append message too large"));
         }
@@ -801,7 +812,12 @@ impl ImapClient {
         };
         // Non-sync literal `{n+}` avoids a round trip when LITERAL+ is
         // supported; otherwise the server replies `+` and we send anyway.
-        let head = format!("APPEND {}{} {{{}+}}", quoted(mailbox), flag_str, message.len());
+        let head = format!(
+            "APPEND {}{} {{{}+}}",
+            quoted(mailbox),
+            flag_str,
+            message.len()
+        );
         let out = if self.has_capability("LITERAL+") || self.has_capability("LITERAL-") {
             let tag = self.send_tagged(&head).await?;
             self.t.write_all(message).await?;
@@ -810,7 +826,12 @@ impl ImapClient {
         } else {
             let body = message.to_vec();
             self.command_cont(
-                &format!("APPEND {}{} {{{}}}", quoted(mailbox), flag_str, message.len()),
+                &format!(
+                    "APPEND {}{} {{{}}}",
+                    quoted(mailbox),
+                    flag_str,
+                    message.len()
+                ),
                 Some(&mut move |_| {
                     let mut v = body.clone();
                     v.extend_from_slice(b"\r\n");
@@ -842,7 +863,9 @@ impl ImapClient {
                 // server wants the literal — shouldn't happen post-send
                 return Err(proto_err("unexpected continuation during APPEND"));
             } else if line.starts_with(tag.as_bytes()) {
-                let rest = String::from_utf8_lossy(&line[tag.len()..]).trim().to_string();
+                let rest = String::from_utf8_lossy(&line[tag.len()..])
+                    .trim()
+                    .to_string();
                 let code = if rest.to_ascii_uppercase().starts_with("OK") {
                     TaggedCode::Ok
                 } else if rest.to_ascii_uppercase().starts_with("NO") {
@@ -879,7 +902,7 @@ impl ImapClient {
         let tag = self.next_tag();
         write_line(&mut self.t, format!("{tag} IDLE").as_bytes()).await?;
         let cont = self.read_response_line().await?;
-        if !(cont.starts_with(b"+") ) {
+        if !(cont.starts_with(b"+")) {
             return Err(proto_err("IDLE rejected (no continuation)"));
         }
         let mut events = Vec::new();
@@ -890,9 +913,7 @@ impl ImapClient {
                 break;
             }
             match tokio::time::timeout_at(deadline, self.read_response_line()).await {
-                Ok(Ok(line)) if line.starts_with(b"* ") => {
-                    events.push(line[2..].to_vec())
-                }
+                Ok(Ok(line)) if line.starts_with(b"* ") => events.push(line[2..].to_vec()),
                 _ => break,
             }
         }
@@ -1012,7 +1033,10 @@ fn parse_address_list(s: &SExp) -> Vec<Mailbox> {
     if let SExp::List(addrs) = s {
         for a in addrs {
             if let SExp::List(fields) = a {
-                let name = fields.first().and_then(|f| f.as_str()).filter(|s| !s.is_empty());
+                let name = fields
+                    .first()
+                    .and_then(|f| f.as_str())
+                    .filter(|s| !s.is_empty());
                 let mailbox = fields.get(2).and_then(|f| f.as_str()).unwrap_or_default();
                 let host = fields.get(3).and_then(|f| f.as_str()).unwrap_or_default();
                 let email = if host.is_empty() {
@@ -1031,19 +1055,19 @@ fn parse_address_list(s: &SExp) -> Vec<Mailbox> {
 
 fn parse_envelope(s: &SExp) -> Option<Envelope> {
     let SExp::List(f) = s else { return None };
-    if f.len() < 10 {
-        return None;
-    }
-    let get = |i: usize| f[i].as_str();
+    // RFC 3501 defines 10 slots; tolerate servers that emit fewer — read
+    // positionally, absent fields stay None (untrusted input, rule 9).
+    let get = |i: usize| f.get(i).and_then(|v| v.as_str());
+    let addr = |i: usize| f.get(i).map(parse_address_list).unwrap_or_default();
     Some(Envelope {
         date: get(0),
         subject: get(1),
-        from: parse_address_list(&f[2]),
-        sender: parse_address_list(&f[3]),
-        reply_to: parse_address_list(&f[4]),
-        to: parse_address_list(&f[5]),
-        cc: parse_address_list(&f[6]),
-        bcc: parse_address_list(&f[7]),
+        from: addr(2),
+        sender: addr(3),
+        reply_to: addr(4),
+        to: addr(5),
+        cc: addr(6),
+        bcc: addr(7),
         in_reply_to: get(8),
         message_id: get(9),
     })
@@ -1062,7 +1086,9 @@ fn parse_params(s: &SExp) -> Vec<(String, String)> {
 }
 
 fn parse_bodystructure(s: &SExp) -> BodyStructure {
-    let SExp::List(f) = s else { return BodyStructure::Unknown };
+    let SExp::List(f) = s else {
+        return BodyStructure::Unknown;
+    };
     if f.is_empty() {
         return BodyStructure::Unknown;
     }
@@ -1109,14 +1135,18 @@ mod tests {
     #[test]
     fn sexp_parses_lists_strings_literals() {
         let s = parse_sexp(b"(FLAGS (\\Seen \\Deleted) UID 42 SUBJECT \"hi \\\"x\\\"\")").unwrap();
-        let SExp::List(items) = s else { panic!("not list") };
+        let SExp::List(items) = s else {
+            panic!("not list")
+        };
         assert_eq!(items[0].as_str().unwrap(), "FLAGS");
     }
 
     #[test]
     fn sexp_handles_literal() {
         let s = parse_sexp(b"(BODY[] {5}\r\nhello UID 9)").unwrap();
-        let SExp::List(items) = s else { panic!("not list") };
+        let SExp::List(items) = s else {
+            panic!("not list")
+        };
         assert_eq!(items[1], SExp::Str(b"hello".to_vec()));
         assert_eq!(items[2].as_str().unwrap(), "UID");
         assert_eq!(items[3].as_u64(), Some(9));
@@ -1173,7 +1203,9 @@ mod tests {
             // CAPABILITY
             let _ = read_line(&mut server_end, &mut buf, PROTO).await.unwrap();
             server_end
-                .write_all(b"* CAPABILITY IMAP4rev1 UIDPLUS IDLE MOVE LITERAL+\r\nA0001 OK done\r\n")
+                .write_all(
+                    b"* CAPABILITY IMAP4rev1 UIDPLUS IDLE MOVE LITERAL+\r\nA0001 OK done\r\n",
+                )
                 .await
                 .unwrap();
             // SELECT

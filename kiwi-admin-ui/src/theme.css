@@ -1,0 +1,113 @@
+/* KIWI admin theme (T-134) — same brand token family as kiwi-app (ui-spec §10).
+ * Sampled images/ palette: near-white/black grounds, amber #e0b030 brand,
+ * red-orange #d05030 secondary, greys. Severity never color-only. */
+
+:root,
+[data-theme="light"] {
+  color-scheme: light;
+  --kiwi-bg: #f4f2ec;
+  --kiwi-surface: #ffffff;
+  --kiwi-sidebar: #ebe7db;
+  --kiwi-card: #ffffff;
+  --kiwi-input: #ffffff;
+  --kiwi-border: #d8d3c4;
+  --kiwi-text: #1b1a17;
+  --kiwi-text-secondary: #5c584c;
+  --kiwi-text-disabled: #8a8574;
+  --kiwi-brand: #e0b030;
+  --kiwi-brand-ink: #7a5b00;
+  --kiwi-focus: #2563eb;
+  --kiwi-secure: #1f7a3d;
+  --kiwi-secure-bg: #e2f2e7;
+  --kiwi-warning: #8a5f00;
+  --kiwi-warning-bg: #fbf0cd;
+  --kiwi-danger: #b23a22;
+  --kiwi-danger-bg: #f9e2da;
+  --kiwi-unknown: #606060;
+  --kiwi-unknown-bg: #e8e6e0;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+  --kiwi-bg: #141311;
+  --kiwi-surface: #1e1d1a;
+  --kiwi-sidebar: #191813;
+  --kiwi-card: #232219;
+  --kiwi-input: #26251d;
+  --kiwi-border: #3d3a2e;
+  --kiwi-text: #f0ede2;
+  --kiwi-text-secondary: #b8b2a1;
+  --kiwi-text-disabled: #7c7767;
+  --kiwi-brand: #e8b93a;
+  --kiwi-brand-ink: #f2cd6b;
+  --kiwi-focus: #7aa7ff;
+  --kiwi-secure: #4cc06e;
+  --kiwi-secure-bg: #14301d;
+  --kiwi-warning: #e0b030;
+  --kiwi-warning-bg: #33290a;
+  --kiwi-danger: #e8704f;
+  --kiwi-danger-bg: #3a1c12;
+  --kiwi-unknown: #a09a89;
+  --kiwi-unknown-bg: #2a2822;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--kiwi-bg);
+  color: var(--kiwi-text);
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 14px;
+}
+
+:focus-visible { outline: 2px solid var(--kiwi-focus); outline-offset: 2px; border-radius: 4px; }
+
+button {
+  font: inherit; color: inherit; background: var(--kiwi-surface);
+  border: 1px solid var(--kiwi-border); border-radius: 6px;
+  padding: 0.35rem 0.7rem; cursor: pointer;
+}
+
+button:disabled { cursor: not-allowed; color: var(--kiwi-text-disabled); }
+
+input, select, textarea {
+  font: inherit; color: var(--kiwi-text); background: var(--kiwi-input);
+  border: 1px solid var(--kiwi-border); border-radius: 6px; padding: 0.35rem 0.5rem;
+}
+
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--kiwi-border); }
+
+.kiwi-pill {
+  display: inline-flex; align-items: center; gap: 0.35rem; border-radius: 999px;
+  padding: 0.15rem 0.6rem; font-size: 0.8rem; font-weight: 600;
+  border: 1px solid transparent; white-space: nowrap;
+}
+.kiwi-pill.allow, .kiwi-pill.secure { color: var(--kiwi-secure); background: var(--kiwi-secure-bg); border-color: var(--kiwi-secure); }
+.kiwi-pill.warn, .kiwi-pill.warning { color: var(--kiwi-warning); background: var(--kiwi-warning-bg); border-color: var(--kiwi-warning); }
+.kiwi-pill.block, .kiwi-pill.danger, .kiwi-pill.denied { color: var(--kiwi-danger); background: var(--kiwi-danger-bg); border-color: var(--kiwi-danger); }
+.kiwi-pill.unknown { color: var(--kiwi-unknown); background: var(--kiwi-unknown-bg); border-color: var(--kiwi-unknown); }
+
+.kiwi-banner { border-radius: 8px; padding: 0.6rem 0.8rem; margin-bottom: 0.6rem; border: 1px solid; }
+.kiwi-banner.error { color: var(--kiwi-danger); background: var(--kiwi-danger-bg); border-color: var(--kiwi-danger); }
+.kiwi-banner.warn { color: var(--kiwi-warning); background: var(--kiwi-warning-bg); border-color: var(--kiwi-warning); }
+
+.kiwi-card {
+  background: var(--kiwi-card); border: 1px solid var(--kiwi-border);
+  border-radius: 8px; padding: 0.8rem; margin-bottom: 0.7rem;
+}
+
+.kiwi-dialog-backdrop {
+  position: fixed; inset: 0; background: rgba(0, 0, 0, 0.45);
+  display: flex; align-items: center; justify-content: center; z-index: 50;
+}
+.kiwi-dialog {
+  background: var(--kiwi-surface); color: var(--kiwi-text);
+  border: 1px solid var(--kiwi-border); border-radius: 10px; padding: 1.25rem;
+  max-width: 520px; width: calc(100vw - 3rem);
+}
+
+.kiwi-sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }

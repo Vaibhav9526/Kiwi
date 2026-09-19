@@ -4,11 +4,14 @@
  * checks RBAC first, and records an audit entry (allowed or denied) —
  * SECURITY.md rule 11.
  */
-import { openDb } from "./db/driver.js";
+import { openSqlite, migrateSqlite } from "./db/sqlite.js";
 import type { Db } from "./db/interfaces.js";
-import { ensureMigrated } from "./db/migrations.js";
-import { SqliteOrgRepository, SqlitePolicyRuleRepository } from "./db/sqlite-org.js";
-import { SqliteMailflowRepository, SqliteAuditRepository } from "./db/sqlite-mailflow.js";
+import {
+  DrizzleOrgRepository,
+  DrizzlePolicyRuleRepository,
+  DrizzleMailflowRepository,
+  DrizzleAuditRepository,
+} from "./db/repositories.js";
 import type { OrgRepository, PolicyRuleRepository, MailflowRepository, AuditRepository } from "./db/interfaces.js";
 import { AuthorizationDeniedError, requirePermission } from "./rbac/rbac.js";
 import type { Actor, Permission } from "./rbac/rbac.js";
@@ -52,14 +55,17 @@ class KiwiServiceContainer implements ServiceContainer {
   readonly mailflow: MailflowService;
   readonly audit: AuditService;
   private readonly auditRepo: AuditRepository;
+  private readonly raw: { close(): void };
 
   constructor(dbPath: string) {
-    this.db = openDb(dbPath);
-    ensureMigrated(this.db);
-    const orgRepo: OrgRepository = new SqliteOrgRepository(this.db);
-    const policyRepo: PolicyRuleRepository = new SqlitePolicyRuleRepository(this.db);
-    const mailflowRepo: MailflowRepository = new SqliteMailflowRepository(this.db);
-    this.auditRepo = new SqliteAuditRepository(this.db);
+    const conn = openSqlite(dbPath);
+    migrateSqlite(conn.db);
+    this.db = conn.facade;
+    this.raw = conn.raw;
+    const orgRepo: OrgRepository = new DrizzleOrgRepository(conn.db);
+    const policyRepo: PolicyRuleRepository = new DrizzlePolicyRuleRepository(conn.db);
+    const mailflowRepo: MailflowRepository = new DrizzleMailflowRepository(conn.db);
+    this.auditRepo = new DrizzleAuditRepository(conn.db);
     this.audit = new AuditService({ audit: this.auditRepo });
     this.orgs = new OrgService({ orgs: orgRepo }, this);
     this.policies = new PolicyService({ policies: policyRepo }, this);
@@ -104,7 +110,7 @@ class KiwiServiceContainer implements ServiceContainer {
   }
 
   close(): void {
-    (this.db as unknown as { close?: () => void }).close?.();
+    this.raw.close();
   }
 }
 

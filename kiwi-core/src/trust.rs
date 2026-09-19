@@ -131,7 +131,11 @@ impl TrustMachine {
     /// Deterministically evaluate `signals` against `policy` and apply the
     /// resulting transition. `Locked` never self-recovers here — even a clean
     /// evaluation leaves a locked machine locked.
-    pub fn evaluate(&mut self, policy: &crate::policy::TrustPolicy, signals: Vec<TrustSignal>) -> TrustEvaluation {
+    pub fn evaluate(
+        &mut self,
+        policy: &crate::policy::TrustPolicy,
+        signals: Vec<TrustSignal>,
+    ) -> TrustEvaluation {
         let eval = evaluate(policy, &signals);
         self.score = eval.score;
         self.active = signals;
@@ -204,10 +208,7 @@ pub enum UnlockError {
 
 /// Pure evaluation: score = 100 − Σ penalties (clamped); hard-lock kinds and
 /// score below `policy.lock_threshold` produce `Locked`.
-pub fn evaluate(
-    policy: &crate::policy::TrustPolicy,
-    signals: &[TrustSignal],
-) -> TrustEvaluation {
+pub fn evaluate(policy: &crate::policy::TrustPolicy, signals: &[TrustSignal]) -> TrustEvaluation {
     let score = 100u32.saturating_sub(signals.iter().map(|s| s.penalty).sum::<u32>());
 
     let hard_lock: BTreeSet<SignalKind> = signals
@@ -269,7 +270,11 @@ mod tests {
         let mut m = TrustMachine::new();
         let e = m.evaluate(
             &TrustPolicy::default(),
-            vec![sig(SignalKind::NoForwardSecrecy, SignalSeverity::Medium, 25)],
+            vec![sig(
+                SignalKind::NoForwardSecrecy,
+                SignalSeverity::Medium,
+                25,
+            )],
         );
         assert_eq!(e.state, TrustState::Degraded);
         assert_eq!(e.required_action, RequiredAction::WarnUser);
@@ -286,7 +291,10 @@ mod tests {
             ],
         );
         assert_eq!(e.state, TrustState::Locked);
-        assert_eq!(e.required_action, RequiredAction::RequireAuthenticatorUnlock);
+        assert_eq!(
+            e.required_action,
+            RequiredAction::RequireAuthenticatorUnlock
+        );
     }
 
     #[test]
@@ -317,7 +325,11 @@ mod tests {
         let mut m = TrustMachine::new();
         m.evaluate(
             &TrustPolicy::default(),
-            vec![sig(SignalKind::NoForwardSecrecy, SignalSeverity::Medium, 25)],
+            vec![sig(
+                SignalKind::NoForwardSecrecy,
+                SignalSeverity::Medium,
+                25,
+            )],
         );
         assert_eq!(m.state(), TrustState::Degraded);
         let e = m.evaluate(&TrustPolicy::default(), vec![]);
@@ -328,7 +340,10 @@ mod tests {
     fn unlock_requires_authenticator_when_policy_says_so() {
         let policy = TrustPolicy::default();
         let mut m = TrustMachine::new();
-        m.evaluate(&policy, vec![sig(SignalKind::DeviceRevoked, SignalSeverity::Critical, 1)]);
+        m.evaluate(
+            &policy,
+            vec![sig(SignalKind::DeviceRevoked, SignalSeverity::Critical, 1)],
+        );
         assert_eq!(
             m.attempt_unlock(&policy, false),
             Err(UnlockError::AuthenticatorRequired)
@@ -348,7 +363,11 @@ mod tests {
             &policy,
             vec![
                 sig(SignalKind::DeviceRevoked, SignalSeverity::Critical, 1),
-                sig(SignalKind::RemoteSessionIndicator, SignalSeverity::Medium, 20),
+                sig(
+                    SignalKind::RemoteSessionIndicator,
+                    SignalSeverity::Medium,
+                    20,
+                ),
             ],
         );
         assert_eq!(m.attempt_unlock(&policy, true), Ok(TrustState::Degraded));

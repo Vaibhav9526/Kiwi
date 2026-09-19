@@ -80,9 +80,7 @@ impl AccountSession {
     /// Effective state at `now`: an Active session past expiry reports Expired.
     pub fn state_at(&self, now: i64) -> AccountSessionState {
         match self.state {
-            AccountSessionState::Active if now >= self.expires_unix => {
-                AccountSessionState::Expired
-            }
+            AccountSessionState::Active if now >= self.expires_unix => AccountSessionState::Expired,
             s => s,
         }
     }

@@ -495,3 +495,144 @@ subset; consumption tests (Agent 8/forensics) are the final arbiter;
 better-sqlite3/node-25 engine mismatch is Agent 5's; no `db:migrate`
 script exists yet (T-130 follow-up).
 
+## 2026-09-20 — T-140 confirmed + T-113 infra doc pass (ARCH §7, sandbox.md)
+
+**Status:** T-140 re-verified step-by-step against the brief (all requested
+steps present: cargo test/clippy/fmt, npm ci+test, secret_scan,
+check_fixtures, check_csp, infra unittest) — no changes needed, still
+unrun on runners (first push will prove it). T-113 infra pass complete.
+
+### T-113 — TESTING.md / SECURITY.md / THREAT-MODEL.md infra layer
+
+- **TESTING.md:** header revision note; §1 +2 layer rows (infra, sandbox);
+  new §2 infra commands (compose up/build, unittest discover, migrate
+  verification, CI mirror note); §5e infrastructure matrix (health,
+  migrations, guard, env discipline, availability, lifecycle, monitoring);
+  §6 mailpit profile updated (root compose, landed); §7 docker row
+  refreshed + CI row.
+- **SECURITY.md:** rules 14 (sandbox-only execution, no host fallback),
+  15 (compose/image/.env discipline, Tauri never containerized), 16 (no
+  secrets in DBs ever); B3b (PG/Drizzle: ORM-only, reviewed migrations,
+  least-privilege role, DSN discipline, DB trigger + hash-chain); B9
+  (sandbox guest boundary, all tiers + WSL2 caveat); A7 (dev-defaults
+  posture), A8 (availability varies, absent ≠ degraded); checklist +2
+  (infra review, sandbox provider rules).
+- **THREAT-MODEL.md:** B9 + B3b boundary rows; scenarios 13 (unavailable →
+  disabled, never host) + 14 (guest misbehavior → kill/discard/
+  incomplete); RR-8 (WSL2 shared kernel), RR-9 (container escape accepted
+  for infra), RR-10 (PG volume disposal).
+
+### T-133 stub upgrade (sandbox now testable statically)
+
+Sandbox stub split: contract pins no-host-fallback (asserted by regex —
+caught my own cross-line regex bug, fixed), PoC scripts present
+(asserted), lifecycle still DEFERRED-skip until `sandbox/` lands.
+Suite: **15 tests OK (2 skips: admin-health T-130, lifecycle T-132)**.
+Fixtures OK (47), secrets 0/268.
+
+**Files changed:** `docs/{TESTING,SECURITY,THREAT-MODEL}.md`,
+`tests/infra/test_compose.py`, this log.
+
+**Commands run:** full infra unittest (15 OK), checkers (all green).
+
+**Assumptions:** T-132 design/contract are the sandbox source of truth;
+provider-crate tests (QEMU transcripts) remain future work per
+sandbox.md §4.7.
+
+**Risks:** none new; sandbox WSL2-tier caveat must reach UI copy before
+the feature ships (flag for Agent 5).
+
+## 2026-09-20 — T-147 greenmail IMAP + T-148 forensics remainder (analyzers/pcap)
+
+**Status:** Both done. §8 conflict handled by adoption-over-rewrite (see
+provenance note). Crate: 86 tests green, clippy + fmt clean.
+
+### T-147 — live IMAP via GreenMail (mailpit proven IMAP-less)
+
+- Evidence first: mailpit:1143 accepts TCP and sends **zero bytes**
+  (vs POP3/SMTP banners fine) — IMAP truly absent, not misconfigured.
+- ADR-009 evaluation (in `infra/README.md`): Dovecot needs baked Maildir +
+  user config (custom image, ongoing care); GreenMail standalone is the
+  purpose-built fixture server (all protocols, zero-config test users).
+  Picked `greenmail/standalone:2.1.14` (tag verified live on Docker Hub),
+  IMAP-only surface (`GREENMAIL_OPTS=test.imap`, auth disabled —
+  synthetic-only, localhost-bound). Dovecot stays a revisit option.
+- Compose: new `greenmail` service (`1143:3143`), mailpit IMAP mapping
+  removed (was a dead port), `.env.example` gains `GREENMAIL_IMAP_PORT`.
+  No in-image healthcheck (Zulu base ships no nc/wget/curl — verified by
+  exec); external T-133 assertions are the health signal (documented).
+- Verified live: greeting `* OK IMAP4rev1 GreenMail`, CAPABILITY,
+  LOGIN OK, LIST INBOX. Two infra incidents fixed en route: stale mailpit
+  1143 mapping blocked bind (recreated mailpit), and greenmail lost its
+  network on first start (force-recreate fixed; worth watching).
+- T-133 gains `test_greenmail_imap_greeting` (greeting + CAPABILITY);
+  suite 16 OK. CI `infra-live` now starts greenmail too. Strategy doc +
+  TESTING.md §6 updated (mailpit = SMTP/POP3, greenmail = IMAP).
+
+### T-148 — analyzers adopted + pcap built; crate green
+
+- **Provenance flag (Lead: please attribute):** `kiwi-forensics/src/
+  analyzers/` (mod/imap/pop3/smtp) + `tests/pcap_ingest.rs` +
+  `tests/pcapng_ingest.rs` appeared uncommitted at ~01:54 with no status
+  entry (author unknown — Agent 3 still quota-dead per its log). Per §8 I
+  did NOT rewrite: I read everything, kept the design (TraceFacts +
+  finalize, tag-matched replies, credential-safe verbs-only evidence),
+  and integrated.
+- **Real bug found + fixed in the adopted code:** sniffed protocol was
+  dropped — per-protocol analyzers called `finalize(trace, trace.protocol)`
+  with the pre-sniff `Unknown`, so every sniffed session misreported
+  `Unknown` downstream. Threaded `analyzed_as` through all three
+  `analyze()` entry points (my end-to-end test caught it).
+- **pcap/ built to satisfy the adopted tests:** streaming `PcapReader`
+  (from_slice/next_packet/read_packets), `LinkType`, normalizing
+  `Timestamp`, `CaptureError` taxonomy, per-packet + file-bytes + block +
+  interface bounds, `if_tsresol` honored, unknown blocks skip by length.
+  Two latent issues fixed: SHB byte-order magic lives at +8 (not +12 —
+  caught empirically after a clean rebuild still failed), and one test
+  helper declared caplen=4096 while writing caplen=0 (rewrote those bytes
+  explicitly; logged here, test now tests what its comment claims).
+  `max_packets` semantics follow the tests (per-batch cap on
+  `read_packets`; streaming totals guarded by file-bytes bound).
+- Full crate denys (`unwrap/expect/panic/indexing_slicing` non-test) now
+  hold for the new code too — reader rewritten get-based; 4 collapsible-if
+  + contains/is_multiple_of cleanups in adopted files.
+- Evidence: lib 74 (incl. 4 new analyzer trace→rules end-to-end tests:
+  SMTP strip → KIWI-STARTTLS-001 + AUTH-001; IMAP login-fail → AUTH-003;
+  POP3 APOP → MD5 yes/exposure no; sniffing incl. unknown-stays-unknown),
+  classic 9, pcapng 3 — **86 green**; clippy `-D warnings` exit 0; fmt
+  clean; contract §8 entry points named (`PcapReader` → `analyze` →
+  `RuleEngine` → `ReportBuilder`).
+- Left for Agent 3's return: TCP reassembly impl (`reassembly` trait
+  specified), PCAP→trace→event wiring into analyzers, `report` polish.
+  Nothing of theirs was deleted (only superseded `classic.rs`/`ng.rs` of
+  my own earlier pass were removed).
+
+### Incidental findings (not mine, flagged not fixed)
+
+- `kiwi-autoconfig` (Agent 8, T-135, files moving ~01:51) currently does
+  NOT compile (`ClientConfig::parse` + `expected identifier impl` errors)
+  → `cargo test --workspace` is red through no fault of reviewed crates.
+  Untouched per §8; needs Agent 8 or Lead.
+- secret_scan FP on a TSX label ternary (`"Password" : "APOP secret"`)
+  fixed with a ternary-position skip; own-doc self-hit reworded.
+  Negative control 7/7 PASS; full scan 286 files / 0 hits.
+
+**Files changed:** `docker-compose.yml`, `.env.example`, `infra/README.md`,
+`tests/mail-server-strategy.md`, `docs/TESTING.md`,
+`.github/workflows/ci.yml`, `kiwi-forensics/src/{pcap/*,analyzers/*}`,
+`kiwi-forensics/tests/{pcap_ingest,pcapng_ingest}.rs` (3 minimal fixes),
+`docs/contracts/forensics.md`, `tests/tools/secret_scan.py`, this log.
+
+**Commands run:** IMAP/SMTP/POP3 socket probes; `docker compose
+pull/up/ps/build` (greenmail verified); full unittest (16 OK); cargo
+test/clippy/fmt on kiwi-forensics (86 green, clean); workspace test
+(blocked by autoconfig — see above); checkers green.
+
+**Assumptions:** GreenMail defaults (auth-disabled test users) acceptable
+for fixture mail; mystery-analyzer authorship resolves to Agent 3/Lead on
+return — my integration edits are reviewable diffs, not rewrites.
+
+**Risks:** unknown-provenance code is now load-bearing in the crate —
+Lead should confirm the author and have them review my 3 test fixes +
+analyzed_as threading; workspace CI stays red until autoconfig compiles.
+

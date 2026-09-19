@@ -45,13 +45,11 @@ impl CredentialStore for OsCredentialStore {
     }
 
     fn set(&self, key: &str, secret: &str) -> Result<()> {
-        Self::entry(key)?
-            .set_password(secret)
-            .map_err(cred_err)
+        Self::entry(key)?.set_password(secret).map_err(cred_err)
     }
 
     fn delete(&self, key: &str) -> Result<()> {
-        match Self::entry(key)?.delete_password() {
+        match Self::entry(key)?.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
             Err(e) => Err(cred_err(e)),
         }

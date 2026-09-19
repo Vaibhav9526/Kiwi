@@ -123,6 +123,34 @@ describe("MailflowService — metadata-only ingest + queries", () => {
   });
 });
 
+describe("List methods (T-134 admin UI reads)", () => {
+  it("lists org users with roles and org policies with rules", () => {
+    const actor: Actor = { ...admin, orgId };
+    const u1 = container.orgs.createUser(actor, orgId, "carol@acme.test", 4000);
+    const u2 = container.orgs.createUser(actor, orgId, "dave@acme.test", 4010);
+    container.orgs.grantRole(actor, u1.id, orgId, "viewer", 4020);
+
+    const users = container.orgs.listUsers(actor, orgId);
+    const emails = users.map((u) => u.email);
+    expect(emails).toContain("carol@acme.test");
+    expect(emails).toContain("dave@acme.test");
+    expect(users.find((u) => u.email === "carol@acme.test")?.roles).toEqual(["viewer"]);
+    expect(users.find((u) => u.email === "dave@acme.test")?.roles).toEqual([]);
+    expect(users).toEqual([...users].sort((a, b) => a.email.localeCompare(b.email)));
+
+    const policies = container.policies.listPolicies(actor, orgId);
+    expect(policies.length).toBeGreaterThanOrEqual(1);
+    expect(policies[0]).toHaveProperty("domainRules");
+  });
+
+  it("denies cross-org listing", () => {
+    const other = container.orgs.createOrg(admin, "list-other.test", 4100).id;
+    const cross: Actor = { ...viewer, orgId };
+    expect(() => container.orgs.listUsers(cross, other)).toThrow(AuthorizationDeniedError);
+    expect(() => container.policies.listPolicies(cross, other)).toThrow(AuthorizationDeniedError);
+  });
+});
+
 describe("AuditService", () => {
   it("verifies the whole chain", () => {
     const v = container.audit.verify({ limit: 200 });

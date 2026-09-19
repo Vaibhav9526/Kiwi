@@ -60,7 +60,11 @@ pub async fn read_dot_block<S: AsyncRead + Unpin>(
         if line == b"." {
             return Ok(out);
         }
-        let content = if line.starts_with(b"..") { &line[1..] } else { &line[..] };
+        let content = if line.starts_with(b"..") {
+            &line[1..]
+        } else {
+            &line[..]
+        };
         out.extend_from_slice(content);
         out.extend_from_slice(b"\r\n");
         if out.len() > limit {
@@ -84,8 +88,14 @@ mod tests {
             b.write_all(b"+OK hello\r\n-ERR bye\n").await.unwrap();
         });
         let mut buf = Vec::new();
-        assert_eq!(read_line(&mut a, &mut buf, "test").await.unwrap(), b"+OK hello");
-        assert_eq!(read_line(&mut a, &mut buf, "test").await.unwrap(), b"-ERR bye");
+        assert_eq!(
+            read_line(&mut a, &mut buf, "test").await.unwrap(),
+            b"+OK hello"
+        );
+        assert_eq!(
+            read_line(&mut a, &mut buf, "test").await.unwrap(),
+            b"-ERR bye"
+        );
     }
 
     #[tokio::test]

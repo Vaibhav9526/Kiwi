@@ -13,6 +13,8 @@ export interface OrgRepository {
   listDomains(orgId: string): { domain: string; verified: number }[];
   createUser(id: string, orgId: string, email: string, now: number): { id: string; org_id: string; email: string; created_at: number };
   getUser(id: string): { id: string; org_id: string; email: string; created_at: number } | undefined;
+  /** Users of an org, ordered by email (T-134 admin UI listing). */
+  listUsers(orgId: string): { id: string; org_id: string; email: string; created_at: number }[];
   grantRole(userId: string, orgId: string, role: OrgRole, now: number): void;
   listRoles(userId: string): OrgRole[];
   createDevice(id: string, orgId: string, label: string, now: number): { id: string; org_id: string; label: string; revoked: number; created_at: number };
@@ -63,7 +65,7 @@ export interface AuditRepository {
   range(since: number, until: number, limit: number): AuditRecord[];
 }
 
-/** Supertype over the concrete driver (see db/driver.ts). */
+/** Supertype over the concrete driver (see db/sqlite.ts). */
 export type SqlParam = null | number | bigint | string | boolean;
 
 export interface Db {
@@ -72,3 +74,14 @@ export interface Db {
   one(sql: string, ...params: SqlParam[]): unknown;
   all(sql: string, ...params: SqlParam[]): unknown[];
 }
+
+/**
+ * Async mirror of a repository interface for the PostgreSQL runtime
+ * (node-postgres is inherently async). Same method names, same shapes —
+ * every method returns a Promise. The sync interfaces above remain the
+ * contract for the local in-process path (SQLite); unifying the service
+ * layer on async is tracked follow-up work (needs Lead).
+ */
+export type AsyncInterface<T> = {
+  [K in keyof T]: T[K] extends (...args: infer A) => infer R ? (...args: A) => Promise<Awaited<R>> : never;
+};

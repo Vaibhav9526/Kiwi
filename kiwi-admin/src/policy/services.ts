@@ -93,6 +93,18 @@ export class OrgService {
     requirePermission(actor, "org.read", orgId);
     return this.repos.orgs.listDomains(orgId);
   }
+
+  /** T-134: org user listing with roles (read-only, RBAC-gated, unaudited like other reads). */
+  listUsers(actor: Actor, orgId: string): { id: string; email: string; roles: OrgRole[]; created_at: number }[] {
+    requirePermission(actor, "user.read", orgId);
+    const oid = assertIdentifier(orgId, "orgId");
+    return this.repos.orgs.listUsers(oid).map((u) => ({
+      id: u.id,
+      email: u.email,
+      roles: this.repos.orgs.listRoles(u.id),
+      created_at: u.created_at,
+    }));
+  }
 }
 
 export class PolicyService {
@@ -143,6 +155,19 @@ export class PolicyService {
     const definition = this.getPolicyDefinition(id);
     if (!definition) throw new Error(`policy '${id}' not found`);
     return evaluatePolicy(definition, input);
+  }
+
+  /** T-134: full policy definitions of an org (read-only, RBAC-gated). */
+  listPolicies(actor: Actor, orgId: string): PolicyDefinition[] {
+    requirePermission(actor, "policy.read", orgId);
+    const oid = assertIdentifier(orgId, "orgId");
+    return this.repos.policies.listPoliciesForOrg(oid).map((row) => ({
+      id: row.id,
+      enabled: row.enabled === 1,
+      minTls: row.min_tls,
+      externalRecipients: row.external_recipients,
+      domainRules: this.repos.policies.listDomainRules(row.id),
+    }));
   }
 
   /**

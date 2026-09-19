@@ -148,10 +148,7 @@ impl<R: DnsResolver> Ctx<'_, R> {
 /// Evaluate SPF for `input` against the SPF record published at
 /// `input.check_domain`. Never returns `Err` on DNS trouble: DNS errors
 /// become `temperror` results; only invalid *input* is an `Err`.
-pub fn evaluate<R: DnsResolver>(
-    dns: &R,
-    input: &SpfInput,
-) -> Result<SpfOutput, Error> {
+pub fn evaluate<R: DnsResolver>(dns: &R, input: &SpfInput) -> Result<SpfOutput, Error> {
     let mut ctx = Ctx {
         dns,
         input: input.clone(),
@@ -196,17 +193,16 @@ fn fetch_record<R: DnsResolver>(
         }
         Err(DnsError::Temp(e)) => {
             let mut o = out(ctx, SpfResult::TempError, None);
-            o.explanation = format!("DNS error fetching TXT: {e}").chars().take(500).collect();
+            o.explanation = format!("DNS error fetching TXT: {e}")
+                .chars()
+                .take(500)
+                .collect();
             return Err(o);
         }
     };
     let mut found: Vec<&String> = txts
         .iter()
-        .filter(|t| {
-            t == &"v=spf1"
-                || t.starts_with("v=spf1 ")
-                || t.starts_with("v=spf1\t")
-        })
+        .filter(|t| t == &"v=spf1" || t.starts_with("v=spf1 ") || t.starts_with("v=spf1\t"))
         .collect();
     if found.is_empty() {
         return Err(with_record(
@@ -225,12 +221,7 @@ fn fetch_record<R: DnsResolver>(
     Ok(found.pop().unwrap().clone())
 }
 
-
-fn eval_domain<R: DnsResolver>(
-    ctx: &mut Ctx<R>,
-    domain: &DomainName,
-    top: bool,
-) -> SpfOutput {
+fn eval_domain<R: DnsResolver>(ctx: &mut Ctx<R>, domain: &DomainName, top: bool) -> SpfOutput {
     if ctx.depth > MAX_RECURSION {
         return with_record(
             out(ctx, SpfResult::PermError, Some("redirect/include loop")),
@@ -238,12 +229,26 @@ fn eval_domain<R: DnsResolver>(
             "include/redirect recursion limit exceeded",
         );
     }
+    let record = match fetch_record(ctx, domain) {
+        Ok(r) => r,
+        Err(o) => {
+            if top || o.result != SpfResult::None {
+                return o;
+            }
+            if ctx.charge_void().is_err() {
+                let mut p = out(ctx, SpfResult::PermError, None);
+                p.explanation = "void lookup limit exceeded".to_string();
+                return p;
+            }
+            let mut o = out(ctx, SpfResult::Neutral, None);
+            o.explanation = "include target has no SPF record".to_string();
+            return o;
+        }
+    };
+    eval_terms(ctx, domain, &record)
+}
 
-fn eval_terms<R: DnsResolver>(
-    ctx: &mut Ctx<R>,
-    domain: &DomainName,
-    record: &str,
-) -> SpfOutput {
+fn eval_terms<R: DnsResolver>(ctx: &mut Ctx<R>, domain: &DomainName, record: &str) -> SpfOutput {
     let body = record.get(6..).unwrap_or("");
     let terms = match split_terms(body) {
         Ok(t) => t,
@@ -280,11 +285,10 @@ fn eval_terms<R: DnsResolver>(
             MechOutcome::Match(q) => {
                 let mut o = out(ctx, q.to_result(), Some(term));
                 o.record = Some(record.chars().take(MAX_TXT_LEN).collect());
-                o.explanation =
-                    format!("mechanism '{term}' matched for {}", ctx.input.sender_ip)
-                        .chars()
-                        .take(500)
-                        .collect();
+                o.explanation = format!("mechanism '{term}' matched for {}", ctx.input.sender_ip)
+                    .chars()
+                    .take(500)
+                    .collect();
                 return o;
             }
             MechOutcome::NoMatch => {}
@@ -333,6 +337,11 @@ fn eval_terms<R: DnsResolver>(
         return o;
     }
     with_record(
+        out(ctx, SpfResult::Neutral, None),
+        record,
+        "no mechanism matched",
+    )
+}
 
 /// Outcome of one mechanism evaluation.
 enum MechOutcome {
@@ -350,8 +359,8 @@ fn eval_mechanism<R: DnsResolver>(
     term: &str,
 ) -> MechOutcome {
     let (q, rest) = Qualifier::of(term);
-    let name_end = rest.find(|c| c == ':' || c == '/').unwrap_or(rest.len());
-    let (name, mut tail) = rest.split_at(name_end);
+    let name_end = rest.find([':', '/']).unwrap_or(rest.len());
+    let (name, tail) = rest.split_at(name_end);
     let name = name.to_ascii_lowercase();
     match name.as_str() {
         "all" => {
@@ -382,9 +391,7 @@ fn eval_mechanism<R: DnsResolver>(
             ctx.depth -= 1;
             match o.result {
                 SpfResult::Pass => MechOutcome::Match(q),
-                SpfResult::Fail | SpfResult::SoftFail | SpfResult::Neutral => {
-                    MechOutcome::NoMatch
-                }
+                SpfResult::Fail | SpfResult::SoftFail | SpfResult::Neutral => MechOutcome::NoMatch,
                 SpfResult::TempError => MechOutcome::Error(SpfResult::TempError),
                 _ => MechOutcome::Error(SpfResult::PermError),
             }
@@ -428,22 +435,23 @@ fn eval_mechanism<R: DnsResolver>(
     }
 }
 
-        out(ctx, SpfResult::Neutral, None),
-        record,
-        "no mechanism matched",
-    )
-}
-
 /// Split on ASCII spaces (RFC 7208: terms separated by SP).
 fn split_terms(s: &str) -> Result<Vec<String>, ()> {
-    let parts: Vec<String> =
-        s.split(' ').filter(|p| !p.is_empty()).map(|p| p.to_string()).collect();
+    let parts: Vec<String> = s
+        .split(' ')
+        .filter(|p| !p.is_empty())
+        .map(|p| p.to_string())
+        .collect();
     if parts.len() > 64 {
         return Err(());
     }
     for p in &parts {
         if p.len() > 300 {
             return Err(());
+        }
+    }
+    Ok(parts)
+}
 
 /// `(domain-spec, cidr4_len, cidr6_len)` from a `:spec[/cidr[/cidr6]]` tail.
 fn split_dual_cidr(tail: &str) -> Option<(&str, Option<u8>, Option<u8>)> {
@@ -498,19 +506,6 @@ fn parse_cidr_len(s: &str) -> Option<u8> {
     s.parse::<u8>().ok()
 }
 
-fn default_spec<'a>(spec: &'a str, current: &'a DomainName) -> &'a str {
-    if spec.is_empty() {
-        current.as_str()
-    } else {
-        spec
-    }
-}
-
-        }
-    }
-    Ok(parts)
-}
-
 fn eval_a<R: DnsResolver>(
     ctx: &mut Ctx<R>,
     current: &DomainName,
@@ -521,7 +516,11 @@ fn eval_a<R: DnsResolver>(
         Some(v) => v,
         None => return MechOutcome::Error(SpfResult::PermError),
     };
-    let use_spec = if spec.is_empty() { current.as_str() } else { spec };
+    let use_spec = if spec.is_empty() {
+        current.as_str()
+    } else {
+        spec
+    };
     let target = match DomainName::parse(&expand_macros(ctx, use_spec)) {
         Ok(d) => d,
         Err(_) => return MechOutcome::Error(SpfResult::PermError),
@@ -541,7 +540,10 @@ fn eval_a<R: DnsResolver>(
             MechOutcome::NoMatch
         }
         Ok(addrs) => {
-            if addrs.iter().any(|a| ip_matches(*a, ctx.input.sender_ip, c4, c6)) {
+            if addrs
+                .iter()
+                .any(|a| ip_matches(*a, ctx.input.sender_ip, c4, c6))
+            {
                 MechOutcome::Match(q)
             } else {
                 MechOutcome::NoMatch
@@ -560,7 +562,11 @@ fn eval_mx<R: DnsResolver>(
         Some(v) => v,
         None => return MechOutcome::Error(SpfResult::PermError),
     };
-    let use_spec = if spec.is_empty() { current.as_str() } else { spec };
+    let use_spec = if spec.is_empty() {
+        current.as_str()
+    } else {
+        spec
+    };
     let target = match DomainName::parse(&expand_macros(ctx, use_spec)) {
         Ok(d) => d,
         Err(_) => return MechOutcome::Error(SpfResult::PermError),
@@ -593,7 +599,10 @@ fn eval_mx<R: DnsResolver>(
                 }
             }
             Ok(addrs) => {
-                if addrs.iter().any(|a| ip_matches(*a, ctx.input.sender_ip, c4, c6)) {
+                if addrs
+                    .iter()
+                    .any(|a| ip_matches(*a, ctx.input.sender_ip, c4, c6))
+                {
                     return MechOutcome::Match(q);
                 }
             }
@@ -613,7 +622,11 @@ fn eval_ptr<R: DnsResolver>(
         Some(v) => v,
         None => return MechOutcome::Error(SpfResult::PermError),
     };
-    let use_spec = if spec.is_empty() { current.as_str() } else { spec };
+    let use_spec = if spec.is_empty() {
+        current.as_str()
+    } else {
+        spec
+    };
     let ptr_names = match ctx.dns.lookup_ptr(ctx.input.sender_ip) {
         Err(DnsError::Temp(_)) => return MechOutcome::Error(SpfResult::TempError),
         Err(DnsError::NxDomain) => {
@@ -624,8 +637,7 @@ fn eval_ptr<R: DnsResolver>(
         }
         Ok(n) => n,
     };
-    let want = DomainName::parse(&expand_macros(ctx, use_spec))
-        .unwrap_or_else(|_| current.clone());
+    let want = DomainName::parse(&expand_macros(ctx, use_spec)).unwrap_or_else(|_| current.clone());
     for n in ptr_names.iter().take(32) {
         if ctx.charge_lookup().is_err() {
             return MechOutcome::Error(SpfResult::PermError);
@@ -638,8 +650,7 @@ fn eval_ptr<R: DnsResolver>(
                 }
             }
             Ok(addrs) => {
-                if addrs.contains(&ctx.input.sender_ip)
-                    && (n == &want || n.is_subdomain_of(&want))
+                if addrs.contains(&ctx.input.sender_ip) && (n == &want || n.is_subdomain_of(&want))
                 {
                     return MechOutcome::Match(q);
                 }
@@ -762,12 +773,6 @@ fn ipv6_in_cidr(ip: std::net::Ipv6Addr, net: std::net::Ipv6Addr, prefix: u8) -> 
     let mask: u128 = u128::MAX << (128 - prefix);
     (a & mask) == (n & mask)
 }
-
-            if p > 128 {
-                return false;
-            }
-            ipv6_in_cidr(s, a, p)
-        }
 
 /// Expand RFC 7208 §7 macros in `spec`. Unknown macros are left literal
 /// (fail-closed: the expanded name then fails `DomainName::parse` and the
@@ -895,8 +900,11 @@ fn sanitize_helo(helo: &str) -> String {
     if t.is_empty() {
         return "unknown".to_string();
     }
-    let clean: String =
-        t.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-').take(253).collect();
+    let clean: String = t
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '.' || *c == '-')
+        .take(253)
+        .collect();
     if clean.is_empty() {
         "unknown".to_string()
     } else {
@@ -905,6 +913,16 @@ fn sanitize_helo(helo: &str) -> String {
 }
 
 fn url_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
 
 #[cfg(test)]
 mod tests {
@@ -923,8 +941,7 @@ mod tests {
 
     #[test]
     fn ip4_pass_and_fail() {
-        let dns = MockResolver::new()
-            .with_txt("example.com", &["v=spf1 ip4:192.0.2.10 -all"]);
+        let dns = MockResolver::new().with_txt("example.com", &["v=spf1 ip4:192.0.2.10 -all"]);
         let good = input("example.com", "192.0.2.10");
         let o = evaluate(&dns, &good).unwrap();
         assert_eq!(o.result, SpfResult::Pass);
@@ -946,11 +963,15 @@ mod tests {
             .with_txt("example.com", &["v=spf1 ~all"])
             .with_txt("other.example", &["v=spf1 ?all"]);
         assert_eq!(
-            evaluate(&dns, &input("example.com", "192.0.2.1")).unwrap().result,
+            evaluate(&dns, &input("example.com", "192.0.2.1"))
+                .unwrap()
+                .result,
             SpfResult::SoftFail
         );
         assert_eq!(
-            evaluate(&dns, &input("other.example", "192.0.2.1")).unwrap().result,
+            evaluate(&dns, &input("other.example", "192.0.2.1"))
+                .unwrap()
+                .result,
             SpfResult::Neutral
         );
     }
@@ -962,11 +983,15 @@ mod tests {
             .with_txt("_spf.example.net", &["v=spf1 ip4:192.0.2.0/24 -all"])
             .with_txt("alias.example", &["v=spf1 redirect=example.com"]);
         assert_eq!(
-            evaluate(&dns, &input("example.com", "192.0.2.55")).unwrap().result,
+            evaluate(&dns, &input("example.com", "192.0.2.55"))
+                .unwrap()
+                .result,
             SpfResult::Pass
         );
         assert_eq!(
-            evaluate(&dns, &input("alias.example", "192.0.2.55")).unwrap().result,
+            evaluate(&dns, &input("alias.example", "192.0.2.55"))
+                .unwrap()
+                .result,
             SpfResult::Pass
         );
     }
@@ -982,8 +1007,7 @@ mod tests {
 
     #[test]
     fn perm_error_on_multiple_records() {
-        let dns = MockResolver::new()
-            .with_txt("example.com", &["v=spf1 -all", "v=spf1 ~all"]);
+        let dns = MockResolver::new().with_txt("example.com", &["v=spf1 -all", "v=spf1 ~all"]);
         let o = evaluate(&dns, &input("example.com", "192.0.2.1")).unwrap();
         assert_eq!(o.result, SpfResult::PermError);
     }
@@ -999,7 +1023,9 @@ mod tests {
             let sub = format!("a{n}.x");
             dns = dns.with_txt(&sub, &["v=spf1 include:b1.y include:b2.y -all"]);
         }
-        dns = dns.with_txt("b1.y", &["v=spf1 -all"]).with_txt("b2.y", &["v=spf1 -all"]);
+        dns = dns
+            .with_txt("b1.y", &["v=spf1 -all"])
+            .with_txt("b2.y", &["v=spf1 -all"]);
         let o = evaluate(&dns, &input("example.com", "192.0.2.1")).unwrap();
         assert_eq!(o.result, SpfResult::PermError);
         assert!(o.lookups_used > MAX_DNS_LOOKUPS - 2);
@@ -1039,7 +1065,9 @@ mod tests {
             .with_host("cidr.example", &["192.0.2.0"]);
         // mx path
         assert_eq!(
-            evaluate(&dns, &input("example.com", "192.0.2.25")).unwrap().result,
+            evaluate(&dns, &input("example.com", "192.0.2.25"))
+                .unwrap()
+                .result,
             SpfResult::Pass
         );
         // a with dual-cidr spec tail: 'a/cidr.example/24' is name 'a' +
@@ -1048,52 +1076,3 @@ mod tests {
         assert_eq!(o.result, SpfResult::PermError);
     }
 }
-
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
-            out.push(b as char);
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
-    }
-    out
-}
-
-        _ => false,
-    }
-}
-
-                }
-            }
-            Ok(addrs) => {
-                if addrs.iter().any(|a| ip_matches(*a, ctx.input.sender_ip, c4, c6)) {
-                    return MechOutcome::Match(q);
-                }
-            }
-        }
-    }
-    MechOutcome::NoMatch
-}
-
-
-    let record = match fetch_record(ctx, domain) {
-        Ok(r) => r,
-        Err(o) => {
-            if top || o.result != SpfResult::None {
-                return o;
-            }
-            // include-target with no record: void lookup.
-            if ctx.charge_void().is_err() {
-                let mut p = out(ctx, SpfResult::PermError, None);
-                p.explanation = "void lookup limit exceeded".to_string();
-                return p;
-            }
-            let mut o = out(ctx, SpfResult::Neutral, None);
-            o.explanation = "include target has no SPF record".to_string();
-            return o;
-        }
-    };
-    eval_terms(ctx, domain, &record)
-}
-

@@ -30,6 +30,18 @@ PATTERNS = {
 # are still scanned — allowlist only covers synthetic markers.
 # Lines proving secret-hygiene handling rather than leaks.
 SKIP_IF_CONTAINS = ("Zeroizing", "REDACTED")
+# Full-value placeholders that are documentation, not secrets (gitleaks-style
+# generic allowlist). A real credential in these files still trips the scan —
+# only these exact documented stand-ins are excused.
+PLACEHOLDER_VALUES = frozenset({
+    "changeme", "change-me", "example", "test", "dummy", "password",
+    "your-password-here", "replace-me", "kiwi-dev-only-change-me",
+})
+# A quoted value in ternary position (`cond ? "A" : "B"`) is UI text, not an
+# assignment — e.g. a TSX label ternary switching on an auth-kind field.
+# Real assignments (quoted key, colon, quoted secret value) still trip it.
+TERNARY_VALUE = re.compile(r"\?\s*[\"'][^\"']{0,40}[\"']\s*:\s*[\"']")
+VALUE_AFTER_SEP = re.compile(r"\s*[:=]\s*['\"]?(\S+?)['\"]?\s*$")
 ALLOW_MARKERS = re.compile(
     r"kiwi-test\.invalid|example\.invalid|STARTTLS-STRIPPED|FORWARD-SECRECY-FAIL|INPUT-MALFORMED"
 )
@@ -75,10 +87,17 @@ def main() -> int:
                 continue
             if any(s in line for s in SKIP_IF_CONTAINS):
                 continue
+            if TERNARY_VALUE.search(line):
+                continue
             for name, rx in PATTERNS.items():
-                if rx.search(line):
-                    print(f"HIT {name} {f}:{lineno}")
-                    hits += 1
+                if not rx.search(line):
+                    continue
+                if name in ("password_eq", "password_colon_quoted"):
+                    m = VALUE_AFTER_SEP.search(line)
+                    if m and m.group(1).lower() in PLACEHOLDER_VALUES:
+                        continue
+                print(f"HIT {name} {f}:{lineno}")
+                hits += 1
     print(f"secret_scan: scanned={scanned} hits={hits}")
     return 1 if hits else 0
 

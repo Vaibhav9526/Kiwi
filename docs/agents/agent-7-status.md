@@ -2,6 +2,144 @@
 
 > Append dated entries: status, files changed, commands run, tests, assumptions, risks.
 
+## 2026-02-14 — T-146 + T-142: message actions + outbox persistence
+
+**Status:** implemented + verified. `cargo check -p kiwi-app` clean,
+`cargo test -p kiwi-app` 26/26, `cargo clippy -p kiwi-app --all-targets
+--no-deps -- -D warnings` clean (`--no-deps` needed: kiwi-forensics has
+~35 deny-lint errors in its in-flight `pcap/` code — another agent's crate,
+left untouched), `cargo fmt -p kiwi-app --check` clean.
+
+### T-146 — message actions (new module `commands/message.rs`, all gated)
+
+- `kiwi_update_message(accountId, folderId, uid, {seen?, starred?,
+  archived?})` — tri-state patch. Flags write-through: live IMAP
+  `UID STORE ±FLAGS.SILENT` first, then `store.update_flags` (local truth
+  for the list view; next sync reconciles). POP3 accounts → local-only.
+  `archived:true` → IMAP `UID MOVE` (MOVE-capable) or kiwi-mail's
+  COPY+Deleted+EXPUNGE fallback, with `CREATE Archive` if absent; local
+  move copies the meta row + body file into the archive folder then
+  deletes the source row. `archived:false` → INBOX. Audited.
+- `kiwi_download_attachment(accountId, folderId, uid, attachmentIndex,
+  destPath)` — `mail-parser` re-parse of the stored body (kiwi-mail's
+  `AttachmentMeta` is metadata-only; bytes come from the raw MIME).
+  ≤50 MiB decoded bound, destPath refused inside `data_dir`, parents
+  created, audited. Filename/content-type from the MIME part.
+- `kiwi_render_body(accountId, folderId, uid)` — `ammonia` 4.2 (new dep;
+  `mail-parser` 0.11 added too, same version kiwi-mail uses). Strict
+  allowlist — script/style/iframe/form/object simply aren't allowed tags;
+  `img src` filtered per-URL: cid:/data:/relative always pass, remote
+  http(s) only when `remote_content_allowed` — stripped count returned
+  for the UI's "allow remote content?" affordance. Output ≤8 MiB.
+  javascript:/vbscript: backstop in the attribute filter.
+- `kiwi_set_remote_content(accountId, allowed)` — per-account opt-in in
+  `AccountMeta` (serde-defaulted false), audited.
+
+### T-142 — outbox persistence (undo-send delay + send-later already landed)
+
+- `data_dir/outbox/<queueId>.json` (OutboxMeta, now Serialize) +
+  `.eml` (built MIME). Persist-before-enqueue so a crash can't lose a
+  committed send; write-then-rename per file.
+- `reload_outbox` in `AppState::open`/`open_test` rebuilds queue+meta —
+  bounded (256 items / 32 MiB each / 100 MiB total), malformed files
+  skipped with warn-log, never fatal.
+- Retry backoff re-persists meta (`update_outbox_meta`); every terminal
+  path (sent/blocked/failed/cancelled/flush) removes both files via
+  `drop_outbox`.
+- Semantics after restart: expired undo window → not cancelable, due
+  immediately; still-valid undo window → honored. This is the correct
+  "committed" reading — sends persisted while offline resume.
+
+### Refactor
+
+- `get_message_impl` body path extracted to `load_body_raw` (store →
+  on-demand IMAP fetch → store), now shared by get/render/download.
+
+### Files changed (this task)
+
+`message.rs` (new), `state.rs` (outbox persist/load, `remote_content_allowed`,
+`OutboxMeta` serde), `send.rs` (persist/remove/re-persist wiring),
+`mail.rs` (`load_body_raw` extraction, `auth_mech_of` pub(crate)),
+`accounts.rs` (meta literal), `types.rs` (5 new views), `lib.rs`
+(4 commands registered — 31 total), `Cargo.toml` (ammonia 4.2,
+mail-parser 0.11), `ipc.md` (§6b, §7 persistence note, §12 note), this log.
+
+### Known gaps added
+
+- Attachment bytes aren't on disk separately — download re-parses the
+  stored MIME each time (bounded; fine at mail sizes).
+- Archive uses the conventional `Archive` name — no \Special-Use list
+  detection yet (kiwi-mail doesn't expose it).
+- Outbox `.eml` files are message bodies at rest — same sensitivity class
+  as `mail.db` bodies; covered by the same "local disk only" guarantee.
+
+## 2026-02-14 — T-144: enforcement loop complete
+
+**Status:** implemented + verified. `cargo check -p kiwi-app` clean,
+`cargo test -p kiwi-app` 21/21, `cargo clippy -p kiwi-app --all-targets`
+clean for this crate (workspace `-D warnings` currently fails inside
+`kiwi-forensics`/`kiwi-autoconfig` — other agents' in-flight code, not
+touched here), `cargo fmt -p kiwi-app --check` clean.
+
+### §10 evaluate-outbound — now resolves config + env
+
+- `bridge::resolve_endpoint` (`resolve_endpoint_with` is the pure,
+  testable core): index org binding → `KIWI_ADMIN_URL`/`KIWI_ADMIN_ORG`
+  env → none. Loopback enforced at resolve time for BOTH sources — a
+  non-loopback env URL or binding is refused outright.
+- No endpoint at all → once-per-process warn (stderr + `policy-bridge-absent`
+  audit) and the send proceeds — local-first dev degrade per task brief.
+- Endpoint without `org_id` (env URL without `KIWI_ADMIN_ORG`) → once-per-
+  process `policy-no-org` warn; evaluation skipped, mailflow still emits.
+- Configured + unreachable → unchanged fail-closed: `policy-unavailable` →
+  outbox `held`, linear backoff, max 5 attempts.
+- `policy.block` path now also records the connection observation (the
+  SMTP session really happened — cert/TLS facts belong in the journal
+  even when DATA never ran).
+- Dev-auth headers on every request: `x-kiwi-subject: kiwi-client`,
+  `x-kiwi-roles: org_admin` (carries `policy.read` + `mailflow.ingest`),
+  `x-kiwi-org: <org>` (§12 scaffold — loopback only by construction).
+
+### §11 mailflow emit — send + receive
+
+- `bridge::MailflowEvent` = §6 wire shape (snake_case, metadata only).
+  `build_send_attempt_events` (one per recipient, verdict from §10 result,
+  unknown-normalized) and `build_received_event` (org_id nullable,
+  `policy_verdict` always `unknown`) — Rust ports of the §11 builders.
+- Send path (`deliver_inner`): emits on EVERY attempt outcome — sent,
+  policy-blocked, transport failure. `message_id` correlates the MIME
+  Message-ID (stored in `OutboxMeta`); `tls_version` is the observed
+  negotiated label.
+- Receive path (`imap_sync`/`pop3_sync`): per-folder UID-set delta around
+  `sync_folder`/`sync_pop3` → `collect_received` pulls store metas for new
+  UIDs (≤200/sync, bounded scan) → one inbound event each. Sender-less
+  messages skipped (§6 requires non-empty sender).
+- `security_status` = `security_status_label(observed, findings)` — maps
+  finding severities only (none→clean, ≤medium→warn, ≥high→suspicious,
+  unobserved→unknown); never the policy verdict (§11 honest rule).
+- `emit_events`: posts each event to `POST /api/v1/mailflow/events`;
+  on first failure the failed event + unattempted remainder requeue into
+  `AppState.mailflow_pending` (VecDeque, 512 cap, drop-oldest) and retry
+  at the head of the next emission. Emission NEVER fails send/sync.
+
+### Files changed (this task)
+
+`bridge.rs` (endpoint resolution, post_json w/ dev-auth headers, §11
+builders, emit+pending queue, `security_status_label`, 5 new tests),
+`state.rs` (`mailflow_pending`, `policy_warned`/`no_org_warned`,
+`OutboxMeta.message_id`), `send.rs` (attempt-ctx refactor, warn-once
+degrade, emit on all outcomes), `mail.rs` (UID-delta collect + emit on
+IMAP+POP3), `ipc.md` (§7 bridge/env/emit semantics, §9 env fallback,
+§12 note), this log.
+
+### Known gaps added
+
+- `mailflow_pending` is in-memory — events queued while admin is down are
+  lost on restart (outbox too). Acceptable for v1 dev transport.
+- Receive emission discovers new messages via UID-set delta — works for
+  IMAP+POP3 sync but not for a hypothetical "bodies-only" refresh (no new
+  UIDs → no events; correct).
+
 ## 2026-02-14 — Task correction: T-132 not mine
 
 T-132 (sandbox eval) was reassigned to Agent 2 — dropped from my queue.

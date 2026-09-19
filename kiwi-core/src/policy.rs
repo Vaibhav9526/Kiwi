@@ -99,9 +99,15 @@ impl TrustPolicy {
                 if let Some(chain) = &s.cert_chain {
                     use crate::session::ChainValidation::*;
                     match chain.validation {
-                        Invalid => push(SignalKind::CertificateInvalid, SignalSeverity::Critical, 100),
+                        Invalid => push(
+                            SignalKind::CertificateInvalid,
+                            SignalSeverity::Critical,
+                            100,
+                        ),
                         Expired => push(SignalKind::CertificateExpired, SignalSeverity::High, 60),
-                        Untrusted => push(SignalKind::CertificateUntrusted, SignalSeverity::High, 60),
+                        Untrusted => {
+                            push(SignalKind::CertificateUntrusted, SignalSeverity::High, 60)
+                        }
                         HostnameMismatch => push(
                             SignalKind::CertificateHostnameMismatch,
                             SignalSeverity::Critical,
@@ -179,7 +185,10 @@ mod tests {
         s.cipher_suite = None;
         s.cert_chain = None;
         let sigs = TrustPolicy::default().session_signals(&s);
-        assert!(sigs.iter().any(|x| x.kind == SignalKind::PlaintextTransport));
+        assert!(
+            sigs.iter()
+                .any(|x| x.kind == SignalKind::PlaintextTransport)
+        );
     }
 
     #[test]
@@ -190,9 +199,10 @@ mod tests {
         s.starttls_offered = Some(true);
         s.starttls_used = false;
         let sigs = TrustPolicy::default().session_signals(&s);
-        assert!(sigs
-            .iter()
-            .any(|x| x.kind == SignalKind::StartTlsDowngradeSuspected));
+        assert!(
+            sigs.iter()
+                .any(|x| x.kind == SignalKind::StartTlsDowngradeSuspected)
+        );
     }
 
     #[test]
@@ -200,9 +210,10 @@ mod tests {
         let mut s = base_session();
         s.tls_version = Some(TlsVersion::Tls1_0);
         let sigs = TrustPolicy::default().session_signals(&s);
-        assert!(sigs
-            .iter()
-            .any(|x| x.kind == SignalKind::DeprecatedTlsVersion));
+        assert!(
+            sigs.iter()
+                .any(|x| x.kind == SignalKind::DeprecatedTlsVersion)
+        );
     }
 
     #[test]
@@ -223,9 +234,7 @@ mod tests {
         });
         let policy = TrustPolicy::default();
         let sigs = policy.session_signals(&s);
-        assert!(sigs
-            .iter()
-            .any(|x| policy.hard_lock.contains(&x.kind)));
+        assert!(sigs.iter().any(|x| policy.hard_lock.contains(&x.kind)));
     }
 
     #[test]

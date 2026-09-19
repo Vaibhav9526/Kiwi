@@ -10,7 +10,7 @@
 
 use std::path::{Path, PathBuf};
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 
 use crate::account::MailAccount;
 use crate::error::{MailError, Result};
@@ -108,6 +108,12 @@ pub struct MailStore {
 }
 
 impl MailStore {
+    /// Test-only access to the connection (foreign-key fixtures).
+    #[cfg(test)]
+    pub fn conn_for_test(&self) -> &Connection {
+        &self.conn
+    }
+
     /// Open (or create) the store under `root`.
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
         let root = root.as_ref().to_path_buf();
@@ -301,9 +307,9 @@ impl MailStore {
 
     /// UIDs still missing a fetched body.
     pub fn uids_without_body(&self, folder_id: i64) -> Result<Vec<u64>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT uid FROM messages WHERE folder_id = ?1 AND body_path IS NULL",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT uid FROM messages WHERE folder_id = ?1 AND body_path IS NULL")?;
         let rows = stmt.query_map(params![folder_id], |r| r.get::<_, i64>(0))?;
         let mut uids = Vec::new();
         for r in rows {
@@ -494,7 +500,9 @@ mod tests {
 
         let fid = store.ensure_folder("a1", "INBOX").unwrap();
         assert_eq!(fid, store.ensure_folder("a1", "INBOX").unwrap());
-        store.set_folder_sync_state(fid, Some(777), Some(1004), 1003).unwrap();
+        store
+            .set_folder_sync_state(fid, Some(777), Some(1004), 1003)
+            .unwrap();
         let fm = store.folder_meta(fid).unwrap().unwrap();
         assert_eq!(fm.uid_validity, Some(777));
 
@@ -505,12 +513,18 @@ mod tests {
         assert_eq!(msgs[0].uid, 1001);
         assert_eq!(msgs[0].flags, vec!["\\Seen"]);
 
-        assert!(store.update_flags(fid, 1001, &["\\Flagged".to_string()]).unwrap());
+        assert!(
+            store
+                .update_flags(fid, 1001, &["\\Flagged".to_string()])
+                .unwrap()
+        );
         let msgs = store.list_messages(fid, 50).unwrap();
         assert_eq!(msgs[0].flags, vec!["\\Flagged"]);
 
         // body storage
-        let path = store.store_body(fid, 1001, b"Subject: x\r\n\r\nbody").unwrap();
+        let path = store
+            .store_body(fid, 1001, b"Subject: x\r\n\r\nbody")
+            .unwrap();
         assert!(path.exists());
         assert!(store.body_file(fid, 1001).unwrap().is_some());
         assert_eq!(store.uids_without_body(fid).unwrap(), vec![1002]);

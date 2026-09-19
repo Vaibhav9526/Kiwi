@@ -298,7 +298,7 @@ mobile/
   tests/
     protocol/*.test.ts       deterministic protocol evidence
     keystore/soft-hsm.test.ts    fail-closed posture evidence
-    helpers/db.ts            fixture helpers (synthetic only — SECURITY.md §4)
+    helpers/protocol.ts           fixture helpers (synthetic only — SECURITY.md §4)
 ```
 
 Pure modules (`protocol/`) run under Node vitest; RN imports are confined to

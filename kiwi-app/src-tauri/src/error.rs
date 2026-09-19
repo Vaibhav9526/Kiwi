@@ -81,9 +81,10 @@ impl From<kiwi_core::challenge::ChallengeError> for IpcError {
         match e {
             UnknownChallenge => Self::new("unknown-challenge", "unknown challenge id"),
             Expired => Self::new("expired", "challenge expired"),
-            AlreadyConsumed => {
-                Self::new("already-consumed", "challenge already consumed (replay rejected)")
-            }
+            AlreadyConsumed => Self::new(
+                "already-consumed",
+                "challenge already consumed (replay rejected)",
+            ),
             BindingMismatch => Self::new(
                 "binding-mismatch",
                 "response binding does not match the issued challenge",

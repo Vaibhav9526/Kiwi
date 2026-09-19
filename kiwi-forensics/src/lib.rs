@@ -55,9 +55,9 @@ pub mod score;
 // lands, so the crate always compiles for the layer that is complete. The task is
 // only reported done when every module below is present and `cargo test` +
 // `cargo clippy` are green.
-// pub mod analyzers;
-// pub mod pcap;
+pub mod analyzers;
 pub mod live;
+pub mod pcap;
 pub mod report;
 pub mod rules;
 

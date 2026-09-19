@@ -45,6 +45,17 @@
 13. Attachments are untrusted files: spoofed extensions flagged, dangerous
     types confirmed before open, saved files get safe names (no path
     traversal), open-handlers never run with elevated privilege.
+14. Active analysis of hostile content runs inside the disposable-VM sandbox
+    only (`docs/sandbox.md`, ADR-008) — never on the host, never in a
+    container. No sandbox provider → analysis reports `Unavailable`; there
+    is no fallback to host execution, ever.
+15. Local infrastructure secrets live in `.env` (gitignored) with dev-only
+    defaults; `.env.example` stays tracked. Compose files pin image versions;
+    the Tauri app is never containerized. Containers are services, not a
+    hostile-code boundary.
+16. Databases hold no secrets in any form: no passwords, keys, tokens, or
+    private material in PG/SQLite rows, migrations, or seeds. Device-local
+    secrets stay in OS credential storage (rule 8).
 
 ## 2. Trust boundaries (standalone)
 
@@ -53,6 +64,8 @@
 | B1 | Network ↔ kiwi-mail transport | mail servers, MITM | rustls explicit config; full `TlsObservation` capture; deterministic TLS/cert/cipher analysis; never silently downgrade |
 | B2 | Webview (frontend) ↔ Rust core (Tauri IPC) | compromised/malicious renderer, XSS via mail content | typed commands, service-side validation + authz on every command; CSP mandatory (`csp: null` is a G5 finding); bodies/creds never cross to admin paths |
 | B3 | kiwi services ↔ SQLite / mail store | tampered DB/file, other local users | per-service DB files (ADR-003); parameterized access only; sensitive fields encrypted at rest where practical; store corruption → rebuild, never silent loss |
+| B3b | kiwi-admin ↔ PostgreSQL (compose) | tampered rows, leaked DSN, malicious migration | Drizzle ORM only (no raw SQL except reviewed migrations); migrations reviewed like code; least-privilege DB role; DSN from `.env`, never committed; audit append-only enforced at DB level (trigger) + hash-chain on read |
+| B9 | Host ↔ sandbox guest (all tiers) | hostile attachment/document/link executing in guest; guest-escape attempt | disposable per-run instances (qcow2 overlay / unregister); base image versioned + hash-pinned, never booted mutable; no host FS/creds/keys/mailbox mapped in; no NIC by default; watchdog kill; provider capability reporting (`Available\|Degraded\|Unavailable`); WSL2 tier carries the documented shared-kernel caveat |
 | B4 | kiwi-core ↔ mobile authenticator | network attacker, cloned device | asymmetric challenge-response; QR/local-net pairing; keypair in platform keystore; revocation honored before trust |
 | B5 | kiwi-admin ↔ admin UI | unauthorized local user / CSRF | localhost-only bind; RBAC on every operation; session expiry; audited elevated actions |
 | B6 | Anything ↔ AI provider | provider, prompt injection via mail content | optional; structured-findings payload only — never credentials/message bodies; AI output never a finding without deterministic re-validation |
@@ -76,7 +89,16 @@
 - A5. QR pairing happens over a physically proximate, human-verified
   channel; a photographed QR is equivalent to consent (documented UX risk).
 - A6. Tauri auto-update (if enabled later) pins signing keys and verifies
-  bundles; until then, releases are verified out-of-band.
+   bundles; until then, releases are verified out-of-band.
+- A7. Compose `.env` holds dev-only defaults; any shared/staging deployment
+   replaces the PG password and treats `pgdata` as disposable unless
+   explicitly backed up. Migrations are trusted dev input (reviewed like
+   code) — the threat is tampering/failure, not malicious SQL from outside.
+- A8. Sandbox availability is host-dependent (QEMU/WHPX target, WSL2
+   interim, Firecracker on Linux). Absent provider = unavailable feature,
+   never degraded-to-host-execution. WSL2 tier: hypervisor boundary vs host
+   holds; shared-kernel escape could reach sibling distros (documented
+   caveat, not a host compromise claim).
 
 ## 4. Secure-coding checklist (all agents, enforced in review)
 
@@ -104,6 +126,15 @@
       wired into the auth paths, not merely depended on).
 - [ ] Webview: non-null CSP; no `http://` remote code in production;
       external links open in the system browser after user action.
+- [ ] Infra: `.env` gitignored + `.env.example` covers every compose var
+      (test-enforced); image versions pinned; no mailbox/credential mounts
+      in compose; no secrets in migrations/seeds (rule 16); migrations
+      reviewed like code; audit-guard trigger preserved on schema changes.
+- [ ] Sandbox: new providers behind the `SandboxProvider` interface with
+      capability reporting; base images versioned + hash-pinned, never
+      mutated; per-run instances never reused; guest output bounded before
+      host parsing; QEMU binary provisioning is an explicit install
+      decision, never bundled silently.
 
 ## 5. AI security rules (prompt.md §12, binding — unchanged by pivot)
 

@@ -1,0 +1,364 @@
+/**
+ * Minimal localhost HTTP transport over the kiwi-admin services (T-134).
+ * Implements the wire mapping in docs/contracts/admin-api.md §3 (+§10 bridge)
+ * plus GET /healthz for process supervision (Agent 6 T-133).
+ *
+ * DEV-SCAFFOLD AUTH WARNING: actor identity comes from `x-kiwi-*` request
+ * headers (see actorFromHeaders). That is LOCAL-DEV-ONLY scaffolding — the
+ * service binds 127.0.0.1 and refuses any other interface. Real session auth
+ * (kiwi-core identity, Phase 3+) replaces header actors before this transport
+ * is used for anything beyond local development. Never expose this port.
+ *
+ * Zero dependencies beyond node stdlib. All business rules stay in services;
+ * this layer only parses HTTP, validates boundary shapes, and maps errors to
+ * the contract's uniform error shape.
+ */
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { pathToFileURL } from "node:url";
+import { createServiceContainer, type ServiceContainer } from "./services.js";
+import { AuthorizationDeniedError, type Actor } from "./rbac/rbac.js";
+import { RequestValidationError, isRecord } from "./util/validate.js";
+import { ALL_ORG_ROLES, TLS_VERSION_ALIASES, type ExternalRecipientBehavior, type OrgRole } from "./types.js";
+
+const HOST = "127.0.0.1";
+const DEFAULT_PORT = 8471;
+const MAX_BODY_BYTES = 1024 * 1024;
+
+function send(res: ServerResponse, status: number, body: unknown): void {
+  const payload = JSON.stringify(body);
+  res.writeHead(status, { "content-type": "application/json; charset=utf-8", "content-length": Buffer.byteLength(payload) });
+  res.end(payload);
+}
+
+function errBody(code: string, message: string, details?: Record<string, unknown>): unknown {
+  return details === undefined ? { error: { code, message } } : { error: { code, message, details } };
+}
+
+function actorFromHeaders(req: IncomingMessage): Actor {
+  const get = (name: string): string | undefined => {
+    const v = req.headers[name];
+    return typeof v === "string" ? v : undefined;
+  };
+  const subject = get("x-kiwi-subject")?.trim() || "local-admin";
+  const roles = (get("x-kiwi-roles") ?? "org_admin")
+    .split(",")
+    .map((r) => r.trim())
+    .filter((r): r is OrgRole => (ALL_ORG_ROLES as readonly string[]).includes(r));
+  const orgId = get("x-kiwi-org")?.trim() || null;
+  return { subject, roles: roles.length ? roles : ["org_admin"], orgId };
+}
+
+function readJson(req: IncomingMessage): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on("data", (c: Buffer) => {
+      size += c.length;
+      if (size > MAX_BODY_BYTES) {
+        reject(new RequestValidationError("body", "exceeds 1 MiB"));
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
+    req.on("end", () => {
+      const text = Buffer.concat(chunks).toString("utf8").trim();
+      if (!text) {
+        resolve({});
+        return;
+      }
+      try {
+        resolve(JSON.parse(text) as unknown);
+      } catch {
+        reject(new RequestValidationError("body", "malformed JSON"));
+      }
+    });
+    req.on("error", reject);
+  });
+}
+
+function strField(body: Record<string, unknown>, field: string, max = 4096): string {
+  const v = body[field];
+  if (typeof v !== "string" || v.trim().length === 0) throw new RequestValidationError(field, "expected non-empty string");
+  if (v.trim().length > max) throw new RequestValidationError(field, `exceeds ${max} chars`);
+  return v.trim();
+}
+
+/** Wire shape per contract §5.1 (snake_case PolicyObject minus id). */
+function parsePolicyBody(body: unknown): {
+  name: string;
+  enabled: boolean;
+  minTls: string | null;
+  externalRecipients: ExternalRecipientBehavior;
+  domainRules: { domain: string; action: "allow" | "block" }[];
+} {
+  if (!isRecord(body)) throw new RequestValidationError("body", "expected object");
+  const name = strField(body, "name", 200);
+  if (typeof body["enabled"] !== "boolean") throw new RequestValidationError("enabled", "expected boolean");
+  const ext = body["external_recipients"];
+  if (ext !== "allow" && ext !== "warn" && ext !== "block") {
+    throw new RequestValidationError("external_recipients", "must be allow|warn|block");
+  }
+  let minTls: string | null = null;
+  const rawTls = body["min_tls"];
+  if (rawTls !== undefined && rawTls !== null) {
+    if (typeof rawTls !== "string") throw new RequestValidationError("min_tls", "expected string");
+    const normalized = TLS_VERSION_ALIASES[rawTls.trim().toLowerCase()];
+    if (!normalized) throw new RequestValidationError("min_tls", "unrecognized TLS version");
+    minTls = normalized;
+  }
+  const rulesRaw = body["domain_rules"] ?? [];
+  if (!Array.isArray(rulesRaw)) throw new RequestValidationError("domain_rules", "expected array");
+  const domainRules = rulesRaw.map((r) => {
+    if (!isRecord(r)) throw new RequestValidationError("domain_rules[]", "expected object");
+    const domain = strField(r, "domain", 253);
+    const actionRaw = r["action"];
+    if (actionRaw !== "allow" && actionRaw !== "block") {
+      throw new RequestValidationError("domain_rules[].action", "must be allow|block");
+    }
+    const action: "allow" | "block" = actionRaw;
+    return { domain, action };
+  });
+  return { name, enabled: body["enabled"], minTls, externalRecipients: ext, domainRules };
+}
+
+function numParam(url: URL, name: string, fallback: number): number {
+  const raw = url.searchParams.get(name);
+  if (raw === null) return fallback;
+  const n = Number(raw);
+  if (!Number.isSafeInteger(n)) throw new RequestValidationError(name, "expected integer");
+  return n;
+}
+
+export function createHttpServer(container: ServiceContainer): Server {
+  return createServer(async (req, res) => {
+    try {
+      await route(container, req, res);
+    } catch (err) {
+      if (err instanceof AuthorizationDeniedError) {
+        send(res, 403, errBody("auth.denied", err.message, { permission: err.permission }));
+      } else if (err instanceof RequestValidationError) {
+        send(res, 400, errBody("validation.failed", err.message));
+      } else if (err instanceof Error && /not found/.test(err.message)) {
+        send(res, 404, errBody("not.found", err.message));
+      } else {
+        send(res, 500, errBody("internal", err instanceof Error ? err.message : "unexpected error"));
+      }
+    }
+  });
+}
+
+async function route(container: ServiceContainer, req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const url = new URL(req.url ?? "/", `http://${HOST}`);
+  const method = (req.method ?? "GET").toUpperCase();
+  const seg = url.pathname.split("/").filter((s) => s.length > 0);
+  const actor = actorFromHeaders(req);
+  const now = Math.floor(Date.now() / 1000);
+
+  if (method === "GET" && seg.length === 1 && seg[0] === "healthz") {
+    send(res, 200, { status: "ok", service: "kiwi-admin", version: "0.1.0", contract: "admin-api/1.3-pending" });
+    return;
+  }
+
+  if (seg[0] !== "api" || seg[1] !== "v1") {
+    send(res, 404, errBody("not.found", `no route ${method} ${url.pathname}`));
+    return;
+  }
+  const rest = seg.slice(2);
+
+  // POST /api/v1/orgs
+  if (method === "POST" && rest.length === 1 && rest[0] === "orgs") {
+    const body = (await readJson(req)) as Record<string, unknown>;
+    send(res, 201, container.orgs.createOrg(actor, strField(body, "name", 200), now));
+    return;
+  }
+
+  // /api/v1/orgs/:org/...
+  if (rest[0] === "orgs" && typeof rest[1] === "string") {
+    const orgId = rest[1];
+    // POST /users | GET /users
+    if (rest[2] === "users" && rest.length === 3) {
+      if (method === "POST") {
+        const body = (await readJson(req)) as Record<string, unknown>;
+        send(res, 201, container.orgs.createUser(actor, orgId, strField(body, "email", 254), now));
+        return;
+      }
+      if (method === "GET") {
+        send(res, 200, { items: container.orgs.listUsers(actor, orgId) });
+        return;
+      }
+    }
+    // PUT /users/:user/role
+    if (rest[2] === "users" && typeof rest[3] === "string" && rest[4] === "role" && rest.length === 5 && method === "PUT") {
+      const body = (await readJson(req)) as Record<string, unknown>;
+      const role = body["role"];
+      if (role !== "org_admin" && role !== "security_admin" && role !== "viewer") {
+        throw new RequestValidationError("role", "must be org_admin|security_admin|viewer");
+      }
+      container.orgs.grantRole(actor, rest[3], orgId, role, now);
+      send(res, 200, { ok: true });
+      return;
+    }
+    // GET|POST /policies
+    if (rest[2] === "policies" && rest.length === 3) {
+      if (method === "GET") {
+        send(res, 200, { items: container.policies.listPolicies(actor, orgId) });
+        return;
+      }
+      if (method === "POST") {
+        const input = parsePolicyBody(await readJson(req));
+        send(
+          res,
+          201,
+          container.policies.createPolicy(actor, orgId, input.name, {
+            name: input.name,
+            enabled: input.enabled,
+            minTls: input.minTls,
+            externalRecipients: input.externalRecipients,
+            domainRules: input.domainRules,
+          }),
+        );
+        return;
+      }
+    }
+    // POST /policies/evaluate-outbound
+    if (rest[2] === "policies" && rest[3] === "evaluate-outbound" && rest.length === 4 && method === "POST") {
+      const body = (await readJson(req)) as Record<string, unknown>;
+      send(
+        res,
+        200,
+        container.policies.evaluateOutbound(actor, orgId, {
+          sender: body["sender"],
+          recipients: body["recipients"],
+          tlsVersion: body["tlsVersion"] ?? body["tls_version"] ?? null,
+        }),
+      );
+      return;
+    }
+  }
+
+  // POST /api/v1/devices/:device/revoke
+  if (method === "POST" && rest[0] === "devices" && typeof rest[1] === "string" && rest[2] === "revoke" && rest.length === 3) {
+    container.orgs.revokeDevice(actor, rest[1], now);
+    send(res, 200, { ok: true });
+    return;
+  }
+
+  // POST /api/v1/policies/:policy/evaluate
+  if (method === "POST" && rest[0] === "policies" && typeof rest[1] === "string" && rest[2] === "evaluate" && rest.length === 3) {
+    const body = (await readJson(req)) as Record<string, unknown>;
+    const direction = body["direction"];
+    if (direction !== "inbound" && direction !== "outbound") throw new RequestValidationError("direction", "must be inbound|outbound");
+    const tlsRaw = body["tlsVersion"] ?? body["tls_version"] ?? null;
+    let tlsVersion: string | null = null;
+    if (tlsRaw !== null) {
+      if (typeof tlsRaw !== "string") throw new RequestValidationError("tlsVersion", "expected string");
+      const normalized = TLS_VERSION_ALIASES[tlsRaw.trim().toLowerCase()];
+      if (!normalized) throw new RequestValidationError("tlsVersion", "unrecognized TLS version");
+      tlsVersion = normalized;
+    }
+    send(
+      res,
+      200,
+      container.policies.evaluate(rest[1], {
+        direction,
+        sender: strField(body, "sender", 254),
+        recipient: strField(body, "recipient", 254),
+        tlsVersion,
+      }),
+    );
+    return;
+  }
+
+  // POST|GET /api/v1/mailflow/events
+  if (rest[0] === "mailflow" && rest[1] === "events" && rest.length === 2) {
+    if (method === "POST") {
+      const body = (await readJson(req)) as Record<string, unknown>;
+      send(
+        res,
+        201,
+        container.mailflow.ingest(actor, {
+          direction: body["direction"] as "inbound" | "outbound",
+          sender: body["sender"] as string,
+          recipient: body["recipient"] as string,
+          ts: body["ts"] as number,
+          message_id: (body["message_id"] as string | null | undefined) ?? null,
+          tls_version: (body["tls_version"] as string | null | undefined) ?? null,
+          security_status: (body["security_status"] as string | undefined) ?? "unknown",
+          policy_verdict: (body["policy_verdict"] as "allow" | "warn" | "block" | "unknown" | undefined) ?? "unknown",
+          org_id: (body["org_id"] as string | null | undefined) ?? null,
+        }),
+      );
+      return;
+    }
+    if (method === "GET") {
+      const filter: { orgId?: string; recipientDomain?: string; sinceTs?: number; untilTs?: number; limit: number } = {
+        limit: numParam(url, "limit", 50),
+      };
+      const org = url.searchParams.get("org");
+      if (org !== null) filter.orgId = org;
+      const rd = url.searchParams.get("recipientDomain");
+      if (rd !== null) filter.recipientDomain = rd;
+      if (url.searchParams.has("since")) filter.sinceTs = numParam(url, "since", 0);
+      if (url.searchParams.has("until")) filter.untilTs = numParam(url, "until", Number.MAX_SAFE_INTEGER);
+      send(res, 200, container.mailflow.query(actor, filter));
+      return;
+    }
+  }
+
+  // GET /api/v1/audit | GET /api/v1/audit/verify
+  if (rest[0] === "audit" && rest.length <= 2 && method === "GET") {
+    if (rest[1] === "verify") {
+      send(res, 200, container.audit.verify({ limit: numParam(url, "limit", 1000) }));
+      return;
+    }
+    if (rest.length === 1) {
+      const filter: { orgId?: string; since?: number; until?: number; limit: number } = {
+        limit: numParam(url, "limit", 50),
+      };
+      const org = url.searchParams.get("org");
+      if (org !== null) filter.orgId = org;
+      if (url.searchParams.has("since")) filter.since = numParam(url, "since", 0);
+      if (url.searchParams.has("until")) filter.until = numParam(url, "until", Number.MAX_SAFE_INTEGER);
+      send(res, 200, { items: container.audit.query(filter) });
+      return;
+    }
+  }
+
+  send(res, 404, errBody("not.found", `no route ${method} ${url.pathname}`));
+}
+
+export interface ServerHandle {
+  server: Server;
+  port: number;
+  container: ServiceContainer;
+}
+
+/** Starts the localhost-only server. Never binds anything but 127.0.0.1. */
+export async function startServer(opts: { dbPath?: string; port?: number; container?: ServiceContainer } = {}): Promise<ServerHandle> {
+  const container = opts.container ?? createServiceContainer(opts.dbPath ?? "kiwi-admin.db");
+  const server = createHttpServer(container);
+  const port = opts.port ?? Number(process.env["KIWI_ADMIN_PORT"] ?? DEFAULT_PORT);
+  await new Promise<void>((resolve) => server.listen(port, HOST, resolve));
+  const address = server.address();
+  const bound = typeof address === "object" && address ? address.port : port;
+  return { server, port: bound, container };
+}
+
+const isMain = typeof process.argv[1] === "string" && import.meta.url.endsWith("/server.js") && process.argv[1].replace(/\\/g, "/").endsWith("/server.js");
+
+if (isMain) {
+  const dbPath = process.env["KIWI_ADMIN_DB"] ?? "kiwi-admin.db";
+  // eslint-disable-next-line no-console
+  console.warn("[kiwi-admin] DEV-SCAFFOLD transport: localhost-only, header actors — NOT production auth.");
+  startServer({ dbPath })
+    .then(({ port }) => {
+      // eslint-disable-next-line no-console
+      console.log(`[kiwi-admin] listening on http://${HOST}:${port} (db ${dbPath})`);
+    })
+    .catch((err: unknown) => {
+      // eslint-disable-next-line no-console
+      console.error("[kiwi-admin] failed to start", err);
+      process.exit(1);
+    });
+}
