@@ -1,46 +1,47 @@
-# Agent 5 Brief — OpenCode Muse 1.3 #1 — THUNDERBIRD UI / UX / BRANDING
+# Agent 5 Brief v2 — OpenCode Muse 1.3 #1 — CLIENT UI / UX / BRANDING
 
-Read first: `prompt.md` (root), `docs/ARCHITECTURE.md`, `docs/TASKS.md`,
-`docs/SECURITY.md`, this file. You are **Agent 5**.
+**PIVOT (2026-09-19):** KIWI is a standalone email client built from scratch —
+NOT a Thunderbird fork. See `docs/DECISIONS.md` ADR-005 and rewritten
+`docs/ARCHITECTURE.md`. You now own the WHOLE app UI, not integration into
+someone else's client. Thunderbird = UX reference for mail workflows;
+Mailspring = reference for selected productivity features.
 
-## Mission (prompt.md §6 Agent 5)
+Read first: `prompt.md`, `docs/ARCHITECTURE.md`, `docs/TASKS.md`,
+`docs/SECURITY.md`. You are **Agent 5**.
 
-- Preserve Thunderbird's visual language and workflows — KIWI must still
-  feel like Thunderbird, not a dashboard app
-- Integrate: secure connection status, account security panel, finding
-  details, native lock screen, authenticator waiting/verification UI,
-  security event details, re-scan/diff UI, local admin UI surfaces
-- Use supplied `images/` assets (logo, favicon, banner) — never overwrite,
-  never invent a replacement logo
-- Accessibility, keyboard navigation, error/loading/locked states,
-  dark/light theme compatibility
+## Mission (updated)
 
-## Your Phase 0 task — T-005 (claimed)
+The complete KIWI client frontend: mailbox, composer, accounts, settings —
+with the security surfaces from your v1 spec (indicators, lock screen,
+authenticator UI, findings, re-scan/diff) integrated natively, plus
+Mailspring-inspired productivity features: **unified inbox, snooze, send
+later, undo send, message templates**.
 
-Thunderbird source is still downloading; do NOT touch `source/`. Deliver:
+## Tasks (see docs/TASKS.md)
 
-1. `docs/ui-spec.md` — KIWI-in-Thunderbird UX spec: where each security
-   surface lives inside the existing product (message-list security
-   indicator, account security panel location, lock screen as a native
-   overlay, authenticator waiting dialog, finding-detail view,
-   policy-violation composer warning). For each: trigger conditions,
-   states (normal/error/loading/locked), keyboard path, a11y notes,
-   theme behavior.
-2. `docs/contracts/ui-surfaces.md` — a registry of UI surfaces with IDs
-   so Agent 2/Lead can wire real data to them later.
-3. Brand asset audit: inspect `images/` (logo.svg/png, favicon, banner,
-   black_bg), record sizes/formats/usage guidance in `docs/ui-spec.md`.
-4. A11y + workflow checklist (what every UI change must be verified
-   against) — include in `docs/ui-spec.md`.
+- T-111: rewrite `docs/ui-spec.md` for the standalone app (rename old spec
+  context — v1 stays as security-surface input). Cover: three-pane mailbox
+  layout, unified inbox, folder tree, message list + reader, composer,
+  account setup wizard, settings, security surfaces (S-01..S-07 from v1),
+  lock screen, authenticator waiting UI. Per surface: states
+  (normal/error/loading/locked), keyboard path, a11y, theme (dark/light).
+  Update `docs/contracts/ui-surfaces.md` to match (surface IDs stable where
+  possible).
+- T-112 (after Lead lands T-110 Tauri shell): scaffold the React+TS
+  frontend in `kiwi-app/` — Vite + React + TS, route structure, layout
+  shell, theme tokens derived from `images/` palette, stub views wired to
+  the IPC command stubs. `images/` stays read-only.
+- Keep the v1 checklist rigor: overflow/clipping, keyboard nav, focus,
+  error/locked states, theme compat — now for the whole app.
 
 ## Boundaries
 
-- Your files: `docs/ui-spec.md`, `docs/contracts/ui-surfaces.md`,
-  `docs/agents/agent-5-status.md`. `images/` is READ-ONLY.
-- Do not redesign Thunderbird; spec incremental, native-feeling additions.
+Yours: `docs/ui-spec.md`, `docs/contracts/ui-surfaces.md`, `kiwi-app/`
+frontend files (NOT `src-tauri/` Rust — Lead owns; coordinate via
+`docs/contracts/ui-surfaces.md`), `docs/agents/agent-5-status.md`.
+`images/` read-only.
 
 ## Reporting
 
-Append dated entries to `docs/agents/agent-5-status.md`:
-status, files changed, commands run, assumptions, risks.
-Hit a limit → handoff entry in `docs/AGENT_HANDOFF.md`.
+Append dated entries to `docs/agents/agent-5-status.md`. Hit a limit →
+handoff entry in `docs/AGENT_HANDOFF.md`.

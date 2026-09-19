@@ -1,0 +1,25 @@
+[package]
+name = "kiwi-app"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "KIWI desktop client (Tauri shell)"
+publish = false
+
+[lib]
+name = "kiwi_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+kiwi-mail = { path = "../../kiwi-mail" }
+kiwi-core = { path = "../../kiwi-core" }
+tauri = { version = "2", features = [] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1", features = ["full"] }
+
+[lints]
+workspace = true

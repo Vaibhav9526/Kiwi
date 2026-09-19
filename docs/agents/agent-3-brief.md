@@ -1,47 +1,41 @@
-# Agent 3 Brief — Cline + DeepSeek V4.1 Flash — FORENSICS / PCAP / TLS RULE ENGINE
+# Agent 3 Brief v2 — Cline + DeepSeek V4.1 Flash — FORENSICS + SECURITY ANALYSIS
 
-Read first: `prompt.md` (root), `docs/ARCHITECTURE.md`, `docs/TASKS.md`,
-`docs/SECURITY.md`, this file. You are **Agent 3**.
+**PIVOT (2026-09-19):** KIWI is a standalone email client built from scratch —
+NOT a Thunderbird fork. See `docs/DECISIONS.md` ADR-005 and rewritten
+`docs/ARCHITECTURE.md`. `source/` is read-only reference. Your
+`kiwi-forensics` work stays valid and gains a live-data role.
 
-## Mission (prompt.md §6 Agent 3)
+Read first: `prompt.md`, `docs/ARCHITECTURE.md`, `docs/TASKS.md`,
+`docs/SECURITY.md`, `docs/contracts/security-session.md` (Agent 2's — your
+analyzers consume this model). You are **Agent 3**.
 
-- Normalized protocol/security data model
-- SMTP / IMAP / POP3 analyzers, STARTTLS analysis, TLS handshake parsing
-- Certificate, cipher-suite, key-exchange analysis; forward-secrecy assessment
-- Cryptographic weakness rules + deterministic scoring (works with NO AI)
-- PCAP forensics: `.pcap/.pcapng` ingest, TCP reassembly, session
-  reconstruction, TLS metadata extraction, evidence records, timeline
-- Findings model: weakness → evidence → impact → remediation; re-scan diff;
-  JSON/HTML/PDF report pipeline
+## Mission (updated)
 
-## Your Phase 0 task — T-003 (claimed)
+Deterministic security analysis engine — from PCAP captures AND from live
+`TlsObservation`/`SecuritySession` events emitted by `kiwi-mail`. Everything
+works with zero AI.
 
-Thunderbird source is still downloading; you do NOT need it. Deliver:
+## Tasks (see docs/TASKS.md)
 
-1. `kiwi-forensics/` Rust crate scaffold (`cargo new --lib`): modules
-   `model` (normalized connection/protocol/security events), `findings`
-   (finding + evidence + severity + remediation + re-scan diff types),
-   `rules` (deterministic rule engine: TLS version floor, weak ciphers,
-   missing forward secrecy, cert problems, plaintext auth, STARTTLS
-   stripping indicators), `pcap` (ingest interface — treat all bytes as
-   untrusted), `score` (deterministic scoring).
-2. `docs/contracts/forensics.md` — the finding/evidence/report contract.
-3. Fixture plan in `docs/contracts/forensics.md`: list of PCAP fixtures
-   needed (coordinate with Agent 6 who owns `tests/fixtures/`).
-4. Unit tests: at minimum, rule engine tests with synthetic sessions
-   (no real packets needed yet) proving deterministic scores.
-
-Suggested crates (evaluate, justify in status file): `pcap-file` or
-`etherparse`/`pcap` for parsing. Pin versions; keep deps minimal.
+- Finish T-003: complete `kiwi-forensics` (model, findings/evidence, rules,
+  pcap ingest, score) — your status noted the crate doesn't compile yet;
+  get `cargo test -p kiwi-forensics` green first.
+- Write `docs/contracts/forensics.md` (finding/evidence/report contract) —
+  still pending.
+- T-107: adapter so the same rules engine scores live session events from
+  `kiwi-mail::transport::TlsObservation` (same normalized model; add a
+  `from_observation` mapping — depend on the shape Agent 2 publishes; if it
+  isn't ready, code to the fields already in `transport.rs`).
+- Fixture catalog in your contract for Agent 6 (T-012/T-114).
 
 ## Boundaries
 
-- Your dirs: `kiwi-forensics/`, `docs/contracts/forensics.md`,
-  `docs/agents/agent-3-status.md`. Nothing else without Lead coordination.
-- `cargo test` + `cargo clippy` must pass before reporting done.
+Yours: `kiwi-forensics/`, `docs/contracts/forensics.md`,
+`docs/agents/agent-3-status.md`. Keep `unsafe_code = "forbid"` (good call —
+keep it). Deps minimal+pinned. `cargo test -p kiwi-forensics` green before
+reporting done.
 
 ## Reporting
 
-Append dated entries to `docs/agents/agent-3-status.md`:
-status, files changed, commands run, test results, assumptions, risks.
-Hit a limit → handoff entry in `docs/AGENT_HANDOFF.md`.
+Append dated entries to `docs/agents/agent-3-status.md`. Hit a limit →
+handoff entry in `docs/AGENT_HANDOFF.md`.

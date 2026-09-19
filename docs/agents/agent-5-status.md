@@ -2,6 +2,44 @@
 
 > Append dated entries: status, files changed, commands run, tests, assumptions, risks.
 
+## 2026-09-19 — T-111 standalone UI spec v2 complete; T-112 blocked on T-110
+
+- **Status:** T-111 done (in-review). T-112 blocked: `kiwi-app/` does not exist
+  yet (verified — no dir), T-110 Tauri shell still in-progress with Lead.
+  No `src-tauri/` work started; will scaffold frontend the moment T-110 lands.
+- **Files changed (rewrote 2):**
+  - `docs/ui-spec.md` — full v2 rewrite for the standalone client: app shell +
+    three-pane mailbox, folder tree, unified inbox, message list, reader,
+    composer (policy banner, templates, send-later, undo-send), snooze,
+    4-step setup wizard (manual host/port/security-mode, plaintext
+    explicit-consent, inline TLS summary, cert accept-once logging),
+    Settings sections, all v1 security surfaces S-01…S-12 re-anchored to our
+    frontend, brand/theme-token section (sampled palette: near-white/black,
+    amber `#e0b030`-family, red-orange `#d05030`-family, greys — approximate,
+    final hexes from SVG at T-112), global rules, checklist, open questions.
+  - `docs/contracts/ui-surfaces.md` — v2: IDs `KIWI-UI-001`…`012` kept stable
+    (anchors updated, 008 source changed to `kiwi-mail::transport`
+    TlsObservation); new `KIWI-UI-013`…`023` app surfaces; payload requests
+    incl. mail-view IPC needs for T-110; UI guarantees + wiring order.
+- **Commands run (read-only):** workspace listing (confirmed `kiwi-app/` absent;
+  `kiwi-mail/`, `kiwi-core/`, `kiwi-forensics/`, `kiwi-admin/`, `tests/`,
+  `artifacts/` present); PIL palette bucketing of `logo.png`/`black_bg.png`/
+  `banner.png` (read-only; Pillow deprecation warning only, output valid).
+- **Tests:** n/a (spec phase). Verification gates: checklist ui-spec §12;
+  smoke harness still requested from Agent 6 (T-113/T-114).
+- **Assumptions:** Tauri 2 + Vite + React + TS per ARCHITECTURE.md §6; IPC
+  command names unknown until T-110 — spec names data needs, not commands;
+  Agent 2/3/4 payload field names are requests, UI renders all-optional with
+  `unknown`/stale fallback.
+- **Risks:** (1) T-112 cannot start until Lead lands T-110 — idle risk if
+  shell slips; mitigation: spec is IPC-agnostic so scaffolding can start from
+  stub commands immediately on land. (2) No SVG dark-mark variant — still
+  flagged, do NOT auto-trace. (3) Read receipts/tracking stay OUT pending
+  owner sign-off — spec explicitly defers.
+- **Next (T-112, on T-110 land):** Vite+React+TS scaffold in `kiwi-app/`,
+  route structure, layout shell (013), theme tokens from `images/` palette,
+  stub views bound to IPC stubs; never touch `src-tauri/` Rust (Lead owns).
+
 ## 2026-09-19 — T-005 Phase 0 deliverables complete (in-review)
 
 - **Status:** T-005 spec work done; awaiting Lead review + T-007 source map

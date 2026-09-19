@@ -1,374 +1,302 @@
-# KIWI-in-Thunderbird — UX Spec (T-005)
+# KIWI Standalone Client — UI/UX Spec v2 (T-111)
 
-> Owner: Agent 5 (OpenCode Muse 1.3 #1). Status: Phase 0 draft.
-> Master prompt: `prompt.md`. Architecture: `docs/ARCHITECTURE.md`.
+> Owner: Agent 5 (OpenCode Muse 1.3 #1). Status: Phase 0/1 draft (standalone pivot).
+> Replaces the v1 Thunderbird-integration spec (T-005) in this file. The v1
+> security-surface designs (S-01…S-12) are carried over and re-anchored to our
+> own React+TS frontend in `kiwi-app/` (Tauri 2 shell, Lead T-110).
+> Architecture: `docs/ARCHITECTURE.md` (standalone pivot, ADR-005).
 > Surface registry: `docs/contracts/ui-surfaces.md`.
-> Constraint: Thunderbird source (`source/`, `source/comm/`) is still being
-> acquired — this spec defines **where** KIWI surfaces live and **how** they
-> behave. No Thunderbird code is modified in T-005.
+> References: Thunderbird (mail workflows, UI patterns), Mailspring
+> (unified inbox, snooze, send later, undo send, templates).
 
-## 0. Design principles (prompt.md §2, §17)
+## 0. Design principles
 
-1. **Thunderbird first.** KIWI adds small, native-feeling security affordances
-   inside existing windows (3-pane mail tab, message header, Account Settings,
-   compose window, status bar). No dashboard-app redesign, no new top-level
-   application window for daily use.
-2. **Quiet by default, visible when useful.** Normal secure state = a single
-   unobtrusive indicator. Warnings, lock state, policy blocks, and
-   authenticator requests are the only things allowed to interrupt.
-3. **Evidence one click away.** Every indicator links to a finding-detail view
-   showing weakness → evidence → impact → remediation (prompt.md §1).
-4. **Deterministic display.** UI renders what `kiwi-core` / `kiwi-forensics`
-   report. UI never invents severity, never claims compromise detection
-   (see `docs/SECURITY.md` rules 1–3).
-5. **Locked means locked.** In lock state the UI must prevent sensitive mailbox
-   access (message body/attachments/compose-send), not merely hide it.
-
----
-
-## 1. Surfaces
-
-### S-01 — Per-message connection-security indicator (message header + thread pane)
-
-- **Location:** message header bar (adjacent to the existing From/Date row,
-  right-aligned pill) + optional 16px icon column in the thread pane
-  (off by default; enabled via View → Threads → KIWI Security column).
-- **Trigger conditions:**
-  - Shown for every open message once a `SecuritySession` exists for the
-    account/server that delivered it.
-  - Severity = worst deterministic finding for that message's receiving
-    session (from `kiwi-core` trust evaluation / `kiwi-forensics` report).
-- **States:**
-  - `secure` (green shield-check): TLS ≥ 1.2, valid chain, strong cipher,
-    forward secrecy. Tooltip: "Secure connection — TLS 1.3, …".
-  - `warning` (amber shield-exclamation): weak but functional (e.g. TLS 1.0/1.1,
-    non-FS cipher, soon-expiring cert). Tooltip summarizes top finding.
-  - `danger` (red shield-x): plaintext, STARTTLS stripped/downgraded,
-    invalid chain. Tooltip summarizes.
-  - `unknown` (grey shield-question): no session data yet (local folders,
-    pre-KIWI archive, IPC unavailable). Tooltip: "No connection data".
-  - `loading` (spinner): session evaluation in flight (< 2 s expected).
-  - `error`: IPC/service failure — "Security check unavailable", never
-    presented as secure.
-- **Keyboard path:** `Tab` reaches the pill in the message header; `Enter`/`Space`
-  opens S-04 (finding detail). Thread-pane icon is decorative (`aria-hidden`),
-  detail is reached from the header pill.
-- **A11y:** pill is a `<button>` with `aria-label` including severity + short
-  summary (e.g. "Connection security: warning. TLS 1.0 negotiated. Activate
-  for details."). Never color-only: icon shape + text label differ per state.
-- **Theme:** uses Thunderbird CSS variables (`--in-content-*`, theme-aware
-  shield icons); amber/red/green pass 4.5:1 on both light and dark themes.
-  High-contrast mode: border + text label carry the meaning.
-
-### S-02 — Account security chip (folder pane + status bar)
-
-- **Location:** folder-pane account row (16px trailing icon) + status-bar
-  right section (text chip: "KIWI: Secure" / "KIWI: 2 warnings" / "KIWI: Locked").
-- **Trigger conditions:** reflects the account's current session trust from
-  `kiwi-core` (worst open session / lock state). Updates on session change,
-  re-scan completion, lock/unlock events.
-- **States:** mirror of S-01 severities + `locked` (padlock, see S-05).
-  Status-bar chip text is always present (no icon-only meaning).
-- **Keyboard path:** status-bar chip is focusable; `Enter` opens S-03 (account
-  security panel). Folder-pane icon is `aria-hidden` (chip is the operable path).
-- **A11y:** `role="status"` live region for severity *escalations only*
-  (de-escalations announce on focus, not via live region, to avoid noise).
-- **Theme:** same token scheme as S-01; chip background uses
-  `color-mix()` tints of the severity color so it adapts to light/dark.
-
-### S-03 — Account security panel
-
-- **Location:** new section "KIWI Security" inside Account Settings for the
-  selected account (below the existing server/security rows), plus a read-only
-  summary card in the Account Hub / account central page if present in this
-  Thunderbird version (exact XUL/HTML file mapped in T-007).
-- **Contents:** negotiated TLS version, cipher suite, key exchange, forward
-  secrecy, cert summary (subject/issuer/expiry, "view full chain" → S-08),
-  last-scan time, finding counts by severity, policy name in force,
-  "Re-scan now" button (→ S-09), "Event history" link (→ S-10).
-- **Trigger conditions:** always present for IMAP/POP3/SMTP accounts;
-  placeholder `unknown` state for Local Folders / RSS / newsgroup accounts
-  ("Not applicable to local folders").
-- **States:** normal / loading (skeleton rows while IPC fetches) / error
-  (service unreachable → retry button; cached last-known values labeled
-  "Last known, HH:MM" — never presented as current).
-- **Keyboard path:** native Account Settings tab order; section heading is a
-  real heading (`h2`/`caption`) so screen-reader and `F6`-pane navigation work.
-- **A11y:** definition-list semantics (`<dl>`) for key/value rows; expiry and
-  severity text are literal text, not icon-only.
-- **Theme:** inherits Account Settings page styles; no custom background.
-
-### S-04 — Finding-detail view
-
-- **Location:** modal dialog launched from S-01 pill, S-03 finding rows, S-09
-  diff rows. (Dialog, not a new tab — keeps mail context visible behind.)
-- **Contents (fixed order):** severity + title → affected session
-  (protocol/server/port/STARTTLS/TLS version/cipher) → evidence block
-  (verbatim, monospace, copyable) → impact (one paragraph) → remediation
-  (numbered steps) → "AI explanation" collapsible (only if AI layer enabled;
-  labeled "AI-generated, not authoritative") → finding ID + engine version.
-- **Trigger conditions:** opened on demand; shows exactly one finding.
-  Prev/Next buttons page through the session's finding list.
-- **States:** normal / loading (finding fetch) / error (finding unavailable).
-  Evidence block always shows raw values; if evidence is missing the dialog
-  states "Evidence unavailable — finding not confirmed" (per SECURITY.md
-  rule 2: never display evidence-free findings as confirmed).
-- **Keyboard path:** focus trap while open; `Esc` closes and returns focus to
-  the invoking control; Prev/Next are buttons in tab order; evidence `<pre>`
-  region is scrollable via keyboard.
-- **A11y:** `role="dialog"` + `aria-modal="true"` + labelledby the finding
-  title; severity announced in the title string.
-- **Theme:** standard Thunderbird dialog styling; evidence `<pre>` uses the
-  code/monospace treatment of the host dialog.
-
-### S-05 — Native lock screen (trust-reduced lock state)
-
-- **Location:** full mail-window overlay (covers 3-pane + tabs), rendered by
-  Thunderbird chrome — not a web page, not dismissible by DOM inspection from
-  content scope.
-- **Trigger conditions:** `kiwi-core` lock policy fires (endpoint-trust drop,
-  suspicious remote-session indicators, admin lock). Overlay appears within
-  1 s of the lock event; a status-bar "KIWI: Locked" chip (S-02) persists.
-- **Contents:** KIWI lock mark (see §3, `black_bg.png` on dark / `logo.png`
-  on light), "Mailbox locked" heading, short reason category (e.g. "Untrusted
-  device posture" — never raw sensor dumps), "Verify with authenticator"
-  button (→ S-06), "Retry trust check" secondary button, admin contact hint
-  if org policy sets one.
-- **States:** `locked` / `authenticator-waiting` (S-06 embedded or linked) /
-  `unlocking` (spinner, inputs disabled) / `unlock-failed` (reason + retry;
-  attempt counter visible after 3 failures) / transient `error`.
-- **While locked:** message list, preview pane, tabs with message content,
-  compose send, attachment open/save, address-book details, and search
-  previews are inert (no message bodies readable). Folder structure and the
-  lock UI itself remain visible so the product still looks like Thunderbird.
-- **Keyboard path:** on lock, focus moves to the dialog heading; `Tab` cycles
-  Verify/Retry only; `Esc` does NOT unlock (announces "Mailbox remains
-  locked").
-- **A11y:** `role="alertdialog"`, reason announced on open; countdown/attempt
-  text is plain text; reduced-motion respected (no animated lock art).
-- **Theme:** follows Thunderbird light/dark; lock mark swaps asset
-  (`logo.png` light, `black_bg.png` dark) so the mark is never invisible.
-
-### S-06 — Authenticator waiting / verification dialog
-
-- **Location:** modal dialog above S-05 (or standalone if invoked from
-  Account Settings → device enrollment test).
-- **Contents:** purpose line ("Approve sign-in on your KIWI authenticator"),
-  device name (truncated fingerprint, e.g. "Pixel 8 · ends 9F3A"), 6-digit
-  or QR pairing code where the protocol requires it, countdown to challenge
-  expiry, Approve/Deny state once the device responds, Cancel button.
-- **Trigger conditions:** unlock flow, new-device enrollment verification,
-  step-up verification for policy-gated send. Challenge is bound to
-  device + session + event (SECURITY.md rule 10); dialog shows the event
-  being approved ("Unlock mailbox", not a generic "Approve?").
-- **States:** `waiting` (spinner + countdown) / `approved` (auto-continues,
-  brief confirmation) / `denied` (reason + return to S-05) / `expired`
-  (explicit "Code expired — request a new one", replay of the old code must
-  fail) / `error` (transport failure → retry).
-- **Keyboard path:** focus trap; Cancel is reachable first via `Shift+Tab`
-  from the heading; countdown is `aria-live="off"` with a polite one-time
-  "30 seconds remaining" note to avoid screen-reader spam.
-- **A11y:** the approved/denied/expired transition is announced via a
-  `role="status"` line; pairing codes use monospaced, letter-spaced text
-  with `aria-label` reading digits grouped.
-- **Theme:** standard dialog theme; QR code (Phase 4) always rendered black
-  on white with a white quiet-zone margin even in dark mode (scannability).
-
-### S-07 — Policy-violation composer warning
-
-- **Location:** inline banner at the top of the compose window (below
-  addressing, above body) + blocking confirm-dialog at Send when policy
-  = block; non-blocking warning style when policy = warn.
-- **Trigger conditions:** recipient-domain allow/deny evaluation and
-  minimum-TLS/policy checks from `kiwi-admin` policy contract fire on
-  addressing change and at Send. Evaluation is per-recipient; the banner
-  lists offending addresses literally.
-- **States:** `warn` (amber banner, Send allowed, banner persists) / `block`
-  (red banner, Send disabled until offending recipients removed; Send hotkey
-  `Ctrl+Enter` announces the block) / `checking` (brief skeleton while policy
-  service responds; Send allowed only after evaluation completes for block
-  policies — fail-closed) / `error` (policy service unreachable → treat as
-  block for block-policies with "Policy check unavailable" text; never
-  silently allow).
-- **Keyboard path:** banner is focusable (`F6` pane cycle reaches it), lists
-  offending addresses as text, "Remove" button per address; Send button has
-  `aria-disabled` + describedby the banner id when blocked.
-- **A11y:** banner `role="alert"` on block only (warn uses `role="status"`);
-  never rely on red/amber alone — text states "Blocked"/"Warning".
-- **Theme:** Thunderbird infobar patterns (same as attachment-blocked and
-  remote-content bars) so it reads as native compose UI.
-- **Honesty rule:** banner text states enforcement scope — "Blocked in this
-  client. Organization-wide enforcement happens at the mail gateway."
-  (prompt.md Agent 4 note: never present UI-only block as complete
-  organizational enforcement.)
-
-### S-08 — Certificate details view
-
-- **Location:** sub-dialog of S-03 / S-04 ("View certificate"), reusing
-  Thunderbird's existing certificate viewer patterns where the mapped source
-  allows (T-007 decides reuse vs. KIWI dialog).
-- **Contents:** leaf + chain (one card per cert: subject, issuer, serial,
-  validity window, fingerprint SHA-256, signature algorithm, key usage),
-  chain-status line per cert (OK/expired/self-signed/hostname-mismatch with
-  the failing field named), raw PEM toggle (copyable).
-- **States:** normal / loading / error (chain unavailable → which hop is
-  missing is stated).
-- **Keyboard path:** cert cards in tab order; PEM `<textarea readonly>`
-  selectable via keyboard; `Esc` returns to parent dialog focus.
-- **A11y:** status text per cert, never icon-only; expiry dates in full
-  date format, not relative-only.
-- **Theme:** inherits viewer/dialog theme; fingerprints monospace.
-
-### S-09 — Re-scan / diff UI
-
-- **Location:** section inside S-03 + results dialog after a re-scan; diff
-  entries link to S-04 for per-finding detail.
-- **Contents:** "Re-scan now" + scope selector (this account / all accounts) +
-  results list grouped new/resolved/unchanged with severity chips +
-  scan timestamps (before → after) + engine version line.
-- **Trigger conditions:** manual button; automatic re-scan offered (button,
-  not auto-run) after remediation steps are viewed in S-04.
-- **States:** `idle` / `scanning` (progress bar, cancellable; partial results
-  labeled "partial") / `done` / `error` (failed scope named, prior results kept).
-- **Keyboard path:** results are a list; each row's "Details" button opens S-04;
-  focus returns to the row on dialog close.
-- **A11y:** progress uses `role="progressbar"` with min/max/now; diff groups
-  are headings ("New (2)", "Resolved (1)") so AT users can jump.
-- **Theme:** standard dialog/list styling; severity chips reuse S-01 tokens.
-
-### S-10 — Security event center / audit history
-
-- **Location:** new Thunderbird tab ("KIWI Security", opened from S-02 chip →
-  "Event history" or AppMenu → KIWI section). Read-only list; this is the one
-  surface allowed to look slightly dashboard-like, kept inside a Thunderbird
-  content tab so back/forward and tab-close behave natively.
-- **Contents:** chronological event rows (time, account, category, severity,
-  summary, "Details" → S-04/S-08 as applicable); filter by account + severity;
-  export button (JSON forensic export, Phase 5 format from `kiwi-forensics`).
-- **States:** normal / loading / empty ("No security events for this filter")
-  / error. Export states: ready/exporting/done/failed with the failure named.
-- **Keyboard path:** filter controls + table in tab order; table uses real
-  `<table>` semantics with sortable column headers as buttons.
-- **A11y:** table has caption + scope headers; live region announces result
-  counts after filtering ("14 events shown").
-- **Theme:** `about:`-style content theme, follows light/dark automatically.
-
-### S-11 — Local admin UI surfaces (Phase 6+, responsive web)
-
-- **Location:** standalone localhost React+TS app (`kiwi-admin-ui`), NOT inside
-  Thunderbird chrome. Agent 4 owns data/API; Agent 5 owns layout/a11y review.
-- **Phase 0 scope:** only responsive/a11y ground rules are fixed here —
-  mobile-first single column → desktop two-pane at ≥ 900px; every data table
-  gets caption + text severity; all destructive actions (revoke device,
-  block domain) require a confirm dialog naming the target; RBAC-denied
-  controls render disabled with "Requires admin role" text (never hidden
-  without explanation).
-- **Keyboard/a11y/theme:** same rules as S-10 plus visible focus rings,
-  `prefers-reduced-motion` support, and dark-mode parity checklist (§4).
-
-### S-12 — Device pairing / enrollment dialog (Phase 4)
-
-- **Location:** modal from Account Settings → KIWI → Devices → "Add device".
-- **Contents:** QR code (local pairing, no push dependency for dev), manual
-  code fallback, device-name field, "Waiting for device…" state → success /
-  failure. Private keys stay in platform keystore; dialog never displays key
-  material (SECURITY.md rule 8).
-- **States:** `showing-code` / `waiting` / `paired` / `expired` / `error`.
-- **Keyboard path:** focus trap; manual code in a readonly labelled field;
-  `Esc` cancels pairing (old codes invalidated).
-- **A11y/theme:** same QR-on-white rule as S-06; expiry announced once.
+1. **Familiar mail client first.** Three-pane mailbox, folder tree, composer,
+   and account setup follow Thunderbird workflow parity (ARCHITECTURE.md §5) —
+   a Thunderbird user must feel at home on first launch.
+2. **KIWI security is native, not bolted on.** Indicators, panels, lock state,
+   and policy banners are first-class citizens of the layout, sharing the same
+   design tokens, but quiet by default (see §7 noise budget).
+3. **Productivity without surveillance.** Mailspring-inspired features
+   (unified inbox, snooze, send later, undo send, templates) are implemented
+   locally. Deferred: read receipts/tracking — privacy-sensitive, needs owner
+   sign-off (ARCHITECTURE.md §4). No tracking pixels are ever rendered or sent.
+4. **Deterministic display.** UI renders what `kiwi-mail` / `kiwi-core` /
+   `kiwi-forensics` / `kiwi-admin` report. UI never invents severity, never
+   claims compromise detection (`docs/SECURITY.md` rules 1–3).
+5. **Locked means locked.** Lock state makes sensitive content inert at the
+   data/IPC layer (Agent 2 lock semantics); the UI additionally removes bodies,
+   attachments, and send affordances from view — never merely hides them.
+6. **No business logic in the frontend** beyond UI state (ARCHITECTURE.md §3).
+   Every view below names its IPC/data source; loading/error states assume the
+   backend may be unreachable.
 
 ---
 
-## 2. Brand asset audit (`images/` — READ-ONLY, never overwritten)
+## 1. App shell & three-pane mailbox (`KIWI-UI-013`)
 
-Verified 2026-09-19 by direct inspection (sizes via .NET `System.Drawing`;
-hashes recorded for change detection). No file was modified.
+- **Layout:** left sidebar (account/folder tree + app nav) | center message
+  list | right/below message reader. Resizable dividers (persisted widths),
+  collapsible sidebar. Default: Thunderbird-classic 3-pane; a "vertical view"
+  (list above reader) toggle in View settings.
+- **Top bar:** global search field (center), sync/refresh button with per-account
+  spinner, KIWI account avatar/menu, "KIWI: <trust>" status chip (§7 S-02).
+- **States:** `ready` / `syncing` (progress in status bar, cancellable per
+  account) / `offline` (banner: "Offline — showing cached mail", queued sends
+  held) / `locked` (→ §7 S-05 overlay) / `error` (backend/IPC unreachable →
+  retry, cached data timestamped "Last known …").
+- **Keyboard:** `F6` cycles panes (sidebar → list → reader → top bar);
+  `Ctrl+K` focuses search; `Ctrl+1..9` jumps accounts; arrow keys navigate
+  tree/list natively. All pane headers are real headings.
+- **A11y/theme:** landmarks (`nav`/`main`/`complementary`/`search`); severity
+  and sync state always as text, never color-only; full dark/light token set
+  (§9); 200% zoom without horizontal clip of essential controls.
 
-| Asset | Format | Dimensions | Size | Role / usage guidance |
-|-------|--------|------------|------|------------------------|
-| `logo.svg` | SVG (Affinity export, `viewBox 0 0 1200 1200`) | 1200×1200 (square) | 25,016 B | **Primary mark.** Use for all chrome UI (S-05 light, About dialog, Account Hub card). SVG scales to 16/24/32px without re-rasterizing. |
-| `logo.png` | PNG, 1200×1200 | 1200×1200 | 184,216 B | Fallback where SVG is unsupported (installer, notifications). Downscale, never upscale. |
-| `favicon.svg` | SVG (rounded-square badge variant, `viewBox 0 0 1200 1200`) | 1200×1200 | 25,457 B | Tab/app icon, S-02 chip at 16px, dialog title-bar icons. Badge shape reads at small sizes — prefer over `logo.svg` below 32px. |
-| `favicon.png` | PNG, 1200×1200 | 1200×1200 | 186,523 B | Same fallback rule as `logo.png`. |
-| `banner.svg` | SVG (wide, `viewBox 0 0 1800 1200`, 3:2) | 1800×1200 | 17,071 B | Welcome/first-run page header, S-10 empty-state art, admin-UI login header. Never crop to square — letterbox instead. |
-| `banner.png` | PNG, 1800×1200 | 1800×1200 | 163,559 B | Same fallback rule; use for email-safe contexts needing raster. |
-| `black_bg.png` | PNG, 1200×1200 (dark-background mark variant) | 1200×1200 | 167,372 B | **Dark-surface mark.** S-05 lock screen dark theme, splash screens, high-contrast-dark. Never place on light backgrounds (use `logo.*` there). No SVG exists — request one from the owner before shipping if vector dark variant is needed; do NOT auto-trace. |
+## 2. Folder tree & unified inbox (`KIWI-UI-014`, `KIWI-UI-015`)
 
-SHA-256 (baseline — re-run `Get-FileHash images\*` if tampering is suspected):
+- **Folder tree (`014`):** per-account expandable nodes (Inbox, Drafts, Sent,
+  Snoozed, Scheduled, Spam, Trash, custom folders) with unread badges and a
+  trailing 16px security icon only when that folder's account is non-`secure`
+  (decorative, `aria-hidden`; the operable path is the status chip §7).
+- **Unified inbox (`015`):** virtual "All Inboxes" node at tree top (default
+  selection on launch when ≥1 account exists), merging all accounts sorted by
+  date; each row shows an account color-dot + account name in the secondary
+  line. Per-account Inboxes remain one click away. Unified Sent/Drafts views
+  follow the same pattern (v2 scope: Inbox first, Sent/Drafts next).
+- **Mailspring parity notes:** unified node persists across restarts; unread
+  counts aggregate; per-account sync errors surface as inline row warnings on
+  the affected account node, not as modal dialogs.
+- **States:** normal / syncing (per-node spinner) / error (node warning +
+  tooltip naming the failing account/server) / empty ("No folders yet —
+  complete account setup").
+- **Keyboard:** tree is a `role="tree"` with arrow-key semantics; `Enter`
+  selects; type-ahead jumps to folder names.
+- **A11y:** unread counts in `aria-label` ("Inbox, 12 unread"); security icon
+  never the sole carrier of meaning.
 
-- `banner.png` `7FD638F3…213B20`, `banner.svg` `843F9951…5AAB`
-- `black_bg.png` `E51CE141…8AC6`, `favicon.png` `9345F22C…15D`
-- `favicon.svg` `3DCB8FD4…57B1`, `logo.png` `39A2CD06…D10`
-- `logo.svg` `4A5E7582…0687` (full hashes in agent status log)
+## 3. Message list (`KIWI-UI-016`)
 
-### Brand rules for all KIWI UI work
+- **Row content:** sender, subject, date (relative + absolute `title`),
+  unread dot, star/flag, attachment clip, account dot (in unified view),
+  16px security glyph (severity shape differs per state, §7 S-01 rules apply).
+- **Behaviors:** multi-select (Ctrl/Shift), bulk actions toolbar (mark
+  read/unread, star, snooze, move, delete, spam), sortable (date/sender/
+  subject/unread/starred), virtualized rendering for large folders, sticky
+  date-group headers ("Today", "Yesterday", …).
+- **States:** normal / loading (skeleton rows on folder switch) / empty
+  ("No messages" + folder-specific hint) / error (sync failure with Retry) /
+  offline (cached rows + "Offline" badge on the list header).
+- **Keyboard:** up/down moves, `Enter` opens in reader, `Space` toggles
+  selection preview, `x` toggles select, `r` reply / `Shift+R` reply-all /
+  `f` forward, `u` mark unread, `s` star, `Delete` trash, `/` back to search.
+  Shortcut help (`?`) dialog lists all bindings.
+- **A11y:** listbox/row semantics with `aria-selected`; unread + severity
+  announced in row labels; bulk toolbar is a real toolbar with labels.
 
-1. Reuse these assets; do not invent a replacement logo (prompt.md §4).
-2. SVG first in product UI; PNG only where the host cannot render SVG.
-3. Small sizes (< 32px): use `favicon.*` (badge variant), not `logo.*`.
-4. Dark surfaces: use `black_bg.png`; light surfaces: `logo.*`. Never CSS-invert
-   the mark to fake a theme variant.
-5. Minimum legible sizes: mark ≥ 16px, lock-screen mark ≥ 96px, banner ≥ 320px
-   wide. Below these, use text ("KIWI") instead of the artwork.
-6. `images/` stays read-only for every agent; new derived assets (ICO/ICNS,
-   16/32px rasters) are generated at build time into the build tree, never
-   committed over `images/`.
+## 4. Message reader (`KIWI-UI-017`)
 
----
+- **Header:** sender (avatar initial, name, address), recipients (expandable),
+  date (full + relative), spot for the security pill (§7 S-01), action bar
+  (reply, reply-all, forward, archive, snooze, delete, print, view-source).
+- **Body:** sanitized HTML render (no remote content by default — "Load remote
+  content" per-message opt-in, matching Thunderbird parity; never loads
+  tracking pixels silently), plain-text fallback toggle, attachment strip
+  (open/save-all with sizes; blocked-while-locked per §7 S-05).
+- **Security pill (S-01, re-anchored):** right-aligned pill in the reader
+  header: `secure` / `warning` / `danger` / `unknown` / `loading` / `error`
+  (severities per `ui-surfaces.md` §2). `Enter` opens finding dialog (S-04).
+  Same fail-closed rules as v1: unknown/error never green; stale timestamped.
+- **States:** normal / loading / error (message fetch failed → Retry; headers
+  may still show) / locked (body + attachments replaced by lock notice +
+  "Verify" button → S-05) / offline (cached body labeled "Cached copy").
+- **Keyboard:** reader is in the `F6` cycle; `Tab` reaches pill then action
+  bar; `n`/`p` next/previous message; body region scrollable by keyboard.
+- **A11y:** pill is a button with severity+summary `aria-label`; remote-content
+  opt-in is a real button announcing state; attachments list uses list semantics.
 
-## 3. Global behavior rules
+## 5. Composer (`KIWI-UI-018`)
 
-- **Noise budget:** at most one persistent indicator per account (S-02) + one
-  per open message (S-01). No toasts for `secure` states; warnings surface in
-  place; only `danger` + `locked` may use a one-time notification.
-- **Fail-closed display:** unknown/error IPC states render as grey/error, never
-  as green. Stale data is always timestamped ("Last known …").
-- **Copy tone:** factual, deterministic ("TLS 1.0 negotiated — upgrade the
-  server"), no FUD verbs ("compromised", "hacked", "protected from all threats").
-  Endpoint states say "trust reduced", never "malware detected".
-- **Performance:** indicators render from cached session state synchronously;
-  IPC fetch is async and must not block message display. Target: indicator
-  paint ≤ 100 ms after message render; panel open ≤ 300 ms to first paint.
-- **Reduced motion:** all spinners/progress honor `prefers-reduced-motion`
-  (static "Working…" text fallback).
+- **Fields:** From selector (per-account identity + alias), To/Cc/Bcc chips
+  with address validation, subject, body (rich-text with plain-text fallback;
+  rich editor is contenteditable with toolbar: bold/italic/lists/links/quotes),
+  attachment well (drag-drop + picker, per-file size, total-size guard),
+  send-options split button (Send now / Send later / Schedule).
+- **Policy banner (S-07, re-anchored):** inline infobar below addressing —
+  `warn` (amber, send allowed) / `block` (red, Send + `Ctrl+Enter` disabled
+  until offending recipients removed) / `checking` (fail-closed for
+  block-policies) / `error` (service unreachable → block-policies stay blocked
+  with "Policy check unavailable"). Banner carries the scope-honesty line:
+  "Blocked in this client. Organization-wide enforcement happens at the mail
+  gateway." Per-recipient "Remove" buttons; `aria-disabled` + describedby on Send.
+- **Templates (`KIWI-UI-022`):** snippet picker (`Ctrl+T` or toolbar) inserting
+  named templates with `{{placeholders}}` tab-stops; manage (create/edit/
+  delete/duplicate) in Settings (§8). No auto-send of templates.
+- **Send later / scheduled (`KIWI-UI-021`):** schedule popover (preset slots +
+  custom datetime, timezone shown); scheduled mail lives in Scheduled folder
+  with edit/cancel; outbox worker sends when due (offline at due time → sends
+  on reconnect, labeled "Delayed — sent HH:MM").
+- **Undo send (`KIWI-UI-021`):** every send enters a grace window (default 10 s,
+  configurable 5/10/20/30 s in Settings): toast with countdown + Undo button;
+  message sits in Outbox "sending in Ns" state; Undo returns it to Drafts.
+- **States:** editing / sending (disabled chrome, cancellable in grace
+  window) / grace-countdown / scheduled-saved / send-failed (error + Retry +
+  preserved draft) / blocked (policy) / offline (queued, "Will send on
+  reconnect").
+- **Keyboard:** `Ctrl+Enter` send (announces block reason when blocked),
+  `Ctrl+S` save draft, `Esc` closes (dirty → save/discard confirm), `F6`
+  reaches banner; template placeholders tab-stop in order.
+- **A11y:** banner `role="alert"` on block / `role="status"` on warn; grace
+  toast is a live region with one announcement, not a countdown spam;
+  editor toolbar buttons labeled; attachments announced on add/remove.
 
----
+## 6. Productivity surfaces detail
 
-## 4. Accessibility + workflow checklist (mandatory per UI change)
+- **Snooze (`KIWI-UI-020`):** row/reader action → popover (Later today /
+  Tomorrow / Next week / Pick date-time); snoozed mail leaves the inbox for a
+  Snoozed folder and returns (unread, "Snoozed" badge) at due time; works
+  offline (local scheduler); empty-state explains where snoozed mail went.
+- **Unified inbox:** see §2 (`015`).
+- **Send later / undo send / templates:** see §5 (`021`, `022`).
+- Deferred (NOT v2): read receipts, link/open tracking, send-side "did they
+  read it" — requires owner sign-off per ARCHITECTURE.md §4.
 
-Every KIWI UI change must be verified against this list (prompt.md §6 Agent 5,
-§13–§14). Record results in the implementing task's status entry.
+## 7. Account setup wizard (`KIWI-UI-019`)
 
-- [ ] Normal Thunderbird workflows unaffected: list, open, compose, send,
-      receive, folders, search, contacts, attachments, setup, reconnect,
-      offline/online (run the TESTING.md E2E set where the build exists).
-- [ ] Error state designed and reachable (IPC down, policy service down,
-      expired challenge, failed scan) — with retry path.
+- **Flow (4 steps, resumable):** 1) Email address (+ display name) → 2) Provider
+  auto-detect (well-known domains) or Manual (IMAP/SMTP/POP3 host/port/security
+  mode: SSL-TLS / STARTTLS / plaintext-with-warning) → 3) Credentials
+  (password or OAuth2 browser flow; OAuth tokens stored by backend, never shown)
+  → 4) Verify (test SMTP send-path + IMAP/POP3 login, TLS observation captured
+  → immediate security summary: TLS version/cipher/chain status shown inline,
+  failures named per-field) → Done (folder list + first sync starts).
+- **Security-first touches:** security-mode selector defaults to the strongest
+  available; choosing plaintext requires an explicit "I understand" checkbox
+  and the account opens with a persistent `danger`-level banner until upgraded;
+  certificate warnings during setup show fingerprint + reason with
+  Accept-once/Reject (decision logged to audit).
+- **States per step:** idle / checking (async verify with cancel) / success /
+  field-error (inline, named fields) / fatal (server unreachable → keep inputs,
+  Retry). Progress is a step indicator, resumable after close.
+- **Keyboard:** full tab order, step buttons labeled ("Step 2 of 4: Server"),
+  error summary region receives focus on failed verify.
+- **A11y:** `aria-current="step"` on the indicator; password field has
+  show/hide toggle with announced state; OAuth step explains the browser
+  handoff in text.
+
+## 8. Settings (`KIWI-UI-023`)
+
+- **Sections (left nav):** General (theme, language, grace-window length,
+  default send-later timezone) → Accounts (per-account server/security/identity
+  edit, re-verify, remove) → KIWI Security (minimum-TLS policy selector,
+  lock-policy sensitivity, trusted devices list → pairing dialog S-12, event
+  history link → S-10) → Templates (CRUD) → Notifications → Privacy (remote
+  content default, receipt/tracking kill-switches locked OFF pending sign-off)
+  → Advanced (local data location, export, reset).
+- **Behavior:** instant-apply with per-row confirmation state ("Saved HH:MM:SS");
+  destructive actions (remove account, revoke device, reset data) use confirm
+  dialogs naming the target; RBAC-denied rows (managed/org policy) render
+  disabled with "Managed by your organization" text.
+- **Keyboard/a11y:** nav is `role="navigation"` with `aria-current`; every
+  control labeled; section headings hierarchical.
+
+## 9. Security surfaces (v1 S-01…S-12, re-anchored to our frontend)
+
+v1 semantics carry over; only the host anchors change (no Thunderbird chrome).
+
+| ID | Surface | New anchor in kiwi-app | Notes vs v1 |
+|----|---------|------------------------|-------------|
+| S-01 | Message security pill | Reader header (§4) + list glyph (§3) | Same severities/states; severity = worst finding for delivering session |
+| S-02 | Trust status chip | Top bar + sidebar account node | `role="status"` on escalation only; text always present |
+| S-03 | Account security panel | Settings → KIWI Security → per-account card + Account view panel | TLS/cipher/KEX/FS/cert summary, last-scan, Re-scan (S-09), Event history (S-10) |
+| S-04 | Finding-detail dialog | Modal from pill/panel/diff/event rows | Fixed order: severity→session→evidence (verbatim, copyable)→impact→remediation→AI collapsible (labeled non-authoritative)→finding ID + engine version; "Evidence unavailable — finding not confirmed" when empty |
+| S-05 | Lock-screen overlay | Full-app overlay above all panes | KIWI mark per §10; reason category only; Verify (S-06) + Retry trust check; content panes inert; `role="alertdialog"`; `Esc` never unlocks |
+| S-06 | Authenticator dialog | Modal above S-05 / standalone enrollment test | Event-bound label ("Unlock mailbox"), device name + fingerprint tail, expiry countdown, waiting/approved/denied/expired/error; QR black-on-white always |
+| S-07 | Composer policy banner | Composer infobar (§5) | warn/block/checking/error + scope-honesty line |
+| S-08 | Certificate viewer | Sub-dialog of S-03/S-04 | Leaf+chain cards, per-hop status, PEM toggle |
+| S-09 | Re-scan / diff | S-03 section + results dialog | new/resolved/unchanged groups, progressbar, cancellable |
+| S-10 | Security event center | App-nav view ("Security"), table + filters + JSON export | Real `<table>` semantics, result-count live region |
+| S-11 | Local admin UI | Standalone localhost app (Agent 4 builds, Agent 5 reviews a11y/responsive) | ≥900px two-pane rule, confirm dialogs, RBAC-denied text |
+| S-12 | Device pairing dialog | Settings → KIWI Security → Devices → "Add device" | QR + manual fallback; no key material displayed |
+
+## 10. Brand assets & theme tokens (`images/` — READ-ONLY)
+
+Audit baseline from T-005 still holds (sizes/hashes in agent status log v1 entry):
+
+| Asset | Size | Role |
+|-------|------|------|
+| `logo.svg` / `logo.png` | 1200×1200 | Primary mark: lock screen (light), About, setup-wizard welcome, account avatar fallback |
+| `favicon.svg` / `favicon.png` | 1200×1200 badge | Small sizes (<32px): sidebar mini-mark, window/app icon, chip glyph base |
+| `banner.svg` / `banner.png` | 1800×1200 (3:2) | Welcome/first-run header, S-10 empty-state art; letterbox, never crop to square |
+| `black_bg.png` | 1200×1200 dark mark | Dark-surface mark: lock screen dark theme, splash; never on light backgrounds; no SVG exists — request from owner if vector needed, do NOT auto-trace |
+
+Sampled palette (bucketed 4-bit render of PNGs, 2026-09-19 — approximate,
+final hexes to be lifted from SVG sources at T-112 theme build):
+
+- near-white `#f0f0f0`-family backgrounds (light theme base)
+- black `#000000`-family (dark theme base, banner ground)
+- amber/gold `#e0b030`-family (brand accent → warning + focus-ring family)
+- red-orange `#d05030`-family (brand secondary → danger family)
+- neutral greys `#606060`/`#808080` (secondary text/borders)
+
+Theme token plan (CSS custom properties, `[data-theme="light"|"dark"]` root):
+
+- `--kiwi-brand` (amber), `--kiwi-brand-strong` (red-orange),
+  `--kiwi-secure/warning/danger/unknown` (+ `-fg` text variants, 4.5:1 verified
+  both themes), `--kiwi-surface-*` (app/sidebar/card/input), `--kiwi-text-*`
+  (primary/secondary/disabled), `--kiwi-focus` (visible ring,
+  `:focus-visible` everywhere), `--kiwi-mark` (asset swap: `logo.*` light /
+  `black_bg.png` dark — never CSS-invert the artwork).
+- Severity is never color-only: icon shape + text label carry meaning;
+  high-contrast theme check per §11.
+
+Brand rules: reuse supplied assets, no replacement logo; SVG first in UI, PNG
+where SVG unsupported; mark ≥16px (text "KIWI" below that), lock mark ≥96px,
+banner ≥320px wide; derived rasters (ICO/ICNS) generated at build time, never
+committed over `images/`.
+
+## 11. Global behavior rules
+
+- **Noise budget:** one persistent indicator per account (§7 S-02) + one per
+  open message (S-01). No toasts for `secure`; warnings in place; only
+  `danger` + `locked` may notify once.
+- **Fail-closed display:** unknown/error IPC states render grey/error, never
+  green; stale data timestamped ("Last known …").
+- **Copy tone:** factual ("TLS 1.0 negotiated — upgrade the server"), no FUD
+  ("compromised", "hacked"); endpoint states say "trust reduced".
+- **Performance targets:** list scroll 60fps (virtualized), indicator paint
+  ≤100 ms after message render, panel open ≤300 ms to first paint, IPC fetch
+  async and never blocking message display.
+- **Reduced motion:** `prefers-reduced-motion` honored (static "Working…"
+  fallbacks for spinners/progress).
+
+## 12. Accessibility + workflow checklist (mandatory per UI change)
+
+- [ ] Core workflows unaffected: setup, list, open, compose, send, receive,
+      folders, unified inbox, search, contacts, attachments, snooze,
+      send-later, undo-send, templates, reconnect, offline/online.
+- [ ] Error state designed + reachable (IPC down, sync fail, send fail,
+      policy unreachable, expired challenge, failed scan) with retry path.
 - [ ] Loading state designed (skeleton/spinner, cancellable where long).
-- [ ] Locked state: sensitive content inert, unlock path operable, focus managed.
-- [ ] Keyboard: all actions reachable, focus visible, focus trap + `Esc` return
-      for dialogs, `F6` pane cycling preserved.
-- [ ] Screen reader: names + roles + severity-as-text verified (no color-only
-      or icon-only meaning; live regions used sparingly and correctly).
+- [ ] Locked state: content inert, unlock operable, focus managed.
+- [ ] Keyboard: full reachability, visible focus, dialog trap + `Esc` return,
+      `F6` pane cycle, app shortcuts + `?` help.
+- [ ] Screen reader: names/roles/severity-as-text; live regions sparse and correct.
 - [ ] Overflow/clipping: 200% zoom, 320px narrow window, long addresses/cert
-      strings wrap or ellipsize with full text available.
-- [ ] Dark + light + high-contrast themes checked for every new surface.
-- [ ] No secrets in UI strings, tooltips, screenshots, or fixtures.
-- [ ] Brand assets used per §2 rules; no new logo invented.
+      strings wrap/ellipsize with full text available.
+- [ ] Dark + light + high-contrast themes checked per surface.
+- [ ] No secrets in strings, tooltips, screenshots, fixtures.
+- [ ] Brand assets per §10; no new logo invented.
 
----
+## 13. Open questions → Lead / other agents
 
-## 5. Open questions → Lead / other agents
-
-1. T-007 (Lead): exact XUL/HTML/JS file paths for S-01 header bar, S-03
-   Account Settings section, compose-window infobar slot, status-bar API —
-   spec assumes standard Thunderbird extension points; adjust surface anchors
-   after the source map lands.
-2. Agent 2: field names of `SecuritySession` / finding payloads (T-002) —
-   `ui-surfaces.md` §3 lists the UI's required fields; confirm or revise.
-3. Agent 4: policy payload for S-07 (T-013) + admin-UI layout ownership split
-   for S-11 (Agent 4 builds, Agent 5 reviews a11y/responsive).
-4. Agent 3: finding/evidence schema (T-003) backs S-04/S-09 — UI renders
-   `evidence` verbatim; confirm max length + redaction rules for display.
-5. Agent 6: UI smoke-test harness for the checklist §4 (T-015).
+1. Lead (T-110): Tauri IPC command names + event channels — spec §1–§9 name
+   data needs; `ui-surfaces.md` §3 lists required fields. Confirm on shell land.
+2. Agent 2: `SecuritySession`/`TlsObservation`/finding payload field names
+   (T-101…T-106, T-002) — UI treats all fields optional, falls back to
+   `unknown`/stale.
+3. Agent 4: policy evaluation payload for S-07 (T-108) + mail-flow event shape
+   (T-109) + admin-UI split for S-11 (Agent 4 builds, Agent 5 reviews).
+4. Agent 3: finding/evidence schema + live-session adapter (T-107); max evidence
+   length + display redaction rules.
+5. Agent 6: client-layer test matrix + UI smoke harness (T-113/T-114); fixture
+   transcripts the wizard/sync states can demo against.

@@ -1,0 +1,1 @@
+//! SMTP send client (EHLO/STARTTLS/AUTH/MAIL/RCPT/DATA). See docs/ARCHITECTURE.md §3.

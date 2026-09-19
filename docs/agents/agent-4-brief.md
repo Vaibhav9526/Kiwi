@@ -1,47 +1,40 @@
-# Agent 4 Brief — Cline + GLM 5.3 Flash — ORGANIZATION / POLICY / ADMIN CONTROL PLANE
+# Agent 4 Brief v2 — Cline + GLM 5.3 Flash — ORGANIZATION / POLICY / ADMIN
 
-Read first: `prompt.md` (root), `docs/ARCHITECTURE.md`, `docs/TASKS.md`,
-`docs/SECURITY.md`, this file. You are **Agent 4**.
+**PIVOT (2026-09-19):** KIWI is a standalone email client built from scratch —
+NOT a Thunderbird fork. See `docs/DECISIONS.md` ADR-005 and rewritten
+`docs/ARCHITECTURE.md`. `source/` is read-only reference. Your `kiwi-admin`
+work stays valid and gains a real consumer: the KIWI client itself.
 
-## Mission (prompt.md §6 Agent 4)
+Read first: `prompt.md`, `docs/ARCHITECTURE.md`, `docs/TASKS.md`,
+`docs/SECURITY.md`. You are **Agent 4**.
 
-- Org model: organizations, domains, users, roles/admin permissions,
-  devices, security policies
-- Mail policies: allowed/blocked recipient domains, external-recipient
-  warn/block rules, minimum TLS requirements, attachment/content interfaces
-- Mail-flow metadata: sender, recipient, timestamp, direction, message-ID,
-  security status, audit events — NO message bodies by default
-- Local admin/control service: API, policy distribution, audit logging,
-  RBAC, mail-flow + security-event queries
-- Real enforcement is eventually gateway/relay-level — never claim a UI-only
-  block is full organizational enforcement
+## Mission (unchanged + now client-facing)
 
-## Your Phase 0 task — T-004 (claimed)
+Org model, mail policies, mail-flow metadata, local admin/control service.
+New: the KIWI client consults your policy evaluator before sending, and
+emits mail-flow metadata to your service.
 
-Thunderbird source is still downloading; you do NOT need it. Deliver:
+## Tasks (see docs/TASKS.md)
 
-1. `kiwi-admin/` Node + TypeScript service scaffold (strict tsconfig,
-   vitest): modules `org` (orgs/domains/users/roles/devices), `policy`
-   (policy model + evaluator interface), `mailflow` (metadata ingest +
-   queries), `audit` (append-only tamper-evident log — hash-chained
-   entries), `db` (SQLite via better-sqlite3 or equivalent; repository
-   interfaces so Postgres can replace later).
-2. `docs/contracts/admin-api.md` — REST/local API contract: endpoints,
-   RBAC requirements per endpoint, policy object schema, mail-flow event
-   schema, audit event schema.
-3. SQLite schema + migrations for the org model.
-4. Tests: policy evaluator unit tests (allow/deny domain, min-TLS
-   downgrade, external-recipient warn), RBAC negative tests (unauthorized
-   admin op rejected + audited), audit-log chain integrity test.
+- Finish T-004: `kiwi-admin/` scaffold + `docs/contracts/admin-api.md`
+  (endpoints, RBAC per endpoint, policy schema, mail-flow event schema,
+  audit event schema).
+- T-108: policy-enforcement bridge — design + document how `kiwi-mail`'s
+  send path calls the evaluator (local IPC/localhost HTTP; request =
+  sender+recipients+account; response = allow/warn/block + reason codes).
+  Specify the contract in `admin-api.md`; implement the server side.
+- T-109: mail-flow metadata ingest endpoint + schema (sender, recipient,
+  ts, direction, message-id, security-status — never bodies).
+- Keep: hash-chained audit log, RBAC negative tests, SQLite behind
+  repository interfaces, vitest green.
 
 ## Boundaries
 
-- Your dirs: `kiwi-admin/`, `docs/contracts/admin-api.md`,
-  `docs/agents/agent-4-status.md`. Nothing else without Lead coordination.
-- Tests must pass before reporting done. Keep deps minimal + pinned.
+Yours: `kiwi-admin/`, `docs/contracts/admin-api.md`,
+`docs/agents/agent-4-status.md`. Deps minimal+pinned. Never claim UI-only
+enforcement is organizational enforcement (prompt.md §6).
 
 ## Reporting
 
-Append dated entries to `docs/agents/agent-4-status.md`:
-status, files changed, commands run, test results, assumptions, risks.
-Hit a limit → handoff entry in `docs/AGENT_HANDOFF.md`.
+Append dated entries to `docs/agents/agent-4-status.md`. Hit a limit →
+handoff entry in `docs/AGENT_HANDOFF.md`.

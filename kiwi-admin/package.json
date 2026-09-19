@@ -1,0 +1,20 @@
+{
+  "name": "kiwi-admin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "KIWI organization/policy/admin control plane service (Agent 4)",
+  "type": "module",
+  "engines": {
+    "node": ">=22.5"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.5",
+    "typescript": "5.7.3",
+    "vitest": "^3.2.4"
+  }
+}

@@ -26,3 +26,9 @@ err.txt
 # OS / editor
 Thumbs.db
 .DS_Store
+
+# Build logs / artifacts
+artifacts/
+
+# Tauri generated
+kiwi-app/src-tauri/gen/

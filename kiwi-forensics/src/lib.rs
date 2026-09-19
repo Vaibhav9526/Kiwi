@@ -45,13 +45,19 @@
 )]
 #![warn(missing_docs)]
 
-pub mod analyzers;
-pub mod findings;
 pub mod model;
-pub mod pcap;
-pub mod report;
-pub mod rules;
-pub mod score;
+
+// Remaining modules are authored in the order listed in
+// `docs/agents/agent-3-status.md`. Each declaration is uncommented as the module
+// lands, so the crate always compiles for the layer that is complete. The task is
+// only reported done when every module below is present and `cargo test` +
+// `cargo clippy` are green.
+// pub mod analyzers;
+// pub mod findings;
+// pub mod pcap;
+// pub mod report;
+// pub mod rules;
+// pub mod score;
 
 /// Version of the finding/evidence/report contract implemented by this crate.
 ///

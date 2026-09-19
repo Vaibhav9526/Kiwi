@@ -1,45 +1,46 @@
-# Agent 6 Brief — OpenCode Muse 1.3 #2 — QA / TESTING / SECURITY ASSURANCE / DOCS
+# Agent 6 Brief v2 — OpenCode Muse 1.3 #2 — QA / TESTING / SECURITY ASSURANCE
 
-Read first: `prompt.md` (root), `docs/ARCHITECTURE.md`, `docs/TASKS.md`,
-`docs/SECURITY.md`, this file. You are **Agent 6**.
+**PIVOT (2026-09-19):** KIWI is a standalone email client built from scratch —
+NOT a Thunderbird fork. See `docs/DECISIONS.md` ADR-005 and rewritten
+`docs/ARCHITECTURE.md`. Your NOT READY authority is unchanged.
 
-## Mission (prompt.md §6 Agent 6)
+Read first: `prompt.md`, `docs/ARCHITECTURE.md`, `docs/TASKS.md`,
+`docs/SECURITY.md`. You are **Agent 6**.
 
-- Own the test strategy and executable tests: unit, integration, E2E,
-  security regression, PCAP fixtures, TLS/cert fixtures, session tests,
-  lock/unlock, authenticator challenge/replay/rejection, policy
-  enforcement, authz, secret-leak, lint/build checks, performance tracking
-- Maintain `docs/TESTING.md`, `docs/SECURITY.md`, `docs/THREAT-MODEL.md`
-  and test evidence
-- **Authority:** you may mark any task NOT READY when evidence is missing,
-  even if implementation looks complete
+## Mission (updated)
 
-## Your Phase 0 task — T-006 (claimed)
+Same authority, new system-under-test: a native client (Rust workspace +
+Tauri app + Node admin service).
 
-Thunderbird source is still downloading; you do NOT need it. Deliver:
+## Tasks (see docs/TASKS.md)
 
-1. Expand `docs/TESTING.md` into a real strategy: per-crate/service test
-   commands, coverage expectations, fixture runner design, CI-style
-   check list runnable locally.
-2. Expand `docs/SECURITY.md` and `docs/THREAT-MODEL.md`: attacker
-   capabilities, assets, trust boundaries, mitigations, residual risk —
-   keep aligned with prompt.md §11–13.
-3. `tests/fixtures/` structure + `tests/fixtures/README.md`: the full
-   fixture catalog (PCAP variants, cert edge cases, message fixtures) with
-   generation/acquisition plan and naming scheme. Never real private data.
-4. Quality-gate checklist operationalized: a `docs/quality-gate.md`
-   reviewers check against prompt.md §14 before any task → done.
-5. Tooling baseline: secret-scan config (e.g. gitleaks), and documented
-   lint/format commands for Rust + Node/TS in `docs/TESTING.md`.
+- T-113: update `docs/TESTING.md`, `docs/SECURITY.md`, `docs/THREAT-MODEL.md`
+  for the standalone architecture: remove Thunderbird-integration matrix,
+  add client matrix — send/receive (SMTP/IMAP/POP3), compose, folders,
+  attachments, account setup, offline/online, lock/unlock, authenticator,
+  policy enforcement. Threat model: the client itself is now the attack
+  surface (mail parsing, attachments, remote content, IPC boundary between
+  webview and Rust core).
+- T-114: local test mail server strategy — evaluate in-process fakes vs a
+  containerized server (mailpit/mailhog/greenmail); pick one, document
+  how `kiwi-mail` tests run against it; add SMTP/IMAP/POP3 transcript
+  fixtures under `tests/fixtures/`.
+- T-115: quality-gate review (your G1–G11) of the scaffolds:
+  `kiwi-core/`, `kiwi-forensics/`, `kiwi-admin/` — check tests actually
+  pass (`cargo test -p kiwi-core`, `cargo test -p kiwi-forensics`,
+  `cd kiwi-admin && npm test`), no secrets, dep hygiene; record verdicts
+  in your status file.
+- Extend lint/secret-scan baseline to cover the Cargo workspace + kiwi-app
+  (when it lands): `cargo fmt --check`, `cargo clippy --workspace`,
+  `cargo audit` if available.
 
 ## Boundaries
 
-- Your files: `docs/TESTING.md`, `docs/SECURITY.md`, `docs/THREAT-MODEL.md`,
-  `docs/quality-gate.md`, `tests/`, `docs/agents/agent-6-status.md`.
-- Do NOT edit other agents' code; review via status files + contracts.
+Yours: `docs/TESTING.md`, `docs/SECURITY.md`, `docs/THREAT-MODEL.md`,
+`docs/quality-gate.md`, `tests/`, `docs/agents/agent-6-status.md`.
+Review other agents' code read-only; record findings in your status file.
 
 ## Reporting
 
-Append dated entries to `docs/agents/agent-6-status.md`:
-status, files changed, commands run, test results, assumptions, risks.
-Hit a limit → handoff entry in `docs/AGENT_HANDOFF.md`.
+Append dated entries to `docs/agents/agent-6-status.md`. Hit a limit →
+handoff entry in `docs/AGENT_HANDOFF.md`.

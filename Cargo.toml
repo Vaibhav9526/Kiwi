@@ -1,0 +1,16 @@
+[workspace]
+resolver = "2"
+members = [
+    "kiwi-core",
+    "kiwi-forensics",
+    "kiwi-mail",
+    "kiwi-app/src-tauri",
+]
+
+[workspace.package]
+edition = "2024"
+license = "MPL-2.0"
+
+# Security-sensitive parsing of untrusted input across the workspace.
+[workspace.lints.rust]
+unsafe_code = "forbid"

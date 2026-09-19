@@ -318,3 +318,177 @@ pub struct ConnectionSecurityEvent {
     /// Traceability anchors for this session (frames, excerpts).
     pub sources: Vec<SourceRef>,
 }
+
+impl ConnectionSecurityEvent {
+    /// Maximum retained capability tokens per session (bound on untrusted input).
+    pub const MAX_CAPABILITIES: usize = 64;
+
+    /// Create a session with conservative defaults.
+    ///
+    /// Defaults are chosen so that an under-specified session cannot be scored
+    /// as healthy: transport starts as [`TransportSecurity::Unknown`] and no
+    /// observation is asserted.
+    pub fn new(
+        id: SessionId,
+        protocol: Protocol,
+        client: Endpoint,
+        server: Endpoint,
+        started_at_unix_ms: i64,
+    ) -> Self {
+        ConnectionSecurityEvent {
+            id,
+            protocol,
+            client,
+            server,
+            started_at_unix_ms,
+            transport: TransportSecurity::Unknown,
+            capabilities: Vec::new(),
+            tls: None,
+            certificates: None,
+            starttls: None,
+            auth: None,
+            sources: Vec::new(),
+        }
+    }
+
+    /// Set the transport classification.
+    pub fn with_transport(mut self, transport: TransportSecurity) -> Self {
+        self.transport = transport;
+        self
+    }
+
+    /// Replace capabilities; input is truncated to [`Self::MAX_CAPABILITIES`].
+    pub fn with_capabilities<I, S>(mut self, caps: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        self.capabilities = caps
+            .into_iter()
+            .take(Self::MAX_CAPABILITIES)
+            .map(|c| SafeText::new(c.as_ref()))
+            .collect();
+        self
+    }
+
+    /// Set TLS handshake metadata.
+    pub fn with_tls(mut self, tls: TlsObservation) -> Self {
+        self.tls = Some(tls);
+        self
+    }
+
+    /// Set certificate presentation metadata.
+    pub fn with_certificates(mut self, certs: CertificatePresentation) -> Self {
+        self.certificates = Some(certs);
+        self
+    }
+
+    /// Set the STARTTLS observation.
+    pub fn with_starttls(mut self, starttls: StartTlsObservation) -> Self {
+        self.starttls = Some(starttls);
+        self
+    }
+
+    /// Set the authentication observation.
+    pub fn with_auth(mut self, auth: AuthObservation) -> Self {
+        self.auth = Some(auth);
+        self
+    }
+
+    /// Append a traceability anchor.
+    pub fn with_source(mut self, source: SourceRef) -> Self {
+        self.sources.push(source);
+        self
+    }
+
+    /// Negotiated TLS version actually protecting this session, if any.
+    pub fn negotiated_tls_version(&self) -> Option<TlsVersion> {
+        self.tls.as_ref().map(|t| t.version)
+    }
+
+    /// `true` when the session is known to be cryptographically protected.
+    pub fn is_encrypted(&self) -> bool {
+        self.transport.is_protected()
+    }
+
+    /// `true` when the server advertised the given capability (case-insensitive).
+    pub fn advertises(&self, capability: &str) -> bool {
+        let needle = capability.trim();
+        self.capabilities
+            .iter()
+            .any(|c| c.as_str().eq_ignore_ascii_case(needle))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn session() -> ConnectionSecurityEvent {
+        ConnectionSecurityEvent::new(
+            SessionId::from_label("t:imap:143"),
+            Protocol::Imap,
+            Endpoint::new("10.0.0.5", 51000),
+            Endpoint::new("mail.example.test", 143),
+            1_700_000_000_000,
+        )
+    }
+
+    #[test]
+    fn safe_text_strips_control_characters_and_collapses_space() {
+        let t = SafeText::new("INJECT\r\nFAKE  LOG\tline");
+        assert_eq!(t.as_str(), "INJECT FAKE LOG line");
+        assert!(!t.as_str().contains('\n'));
+    }
+
+    #[test]
+    fn safe_text_is_bounded() {
+        let long = "A".repeat(10_000);
+        assert_eq!(
+            SafeText::new(&long).as_str().chars().count(),
+            SafeText::MAX_LEN
+        );
+    }
+
+    #[test]
+    fn session_defaults_are_conservative() {
+        let s = session();
+        assert_eq!(s.transport, TransportSecurity::Unknown);
+        assert!(!s.is_encrypted());
+        assert!(s.tls.is_none());
+        assert!(s.negotiated_tls_version().is_none());
+    }
+
+    #[test]
+    fn capability_list_is_bounded_and_case_insensitive() {
+        let caps: Vec<String> = (0..500).map(|i| format!("CAP{i}")).collect();
+        let s = session().with_capabilities(caps);
+        assert_eq!(
+            s.capabilities.len(),
+            ConnectionSecurityEvent::MAX_CAPABILITIES
+        );
+        let s = session().with_capabilities(["starttls"]);
+        assert!(s.advertises("STARTTLS"));
+        assert!(!s.advertises("AUTH=PLAIN"));
+    }
+
+    #[test]
+    fn session_id_is_deterministic() {
+        let a = SessionId::new("cap.pcap", Protocol::Smtp, 40000, 587, 3);
+        let b = SessionId::new("cap.pcap", Protocol::Smtp, 40000, 587, 3);
+        assert_eq!(a, b);
+        assert_eq!(a.as_str(), "cap.pcap:smtp:40000-587:3");
+    }
+
+    #[test]
+    fn starttls_stripping_indicator_requires_positive_evidence() {
+        let mut obs = StartTlsObservation::upgraded();
+        obs.handshake_completed = false;
+        // No application data across the request -> absence of observation only.
+        assert!(!obs.is_stripping_indicator());
+        obs.application_data_before_tls = true;
+        assert!(obs.is_stripping_indicator());
+        // Never advertised at all: not a stripping indicator.
+        assert!(!StartTlsObservation::not_advertised().is_stripping_indicator());
+    }
+}

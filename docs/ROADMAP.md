@@ -1,59 +1,58 @@
 # KIWI — Roadmap
 
-> Owner: Lead Agent. Phases mirror prompt.md §10. Status column updated as work lands.
+> Owner: Lead Agent. Phases adapted to the standalone-client pivot (ADR-005);
+> security mission unchanged.
 
-## Phase 0 — Repository reconnaissance — IN PROGRESS
-- [ ] Acquire Firefox + Thunderbird (`comm/`) source checkouts (Lead, in progress)
-- [ ] Install MozillaBuild toolchain; verify VS Build Tools workloads (Lead)
-- [ ] `mozconfig` with `--enable-project=comm/mail`; `./mach bootstrap` option 2
-- [ ] Build unmodified Thunderbird successfully (BLOCKER for all TB integration)
-- [ ] Map source paths for SMTP/IMAP/POP3/NSS/certs/auth/render/compose/accounts/startup/UI → ARCHITECTURE.md §5
-- [x] Create docs/ source-of-truth set
-- [x] Dispatch initial tasks to Agents 2–6
+## Phase 0 — Standalone foundation — IN PROGRESS
+- [x] Repo recon; Thunderbird checkout acquired (now read-only reference at `source/`)
+- [x] docs/ source-of-truth set created
+- [x] Cargo workspace + `kiwi-mail` skeleton (Lead)
+- [ ] `kiwi-app` Tauri shell running (empty window → mailbox UI skeleton)
+- [ ] `kiwi-mail` transport + SMTP/IMAP/POP3 happy-path vs local test server
+- [x] kiwi-core / kiwi-forensics / kiwi-admin scaffolds
+- [ ] Agent 6 gates green on all scaffolds
 
-**Exit criteria:** `./mach build` completes; `mach run` launches unmodified
-Thunderbird; source map published; every agent has a claimed task in TASKS.md.
+**Exit criteria:** `cargo test --workspace` green; `kiwi-app` launches;
+kiwi-mail completes a send+receive round trip against a local test
+mail server (e.g. mailpit/greenmail container or in-process fake);
+every agent has a claimed task in TASKS.md.
 
-## Phase 1 — Security foundation
-- Normalized `SecuritySession` model in kiwi-core
-- TLS/cert/cipher/key-exchange analyzers + forward-secrecy rules in kiwi-forensics
-- Deterministic scoring engine (no AI dependency)
-- Initial security status model + test fixtures
-- **Depends on:** Phase 0 (fixtures + models can start in parallel)
+## Phase 1 — Mail engine + security foundation
+- kiwi-mail: full SMTP/IMAP/POP3 happy paths, MIME parse, account model,
+  local mail store (SQLite + on-disk bodies), folder sync
+- transport: `TlsObservation` capture on every connection
+- kiwi-core: `SecuritySession` consumed from transport; trust engine live
+- kiwi-forensics: deterministic analyzers consume live session events
+- Initial security indicators in kiwi-app UI
 
-## Phase 2 — Thunderbird integration
-- Narrow native hooks into connection/security events
-- Real account connection analysis against live SMTP/IMAP/POP3
-- Security status UI surfaces in Thunderbird chrome
-- Safe error handling; no regression to mail workflows
-- **Depends on:** Phase 0 build + source map
+## Phase 2 — Full client UX
+- Mailbox views: unified inbox, folders, message list/detail, search
+- Composer: rich text, attachments, drafts, send queue
+- Contacts/address book
+- Mailspring-inspired: snooze, send later, undo send, templates
+- Account setup wizard (autoconfig), offline mode
+- Security status surfaces per Agent 5 spec
 
 ## Phase 3 — Identity + trusted device
-- SecureMail account identity, sessions, recovery model
-- Device enrollment/registration/revocation
-- Endpoint trust signals → trust state → native lock state
-- **Depends on:** kiwi-core model (Phase 1), TB UI surfaces (Phase 2)
+- SecureMail account identity, sessions, recovery
+- Device enrollment/revocation, endpoint trust signals, native lock state
 
 ## Phase 4 — Mobile authenticator
-- QR pairing, keygen in platform keystore, challenge-response
-- Approve/deny UX, replay protection, revocation
-- **Depends on:** Phase 3 device/session model
+- QR/local pairing, keystore keygen, challenge-response, approve/deny,
+  replay protection, revocation
 
 ## Phase 5 — Forensics
-- PCAP import, TCP reassembly, SMTP/IMAP/POP3 identification
-- TLS evidence extraction, forensic reports, re-scan/diff
-- **Depends on:** kiwi-forensics core (Phase 1)
+- PCAP import UI, stream reconstruction, TLS evidence, forensic reports,
+  re-scan/diff
 
 ## Phase 6 — Organization controls
-- kiwi-admin local service, org/domain/user/role models
-- Recipient-domain policies, mail-flow metadata, audit log
-- Local React+TS admin UI
-- **Depends on:** kiwi-admin scaffold (Phase 0 task T-004)
+- kiwi-admin service wired into client (policy fetch, outbound enforcement,
+  mail-flow metadata), local React admin UI
 
-## Phase 7 — Intelligence / enrichment (optional)
-- CT logs, SPF/DKIM/DMARC, threat intel, URL reputation, AI explanations
-- All degrade gracefully when unavailable
+## Phase 7 — Intelligence/enrichment (optional)
+- SPF/DKIM/DMARC checks (native), CT, threat intel, AI explanations —
+  graceful degradation
 
-## Phase 8 — Hardening / release engineering
-- Security review, dependency audit, secret scanning, fuzzing
-- Performance, update strategy, installer validation, revocation recovery
+## Phase 8 — Hardening / release
+- Security review, dep audit, secret scan, fuzzing, perf, packaging
+  (Tauri bundle), update strategy, revocation recovery

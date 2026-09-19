@@ -53,3 +53,25 @@
   `PATH=/c/mozilla-build/python3:/c/mozilla-build/bin:$PATH`.
 - **Consequences:** Build objdir lands in `D:\kiwi-src\obj-*`. `source/`
   stays gitignored in the project repo.
+
+## ADR-005 — KIWI is a standalone client, not a Thunderbird fork (PIVOT)
+
+- **Date:** 2026-09-19 · **Status:** accepted (supersedes parts of ADR-001/§ARCHITECTURE) · **By:** Lead, per owner directive
+- **Context:** Owner directive replaced prompt.md §1–2: build KIWI as a
+  completely independent email client from scratch. Do NOT fork or modify
+  Thunderbird/Mailspring. Thunderbird = primary reference for mail workflows,
+  UI patterns, expected functionality; Mailspring = source of selected
+  productivity features (unified inbox, snooze, send later, undo send,
+  templates). All security/privacy/auth/forensics/org-control features are
+  native KIWI. Thunderbird build effort (T-001) abandoned; `D:\kiwi-src`
+  checkout retained as read-only protocol/UX reference.
+- **Decision:** Standalone app: **Tauri 2 shell** (Rust backend `src-tauri` +
+  React/TypeScript webview frontend — matches ADR-002 stack). New crate
+  `kiwi-mail` owns SMTP/IMAP/POP3 protocol clients + account/sync/storage —
+  owning the transport gives KIWI first-class access to TLS/security params
+  the security mission needs. Mail TLS via `rustls` (explicit config, full
+  negotiated-param capture). `kiwi-core`, `kiwi-forensics`, `kiwi-admin`
+  unchanged — already standalone.
+- **Consequences:** No mach/MozillaBuild dependency; standard cargo+npm
+  toolchain (all present). Phase 0 TB build exit criterion replaced by
+  "kiwi-app shell runs + kiwi-mail connects to a test server".

@@ -1,44 +1,51 @@
-# Agent 2 Brief — Devin SWE-2 — CORE SECURITY + TRUSTED SESSION ENGINE
+# Agent 2 Brief v2 — Devin SWE-2 — MAIL ENGINE + CORE SECURITY
 
-Read first: `prompt.md` (root), `docs/ARCHITECTURE.md`, `docs/TASKS.md`,
-`docs/SECURITY.md`, this file. You are **Agent 2**.
+**PIVOT (2026-09-19):** KIWI is now a standalone email client built from
+scratch — NOT a Thunderbird fork. Read `docs/DECISIONS.md` ADR-005 and
+`docs/ARCHITECTURE.md` (rewritten). Thunderbird source at `source/` is
+READ-ONLY reference. Your kiwi-core work stays valid.
 
-## Mission (prompt.md §6 Agent 2)
+Read first: `prompt.md`, `docs/ARCHITECTURE.md`, `docs/TASKS.md`,
+`docs/SECURITY.md`, `docs/contracts/security-session.md` (yours). You are
+**Agent 2**.
 
-- Thunderbird security integration (narrow hooks into TLS/NSS connection data)
-- Normalized internal security-session model
-- Endpoint trust: device registration, identity, integrity signals, session
-  trust state, lock/unlock — NO AV/EDR, measurable indicators only
-- SecureMail identity: account/session model, credential/session handling,
-  device registration/revocation interfaces, recovery model
+## Mission (updated)
 
-## Your Phase 0 task — T-002 (claimed)
+You own the heart of the client: **`kiwi-mail`** (native mail engine) plus
+the existing **`kiwi-core`** (security/trust/identity).
 
-The Thunderbird source is still downloading; do NOT touch `source/`.
-Until the integration map (T-007) lands, deliver:
+## Tasks (see docs/TASKS.md)
 
-1. `docs/contracts/security-session.md` — the normalized `SecuritySession`
-   contract: fields for protocol (smtp/imap/pop3), transport state
-   (plaintext/starttls/tls), negotiated TLS version, cipher suite, key
-   exchange group, cert chain summary, auth mechanism, forward-secrecy flag,
-   trust evaluation inputs/outputs. Typed, versioned.
-2. `kiwi-core/` Rust crate scaffold (`cargo new --lib`): modules for
-   `session`, `trust` (state machine: trusted → degraded → locked),
-   `device` (registration/revocation), `identity` (SecureMail
-   account/session), `policy`. Include unit tests for the trust state
-   machine transitions and challenge-binding rules.
-3. Lock-state semantics: what reduces trust, what locks, what unlocks
-   (authenticator-required path) — document in the contract.
+- T-101 `kiwi-mail/src/transport.rs`: TCP + rustls client, `TlsObservation`
+  capture (TLS version, cipher suite, key-exchange group, ALPN, peer cert
+  chain DER), `SocketSecurity` modes (Plaintext/ImplicitTls/StartTls),
+  STARTTLS upgrade path returning a new TlsObservation.
+- T-102 `smtp.rs`: EHLO→STARTTLS→AUTH(PLAIN/LOGIN/XOAUTH2)→MAIL/RCPT/DATA;
+  send-queue hooks for undo-send/send-later.
+- T-103 `imap.rs`: CAPABILITY/LOGIN/AUTHENTICATE/SELECT/FETCH
+  (ENVELOPE, FLAGS, BODYSTRUCTURE, RFC822.SIZE, UID), UIDVALIDITY-aware
+  sync primitives, IDLE.
+- T-104 `pop3.rs`: USER/PASS + APOP, LIST/UIDL/RETR/DELE, STLS.
+- T-105 `account.rs` + `store.rs`: account model; SQLite mail schema
+  (accounts, folders, message metadata) + bodies/attachments on disk.
+- T-106 `sync.rs` + `mime.rs`: folder sync engine; mail-parser inbound,
+  native outbound builder.
+- Also keep kiwi-core healthy: `cargo test` stays green.
+
+Reference (behavior only): `source/comm/mailnews/compose/src/SmtpClient.sys.mjs`,
+`local/src/Pop3Client.sys.mjs`, `imap/src/`. Write idiomatic async Rust
+(tokio). Stream bodies — never buffer whole messages unboundedly.
+Unit-test parsers/state machines against recorded transcripts (coordinate
+fixtures with Agent 6, T-114). No real credentials anywhere.
 
 ## Boundaries
 
-- Your dirs: `kiwi-core/`, `docs/contracts/security-session.md`,
-  `docs/agents/agent-2-status.md`. Nothing else without Lead coordination.
-- Rust: `cargo test` must pass before you report progress.
-- Subagents allowed per prompt.md §7 — they report files/commands/tests.
+Yours: `kiwi-mail/`, `kiwi-core/`, `docs/contracts/security-session.md`,
+`docs/agents/agent-2-status.md`. Deps: keep minimal + pinned; justify each
+new crate in your status file. `cargo test -p kiwi-mail -p kiwi-core` green
+before reporting progress.
 
 ## Reporting
 
-Append dated entries to `docs/agents/agent-2-status.md`:
-status, files changed, commands run, test results, assumptions, risks.
-Hit a limit → write a handoff entry in `docs/AGENT_HANDOFF.md` (template there).
+Append dated entries to `docs/agents/agent-2-status.md`. Hit a limit →
+handoff entry in `docs/AGENT_HANDOFF.md`.

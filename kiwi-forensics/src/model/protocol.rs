@@ -124,7 +124,10 @@ impl TransportSecurity {
     /// `StartTls`/`ImplicitTls` mean TLS was *observed*; `Unknown` is **not**
     /// treated as protected, so credential-exposure rules stay conservative.
     pub fn is_protected(self) -> bool {
-        matches!(self, TransportSecurity::StartTls | TransportSecurity::ImplicitTls)
+        matches!(
+            self,
+            TransportSecurity::StartTls | TransportSecurity::ImplicitTls
+        )
     }
 }
 

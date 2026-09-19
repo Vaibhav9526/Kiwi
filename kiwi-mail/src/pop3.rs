@@ -1,0 +1,1 @@
+//! POP3 receive client (USER/PASS/APOP, LIST/UIDL/RETR/DELE, STLS).
