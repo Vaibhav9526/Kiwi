@@ -1,0 +1,82 @@
+# KIWI local infrastructure (ADR-007). Services only — the Tauri desktop app
+# ALWAYS runs natively on the host and must never be containerized here
+# (enforced by tests/infra/test_compose.py::test_tauri_not_in_compose).
+#
+# Usage: `cp .env.example .env` then `docker compose up -d` (see infra/README.md).
+
+name: kiwi
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: true
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  mailpit:
+    # Dev/test mail server (T-114 interop profile): SMTP+IMAP+POP3+API/UI.
+    image: axllent/mailpit:v1.31.2
+    restart: unless-stopped
+    # POP3 is off by default in mailpit — bind on the mapped port + auth file
+    # (infra/mailpit-pop3-auth: htpasswd bcrypt, demo/demo for tests only).
+    # (mailpit has no IMAP; IMAP live tests need a different fixture server.)
+    command: ["--pop3", "0.0.0.0:1100", "--pop3-auth-file", "/auth/pop3.htpasswd", "--verbose"]
+    volumes:
+      - ./infra/mailpit-pop3-auth:/auth/pop3.htpasswd:ro
+    ports:
+      - "${MAILPIT_SMTP_PORT:-1025}:1025"
+      - "${MAILPIT_IMAP_PORT:-1143}:1143"
+      - "${MAILPIT_POP3_PORT:-1100}:1100"
+      - "${MAILPIT_UI_PORT:-8025}:8025"
+    healthcheck:
+      # Mailpit serves its API/UI over HTTP on 8025.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8025/api/v1/info || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  admin:
+    build:
+      context: ./kiwi-admin
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: true
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      PORT: "3001"
+    ports:
+      - "${KIWI_ADMIN_PORT:-3001}:3001"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      # Node 22 has global fetch: no curl dependency inside the image.
+      # NOTE: GET /healthz lands with T-130 (service entrypoint). Until then
+      # this service is expected-unhealthy — see infra/README.md.
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3001/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+
+volumes:
+  pgdata:
+    name: kiwi-pgdata
