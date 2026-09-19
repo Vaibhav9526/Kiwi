@@ -53,18 +53,11 @@ cloud.
 
 ## Architecture
 
-```
-kiwi-app        Tauri 2 desktop shell — React/TS frontend ←→ Rust core (IPC)
- ├─ kiwi-mail        SMTP / IMAP / POP3 clients, rustls transport with
- │                   full TLS-parameter capture, accounts, store, sync, MIME
- ├─ kiwi-core        session security model, trust/lock state, SecureMail
- │                   identity, device registration
- ├─ kiwi-forensics   PCAP ingest + live-session analyzers, deterministic
- │                   rule engine + scoring, evidence/report pipeline
- ├─ kiwi-mailauth    SPF / DKIM / DMARC (offline-testable DNS)
- └─ kiwi-admin       org / policy / RBAC / mail-flow / audit (Node/TS, localhost)
-mobile              React Native authenticator (pairing, challenge-response)
-```
+<p align="center">
+  <img src="docs/architecture.svg" alt="KIWI system architecture" width="1000" />
+</p>
+
+Full detail in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Tech stack
 

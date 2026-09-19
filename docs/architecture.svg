@@ -1,0 +1,153 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="820" viewBox="0 0 1240 820" font-family="Segoe UI, system-ui, sans-serif">
+  <defs>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#EAA132"/>
+      <stop offset="0.55" stop-color="#E37533"/>
+      <stop offset="1" stop-color="#E580CC"/>
+    </linearGradient>
+    <linearGradient id="brandV" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#EAA132"/>
+      <stop offset="1" stop-color="#E580CC"/>
+    </linearGradient>
+    <marker id="arr" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+      <path d="M0,0 L9,4.5 L0,9 z" fill="#8a8a96"/>
+    </marker>
+    <marker id="arrB" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
+      <path d="M0,0 L9,4.5 L0,9 z" fill="#E37533"/>
+    </marker>
+  </defs>
+
+  <rect width="1240" height="820" rx="22" fill="#0e0e12"/>
+
+  <!-- ============ kiwi-app boundary ============ -->
+  <rect x="40" y="40" width="880" height="470" rx="16" fill="none" stroke="url(#brand)" stroke-width="2" stroke-dasharray="9 7"/>
+  <text x="62" y="74" fill="#fff" font-size="21" font-weight="600">kiwi-app</text>
+  <text x="152" y="74" fill="#8a8a96" font-size="15">Tauri 2 desktop shell</text>
+
+  <!-- frontend -->
+  <rect x="70" y="100" width="380" height="112" rx="12" fill="#17171d" stroke="#2c2c36"/>
+  <text x="92" y="138" fill="#fff" font-size="17" font-weight="600">React + TypeScript frontend</text>
+  <text x="92" y="163" fill="#a8a8b4" font-size="13">mailbox · composer · unified inbox</text>
+  <text x="92" y="182" fill="#a8a8b4" font-size="13">security surfaces · lock screen · settings</text>
+  <text x="92" y="201" fill="#7a7a86" font-size="12">webview — untrusted-render boundary</text>
+
+  <!-- backend -->
+  <rect x="510" y="100" width="380" height="112" rx="12" fill="#17171d" stroke="#2c2c36"/>
+  <text x="532" y="138" fill="#fff" font-size="17" font-weight="600">Rust backend — src-tauri</text>
+  <text x="532" y="163" fill="#a8a8b4" font-size="13">typed IPC commands · input validation</text>
+  <text x="532" y="182" fill="#E9A554" font-size="13" font-weight="600">lock-state gate on every command</text>
+  <text x="532" y="201" fill="#7a7a86" font-size="12">delegates to the crates below — no business logic</text>
+
+  <!-- IPC arrow -->
+  <line x1="452" y1="156" x2="506" y2="156" stroke="url(#brand)" stroke-width="2.5" marker-end="url(#arrB)"/>
+  <line x1="506" y1="156" x2="452" y2="156" stroke="url(#brand)" stroke-width="2.5" marker-end="url(#arrB)"/>
+  <text x="437" y="143" fill="#E9A554" font-size="12" font-weight="600">IPC</text>
+
+  <!-- crates row -->
+  <g>
+    <rect x="70" y="268" width="195" height="150" rx="12" fill="#17171d" stroke="#2c2c36"/>
+    <rect x="70" y="268" width="195" height="6" rx="3" fill="#5aa7ff"/>
+    <text x="86" y="300" fill="#fff" font-size="16" font-weight="600">kiwi-mail</text>
+    <text x="86" y="324" fill="#a8a8b4" font-size="12">SMTP · IMAP · POP3</text>
+    <text x="86" y="341" fill="#a8a8b4" font-size="12">rustls transport</text>
+    <text x="86" y="358" fill="#a8a8b4" font-size="12">accounts · store · sync · MIME</text>
+    <text x="86" y="380" fill="#E9A554" font-size="12" font-weight="600">emits TlsObservation</text>
+    <text x="86" y="397" fill="#7a7a86" font-size="11">every connection is evidence</text>
+  </g>
+  <g>
+    <rect x="280" y="268" width="195" height="150" rx="12" fill="#17171d" stroke="#2c2c36"/>
+    <rect x="280" y="268" width="195" height="6" rx="3" fill="url(#brand)"/>
+    <text x="296" y="300" fill="#fff" font-size="16" font-weight="600">kiwi-core</text>
+    <text x="296" y="324" fill="#a8a8b4" font-size="12">security session model</text>
+    <text x="296" y="341" fill="#a8a8b4" font-size="12">trust engine · lock state</text>
+    <text x="296" y="358" fill="#a8a8b4" font-size="12">SecureMail identity</text>
+    <text x="296" y="380" fill="#a8a8b4" font-size="12">device register / revoke</text>
+  </g>
+  <g>
+    <rect x="490" y="268" width="195" height="150" rx="12" fill="#17171d" stroke="#2c2c36"/>
+    <rect x="490" y="268" width="195" height="6" rx="3" fill="url(#brand)"/>
+    <text x="506" y="300" fill="#fff" font-size="16" font-weight="600">kiwi-forensics</text>
+    <text x="506" y="324" fill="#a8a8b4" font-size="12">deterministic rule engine</text>
+    <text x="506" y="341" fill="#a8a8b4" font-size="12">TLS · cipher · cert · STARTTLS</text>
+    <text x="506" y="358" fill="#a8a8b4" font-size="12">PCAP ingest · scoring</text>
+    <text x="506" y="380" fill="#E9A554" font-size="12" font-weight="600">evidence → findings → diff</text>
+    <text x="506" y="397" fill="#7a7a86" font-size="11">works with AI fully disabled</text>
+  </g>
+  <g>
+    <rect x="700" y="268" width="195" height="150" rx="12" fill="#17171d" stroke="#2c2c36"/>
+    <rect x="700" y="268" width="195" height="6" rx="3" fill="url(#brand)"/>
+    <text x="716" y="300" fill="#fff" font-size="16" font-weight="600">kiwi-mailauth</text>
+    <text x="716" y="324" fill="#a8a8b4" font-size="12">SPF — RFC 7208</text>
+    <text x="716" y="341" fill="#a8a8b4" font-size="12">DKIM — RFC 6376</text>
+    <text x="716" y="358" fill="#a8a8b4" font-size="12">DMARC — RFC 7489</text>
+    <text x="716" y="380" fill="#a8a8b4" font-size="12">offline-testable DNS layer</text>
+  </g>
+
+  <!-- backend → crates -->
+  <line x1="700" y1="212" x2="168" y2="264" stroke="#8a8a96" stroke-width="1.6" marker-end="url(#arr)"/>
+  <line x1="700" y1="212" x2="378" y2="264" stroke="#8a8a96" stroke-width="1.6" marker-end="url(#arr)"/>
+  <line x1="700" y1="212" x2="588" y2="264" stroke="#8a8a96" stroke-width="1.6" marker-end="url(#arr)"/>
+  <line x1="700" y1="212" x2="798" y2="264" stroke="#8a8a96" stroke-width="1.6" marker-end="url(#arr)"/>
+
+  <!-- kiwi-mail → forensics : security events -->
+  <path d="M265 343 L265 343 C 265 440 480 440 560 420" fill="none" stroke="url(#brand)" stroke-width="2.2" marker-end="url(#arrB)" stroke-dasharray="1 0"/>
+  <text x="300" y="452" fill="#E9A554" font-size="12" font-weight="600">live session events</text>
+
+  <!-- mailauth → forensics -->
+  <line x1="798" y1="418" x2="640" y2="418" stroke="url(#brand)" stroke-width="1.8" marker-end="url(#arrB)"/>
+  <text x="695" y="445" fill="#E9A554" font-size="11">auth results → findings</text>
+
+  <!-- core → backend trust gate (up) -->
+  <line x1="378" y1="268" x2="378" y2="232" stroke="url(#brand)" stroke-width="2" marker-end="url(#arrB)"/>
+  <text x="388" y="240" fill="#E9A554" font-size="11">trust → lock gate</text>
+
+  <!-- ============ right column: external/local services ============ -->
+  <g>
+    <rect x="960" y="40" width="240" height="128" rx="12" fill="#17171d" stroke="#2c2c36"/>
+    <rect x="960" y="40" width="240" height="6" rx="3" fill="#8e6cff"/>
+    <text x="978" y="78" fill="#fff" font-size="16" font-weight="600">kiwi-admin</text>
+    <text x="978" y="98" fill="#7a7a86" font-size="12">Node + TypeScript · localhost</text>
+    <text x="978" y="122" fill="#a8a8b4" font-size="12">orgs · policies · RBAC</text>
+    <text x="978" y="139" fill="#a8a8b4" font-size="12">mail-flow metadata (no bodies)</text>
+    <text x="978" y="156" fill="#a8a8b4" font-size="12">tamper-evident audit log</text>
+  </g>
+  <g>
+    <rect x="960" y="200" width="240" height="96" rx="12" fill="#17171d" stroke="#2c2c36"/>
+    <text x="978" y="234" fill="#fff" font-size="16" font-weight="600">admin UI</text>
+    <text x="978" y="258" fill="#a8a8b4" font-size="12">React + TS · local only</text>
+    <text x="978" y="275" fill="#a8a8b4" font-size="12">policy + audit views</text>
+  </g>
+  <g>
+    <rect x="960" y="328" width="240" height="130" rx="12" fill="#17171d" stroke="url(#brand)" stroke-width="1.6"/>
+    <text x="978" y="362" fill="#fff" font-size="16" font-weight="600">mobile authenticator</text>
+    <text x="978" y="382" fill="#7a7a86" font-size="12">React Native — Phase 4</text>
+    <text x="978" y="406" fill="#a8a8b4" font-size="12">keystore keypair · QR pairing</text>
+    <text x="978" y="423" fill="#a8a8b4" font-size="12">asymmetric challenge-response</text>
+    <text x="978" y="440" fill="#a8a8b4" font-size="12">replay-protected · revocable</text>
+  </g>
+
+  <!-- backend → kiwi-admin -->
+  <path d="M890 150 C 920 150 930 110 956 106" fill="none" stroke="#8e6cff" stroke-width="1.8" marker-end="url(#arr)"/>
+  <!-- admin → admin UI -->
+  <line x1="1080" y1="168" x2="1080" y2="196" stroke="#8a8a96" stroke-width="1.6" marker-end="url(#arr)"/>
+  <!-- mobile → backend pairing -->
+  <path d="M960 393 C 930 400 930 200 894 190" fill="none" stroke="url(#brand)" stroke-width="1.8" marker-end="url(#arrB)" stroke-dasharray="5 4"/>
+  <text x="895" y="320" fill="#E9A554" font-size="11" transform="rotate(-84 918 310)">pairing · unlock challenge</text>
+
+  <!-- ============ SQLite bar ============ -->
+  <rect x="70" y="560" width="825" height="72" rx="12" fill="#17171d" stroke="#2c2c36"/>
+  <text x="92" y="592" fill="#fff" font-size="16" font-weight="600">SQLite — local-first storage</text>
+  <text x="92" y="614" fill="#a8a8b4" font-size="12">per-service DBs (mail / core / forensics / admin) · encrypted-at-rest secrets · PostgreSQL-ready interfaces</text>
+
+  <line x1="168" y1="418" x2="168" y2="556" stroke="#8a8a96" stroke-width="1.4" marker-end="url(#arr)"/>
+  <line x1="378" y1="418" x2="378" y2="556" stroke="#8a8a96" stroke-width="1.4" marker-end="url(#arr)"/>
+  <line x1="588" y1="418" x2="588" y2="556" stroke="#8a8a96" stroke-width="1.4" marker-end="url(#arr)"/>
+  <line x1="798" y1="418" x2="798" y2="556" stroke="#8a8a96" stroke-width="1.4" marker-end="url(#arr)"/>
+  <line x1="1080" y1="458" x2="1080" y2="596" stroke="#8a8a96" stroke-width="1.4" marker-end="url(#arr)"/>
+
+  <!-- ============ bottom: trust boundary + principles ============ -->
+  <rect x="70" y="680" width="1130" height="104" rx="12" fill="none" stroke="#2c2c36"/>
+  <text x="92" y="710" fill="#E9A554" font-size="13" font-weight="700" letter-spacing="2">TRUST BOUNDARIES</text>
+  <text x="92" y="736" fill="#a8a8b4" font-size="13">webview ⇄ Rust IPC (validated)  ·  client ⇄ admin service (RBAC + audit)  ·  client ⇄ mobile (challenge-response, replay-protected)</text>
+  <text x="92" y="762" fill="#7a7a86" font-size="12">deterministic rules are authoritative — AI explains findings, never decides  ·  secrets never logged  ·  unsafe code forbidden in Rust crates</text>
+</svg>
