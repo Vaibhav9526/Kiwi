@@ -2,6 +2,8 @@
 
 > Owner: Lead Agent. Phases adapted to the standalone-client pivot (ADR-005);
 > security mission unchanged.
+> **Release rule (owner):** push to GitHub after each phase — work happens on
+> `release/vX.Y.Z` branches; Lead merges to `main` and pushes at phase gates.
 
 ## Phase 0 — Standalone foundation — IN PROGRESS
 - [x] Repo recon; Thunderbird checkout acquired (now read-only reference at `source/`)
