@@ -1,0 +1,22 @@
+# Firefox + Thunderbird source checkouts (own .git inside)
+source/
+
+# Build artifacts
+obj-*/
+*.exe
+
+# Node / TS
+node_modules/
+dist/
+
+# Rust
+target/
+
+# SQLite / local data
+*.db
+*.db-journal
+*.sqlite*
+
+# OS / editor
+Thumbs.db
+.DS_Store
