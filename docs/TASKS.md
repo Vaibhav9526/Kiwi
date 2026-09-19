@@ -38,8 +38,8 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-113 | Update TESTING/SECURITY/THREAT-MODEL for standalone architecture; add client-layer test matrix (send/receive/compose/folders/attachments/offline/lock) | Agent 6 | open | `docs/` | T-006 |
 | T-114 | Local test mail server strategy (in-process fake vs mailpit) + fixtures for SMTP/IMAP/POP3 transcripts | Agent 6 | open | `tests/fixtures/`, `tests/tools/` | — |
 | T-115 | Quality-gate review of kiwi-core + kiwi-forensics + kiwi-admin scaffolds (G1–G11) | Agent 6 | in-progress (verdicts recorded in status) | review only | T-002..T-004 |
-| T-120 | kiwi-app src-tauri real IPC command layer: accounts/send/sync/security-status + lock-state gate | Agent 7 (Devin Pro, new) | open | `kiwi-app/src-tauri/`, `docs/contracts/ipc.md` | T-110 |
-| T-121 | Endpoint signal collector → kiwi-core trust evaluation (bounded indicators, Windows) | Agent 7 | open | `kiwi-app/src-tauri/` | T-120 |
+| T-120 | kiwi-app src-tauri real IPC command layer + lock gate | Agent 7 | done (commands/* + ipc.md contract) | `kiwi-app/src-tauri/`, `docs/contracts/ipc.md` | T-110 |
+| T-121 | Endpoint signal collector | Agent 7 | done (signals.rs, Windows-first) | `kiwi-app/src-tauri/` | T-120 |
 | T-122 | `kiwi-mailauth` crate: SPF/DKIM/DMARC | Agent 8 | in-review (modules landed, mock-DNS tests) | `kiwi-mailauth/`, `docs/contracts/mailauth.md` | — |
 
 ## Rules (from prompt.md §8, §14)
@@ -56,16 +56,18 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 |----|-------|-------|--------|-------------------|------------|
 | T-130 | Drizzle ORM foundation for kiwi-admin | Agent 5 | done (55 npm tests, contract v1.2 approved) | `kiwi-admin/` (db layer), `drizzle.config.ts`, migrations | — |
 | T-131 | docker-compose infra: postgres+mailpit+kiwi-admin | Agent 6 | done (compose verified, 13 unittests OK) | `docker-compose.yml`, `.env.example`, `kiwi-admin/Dockerfile`, `infra/` | — |
-| T-132 | Sandbox evaluation + design: Firecracker-vs-QEMU/KVM on Windows host, base image + snapshot strategy, isolation contract, PoC lifecycle test | Agent 2 (Devin) | open | `docs/sandbox.md`, `docs/contracts/sandbox.md`, `sandbox/` | — |
+| T-132 | Sandbox eval + design | Agent 2 | done (docs/sandbox.md + contracts/sandbox.md; WSL2 PoC proven; QEMU/WHPX viable; Firecracker=N/A on Win) | `docs/sandbox.md`, `docs/contracts/sandbox.md`, `sandbox/` | — |
 | T-133 | Infra verification tests: DB connectivity + migrations run, compose health, sandbox create/revert/teardown (stubbed if T-132 pending) | Agent 6 | open | `tests/` | T-130, T-131 |
 
 ## Rolling backlog — keep agents busy (owner directive: reassign on completion)
 
 | ID | Title | Owner | Status | Target files/dirs | Depends on |
 |----|-------|-------|--------|-------------------|------------|
-| T-134 | `kiwi-admin-ui` scaffold: React+TS local admin UI — orgs/policies/audit/mailflow views against kiwi-admin service | Agent 5 | open | `kiwi-admin-ui/` | — |
+| T-134 | `kiwi-admin-ui` scaffold + list endpoints | Agent 5 | done (views + contract v1.3 approved) | `kiwi-admin-ui/` | — |
 | T-135 | `kiwi-autoconfig` crate: account autodiscovery — ISPDB-style lookup, autodiscover.xml, MX-derived guesses; offline fixtures | Agent 8 | open | `kiwi-autoconfig/`, `docs/contracts/autoconfig.md` | — |
 | T-136 | `mobile/` React Native authenticator scaffold + pairing/challenge-response protocol design | Agent 4 | open | `mobile/`, `docs/contracts/authenticator.md` | — |
 | T-140 | CI pipeline: .github/workflows — cargo test/clippy/fmt, kiwi-admin npm test, secret-scan, fixture checks | Agent 6 | open | `.github/workflows/` | — |
 | T-141 | mailauth fixtures: auth-*.eml corpus + mock-DNS→findings mapping tests (Agent 8's proposal list) | Agent 6 | open | `tests/fixtures/messages/` | T-122 |
 | T-142 | kiwi-mail send queue: undo-send delay + send-later scheduler + outbox persistence | Agent 2 | queued | `kiwi-mail/src/` | T-102 |
+| T-143 | Bind kiwi-app frontend views to ipc.md command surface (typed invoke wrappers, real data flow) | Agent 5 | open | `kiwi-app/src/` | T-120, T-112 |
+| T-144 | Send-path wiring: call §10 evaluate-outbound bridge (fail-closed) + mailflow emitter post-send/receive in src-tauri | Agent 7 | open | `kiwi-app/src-tauri/` | T-120, T-108, T-109 |

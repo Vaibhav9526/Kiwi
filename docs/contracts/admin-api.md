@@ -1,7 +1,7 @@
 # Contract — kiwi-admin API (org / policy / mailflow / audit)
 
-> Owner: Agent 4 · **Contract version: 1.2** (T-130 Drizzle foundation by
-> Agent 5; **Lead-reviewed 2026-09-20 — approved**) · Status: active
+> Owner: Agent 4 · **Contract version: 1.3** (T-134 list endpoints + dev HTTP
+> transport by Agent 5; **Lead-reviewed 2026-09-20 — approved**) · Status: active
 > Implemented by `kiwi-admin/` (Node + TypeScript). Reference implementation:
 > `src/services.ts` (service layer) + `src/policy/evaluator.ts` (deterministic
 > evaluator). The REST transport is layered over these services; the endpoint
@@ -52,10 +52,12 @@ metadata ingest); kiwi-admin ↔ kiwi-core (device/session identity, Phase 3+).
 | Method + path | Service call | Permission | Notes |
 |---------------|--------------|------------|-------|
 | `POST /api/v1/orgs` | `OrgService.createOrg` | platform-level (bootstrap) | |
+| `GET /api/v1/orgs/{orgId}/users` | `OrgService.listUsers` | `user.read` | T-134: users with roles, email-ordered |
 | `POST /api/v1/orgs/{orgId}/users` | `OrgService.createUser` | `user.invite` | |
 | `PUT /api/v1/orgs/{orgId}/users/{userId}/role` | `OrgService.grantRole` | `user.role.grant` | |
 | `POST /api/v1/devices/{deviceId}/revoke` | `OrgService.revokeDevice` | `device.revoke` | |
 | `POST /api/v1/orgs/{orgId}/policies` | `PolicyService.createPolicy` | `policy.write` | body = PolicyObject minus id |
+| `GET /api/v1/orgs/{orgId}/policies` | `PolicyService.listPolicies` | `policy.read` on owning org | T-134: full definitions with domain rules |
 | `POST /api/v1/policies/{policyId}/evaluate` | `PolicyService.evaluate` | `policy.read` on owning org | deterministic; single-policy check |
 | `POST /api/v1/orgs/{orgId}/policies/evaluate-outbound` | `PolicyService.evaluateOutbound` | `policy.read` on the org | T-108 send-path bridge; see §10 |
 | `POST /api/v1/mailflow/events` | `MailflowService.ingest` | `mailflow.ingest` | MailflowEvent schema §6 |
@@ -235,6 +237,17 @@ Run: `npm run typecheck && npm test` (55 tests passing + 1 PG-live skip at T-130
 
 ## 10. Send-path bridge — T-108 (kiwi-mail send path ↔ kiwi-admin)
 
+`npm run build && npm run serve` (env `KIWI_ADMIN_DB`, `KIWI_ADMIN_PORT`;
+defaults `kiwi-admin.db`, `8471`). Implements the §3 + §10 wire mapping over
+the services plus extra-contract `GET /healthz` (`{status, service, version,
+contract}`) for process supervision (Agent 6 T-133). Binds **127.0.0.1 only**.
+
+DEV-AUTH WARNING (scaffold only): actor identity arrives via `x-kiwi-subject`
+/ `x-kiwi-roles` / `x-kiwi-org` headers — convenient, NOT secure. kiwi-core
+session auth (Phase 3+) replaces header actors before this transport serves
+anything beyond local development. The header scheme must never survive
+contact with a non-loopback listener.
+
 The compose-send hook (kiwi-mail, Agent 2) consults the bridge BEFORE
 transmission; the frontend composer banner (KIWI-UI-007) renders the
 per-recipient results. Wire shape:
@@ -293,5 +306,18 @@ builders in `src/mailflow/emitter.ts`; transport is `MailflowService.ingest`
   fail delivery; queue-and-retry locally.
 - `security_status` reflects OBSERVED transport/findings only; builders
   default it to `"unknown"` — never inferred from the policy verdict.
+
+## 12. Dev HTTP transport — T-134 scaffold (`src/server.ts`)
+
+`npm run build && npm run serve` (env `KIWI_ADMIN_DB`, `KIWI_ADMIN_PORT`;
+defaults `kiwi-admin.db`, `8471`). Implements the §3 + §10 wire mapping over
+the services plus extra-contract `GET /healthz` (`{status, service, version,
+contract}`) for process supervision (Agent 6 T-133). Binds **127.0.0.1 only**.
+
+DEV-AUTH WARNING (scaffold only): actor identity arrives via `x-kiwi-subject`
+/ `x-kiwi-roles` / `x-kiwi-org` headers — convenient, NOT secure. kiwi-core
+session auth (Phase 3+) replaces header actors before this transport serves
+anything beyond local development. The header scheme must never survive
+contact with a non-loopback listener.
 
 

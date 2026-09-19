@@ -428,3 +428,70 @@ daemon; `npm install` (vs `ci`) in-image trades pinning for robustness
 until the lock regen; `.env` with stronger password is the deployer's job
 (noted in README).
 
+## 2026-09-20 — T-140 CI + T-141 mailauth fixtures + T-133 DB upgrade
+
+**Status:** All three done, verified live where possible. T-113 deferred
+per directive (not touched).
+
+### T-140 — `.github/workflows/ci.yml` (validated YAML, 4 jobs)
+
+`rust` (Tauri system deps via apt + fmt/test/clippy-`-D warnings`),
+`node-admin` (`npm ci` + typecheck + test), `static-checks` (secret_scan,
+check_fixtures, check_csp, compose-static unittest), `infra-live`
+(compose up db+mailpit, build admin, full unittest, `down -v` always).
+Pre-flight evidence: local `npm ci` EXIT=0 (lock healthy after T-130
+regen — CI's `npm ci` is safe), admin suite now 64 passed (Agent 5
+active), YAML parses with all 4 jobs. Note: better-sqlite3 warns
+EBADENGINE on node 25 (wants ≤24) — pre-existing, flagged for Agent 5;
+setup-node pins 22 in CI so CI is unaffected.
+
+### T-141 — mailauth corpus (Agent 8's proposal, realized 1:1 + extras)
+
+- 6 `.eml` + `transcripts/smtp_auth-mixed-results.txt` (named per proto
+  convention; proposal's `auth-mixed-results` documented as realized) +
+  `tests/fixtures/dns/mailauth.txt` (SPF/DKIM/DMARC fragments, TEST-NET
+  addresses only).
+- `auth-dkim-valid.eml` carries a **real RSA-2048 `simple/simple`
+  signature** (Node `crypto`, fold-free headers so simple==relaxed; no
+  `t=`/`x=` by design) with **generator round-trip verification**
+  (sign→verify + body-hash check — `DKIM round-trip: OK`); tampered copy
+  differs by exactly one body line (diff-verified). Generator script kept
+  out of the repo; method in `tests/mailauth-mapping.md`, which also maps
+  every fixture → `MockResolver` builders → expected verdicts per
+  contract §8 (findings mapping itself lands with forensics auth work).
+- MANIFEST 39 → 47 entries; checker learns `suite: dns`; fixtures README
+  documents the corpus + verdict-tag convention. `check_fixtures: OK`;
+  secrets clean.
+
+### T-133 — DB test upgraded from probe to proof
+
+`test_migrations_apply_and_guard_holds`: applies `drizzle/pg/*.sql` to the
+compose DB via psql (rerun-safe: "already exists" tolerated, tables are
+the gate), asserts all 9 T-130 tables present, then INSERTs a probe audit
+row and proves DELETE raises the append-only guard. Live result: OK.
+Suite remains 13 tests OK (2 principled skips: admin /healthz T-130,
+sandbox T-132). Note: `drizzle-kit migrate` itself can't run (config has
+no dbCredentials — T-130 runtime wiring still open); psql-apply is the
+documented stand-in, journal-free by design for dev DBs.
+
+**Files changed:** `.github/workflows/ci.yml`, `tests/fixtures/messages/
+auth-*.eml` (6), `tests/fixtures/transcripts/smtp_auth-mixed-results.txt`,
+`tests/fixtures/dns/mailauth.txt`, `tests/fixtures/MANIFEST.json`,
+`tests/fixtures/README.md`, `tests/mailauth-mapping.md`,
+`tests/tools/check_fixtures.py`, `tests/infra/test_compose.py`, this log.
+
+**Commands run:** npm ci (0) + npm test (64 passed) in kiwi-admin; full
+infra unittest (13 OK); checkers (47-entry fixtures OK, 251-file secrets
+0 hits); DKIM generator + round trip; YAML parse; read-only greps of
+Agent 8/mailauth contract/drizzle SQL.
+
+**Assumptions:** verdict-tag (non-KIWI-ID) convention in MANIFEST is
+interim until findings mapping exists; fresh DKIM keypair per generation
+is fine (fixtures pin signature + p= together).
+
+**Risks:** my hand-rolled DKIM simple-canon must agree with mailauth's
+verifier on edge bytes — fixtures use minimal ASCII to stay in the safe
+subset; consumption tests (Agent 8/forensics) are the final arbiter;
+better-sqlite3/node-25 engine mismatch is Agent 5's; no `db:migrate`
+script exists yet (T-130 follow-up).
+

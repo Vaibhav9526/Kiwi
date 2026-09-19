@@ -102,3 +102,29 @@
 **New dev-dependency:** `rcgen 0.13` (dev-only; generates fixture certs — chosen over 0.14 as the older stable line).
 
 **Notes for Agent 6 (T-114):** the `serve()` helper pattern (expect-prefix → reply steps) and the rcgen `TlsAcceptor`-over-duplex recipe can be lifted directly into the shared transcript harness.
+
+## 2026-09-20 — T-132 sandbox evaluation + design (owner priority, infra before features)
+
+**Status:** DONE (design + contract + lifecycle PoC verified on this host). Branch release/v0.1.0. Note: ADR-008's open question was tagged "Agent 7" but the owner directive assigned T-132 to Agent 2 — flagging for Lead's ledger consistency.
+
+**Deliverables:**
+- `docs/sandbox.md` — design: measured host evaluation, option matrix, tier decision, prebuilt-base-image + snapshot/revert strategy, isolation table, monitoring outputs (proc/fs/net→PCAP for kiwi-forensics), degradation model, ADR-009 justification, build order.
+- `docs/contracts/sandbox.md` — v1 contract: `SandboxProvider`/`Sandbox` trait shapes, `Availability::{Available,Degraded,Unavailable}`, `SandboxCapabilities`, `SandboxSpec`, bounded `AnalysisReport`, error taxonomy, 7 provider invariants, caller obligations (never host-execute on Unavailable).
+- `tests/infra/check-sandbox-host.ps1` — read-only capability probe.
+- `tests/infra/sandbox-wsl-poc.ps1` — lifecycle PoC, **PASS** on this host.
+
+**Host evaluation (measured, honest):**
+- Windows 11 **Home**; hypervisor running; `vmcompute` up, `vmms` absent (no Hyper-V role on Home — Hyper-V Manager path dead).
+- `WinHvPlatform.dll` + `hvix64.exe` present → **QEMU/WHPX viable** (dedicated kernel, qcow2 overlay revert, `-object filter-dump` PCAP). QEMU binary absent — one-off provision needed; chose not to install system software without a provisioning decision.
+- **Firecracker impossible**: KVM is Linux-only; `/dev/kvm` absent inside WSL2 (nested virt off). Documented as Linux-host tier only.
+- **WSL2 tier works today** — real hypervisor boundary vs host; documented shared-kernel caveat (all distros share the utility-VM kernel → kernel escape lands in utility VM, can reach other WSL2 distros' FS — flagged `dedicated_kernel: false` in capabilities).
+
+**PoC evidence (WSL2 lifecycle):** docker-export busybox → bake `/etc/wsl.conf` (automount+interop off) into rootfs → `wsl --import` → analyze (verified `/mnt` shows only `wsl`,`wslg` internals — **no host drives**) → revert (marker file gone after re-import) → teardown (`--unregister`, VHDX destroyed). Key design note proven: policy must be baked into the base image, not mutated at runtime (in-guest wsl.conf write + restart did NOT take reliably).
+
+**Degradation:** interface reports `Unavailable(reason)`; no host fallback path exists by design (invariant, not just a default).
+
+**Risks/open:**
+- QEMU/WHPX provider needs QEMU binaries provisioned (portable build suffices; decision deferred to Lead/owner).
+- WSL2 egress control is weakest link (no per-distro net toggle; `unshare -rn` or host firewall — provider reports `egress_control: None` honestly).
+- `kiwi-sandbox` crate (trait + Wsl2Provider + NullProvider) is the natural next implementation step; T-114 transcripts can capture the qemu-img/qemu-system command lines once QEMU lands.
+- Resuming kiwi-mail T-103..T-106 follow-up hardening after this.

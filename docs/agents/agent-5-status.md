@@ -231,3 +231,51 @@
 - **Next:** T-112 IPC bindings as Agent 2 lands mail IPC; frontend views
   otherwise complete for scaffold phase.
 
+## 2026-09-20 — T-134 admin console done (branch release/v0.1.0)
+
+- **Status:** v1.2 approval noted. Delivered: list endpoints + localhost HTTP
+  scaffold transport in kiwi-admin, contract v1.3 (Lead review pending), and
+  the `kiwi-admin-ui/` React+TS console. No commits made.
+- **kiwi-admin additions (mine):**
+  - `OrgService.listUsers` (RBAC `user.read`, roles joined) +
+    `PolicyService.listPolicies` (RBAC `policy.read`, full definitions);
+    `listUsers` added to `OrgRepository` + both Drizzle impls (sync + PG
+    async mirror). +2 service tests (57 service-level green).
+  - `src/server.ts` (new, stdlib-only `node:http`): full §3+§10 wire mapping,
+    extra-contract `GET /healthz`, 127.0.0.1-only bind, 1 MiB body cap,
+    boundary validation (policy snake_case wire shape, TLS aliases, role enum),
+    uniform error shape (auth.denied 403 / validation.failed 400 / not.found
+    404). DEV-AUTH WARNING throughout: `x-kiwi-*` header actors are local-dev
+    scaffolding, replaced by kiwi-core sessions (Phase 3+); never non-loopback.
+  - `tsconfig.build.json` + `build`/`serve` scripts (`dist/` gitignored);
+    built artifact smoke-tested (`/healthz` → ok over real HTTP).
+  - `tests/server.test.ts` (new, 7 tests): healthz, users/roles round-trip,
+    policy CRUD + single + bridge evaluation, mailflow ingest/query, audit
+    query/verify, 403 shape, 400/404 shapes. Full suite: **64 pass + 1 PG-live
+    skip, 9 files**. Also answers Agent 6's T-133 expectation (admin /healthz
+    + entrypoint now exist; the 2 principled skips can narrow to sandbox).
+- **Contract v1.3 (pending):** list-endpoint rows, new §12 dev-transport note
+  with the auth warning; test map updated. DECISIONS.md untouched (Lead-owned).
+- **kiwi-admin-ui/ (new):** Vite+React+TS, dev server pinned to 127.0.0.1:1421.
+  `api.ts` typed client exactly matching v1.3 (HttpAdminApi + ApiError codes);
+  `mock.ts` demo adapter enforcing the §2 permission matrix so the header role
+  switcher shows real allow/deny paths (bridge verdicts trivially derived,
+  labeled DEMO). Hash router, brand token theme (light/dark), shell with
+  live/demo badge + base-URL/org/role controls. Views: orgs (create + context —
+  honestly notes no list endpoint), users/roles (invite, confirm grant, confirm
+  device revoke by id), policies (list, create, §10 bridge evaluation tester),
+  mailflow (filters, metadata-only table, send-attempt ingest), audit (table +
+  verify panel). Every view: loading/error+retry/empty states; destructive
+  actions confirm naming the target (S-11). `npm run build` green (36 modules).
+- **Commands run:** kiwi-admin typecheck/test/build/serve-smoke; admin-ui
+  install/build; rg secret scans on UI + server (zero hits); `npm ls` lockfile
+  consistent (answers Agent 6's lock-regen flag — lock already regenerated
+  under T-130 installs and verified).
+- **Assumptions:** server `now` uses contract-correct Unix seconds; service-
+  internal audit timestamps remain Date.now() ms (pre-existing inconsistency,
+  left untouched — flagged follow-up). No org/device enumeration endpoints in
+  v1.3 — UI states this openly; list endpoints are tracked follow-up.
+- **Needs:** (1) Lead review on v1.3. (2) Real session auth to replace header
+  actors (Phase 3+). (3) Async service unification for PG (prior flag stands).
+- **Next:** T-112 IPC bindings when Agent 2 lands mail IPC.
+
