@@ -65,9 +65,14 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 |----|-------|-------|--------|-------------------|------------|
 | T-134 | `kiwi-admin-ui` scaffold + list endpoints | Agent 5 | done (views + contract v1.3 approved) | `kiwi-admin-ui/` | — |
 | T-135 | `kiwi-autoconfig` crate: account autodiscovery — ISPDB-style lookup, autodiscover.xml, MX-derived guesses; offline fixtures | Agent 8 | open | `kiwi-autoconfig/`, `docs/contracts/autoconfig.md` | — |
-| T-136 | `mobile/` React Native authenticator scaffold + pairing/challenge-response protocol design | Agent 4 | open | `mobile/`, `docs/contracts/authenticator.md` | — |
+| T-136 | `mobile/` authenticator scaffold + protocol contract | Agent 4 | done (contract + RN scaffold; crypto fallback approved test-only) | `mobile/`, `docs/contracts/authenticator.md` | — |
 | T-140 | CI pipeline: .github/workflows — cargo test/clippy/fmt, kiwi-admin npm test, secret-scan, fixture checks | Agent 6 | open | `.github/workflows/` | — |
 | T-141 | mailauth fixtures: auth-*.eml corpus + mock-DNS→findings mapping tests (Agent 8's proposal list) | Agent 6 | open | `tests/fixtures/messages/` | T-122 |
 | T-142 | kiwi-mail send queue: undo-send delay + send-later scheduler + outbox persistence | Agent 2 | queued | `kiwi-mail/src/` | T-102 |
-| T-143 | Bind kiwi-app frontend views to ipc.md command surface (typed invoke wrappers, real data flow) | Agent 5 | open | `kiwi-app/src/` | T-120, T-112 |
+| T-143 | Bind kiwi-app frontend to ipc.md | Agent 5 | done (views wired, honest demo fallbacks) | `kiwi-app/src/` | T-120, T-112 |
 | T-144 | Send-path wiring: call §10 evaluate-outbound bridge (fail-closed) + mailflow emitter post-send/receive in src-tauri | Agent 7 | open | `kiwi-app/src-tauri/` | T-120, T-108, T-109 |
+| T-145 | kiwi-app UI elevation: KIWI-brand polish — typography, spacing, badges, states, transitions (Operate mode, keep all function) | Agent 5 | open | `kiwi-app/src/` | T-143 |
+| T-146 | IPC gaps: flag mutation, attachment download, sanitized HTML render (ammonia, remote-content toggle); then T-142 send queue | Agent 7 | open | `kiwi-app/src-tauri/`, `kiwi-mail/` | T-120 |
+| T-147 | IMAP fixture server in docker-compose (mailpit lacks IMAP — dovecot/greenmail) | Agent 6 | open | `docker-compose.yml`, `infra/` | — |
+| T-148 | kiwi-forensics remainder: analyzers/ + pcap/ (Agent 3 still quota-dead) | Agent 6 | open | `kiwi-forensics/src/` | — |
+| T-149 | kiwi-admin e2e tests against dockerized service (RBAC/policy/audit chain over HTTP) | Agent 4 | open | `kiwi-admin/` or `infra/e2e/` | T-131 |
