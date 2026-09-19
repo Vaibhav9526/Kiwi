@@ -163,3 +163,71 @@
   forensics → Security views); vitest for frontend pure modules (router/ipc
   parsers) proposed for Agent 6 T-113/T-115 pass.
 
+## 2026-09-20 — T-130 Drizzle foundation done (branch release/v0.1.0)
+
+- **Status:** kiwi-admin DB layer migrated to Drizzle ORM. PG dialect primary
+  (schema + Kit migrations), SQLite dialect for tests/local. All 50 prior
+  tests pass UNCHANGED on the new stack (only the journal-table assertion,
+  which tests new machinery, was touched) + 5 new migration tests.
+  Typecheck clean, `drizzle-kit check` clean both dialects. No commits made.
+- **ADR-009 justification (infrastructure decision rule):** Drizzle is REQUIRED
+  by owner directive (ADR-006) — PG for service/org data is the prerequisite
+  for Agent 6's T-131 compose + T-133 verification. Problem solved: hand-written
+  SQL strings are untyped and dialect-locked; Drizzle gives typed schemas,
+  generated versioned migrations, and one interface behind two dialects.
+  Simpler alternative rejected: keeping raw SQL + hand-maintained PG port
+  doubles every future schema change and has no migration journal. Security:
+  query builder eliminates string-concatenated SQL (all values parameterized);
+  no secrets in code/migrations (connection string is caller env only —
+  verified by rg scan). Cost: +3 runtime deps (drizzle-orm, pg, better-sqlite3
+  with working win64 prebuild — no compiler needed), ~1.5 s test suite.
+  Testing: full suite on SQLite-Drizzle + artifact assertions + skip-guarded
+  PG live test for compose.
+- **Files changed — kiwi-admin (mine only; other agents' tree entries untouched):**
+  - `src/db/schema.pg.ts` (new) — 9 tables, CHECKs, FK cascades, indexes,
+    typed relations. Timestamps bigint (no 2038 overflow); TEXT+CHECK instead
+    of native enums (new values must not need ALTER TYPE).
+  - `src/db/schema.sqlite.ts` (new) — table-for-table mirror (0/1 integers).
+  - `drizzle.config.ts` + `drizzle.sqlite.config.ts` (new); `drizzle/pg` +
+    `drizzle/sqlite` (new) — Kit output: `0000` full schema, custom `0001`
+    audit triggers (plpgsql `RAISE EXCEPTION` / sqlite `RAISE(ABORT)`).
+  - `src/db/sqlite.ts` + `src/db/pg.ts` (new) — connections, Drizzle bindings,
+    journal-tracked migrators (CJS driver via createRequire — tsconfig is
+    NodeNext without interop; `openPg` requires caller-supplied string).
+  - `src/db/repositories.ts` (new) — sync Drizzle repos, byte-identical return
+    shapes to the retired raw-SQL layer. `repositories.pg.ts` (new) — async
+    mirrors (`AsyncInterface`, new mapped type in `interfaces.ts`), PG
+    booleans mapped to 0/1 at the boundary.
+  - `src/services.ts` — container now opens SQLite-Drizzle + migrates;
+    `db: Db` facade preserved (tests use it); `close()` closes the real handle.
+  - Deleted: `driver.ts`, `migrations.ts` (custom runner superseded by Kit
+    journal), `sqlite-org.ts`, `sqlite-mailflow.ts`. `tests/helpers/db.ts` —
+    dropped unused `node:sqlite` helper.
+  - `tests/db.migrations.test.ts` (new, 5 run + 1 skip) — fresh-file migrate
+    (9 tables + triggers), idempotent re-migrate, FK pragma, PG/SQLite DDL
+    artifact assertions, PG live round-trip incl. trigger rejection
+    (skip-guarded on `DATABASE_URL`), compile-time repo conformance.
+  - `tests/audit.guard.test.ts` — restart test now asserts the Drizzle journal
+    (`__drizzle_migrations` ≥ 2) instead of the retired `schema_migrations`.
+  - `package.json` — drizzle-orm/pg/better-sqlite3 + drizzle-kit/@types/pg;
+    `db:generate`, `db:generate:sqlite`, `db:check*` scripts.
+  - `README.md` + `src/db/README.md` — Drizzle layout/commands/packaging note
+    (ship `drizzle/` with the service).
+  - `docs/contracts/admin-api.md` → v1.2 (§4 Drizzle migrations, §8 PG path +
+    async-unification follow-up flagged, §9 test map 50→55). **Lead review
+    pending** (DECISIONS.md untouched — Lead-owned).
+- **Commands run:** npm installs; `db:generate` ×2 + `--custom` ×2;
+  `db:check` ×2 (clean); `typecheck` + `test` (55 pass + 1 PG-live skip, 8 files);
+  rg secret-scan (only rule-reference comments).
+- **Test notes:** 2 failures during the run, both my test-code bugs (journal
+  column name; PRAGMA row shape under better-sqlite3) — fixed, no prod change.
+  better-sqlite3 `Database` import via createRequire (no tsconfig change).
+- **Boundaries:** did NOT touch `docker-compose.yml`/`.env.example`/`infra/`/
+  `Dockerfile` (Agent 6 T-131 in progress in-tree), `src-tauri/`, `kiwi-mail*`,
+  other agents' status files. PG `DATABASE_URL` wiring composes with T-131.
+- **Needs:** (1) Lead review sign-off on admin-api v1.2. (2) Async service-layer
+  unification for PG runtime (flagged in contract §8 — needs Lead). (3) Agent 6
+  T-133 runs the PG live test once compose provides `DATABASE_URL`.
+- **Next:** T-112 IPC bindings as Agent 2 lands mail IPC; frontend views
+  otherwise complete for scaffold phase.
+

@@ -349,3 +349,82 @@ judgement calls — flagged for Agent 3/Lead review, all in one table
 (contract §5) for easy revision; `Unknown(0xFFFF)` sentinel needs kiwi-mail
 to eventually supply raw wire values if it wants exactness.
 
+## 2026-09-20 — T-131 + T-133 (infra directive, ADR-007/008/009, ARCH §7)
+
+**Status:** Both done and live-verified. Branch `release/v0.1.0`. T-113 doc
+updates deferred per directive. All edits in T-131 target paths + `tests/`
++ `.gitignore` (one line) + this log.
+
+### T-131 — compose infra delivered
+
+- `docker-compose.yml` (root, project `kiwi`): `db` (postgres:17-alpine,
+  `pg_isready` healthcheck, named volume `kiwi-pgdata`), `mailpit`
+  (**axllent/mailpit:v1.31.2 pinned** — tag verified live on Docker Hub
+  today), `admin` (builds `kiwi-admin/Dockerfile`, waits on healthy `db`,
+  node-fetch `/healthz` healthcheck). `.env` required (`env_file
+  required: true` — fail fast); created local `.env` from example
+  (gitignored, dev defaults only).
+- `.env.example`: all compose vars documented (T-133 asserts coverage).
+- `kiwi-admin/Dockerfile` (multi-stage, node:22-bookworm-slim): builder
+  runs `npm run typecheck` gate + emits `dist/`; runner ships deps + dist;
+  node-fetch HEALTHCHECK (no curl). No secrets baked in.
+- `kiwi-admin/.dockerignore`, `infra/README.md` (start/stop, service table,
+  mailpit quick-check for kiwi-mail interop, pending-items + troubleshooting,
+  ADR-009 justification block).
+- `.gitignore` += `.env` (Lead-owned file; one line, security necessity —
+  secrets must never commit. Flagging explicitly.)
+- Tauri stays out: enforced by test, not convention
+  (`test_tauri_not_in_compose`).
+
+### T-133 — `tests/infra/test_compose.py` (stdlib unittest, 13 tests)
+
+Static (no daemon): config-valid, env-coverage, Tauri-guard,
+Dockerfile-type-gate. Live: PG TCP + healthy + pg_isready, mailpit SMTP
+banner + API, admin /healthz (skips until T-130), migrations connectivity
+(runs psql probe now that Drizzle markers exist — see below), sandbox
+lifecycle (DEFERRED skip until T-132). Result: **13 tests OK (2 principled
+skips: admin-health T-130, sandbox T-132)** against the live stack.
+
+### Live verification evidence (daemon was down → launched Docker Desktop)
+
+- `docker compose pull db mailpit` → both pins pull clean.
+- `docker compose up -d db mailpit` → **both Up + healthy** (mailpit wget
+  probe works — image is alpine-based as assumed).
+- `docker compose build admin` → green (type gate passed inside).
+- Two real findings fixed en route:
+  1. **Repo lock drift:** `npm ci` fails in-image (`@types/node` peer
+     resolution) though the tree installs/tests green. Dockerfile uses
+     `npm install` + carries node_modules, with comments restoring `ci`
+     after Agent 5 regenerates the lock under T-130. **Flag to Agent 5.**
+  2. **Scanner vs `.env.example`:** dev-default password tripped
+     secret_scan (correct instinct, wrong verdict). Added documented
+     placeholder allowlist (`kiwi-dev-only-change-me`, `changeme`, …);
+     negative control 7/7 PASS — real credentials still trip.
+- `secret_scan` 193 files / 0 hits; `check_fixtures` OK (39);
+  `check_csp` OK (3 advisories, unchanged).
+
+### Handover notes
+
+- `admin` service is **expected-red until T-130** (no `src/server.ts` /
+  `/healthz` yet): image builds, container has nothing to run. Compose,
+  tests and README all encode this — no changes needed when T-130 lands
+  except the entrypoint itself. **T-130 appears underway** (Drizzle
+  markers `drizzle.config.ts` + `drizzle/` appeared mid-task) — Agent 5
+  active, no conflict (untouched per §8).
+- Known pending: `cargo-audit`/`gitleaks` installs, repo initial commit,
+  T-113 infra-doc pass (deferred), T-132 sandbox.
+
+**Commands run:** `docker info` (daemon down → launched Docker Desktop),
+`docker compose config/pull/up/ps/build`, `docker compose build --no-cache`
+(debug), full unittest suite (13 OK), secret/fixture/CSP tools, registry
+tag check via Docker Hub, read-only greps elsewhere.
+
+**Assumptions:** dev-default PG password acceptable for local-only use
+(documented, gitignored `.env`); mailpit v1.31.2 pin holds until Dependabot-
+style review; T-130 provides server entrypoint + `/healthz` + migrations.
+
+**Risks:** Docker Desktop on this host was off — CI/others must ensure the
+daemon; `npm install` (vs `ci`) in-image trades pinning for robustness
+until the lock regen; `.env` with stronger password is the deployer's job
+(noted in README).
+

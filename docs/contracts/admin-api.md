@@ -1,7 +1,7 @@
 # Contract — kiwi-admin API (org / policy / mailflow / audit)
 
-> Owner: Agent 4 · **Contract version: 1.1** (T-108/T-109 bridge+emitter added
-> by Agent 5 under handoff; **Lead-reviewed 2026-09-19 — approved**) · Status: active
+> Owner: Agent 4 · **Contract version: 1.2** (T-130 Drizzle foundation by
+> Agent 5; **Lead-reviewed 2026-09-20 — approved**) · Status: active
 > Implemented by `kiwi-admin/` (Node + TypeScript). Reference implementation:
 > `src/services.ts` (service layer) + `src/policy/evaluator.ts` (deterministic
 > evaluator). The REST transport is layered over these services; the endpoint
@@ -71,9 +71,14 @@ with codes `auth.required`, `auth.denied`, `validation.failed`, `not.found`,
 
 ## 4. SQLite schema (v1 — org model)
 
-One file per service boundary (`kiwi-admin.db`, ADR-003). Applied by
-sequential migrations in `src/db/migrations.ts`; applied versions recorded in
-`schema_migrations`.
+One file per service boundary (`kiwi-admin.db`, ADR-003). Drizzle ORM
+(ADR-006, T-130): PostgreSQL schema `src/db/schema.pg.ts` is primary with
+Drizzle Kit migrations in `drizzle/pg/`; SQLite mirror `src/db/schema.sqlite.ts`
+with migrations in `drizzle/sqlite/` for tests/local. Runtime applies pending
+migrations idempotently via Drizzle's journal-tracked migrator
+(`__drizzle_migrations`). The audit append-only triggers ship as custom
+migration `0001` in BOTH dialects (SQLite `RAISE(ABORT)`; PG plpgsql
+`RAISE EXCEPTION`).
 
 | table | key columns | notes |
 |-------|-------------|-------|
@@ -205,9 +210,13 @@ represent a client-side block as complete organizational enforcement.
   `contracts/security-session.md`). kiwi-admin stores device records and
   revocation state only.
 - Mailflow events reference org/user/device by id, never by credential.
-- Postgres migration path: repositories in `src/db/interfaces.ts` are the
-  seam; a Postgres implementation replaces the SQLite classes without
-  touching services or evaluator.
+- Postgres path (T-130): `src/db/schema.pg.ts` + `drizzle/pg/` migrations are
+  the primary DDL; `src/db/repositories.pg.ts` implements the async mirror
+  (`AsyncInterface`) of the sync repository contracts, with PG booleans mapped
+  to 0/1 at the boundary. Sync interfaces in `src/db/interfaces.ts` remain the
+  contract for the local in-process path (SQLite/Drizzle). Unifying services on
+  async is tracked follow-up work (needs Lead). Connection strings are
+  caller-supplied env (`DATABASE_URL`) — never code, logs, or migrations.
 
 ## 9. Test map (evidence for T-004)
 
@@ -220,8 +229,9 @@ represent a client-side block as complete organizational enforcement.
 | `tests/policy.bridge.test.ts` (T-108) | org worst-wins per-recipient verdicts, min-TLS block, alias normalization, no-policy allow, cross-org denial audited, input validation, core determinism |
 | `tests/mailflow.emitter.test.ts` (T-109) | per-recipient expansion, metadata-only keys, unknown-defaulting, ingest round-trip, end-to-end service ingest, inbound builder |
 | `tests/audit.guard.test.ts` (tamper guard) | trigger rejection of UPDATE/DELETE, trigger registration, seq-gap detection, restart-safe idempotent migrations |
+| `tests/db.migrations.test.ts` (T-130) | fresh-file migration (9 tables + triggers), idempotent re-migrate, FK enforcement, PG/SQLite artifact DDL assertions, PG live round-trip (skipped without `DATABASE_URL`), compile-time PG repo conformance |
 
-Run: `npm run typecheck && npm test` (50 tests, all passing at tamper-guard close).
+Run: `npm run typecheck && npm test` (55 tests passing + 1 PG-live skip at T-130 close).
 
 ## 10. Send-path bridge — T-108 (kiwi-mail send path ↔ kiwi-admin)
 

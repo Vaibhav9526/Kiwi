@@ -40,7 +40,7 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-115 | Quality-gate review of kiwi-core + kiwi-forensics + kiwi-admin scaffolds (G1–G11) | Agent 6 | in-progress (verdicts recorded in status) | review only | T-002..T-004 |
 | T-120 | kiwi-app src-tauri real IPC command layer: accounts/send/sync/security-status + lock-state gate | Agent 7 (Devin Pro, new) | open | `kiwi-app/src-tauri/`, `docs/contracts/ipc.md` | T-110 |
 | T-121 | Endpoint signal collector → kiwi-core trust evaluation (bounded indicators, Windows) | Agent 7 | open | `kiwi-app/src-tauri/` | T-120 |
-| T-122 | `kiwi-mailauth` crate: SPF/DKIM/DMARC deterministic checks, offline-testable DNS | Agent 8 (Cline Muse, new) | open | `kiwi-mailauth/`, `docs/contracts/mailauth.md` | — |
+| T-122 | `kiwi-mailauth` crate: SPF/DKIM/DMARC | Agent 8 | in-review (modules landed, mock-DNS tests) | `kiwi-mailauth/`, `docs/contracts/mailauth.md` | — |
 
 ## Rules (from prompt.md §8, §14)
 
@@ -54,7 +54,18 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 
 | ID | Title | Owner | Status | Target files/dirs | Depends on |
 |----|-------|-------|--------|-------------------|------------|
-| T-130 | Drizzle ORM foundation for kiwi-admin: PG schema + migrations via Drizzle Kit, SQLite dialect for tests/local, repository interfaces preserved | Agent 5 | open | `kiwi-admin/` (db layer), `drizzle.config.ts`, migrations | — |
-| T-131 | docker-compose infra: PostgreSQL (healthcheck+volume), kiwi-admin Dockerfile, mailpit test server, .env.example, start/stop docs | Agent 6 | open | `docker-compose.yml`, `.env.example`, `kiwi-admin/Dockerfile`, `infra/` | — |
+| T-130 | Drizzle ORM foundation for kiwi-admin | Agent 5 | done (55 npm tests, contract v1.2 approved) | `kiwi-admin/` (db layer), `drizzle.config.ts`, migrations | — |
+| T-131 | docker-compose infra: postgres+mailpit+kiwi-admin | Agent 6 | done (compose verified, 13 unittests OK) | `docker-compose.yml`, `.env.example`, `kiwi-admin/Dockerfile`, `infra/` | — |
 | T-132 | Sandbox evaluation + design: Firecracker-vs-QEMU/KVM on Windows host, base image + snapshot strategy, isolation contract, PoC lifecycle test | Agent 2 (Devin) | open | `docs/sandbox.md`, `docs/contracts/sandbox.md`, `sandbox/` | — |
 | T-133 | Infra verification tests: DB connectivity + migrations run, compose health, sandbox create/revert/teardown (stubbed if T-132 pending) | Agent 6 | open | `tests/` | T-130, T-131 |
+
+## Rolling backlog — keep agents busy (owner directive: reassign on completion)
+
+| ID | Title | Owner | Status | Target files/dirs | Depends on |
+|----|-------|-------|--------|-------------------|------------|
+| T-134 | `kiwi-admin-ui` scaffold: React+TS local admin UI — orgs/policies/audit/mailflow views against kiwi-admin service | Agent 5 | open | `kiwi-admin-ui/` | — |
+| T-135 | `kiwi-autoconfig` crate: account autodiscovery — ISPDB-style lookup, autodiscover.xml, MX-derived guesses; offline fixtures | Agent 8 | open | `kiwi-autoconfig/`, `docs/contracts/autoconfig.md` | — |
+| T-136 | `mobile/` React Native authenticator scaffold + pairing/challenge-response protocol design | Agent 4 | open | `mobile/`, `docs/contracts/authenticator.md` | — |
+| T-140 | CI pipeline: .github/workflows — cargo test/clippy/fmt, kiwi-admin npm test, secret-scan, fixture checks | Agent 6 | open | `.github/workflows/` | — |
+| T-141 | mailauth fixtures: auth-*.eml corpus + mock-DNS→findings mapping tests (Agent 8's proposal list) | Agent 6 | open | `tests/fixtures/messages/` | T-122 |
+| T-142 | kiwi-mail send queue: undo-send delay + send-later scheduler + outbox persistence | Agent 2 | queued | `kiwi-mail/src/` | T-102 |
