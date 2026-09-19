@@ -1,0 +1,16 @@
+# Synthetic POP3 STLS upgrade. Wire is CRLF.
+S: +OK fake.kiwi-test.invalid POP3 FakeKIWI
+C: CAPA
+S: +OK Capability list follows
+S: STLS
+S: USER
+S: .
+C: STLS
+S: +OK Begin TLS negotiation
+# TLS handshake happens here (test CA); server re-greets capabilities.
+# Client must emit TlsObservation at upgrade (or explicit unknown).
+C: CAPA
+S: +OK Capability list follows
+S: USER
+S: APOP
+S: .

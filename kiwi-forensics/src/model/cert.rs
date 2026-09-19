@@ -526,6 +526,13 @@ impl CertificatePresentation {
             if self.chain_truncated {
                 problems.push(CertificateProblem::ChainTruncated);
             }
+            // A verifier rejection is chain-level metadata, not leaf content:
+            // it survives an unparsed or missing chain (live adapters report
+            // the verdict without DER parsing). `NotEvaluated`/`Unknown` stay
+            // silent here so "no certificates" still reports nothing.
+            if matches!(self.trust, TrustState::Untrusted | TrustState::Revoked) {
+                problems.push(CertificateProblem::TrustRejected);
+            }
             return problems;
         };
 

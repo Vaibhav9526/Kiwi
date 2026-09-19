@@ -179,6 +179,12 @@ impl Transport {
         self.observation.is_some()
     }
 
+    /// Configured socket-security mode (does not change after upgrade —
+    /// check `is_encrypted()`/`observation()` for live state).
+    pub fn socket_security(&self) -> SocketSecurity {
+        self.security
+    }
+
     pub fn host(&self) -> &str {
         &self.host
     }

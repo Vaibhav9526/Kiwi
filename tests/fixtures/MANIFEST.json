@@ -1,1 +1,327 @@
-{"fixtures": [{"expected_findings": ["TLS-ABSENT"], "generation": "planned: local test MTA without TLS + dumpcap", "path": "pcap/smtp_plaintext_notls.pcapng", "status": "planned", "suite": "pcap"}, {"expected_findings": [], "generation": "planned: local MTA TLS1.2-only + s_client session", "path": "pcap/smtp_starttls_tls12.pcapng", "status": "planned", "suite": "pcap"}, {"expected_findings": [], "generation": "planned: local MTA TLS1.3", "path": "pcap/smtp_starttls_tls13.pcapng", "status": "planned", "suite": "pcap"}, {"expected_findings": ["STARTTLS-STRIPPED"], "generation": "planned: MITM proxy removing 250-STARTTLS", "path": "pcap/smtp_stripped_notls.pcapng", "status": "planned", "suite": "pcap"}, {"expected_findings": [], "generation": "planned: local MTA implicit TLS (465-style)", "path": "pcap/smtp_implicit-tls_tls12.pcapng", "status": "planned", "suite": "pcap"}, {"expected_findings": ["TLS-ABSENT"], "generation": "planned: local IMAP without TLS + dumpcap", "path": "pcap/imap_plaintext_notls.pcapng", "status": "planned", "suite": "pcap"}, {"expected_findings": [], "generation": "planned: local IMAP STARTTLS 1.2", "path": "pcap/imap_starttls_tls12.pcapng", "status": "planned", "suite": "pcap"}, {"expected_findings": [], "generation": "planned: local IMAP STARTTLS 1.3", "path": "pcap/imap_starttls_tls13.pcapng", "status": "planned", "suite": "pcap"}, {"expected_findings": ["TLS-ABSENT"], "generation": "planned: local POP3 without TLS + dumpcap", "path": "pcap/pop3_plaintext_notls.pcapng", "status": "planned", "suite": "pcap"}, {"expected_findings": [], "generation": "planned: local POP3 STLS 1.2", "path": "pcap/pop3_starttls_tls12.pcapng", "status": "planned", "suite": "pcap"}, {"expected_findings": [], "generation": "planned: local POP3 STLS 1.3", "path": "pcap/pop3_starttls_tls13.pcapng", "status": "planned", "suite": "pcap"}, {"expected_findings": ["CIPHER-WEAK", "FORWARD-SECRECY-FAIL"], "generation": "planned: MTA restricted to legacy suite", "path": "pcap/smtp_starttls_tls12_weak-cipher.pcapng", "status": "planned", "suite": "pcap"}, {"expected_findings": ["CERT-EXPIRED"], "generation": "planned: test CA, backdated leaf", "path": "pcap/smtp_starttls_tls12_expired-cert.pcapng", "status": "planned", "suite": "pcap"}, {"expected_findings": ["CERT-UNTRUSTED"], "generation": "planned: self-signed leaf", "path": "pcap/imap_starttls_tls12_selfsigned.pcapng", "status": "planned", "suite": "pcap"}, {"expected_findings": ["INPUT-MALFORMED"], "generation": "planned: Scapy-crafted truncated handshake", "path": "pcap/smtp_plaintext_notls_malformed-01-truncated-hello.pcapng", "status": "planned", "suite": "pcap"}, {"expected_findings": ["INPUT-MALFORMED"], "generation": "planned: Scapy-crafted overlapping segments", "path": "pcap/smtp_plaintext_notls_malformed-02-overlap-streams.pcapng", "status": "planned", "suite": "pcap"}, {"expected_findings": [], "generation": "planned: openssl synthetic chain, CN=*.kiwi-test.invalid", "path": "certs/valid-chain.pem", "status": "planned", "suite": "cert"}, {"expected_findings": ["CERT-EXPIRED"], "generation": "planned: openssl backdated leaf", "path": "certs/expired.pem", "status": "planned", "suite": "cert"}, {"expected_findings": ["CERT-NOT-YET-VALID"], "generation": "planned: openssl future-dated leaf", "path": "certs/not-yet-valid.pem", "status": "planned", "suite": "cert"}, {"expected_findings": ["CERT-UNTRUSTED"], "generation": "planned: openssl self-signed", "path": "certs/self-signed.pem", "status": "planned", "suite": "cert"}, {"expected_findings": ["CERT-HOSTNAME-MISMATCH"], "generation": "planned: openssl CN=wrong.invalid", "path": "certs/hostname-mismatch.pem", "status": "planned", "suite": "cert"}, {"expected_findings": ["CERT-WEAK-SIG"], "generation": "planned: openssl legacy digest (test only)", "path": "certs/weak-sig-md5.pem", "status": "planned", "suite": "cert"}, {"expected_findings": ["CERT-WEAK-SIG"], "generation": "planned: openssl sha1 leaf (test only)", "path": "certs/weak-sig-sha1.pem", "status": "planned", "suite": "cert"}, {"expected_findings": ["CERT-WEAK-KEY"], "generation": "planned: openssl 1024-bit RSA (test only)", "path": "certs/rsa1024.pem", "status": "planned", "suite": "cert"}, {"expected_findings": ["CERT-REVOKED"], "generation": "planned: test CA + mini-CRL", "path": "certs/revoked.pem", "status": "planned", "suite": "cert"}, {"expected_findings": [], "generation": "planned: openssl wildcard SAN", "path": "certs/wildcard.pem", "status": "planned", "suite": "cert"}, {"expected_findings": [], "generation": "planned: openssl multi-SAN", "path": "certs/san-multi.pem", "status": "planned", "suite": "cert"}, {"expected_findings": [], "generation": "planned: synthetic lorem filler", "path": "messages/normal-basic.eml", "status": "planned", "suite": "message"}, {"expected_findings": ["INPUT-MALFORMED"], "generation": "planned: hand-written bad boundary", "path": "messages/malformed-mime-boundary.eml", "status": "planned", "suite": "message"}, {"expected_findings": ["INPUT-HOSTILE-HEADER"], "generation": "planned: hand-written injection headers", "path": "messages/hostile-headers.eml", "status": "planned", "suite": "message"}, {"expected_findings": ["INPUT-SUSPICIOUS-ATTACHMENT"], "generation": "planned: hand-written spoofed filename", "path": "messages/attachment-spoofed-ext.eml", "status": "planned", "suite": "message"}, {"expected_findings": ["INPUT-OVERSIZE"], "generation": "planned: generated oversize header block", "path": "messages/oversize-headers.eml", "status": "planned", "suite": "message"}], "version": 1}
+{
+ "fixtures": [
+  {
+   "expected_findings": [
+    "TLS-ABSENT"
+   ],
+   "generation": "planned: local test MTA without TLS + dumpcap",
+   "path": "pcap/smtp_plaintext_notls.pcapng",
+   "status": "planned",
+   "suite": "pcap"
+  },
+  {
+   "expected_findings": [],
+   "generation": "planned: local MTA TLS1.2-only + s_client session",
+   "path": "pcap/smtp_starttls_tls12.pcapng",
+   "status": "planned",
+   "suite": "pcap"
+  },
+  {
+   "expected_findings": [],
+   "generation": "planned: local MTA TLS1.3",
+   "path": "pcap/smtp_starttls_tls13.pcapng",
+   "status": "planned",
+   "suite": "pcap"
+  },
+  {
+   "expected_findings": [
+    "STARTTLS-STRIPPED"
+   ],
+   "generation": "planned: MITM proxy removing 250-STARTTLS",
+   "path": "pcap/smtp_stripped_notls.pcapng",
+   "status": "planned",
+   "suite": "pcap"
+  },
+  {
+   "expected_findings": [],
+   "generation": "planned: local MTA implicit TLS (465-style)",
+   "path": "pcap/smtp_implicit-tls_tls12.pcapng",
+   "status": "planned",
+   "suite": "pcap"
+  },
+  {
+   "expected_findings": [
+    "TLS-ABSENT"
+   ],
+   "generation": "planned: local IMAP without TLS + dumpcap",
+   "path": "pcap/imap_plaintext_notls.pcapng",
+   "status": "planned",
+   "suite": "pcap"
+  },
+  {
+   "expected_findings": [],
+   "generation": "planned: local IMAP STARTTLS 1.2",
+   "path": "pcap/imap_starttls_tls12.pcapng",
+   "status": "planned",
+   "suite": "pcap"
+  },
+  {
+   "expected_findings": [],
+   "generation": "planned: local IMAP STARTTLS 1.3",
+   "path": "pcap/imap_starttls_tls13.pcapng",
+   "status": "planned",
+   "suite": "pcap"
+  },
+  {
+   "expected_findings": [
+    "TLS-ABSENT"
+   ],
+   "generation": "planned: local POP3 without TLS + dumpcap",
+   "path": "pcap/pop3_plaintext_notls.pcapng",
+   "status": "planned",
+   "suite": "pcap"
+  },
+  {
+   "expected_findings": [],
+   "generation": "planned: local POP3 STLS 1.2",
+   "path": "pcap/pop3_starttls_tls12.pcapng",
+   "status": "planned",
+   "suite": "pcap"
+  },
+  {
+   "expected_findings": [],
+   "generation": "planned: local POP3 STLS 1.3",
+   "path": "pcap/pop3_starttls_tls13.pcapng",
+   "status": "planned",
+   "suite": "pcap"
+  },
+  {
+   "expected_findings": [
+    "CIPHER-WEAK",
+    "FORWARD-SECRECY-FAIL"
+   ],
+   "generation": "planned: MTA restricted to legacy suite",
+   "path": "pcap/smtp_starttls_tls12_weak-cipher.pcapng",
+   "status": "planned",
+   "suite": "pcap"
+  },
+  {
+   "expected_findings": [
+    "CERT-EXPIRED"
+   ],
+   "generation": "planned: test CA, backdated leaf",
+   "path": "pcap/smtp_starttls_tls12_expired-cert.pcapng",
+   "status": "planned",
+   "suite": "pcap"
+  },
+  {
+   "expected_findings": [
+    "CERT-UNTRUSTED"
+   ],
+   "generation": "planned: self-signed leaf",
+   "path": "pcap/imap_starttls_tls12_selfsigned.pcapng",
+   "status": "planned",
+   "suite": "pcap"
+  },
+  {
+   "expected_findings": [
+    "INPUT-MALFORMED"
+   ],
+   "generation": "planned: Scapy-crafted truncated handshake",
+   "path": "pcap/smtp_plaintext_notls_malformed-01-truncated-hello.pcapng",
+   "status": "planned",
+   "suite": "pcap"
+  },
+  {
+   "expected_findings": [
+    "INPUT-MALFORMED"
+   ],
+   "generation": "planned: Scapy-crafted overlapping segments",
+   "path": "pcap/smtp_plaintext_notls_malformed-02-overlap-streams.pcapng",
+   "status": "planned",
+   "suite": "pcap"
+  },
+  {
+   "expected_findings": [],
+   "generation": "planned: openssl synthetic chain, CN=*.kiwi-test.invalid",
+   "path": "certs/valid-chain.pem",
+   "status": "planned",
+   "suite": "cert"
+  },
+  {
+   "expected_findings": [
+    "CERT-EXPIRED"
+   ],
+   "generation": "planned: openssl backdated leaf",
+   "path": "certs/expired.pem",
+   "status": "planned",
+   "suite": "cert"
+  },
+  {
+   "expected_findings": [
+    "CERT-NOT-YET-VALID"
+   ],
+   "generation": "planned: openssl future-dated leaf",
+   "path": "certs/not-yet-valid.pem",
+   "status": "planned",
+   "suite": "cert"
+  },
+  {
+   "expected_findings": [
+    "CERT-UNTRUSTED"
+   ],
+   "generation": "planned: openssl self-signed",
+   "path": "certs/self-signed.pem",
+   "status": "planned",
+   "suite": "cert"
+  },
+  {
+   "expected_findings": [
+    "CERT-HOSTNAME-MISMATCH"
+   ],
+   "generation": "planned: openssl CN=wrong.invalid",
+   "path": "certs/hostname-mismatch.pem",
+   "status": "planned",
+   "suite": "cert"
+  },
+  {
+   "expected_findings": [
+    "CERT-WEAK-SIG"
+   ],
+   "generation": "planned: openssl legacy digest (test only)",
+   "path": "certs/weak-sig-md5.pem",
+   "status": "planned",
+   "suite": "cert"
+  },
+  {
+   "expected_findings": [
+    "CERT-WEAK-SIG"
+   ],
+   "generation": "planned: openssl sha1 leaf (test only)",
+   "path": "certs/weak-sig-sha1.pem",
+   "status": "planned",
+   "suite": "cert"
+  },
+  {
+   "expected_findings": [
+    "CERT-WEAK-KEY"
+   ],
+   "generation": "planned: openssl 1024-bit RSA (test only)",
+   "path": "certs/rsa1024.pem",
+   "status": "planned",
+   "suite": "cert"
+  },
+  {
+   "expected_findings": [
+    "CERT-REVOKED"
+   ],
+   "generation": "planned: test CA + mini-CRL",
+   "path": "certs/revoked.pem",
+   "status": "planned",
+   "suite": "cert"
+  },
+  {
+   "expected_findings": [],
+   "generation": "planned: openssl wildcard SAN",
+   "path": "certs/wildcard.pem",
+   "status": "planned",
+   "suite": "cert"
+  },
+  {
+   "expected_findings": [],
+   "generation": "planned: openssl multi-SAN",
+   "path": "certs/san-multi.pem",
+   "status": "planned",
+   "suite": "cert"
+  },
+  {
+   "expected_findings": [],
+   "generation": "planned: synthetic lorem filler",
+   "path": "messages/normal-basic.eml",
+   "status": "planned",
+   "suite": "message"
+  },
+  {
+   "expected_findings": [
+    "INPUT-MALFORMED"
+   ],
+   "generation": "planned: hand-written bad boundary",
+   "path": "messages/malformed-mime-boundary.eml",
+   "status": "planned",
+   "suite": "message"
+  },
+  {
+   "expected_findings": [
+    "INPUT-HOSTILE-HEADER"
+   ],
+   "generation": "planned: hand-written injection headers",
+   "path": "messages/hostile-headers.eml",
+   "status": "planned",
+   "suite": "message"
+  },
+  {
+   "expected_findings": [
+    "INPUT-SUSPICIOUS-ATTACHMENT"
+   ],
+   "generation": "planned: hand-written spoofed filename",
+   "path": "messages/attachment-spoofed-ext.eml",
+   "status": "planned",
+   "suite": "message"
+  },
+  {
+   "expected_findings": [
+    "INPUT-OVERSIZE"
+   ],
+   "generation": "planned: generated oversize header block",
+   "path": "messages/oversize-headers.eml",
+   "status": "planned",
+   "suite": "message"
+  },
+  {
+   "path": "transcripts/smtp_send_ok.txt",
+   "suite": "transcript",
+   "status": "present",
+   "generation": "hand-written synthetic transcript (T-114)",
+   "expected_findings": []
+  },
+  {
+   "path": "transcripts/smtp_auth_fail.txt",
+   "suite": "transcript",
+   "status": "present",
+   "generation": "hand-written synthetic transcript (T-114)",
+   "expected_findings": [
+    "AUTH-FAIL"
+   ]
+  },
+  {
+   "path": "transcripts/smtp_stripped.txt",
+   "suite": "transcript",
+   "status": "present",
+   "generation": "hand-written synthetic transcript (T-114)",
+   "expected_findings": [
+    "STARTTLS-STRIPPED"
+   ]
+  },
+  {
+   "path": "transcripts/imap_select_fetch.txt",
+   "suite": "transcript",
+   "status": "present",
+   "generation": "hand-written synthetic transcript (T-114)",
+   "expected_findings": []
+  },
+  {
+   "path": "transcripts/imap_hostile_fetch.txt",
+   "suite": "transcript",
+   "status": "present",
+   "generation": "hand-written synthetic transcript (T-114)",
+   "expected_findings": [
+    "INPUT-MALFORMED"
+   ]
+  },
+  {
+   "path": "transcripts/pop3_retr.txt",
+   "suite": "transcript",
+   "status": "present",
+   "generation": "hand-written synthetic transcript (T-114)",
+   "expected_findings": []
+  },
+  {
+   "path": "transcripts/pop3_stls.txt",
+   "suite": "transcript",
+   "status": "present",
+   "generation": "hand-written synthetic transcript (T-114)",
+   "expected_findings": []
+  }
+ ],
+ "version": 1
+}

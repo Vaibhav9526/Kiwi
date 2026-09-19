@@ -11,6 +11,7 @@
 //! | [`model`] | Normalized protocol/security model (`ConnectionSecurityEvent`) |
 //! | [`analyzers`] | Deterministic SMTP/IMAP/POP3 trace analyzers (STARTTLS + AUTH observation) |
 //! | [`findings`] | Finding/evidence/impact/remediation records, stable keys, re-scan diff |
+//! | [`live`] | Live adapter: `kiwi-mail` transport observations become rule input |
 //! | [`rules`] | Deterministic rule engine + catalog (TLS, cipher, key-exchange, cert, auth, STARTTLS) |
 //! | [`score`] | Integer-only deterministic scoring and grading |
 //! | [`pcap`] | Bounded `.pcap`/`.pcapng` ingest; every byte is untrusted input |
@@ -45,7 +46,9 @@
 )]
 #![warn(missing_docs)]
 
+pub mod findings;
 pub mod model;
+pub mod score;
 
 // Remaining modules are authored in the order listed in
 // `docs/agents/agent-3-status.md`. Each declaration is uncommented as the module
@@ -53,11 +56,10 @@ pub mod model;
 // only reported done when every module below is present and `cargo test` +
 // `cargo clippy` are green.
 // pub mod analyzers;
-// pub mod findings;
 // pub mod pcap;
-// pub mod report;
-// pub mod rules;
-// pub mod score;
+pub mod live;
+pub mod report;
+pub mod rules;
 
 /// Version of the finding/evidence/report contract implemented by this crate.
 ///

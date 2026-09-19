@@ -21,9 +21,9 @@
       scope expansion, no unrelated refactors.
 
 ### G2 — Existing behavior preserved
-- [ ] Thunderbird mail workflows unaffected (or breakage documented +
-      handoff filed). Post-T-001: `./mach build` green; pre-T-001: state
-      "build-gate n/a — T-001 in progress".
+- [ ] No regressions in sibling crates (`cargo test --workspace` green) or
+      documented + handoff filed. Pre-Phase-1: state which gates are n/a
+      (e.g. "E2E n/a — fake-server harness lands with T-101").
 
 ### G3 — Tests added/updated (†)
 - [ ] New/changed behavior has unit + integration tests; security findings
@@ -56,13 +56,17 @@
       files/modules edited without coordination (prompt.md §8).
 
 ### G9 — Build / lint / static checks pass
-- [ ] Rust: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`
-      clean. Node/TS: `npm run lint`, `npm run typecheck` clean.
+- [ ] Rust: `cargo fmt --check`, `cargo clippy --workspace --all-targets
+  -- -D warnings` clean; every crate has `[lints] workspace = true`.
+      Node/TS: `npm run lint`, `npm run typecheck` clean (missing `lint`
+      script itself fails this row).
       Paste outputs or state "n/a — no <lang> files touched".
 
 ### G10 — UI manually inspected (UI-affecting tasks only)
 - [ ] Normal / error / loading / locked / unlock states; keyboard nav;
       focus handling; overflow; dark/light where relevant (prompt.md §13).
+- [ ] Remote email content blocked by default; attachment
+      open/save confirmation flows; Tauri CSP non-null.
       Evidence: checklist results + screenshots location.
 
 ### G11 — Handoff note for unresolved risks

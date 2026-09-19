@@ -1,0 +1,10 @@
+# Synthetic HOSTILE IMAP FETCH: rogue server announces an absurd literal.
+# Client must bound/reject WITHOUT pre-allocating; input-quality finding.
+S: * OK fake.kiwi-test.invalid IMAP4rev2 FakeKIWI
+C: b001 LOGIN test-user@kiwi-test.invalid REDACTED-DUMMY
+S: b001 OK LOGIN completed
+C: b002 SELECT INBOX
+S: b002 OK [READ-WRITE] SELECT completed
+C: b003 UID FETCH 1 BODY[]
+S: * 1 FETCH (UID 1 BODY[] {999999999}
+# ^^^ 999999999-byte literal: must be rejected by size cap before ANY read.

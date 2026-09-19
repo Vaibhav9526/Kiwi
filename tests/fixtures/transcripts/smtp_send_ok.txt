@@ -1,0 +1,24 @@
+# Synthetic SMTP send — happy path. Wire is CRLF; AUTH string is a dummy.
+S: 220 fake.kiwi-test.invalid ESMTP FakeKIWI
+C: EHLO client.kiwi-test.invalid
+S: 250-fake.kiwi-test.invalid
+S: 250-STARTTLS
+S: 250-AUTH PLAIN LOGIN
+S: 250 SIZE 10485760
+C: AUTH PLAIN AHRlc3QtdXNlckBma2Utd2lyZQ==
+S: 235 2.7.0 Authentication successful
+C: MAIL FROM:<alice@kiwi-test.invalid>
+S: 250 2.1.0 Ok
+C: RCPT TO:<bob@kiwi-test.invalid>
+S: 250 2.1.5 Ok
+C: DATA
+S: 354 End data with <CR><LF>.<CR><LF>
+C: From: alice@kiwi-test.invalid
+C: To: bob@kiwi-test.invalid
+C: Subject: synthetic hello
+C:
+C: Hello from the fixture.
+C: .
+S: 250 2.0.0 Ok: queued as FAKE0001
+C: QUIT
+S: 221 2.0.0 Bye

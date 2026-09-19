@@ -1,0 +1,15 @@
+# Synthetic IMAP select+fetch. Wire is CRLF; content is lorem filler.
+S: * OK fake.kiwi-test.invalid IMAP4rev2 FakeKIWI
+C: a001 LOGIN test-user@kiwi-test.invalid REDACTED-DUMMY
+S: a001 OK LOGIN completed
+C: a002 SELECT INBOX
+S: * 2 EXISTS
+S: * 1 RECENT
+S: * OK [UIDVALIDITY 12345] UIDs valid
+S: a002 OK [READ-WRITE] SELECT completed
+C: a003 UID FETCH 1:* (UID FLAGS ENVELOPE)
+S: * 1 FETCH (UID 101 FLAGS (\Seen) ENVELOPE ("Mon, 01 Jan 2024 00:00:00 +0000" "synthetic" (("Alice" NIL "alice" "kiwi-test.invalid")) (("Bob" NIL "bob" "kiwi-test.invalid")) NIL NIL NIL "<fake1@kiwi-test.invalid>"))
+S: a003 OK FETCH completed
+C: a004 LOGOUT
+S: * BYE FakeKIWI logging out
+S: a004 OK LOGOUT completed

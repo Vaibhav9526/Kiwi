@@ -14,10 +14,14 @@ pub mod tls;
 use serde::{Deserialize, Serialize};
 
 pub use auth::{AuthMechanism, AuthObservation, CredentialKind};
-pub use cert::{CertificatePresentation, CertificateProblem, DistinguishedName, TrustState};
+pub use cert::{
+    CertThresholds, CertificateInfo, CertificatePresentation, CertificateProblem,
+    DistinguishedName, HostnameMatch, PublicKeyAlgorithm, SignatureAlgorithm, TrustState,
+};
 pub use protocol::{Protocol, TransportSecurity};
 pub use tls::{
     CipherStrength, CipherSuite, ForwardSecrecy, KeyExchange, TlsObservation, TlsVersion,
+    VersionComparison,
 };
 
 /// Bounded, human-readable string taken from untrusted input.

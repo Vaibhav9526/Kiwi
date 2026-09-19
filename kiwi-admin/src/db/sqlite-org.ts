@@ -154,4 +154,11 @@ export class SqlitePolicyRuleRepository implements PolicyRuleRepository {
       action: RecipientDomainAction;
     }[];
   }
+
+  listPoliciesForOrg(orgId: string): PolicyRow[] {
+    return this.db.all(
+      "SELECT id, org_id, name, enabled, min_tls, external_recipients FROM policies WHERE org_id = ? ORDER BY id",
+      orgId,
+    ) as PolicyRow[];
+  }
 }

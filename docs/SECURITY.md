@@ -1,7 +1,9 @@
 # KIWI — Security Rules & Assumptions
 
-> Owner: Agent 6 (content), Lead (enforcement). Expanded per T-006,
-> 2026-09-19. Aligned with prompt.md §2, §11, §12. Binding on all agents.
+> Owner: Agent 6 (content), Lead (enforcement). Standalone-pivot revision
+> per T-113, 2026-09-19/20. Aligned with prompt.md §2, §11, §12 + ADR-005.
+> Binding on all agents. (Supersedes the Thunderbird-hook revision: NSS-hook
+> assumption A2 replaced; B2 redefined as webview↔core IPC.)
 
 ## 1. Non-negotiable rules (from prompt.md §2, §11)
 
@@ -12,75 +14,98 @@
    a test case (fixture + `security_*` regression test).
 3. Never claim universal malware/compromise detection. Endpoint trust =
    measurable indicators + trust reduction, described as such in UI/docs.
-4. Established crypto + platform APIs only. No invented algorithms/protocols.
-   TLS via NSS/Thunderbird stack; key storage via OS keystore APIs
-   (Windows DPAPI/CNG now, Android Keystore / iOS Keychain later).
+4. Established crypto + platform APIs only. Mail TLS via `rustls` with
+   explicit, reviewable configuration; key/token storage via OS facilities
+   (Windows Credential Manager/DPAPI now; Android Keystore / iOS Keychain
+   for mobile later). No invented algorithms/protocols.
 5. Local-first, least privilege. No message content or credentials leave the
    machine without explicit, documented approval (decision record + user
    consent surface).
 6. Secrets never logged or committed: keys, tokens, passwords, OAuth
    secrets, test credentials — none. Enforced by gitleaks gate (§6).
+   `md5` exists in `kiwi-mail` deps solely for APOP challenge-response
+   (protocol-mandated, T-104) — never for integrity/security hashing; its
+   call sites require a comment stating this.
 7. No fake security in core paths. Stubs only behind interfaces, explicitly
    marked (`UNIMPLEMENTED`), isolated, with tests asserting they fail closed.
-8. Never store authenticator private keys in plaintext — platform keystore
-   only; export prohibited by API design.
-9. All externally supplied data is untrusted: PCAP bytes, email content,
-   attachments, network responses, admin API input. Validate + bound
-   everything (length, type, charset, depth — see §4).
+8. Never store authenticator private keys or OAuth refresh tokens in
+   plaintext — platform keystore/credential-manager only.
+9. All externally supplied data is untrusted: server responses (SMTP/IMAP/
+   POP3 bytes incl. hostile FETCH), PCAP bytes, email content, attachments,
+   remote web content, admin API input, **and frontend IPC input**.
+   Validate + bound everything (length, type, charset, depth — see §4).
 10. Authenticator challenges bind to device + session + event (nonce,
-    timestamp, scope); replay must fail; single-use enforced server-side.
+    timestamp, scope); replay must fail; single-use enforced.
 11. Elevated actions are audited; audit log is append-only/tamper-evident
     (hash-chained; verification procedure owned by Agent 4, audited by
     Agent 6).
+12. Remote email content (images, stylesheets, external media) is blocked by
+    default; loading it requires explicit per-sender/temporary consent and
+    never sends credentials/cookies.
+13. Attachments are untrusted files: spoofed extensions flagged, dangerous
+    types confirmed before open, saved files get safe names (no path
+    traversal), open-handlers never run with elevated privilege.
 
-## 2. Trust boundaries
+## 2. Trust boundaries (standalone)
 
 | # | Boundary | Untrusted side | Notes / enforcement |
 |---|----------|----------------|---------------------|
-| B1 | Network ↔ Thunderbird mail stack | mail servers, MITM | deterministic TLS/cert/cipher analysis, scoring, warnings; never silently downgrade |
-| B2 | Thunderbird ↔ kiwi services | compromised renderer/chrome JS | local IPC only (named pipe / localhost socket), authenticated channel, no remote listeners by default; validate every message (§4) |
-| B3 | kiwi services ↔ SQLite | tampered DB file, other local users | per-service DB files (ADR-003); parameterized access only; sensitive fields encrypted at rest where practical; integrity checks on open |
-| B4 | kiwi-core ↔ mobile authenticator | network attacker, cloned device | asymmetric challenge-response; pairing via QR/local net; keypair in platform keystore; revocation list honored before trust |
+| B1 | Network ↔ kiwi-mail transport | mail servers, MITM | rustls explicit config; full `TlsObservation` capture; deterministic TLS/cert/cipher analysis; never silently downgrade |
+| B2 | Webview (frontend) ↔ Rust core (Tauri IPC) | compromised/malicious renderer, XSS via mail content | typed commands, service-side validation + authz on every command; CSP mandatory (`csp: null` is a G5 finding); bodies/creds never cross to admin paths |
+| B3 | kiwi services ↔ SQLite / mail store | tampered DB/file, other local users | per-service DB files (ADR-003); parameterized access only; sensitive fields encrypted at rest where practical; store corruption → rebuild, never silent loss |
+| B4 | kiwi-core ↔ mobile authenticator | network attacker, cloned device | asymmetric challenge-response; QR/local-net pairing; keypair in platform keystore; revocation honored before trust |
 | B5 | kiwi-admin ↔ admin UI | unauthorized local user / CSRF | localhost-only bind; RBAC on every operation; session expiry; audited elevated actions |
-| B6 | Anything ↔ AI provider | provider, prompt injection via mail content | optional; structured-findings payload only — never credentials/message bodies; AI output never written back as a finding without deterministic re-validation |
-| B7 | Forensics ingest ↔ PCAP files | crafted packet bytes | Rust memory-safe parsing; hard caps (file size, stream count, reassembly buffers); fuzz/property tests; parse failures are findings about the input, never panics in core paths |
+| B6 | Anything ↔ AI provider | provider, prompt injection via mail content | optional; structured-findings payload only — never credentials/message bodies; AI output never a finding without deterministic re-validation |
+| B7 | Forensics ingest ↔ PCAP files | crafted packet bytes | Rust memory-safe parsing; hard caps; fuzz/property tests; parse failures are findings about input, never panics |
+| B8 | MIME/attachment handling ↔ mail content | hostile MIME, spoofed filenames, polyglots | bounded parse via `mail-parser`; nesting/size caps; filename sanitization; remote-content block (rule 12) |
 
 ## 3. Security assumptions (explicit; challenge these in review)
 
-- A1. The local OS user account is trusted to the extent of file access —
-  KIWI raises the bar for remote/network attackers and opportunistic local
+- A1. The local OS user account is trusted to file-access extent — KIWI
+  raises the bar for remote/network attackers and opportunistic local
   actors, not for a fully compromised OS (see THREAT-MODEL.md out-of-scope).
-- A2. NSS/Thunderbird TLS state is read faithfully via the narrow hooks;
-  if a hook cannot observe a value (e.g. cipher suite hidden by platform),
-  the engine reports `unknown` with reduced trust — never a guessed value.
+- A2. `TlsObservation` comes from KIWI's own rustls transport (owned code,
+  T-101) — full negotiated parameters available. If a value is genuinely
+  unavailable, report `unknown` + reduced trust, never a guess.
 - A3. The device clock is approximately correct (skew budget documented per
   protocol); expiry/replay windows depend on it.
 - A4. SQLite file permissions + OS user separation are the at-rest
   guarantee in Phase 0–1; field-level encryption is defense-in-depth.
+  OAuth refresh tokens + authenticator keys always use the OS
+  credential-manager/keystore, never SQLite plaintext.
 - A5. QR pairing happens over a physically proximate, human-verified
   channel; a photographed QR is equivalent to consent (documented UX risk).
+- A6. Tauri auto-update (if enabled later) pins signing keys and verifies
+  bundles; until then, releases are verified out-of-band.
 
 ## 4. Secure-coding checklist (all agents, enforced in review)
 
 - [ ] Input validation at every boundary: length caps, type checks, charset
       restrictions, recursion/nesting depth limits, explicit unknown-field
       policy (ignore, never fail-open on security decisions; fail-closed on
-      auth/trust paths).
+      auth/trust paths). Frontend input re-validated Rust-side (B2).
 - [ ] No secrets in logs, fixtures, commits, or docs (gitleaks gate, §6).
+      Logging helpers must redact by default — caller-discipline-only
+      loggers (kiwi-admin `createConsoleLogger` at T-115 review) need a
+      `redact()` wrapper before handling auth-adjacent paths.
 - [ ] Fixture data never from real private mail/credentials — synthetic
       only, documented generation method.
 - [ ] New dependencies justified, minimal, pinned (`Cargo.lock` /
       `package-lock.json` committed); `cargo audit` / `npm audit` at each
-      milestone.
-- [ ] Rust `unsafe` / C++ changes in `comm/` get extra reviewer scrutiny;
-      `unsafe` requires a `// SAFETY:` comment stating the invariant.
-- [ ] Error paths fail closed on trust/auth/policy decisions; error
-      messages to users never include secrets, tokens, or raw key material.
+      milestone; `publish = false` on app crates.
+- [ ] Every crate opts into `[lints] workspace = true` (inherits
+      `unsafe_code = "forbid"`); any `unsafe` needs Lead + Agent 6 sign-off
+      and a `// SAFETY:` invariant comment.
+- [ ] Error paths fail closed on trust/auth/policy decisions; UI-facing
+      errors never include secrets, tokens, or raw key material.
 - [ ] Time/comparison safety: constant-time comparison for secrets/tokens;
-      no security decision on wall-clock equality alone (allow skew window).
-- [ ] IPC/API input re-validated service-side even if the sender validated.
+      no security decision on wall-clock equality alone.
+- [ ] Credentials zeroized after use (`zeroize` in kiwi-mail — must be
+      wired into the auth paths, not merely depended on).
+- [ ] Webview: non-null CSP; no `http://` remote code in production;
+      external links open in the system browser after user action.
 
-## 5. AI security rules (prompt.md §12, binding)
+## 5. AI security rules (prompt.md §12, binding — unchanged by pivot)
 
 AI MAY: explain findings, summarize incidents, correlate findings, describe
 impact, suggest remediation, summarize re-scan diffs — always grounded in
@@ -93,24 +118,26 @@ enforcement, endpoint trust decisions.
 Hard requirements:
 
 - Every AI response about a security event must cite the underlying
-  finding/evidence IDs; UI must render the deterministic finding alongside
-  any AI text, labeled as AI-generated.
+  finding/evidence IDs; UI renders the deterministic finding alongside any
+  AI text, labeled as AI-generated.
 - When AI is disabled/unavailable, core analysis works fully (tests run
   the engine with AI stubbed off).
 - Mail bodies/credentials never enter AI payloads. Allowed payload:
-  finding IDs, rule IDs, protocol metadata (versions, cipher names),
-  remediation templates — see `docs/contracts/` AI payload schema (Lead).
-- Prompt-injection posture: email/PCAP content is untrusted and must never
-  be concatenated into AI system instructions; treat as data, quote/escape.
+  finding IDs, rule IDs, protocol metadata, remediation templates.
+- Prompt-injection posture: email/PCAP content is untrusted data, never
+  concatenated into AI system instructions.
 
 ## 6. Verification & gates (Agent 6-operated)
 
 - Secret scan: `gitleaks detect --config tests/tools/gitleaks.toml
-  --source .` (or `python tests/tools/secret_scan.py` fallback). Gate
-  blocks any task → `done` on a hit.
+  --source .` (or `python tests/tools/secret_scan.py` fallback). Blocks
+  any task → `done` on a hit.
+- Workspace gates: `cargo fmt --check`, `cargo clippy --workspace
+  --all-targets -- -D warnings`, `cargo test --workspace`; Node packages:
+  `npm run lint`, `npm run typecheck`, `npm test`.
 - Security regression: each fixed weakness keeps a permanent
-  `security_*` test (docs/TESTING.md §3, §6).
-- Review triggers (require Agent 6 + Lead sign-off): new IPC surface, new
-  crypto/key handling, new admin privileged op, changes to scoring rules,
-  any `unsafe`/NSS-touching code.
-- Residual risk is tracked in docs/THREAT-MODEL.md and reviewed each phase.
+  `security_*` test (TESTING.md §3, §5b).
+- Review triggers (Lead + Agent 6 sign-off): new IPC command, new
+  crypto/key/token handling, new admin privileged op, scoring-rule changes,
+  transport/TLS-config changes, CSP changes, any `unsafe`.
+- Residual risk tracked in THREAT-MODEL.md, reviewed each phase.

@@ -6,9 +6,11 @@ import { randomUUID } from "node:crypto";
 import { requirePermission, AuthorizationDeniedError } from "../rbac/rbac.js";
 import type { Actor, Permission } from "../rbac/rbac.js";
 import type { OrgRole } from "../types.js";
+import { TLS_VERSION_ALIASES } from "../types.js";
 import { evaluatePolicy } from "./evaluator.js";
-import type { PolicyDefinition, PolicyInput, PolicyDecision } from "./model.js";
-import { assertNonEmptyString, assertIdentifier } from "../util/validate.js";
+import type { PolicyDefinition, PolicyInput, PolicyDecision, PolicyReason } from "./model.js";
+import { REASON_CODES } from "./model.js";
+import { assertNonEmptyString, assertIdentifier, RequestValidationError } from "../util/validate.js";
 import type { RecipientDomainAction, ExternalRecipientBehavior } from "../types.js";
 
 export interface ExternalPolicyInput {
@@ -142,4 +144,108 @@ export class PolicyService {
     if (!definition) throw new Error(`policy '${id}' not found`);
     return evaluatePolicy(definition, input);
   }
+
+  /**
+   * T-108 send-path entry point. Validates untrusted caller input, loads the
+   * org's policies, and delegates to the pure evaluateOutboundForOrg core.
+   * Requires `policy.read` on the org; allowed AND denied checks are audited.
+   */
+  evaluateOutbound(
+    actor: Actor,
+    orgId: string,
+    raw: { sender: unknown; recipients: unknown; tlsVersion: unknown },
+  ): OutboundEvaluation {
+    return this.ctx.auditWrap(
+      actor,
+      orgId,
+      "policy.evaluate_outbound",
+      orgId,
+      () => {
+        const oid = assertIdentifier(orgId, "orgId");
+        const sender = assertNonEmptyString(raw.sender, "sender", 254);
+        if (!Array.isArray(raw.recipients) || raw.recipients.length === 0) {
+          throw new RequestValidationError("recipients", "expected non-empty array");
+        }
+        if (raw.recipients.length > MAX_BRIDGE_RECIPIENTS) {
+          throw new RequestValidationError("recipients", `exceeds ${MAX_BRIDGE_RECIPIENTS} entries`);
+        }
+        const recipients = raw.recipients.map((r) => assertNonEmptyString(r, "recipients[]", 254));
+        let tlsVersion: string | null = null;
+        if (raw.tlsVersion !== undefined && raw.tlsVersion !== null) {
+          if (typeof raw.tlsVersion !== "string") throw new RequestValidationError("tlsVersion", "expected string");
+          const normalized = TLS_VERSION_ALIASES[raw.tlsVersion.trim().toLowerCase()];
+          if (!normalized) throw new RequestValidationError("tlsVersion", "unrecognized TLS version");
+          tlsVersion = normalized;
+        }
+        const definitions: PolicyDefinition[] = this.repos.policies.listPoliciesForOrg(oid).map((row) => ({
+          id: row.id,
+          enabled: row.enabled === 1,
+          minTls: row.min_tls,
+          externalRecipients: row.external_recipients,
+          domainRules: this.repos.policies.listDomainRules(row.id),
+        }));
+        return evaluateOutboundForOrg(oid, definitions, sender, recipients, tlsVersion);
+      },
+      "policy.read",
+    );
+  }
 }
+
+export interface OutboundRecipientResult {
+  recipient: string;
+  verdict: "allow" | "warn" | "block";
+  reasons: PolicyReason[];
+  /** Worst-policy id, or null when the org has no enabled policy. */
+  policyId: string | null;
+}
+
+export interface OutboundEvaluation {
+  orgId: string;
+  /** Worst verdict across recipients — the send path blocks when ANY is block. */
+  overall: "allow" | "warn" | "block";
+  results: OutboundRecipientResult[];
+}
+
+const VERDICT_RANK = { allow: 0, warn: 1, block: 2 } as const;
+
+/**
+ * T-108 send-path bridge. Evaluates an outbound send attempt against ALL
+ * enabled policies of the org (worst verdict wins per recipient) and returns
+ * per-recipient results for the composer banner (KIWI-UI-007) plus an overall
+ * send/no-send verdict for kiwi-mail's send path. Pure core — no I/O, no AI.
+ *
+ * Advisory only — see admin-api.md §5.3 honest-enforcement limitation.
+ */
+export function evaluateOutboundForOrg(
+  orgId: string,
+  policies: PolicyDefinition[],
+  sender: string,
+  recipients: string[],
+  tlsVersion: string | null,
+): OutboundEvaluation {
+  const enabled = policies.filter((p) => p.enabled);
+  const results: OutboundRecipientResult[] = recipients.map((recipient) => {
+    if (enabled.length === 0) {
+      return { recipient, verdict: "allow", reasons: [{ code: REASON_CODES.NO_POLICY_ENABLED }], policyId: null };
+    }
+    const decisions = enabled.map((p) => evaluatePolicy(p, { direction: "outbound", sender, recipient, tlsVersion }));
+    let worst = decisions[0]!;
+    for (const d of decisions) {
+      if (VERDICT_RANK[d.verdict] > VERDICT_RANK[worst.verdict]) worst = d;
+    }
+    return {
+      recipient,
+      verdict: worst.verdict,
+      reasons: worst.reasons,
+      policyId: worst.evaluatedPolicyId,
+    };
+  });
+  let overall: OutboundEvaluation["overall"] = "allow";
+  for (const r of results) {
+    if (VERDICT_RANK[r.verdict] > VERDICT_RANK[overall]) overall = r.verdict;
+  }
+  return { orgId, overall, results };
+}
+
+/** Max recipients per send-path evaluation (bounded untrusted input). */
+const MAX_BRIDGE_RECIPIENTS = 256;

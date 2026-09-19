@@ -40,6 +40,15 @@ export interface PolicyRuleRepository {
   } | undefined;
   addDomainRule(policyId: string, domain: string, action: RecipientDomainAction): void;
   listDomainRules(policyId: string): { domain: string; action: RecipientDomainAction }[];
+  /** All policies of an org (T-108 send-path bridge evaluates the enabled ones). */
+  listPoliciesForOrg(orgId: string): {
+    id: string;
+    org_id: string;
+    name: string;
+    enabled: number;
+    min_tls: string | null;
+    external_recipients: ExternalRecipientBehavior;
+  }[];
 }
 
 export interface MailflowRepository {

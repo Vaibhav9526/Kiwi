@@ -1,6 +1,7 @@
 # Contract — kiwi-admin API (org / policy / mailflow / audit)
 
-> Owner: Agent 4 · **Contract version: 1** · Status: draft (T-004)
+> Owner: Agent 4 · **Contract version: 1.1** (T-108/T-109 bridge+emitter added
+> by Agent 5 under handoff; **Lead-reviewed 2026-09-19 — approved**) · Status: active
 > Implemented by `kiwi-admin/` (Node + TypeScript). Reference implementation:
 > `src/services.ts` (service layer) + `src/policy/evaluator.ts` (deterministic
 > evaluator). The REST transport is layered over these services; the endpoint
@@ -55,7 +56,8 @@ metadata ingest); kiwi-admin ↔ kiwi-core (device/session identity, Phase 3+).
 | `PUT /api/v1/orgs/{orgId}/users/{userId}/role` | `OrgService.grantRole` | `user.role.grant` | |
 | `POST /api/v1/devices/{deviceId}/revoke` | `OrgService.revokeDevice` | `device.revoke` | |
 | `POST /api/v1/orgs/{orgId}/policies` | `PolicyService.createPolicy` | `policy.write` | body = PolicyObject minus id |
-| `POST /api/v1/policies/{policyId}/evaluate` | `PolicyService.evaluate` | `policy.read` on owning org | deterministic; called by compose-send hook |
+| `POST /api/v1/policies/{policyId}/evaluate` | `PolicyService.evaluate` | `policy.read` on owning org | deterministic; single-policy check |
+| `POST /api/v1/orgs/{orgId}/policies/evaluate-outbound` | `PolicyService.evaluateOutbound` | `policy.read` on the org | T-108 send-path bridge; see §10 |
 | `POST /api/v1/mailflow/events` | `MailflowService.ingest` | `mailflow.ingest` | MailflowEvent schema §6 |
 | `GET  /api/v1/mailflow/events` | `MailflowService.query` | `mailflow.read` | filters: org, recipient domain, ts range, limit ≤ 1000 |
 | `GET  /api/v1/audit` | `AuditService.query` | `audit.read` | filters: org, ts range, limit ≤ 1000 |
@@ -209,7 +211,70 @@ represent a client-side block as complete organizational enforcement.
 | `tests/rbac.test.ts` | role permission matrix, cross-org denial, negative cases, denials audited |
 | `tests/audit.chain.test.ts` | chaining, tamper detection (field edit), deletion detection (replay), canonical hashing, strict input parsing |
 | `tests/services.test.ts` | service-level RBAC + audit wiring, policy determinism through service, mailflow metadata-only ingest, chain verification |
+| `tests/policy.bridge.test.ts` (T-108) | org worst-wins per-recipient verdicts, min-TLS block, alias normalization, no-policy allow, cross-org denial audited, input validation, core determinism |
+| `tests/mailflow.emitter.test.ts` (T-109) | per-recipient expansion, metadata-only keys, unknown-defaulting, ingest round-trip, end-to-end service ingest, inbound builder |
 
-Run: `npm run typecheck && npm test` (34 tests, all passing at T-004 close).
+Run: `npm run typecheck && npm test` (46 tests, all passing at T-108/T-109 close).
+
+## 10. Send-path bridge — T-108 (kiwi-mail send path ↔ kiwi-admin)
+
+The compose-send hook (kiwi-mail, Agent 2) consults the bridge BEFORE
+transmission; the frontend composer banner (KIWI-UI-007) renders the
+per-recipient results. Wire shape:
+
+```json
+// POST /api/v1/orgs/{orgId}/policies/evaluate-outbound  (permission: policy.read)
+{ "sender": "alice@acme.test", "recipients": ["b@partner.example"], "tlsVersion": "tls1.3" }
+// → 200
+{
+  "orgId": "org-…",
+  "overall": "allow | warn | block",
+  "results": [
+    { "recipient": "b@partner.example", "verdict": "allow",
+      "reasons": [{ "code": "recipient-domain-allowed", "detail": "partner.example" }],
+      "policyId": "pol-…" }
+  ]
+}
+```
+
+Rules (implemented by `PolicyService.evaluateOutbound` over the pure core
+`evaluateOutboundForOrg` in `src/policy/services.ts`):
+
+- Input validated as untrusted: org/user/address identifiers, 1–256
+  recipients, TLS label via canonical aliases (unknown label → 400
+  `validation.failed`, never silent allow-on-typo).
+- All ENABLED policies of the org evaluate each recipient (§5.2 order);
+  worst verdict wins per recipient; `overall` is worst across recipients —
+  the send path must not transmit when ANY recipient is `block`.
+- No enabled policies → per-recipient `allow` with reason
+  `no-policy-enabled` (documented, auditable — not silent).
+- Allowed AND denied checks are audited (`policy.evaluate_outbound`).
+- Advisory only (§5.3 honest-enforcement): a `block` stops the local client;
+  gateway/relay enforcement is out of scope for v1.
+- kiwi-mail side (Agent 2): call with the OBSERVED transport TLS of the
+  sending connection (`tlsVersion: null` when unobserved — warns, never
+  blocks, per §5.2); on bridge unreachable, fail closed for send (hold in
+  outbox, banner "Policy check unavailable").
+
+## 11. Mail-flow emitter — T-109 (client → kiwi-admin ingest)
+
+After the bridge verdict is known and the SMTP result is known, the client
+emits send-attempt facts; after receive sync it emits received facts. Pure
+builders in `src/mailflow/emitter.ts`; transport is `MailflowService.ingest`
+(§3, permission `mailflow.ingest`); schema is §6 (metadata only).
+
+- `buildSendAttemptEvents({ orgId, sender, perRecipient: [{ recipient, policyVerdict }], tlsVersion, securityStatus?, messageId?, ts })`
+  → one outbound wire event per recipient. `policyVerdict` comes from the
+  §10 bridge result; attempts are recorded regardless of delivery outcome
+  (v1 stores advisory verdict, not delivery status).
+- `buildReceivedEvent({ orgId | null, sender, recipient, tlsVersion, securityStatus?, messageId?, ts })`
+  → one inbound wire event per received message (`policy_verdict: "unknown"`).
+- Builder output is re-validated by `parseMailflowIngest` on ingest — the
+  emitter never bypasses validation (round-trip proven in tests).
+- Emission points (kiwi-mail, Agent 2): post-send-attempt (all recipients of
+  the attempt) and post-receive-sync (per message). Failures to emit must not
+  fail delivery; queue-and-retry locally.
+- `security_status` reflects OBSERVED transport/findings only; builders
+  default it to `"unknown"` — never inferred from the policy verdict.
 
 

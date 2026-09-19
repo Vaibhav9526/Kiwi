@@ -69,3 +69,56 @@
   send-blocking (S-07) and lock overlay (S-05) need Agent 2/4 semantics
   before implementation (queued as T-014).
 
+## 2026-09-19 — T-112 scaffold done; T-004 verified; T-108/T-109 done (Lead review pending)
+
+- **Status:** T-112 complete (vite build green). Agent 4 handoff absorbed:
+  kiwi-admin verified (34/34 inherited green, typecheck clean, no secrets —
+  T-004 completion attested), T-108 bridge + T-109 emitter implemented
+  (46/46 green). `src-tauri/` untouched (Lead owns). `images/` read-only.
+- **Files changed — kiwi-app/src (T-112, new unless noted):**
+  - `theme.css` — light/dark tokens from `images/` palette, severity pills,
+    banners, dialogs, focus rings, reduced-motion.
+  - `kiwi.ts` — Severity/TrustState/Account/Message/Finding/Event types +
+    label/glyph helpers (never color-only).
+  - `ipc.ts` — typed `api` wrappers (`kiwi_ping/list_accounts/security_status`)
+    with unknown-tolerant parsing + demo fallback outside the webview.
+  - `router.ts` — dependency-free hash router + `useRoute`.
+  - `mock.ts` — demo accounts/messages/findings/events (demo-badged only).
+  - `components/chrome.tsx` — AppShell, TopBar (search/Ctrl+K, theme, TrustChip→002),
+    Sidebar (folder tree 014, unified inbox 015, accounts, nav).
+  - `components/security.tsx` — SecurityPill (001), PolicyBanner (007),
+    FindingDialog (004), LockOverlay (005), AuthenticatorDialog (006).
+  - `views/mailbox.tsx` (015/016/017+S-01), `views/compose.tsx`
+    (018+021+022+007 demo policy), `views/setup.tsx` (019, 4-step + plaintext
+    consent + verify), `views/settings.tsx` (023+003 stub+022 CRUD),
+    `views/security-center.tsx` (010, filters + JSON export).
+  - `App.tsx` (rewrote Lead stub — kept `kiwi_ping` probe, added trust/accounts
+    probe, theme, Ctrl+K, dialog orchestration, demo auto-approve labeled),
+    `main.tsx` + `index.html` (theme import, title/meta).
+- **Files changed — kiwi-admin (T-108/T-109):**
+  - `src/db/interfaces.ts` + `src/db/sqlite-org.ts` — `listPoliciesForOrg`.
+  - `src/policy/services.ts` — `evaluateOutboundForOrg` pure core +
+    `PolicyService.evaluateOutbound` (validated, RBAC `policy.read`, audited).
+  - `src/mailflow/emitter.ts` (new) — `buildSendAttemptEvents` /
+    `buildReceivedEvent` pure builders, metadata-only, re-validated on ingest.
+  - `tests/policy.bridge.test.ts` + `tests/mailflow.emitter.test.ts` (new, 12 tests).
+  - `docs/contracts/admin-api.md` — v1.1: bridge endpoint row, §10 bridge
+    contract, §11 emitter contract, test map (34→46). **Lead review pending**
+    (per contract rule; DECISIONS.md untouched — Lead-owned).
+- **Commands run:** `npm run typecheck` + `npm test` in kiwi-admin (clean,
+  46/46); `npm run build` in kiwi-app (tsc strict + vite, 40 modules, green);
+  rg secret-scan on kiwi-admin src+tests (only a rule-6 comment hit).
+- **Tests:** kiwi-admin 46/46 (6 files); kiwi-app `npm run build` green
+  (no test runner in scaffold — noted for Agent 6 T-113/T-115).
+- **Assumptions:** bridge `overall=block` ⇒ send path holds (Agent 2 wires
+  call + fail-closed on bridge unreachable); emitter queue-and-retry on
+  ingest failure (Agent 2); no-policy org ⇒ allow+`no-policy-enabled` (matches
+  evaluator semantics for disabled policies).
+- **Risks / needs:** (1) admin-api v1.1 needs Lead review sign-off.
+  (2) Frontend demo policy/banner logic is LOCAL stub — replaced by T-108
+  bridge data when IPC lands. (3) kiwi-admin audit-log DB-level tamper guard
+  still open (contract §7 known gap — Lead queue). (4) Agent 4 on resume acts
+  as reviewer only until Lead re-clears (per handoff §8).
+- **Next:** bind views to real kiwi-mail IPC as Agent 2 lands T-101…T-106;
+  composer banner → bridge verdicts; Security views → forensics events.
+

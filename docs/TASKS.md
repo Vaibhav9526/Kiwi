@@ -12,7 +12,7 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 |----|-------|-------|--------|-------------------|------------|
 | T-001 | ~~Build unmodified Thunderbird~~ — abandoned by pivot (ADR-005); checkout kept as reference | Lead | done (n/a) | `source/` | — |
 | T-002 | Security session model + trust engine; kiwi-core crate | Agent 2 (Devin) | in-review (32 tests green) | `kiwi-core/`, `docs/contracts/security-session.md` | — |
-| T-003 | Forensics engine: model, findings/evidence, rules, PCAP ingest, scoring | ~~Agent 3~~ → Agent 6 (handoff: daily quota limit, AGENT_HANDOFF.md) | in-progress | `kiwi-forensics/`, `docs/contracts/forensics.md` | — |
+| T-003 | Forensics engine: model, findings/evidence, rules, live adapter, report, contract | ~~Agent 3~~ → Agent 6 | in-progress (70 tests green; analyzers/pcap remain — Agent 3 resumes on quota reset) | `kiwi-forensics/`, `docs/contracts/forensics.md` | — |
 | T-004 | Org/policy model + kiwi-admin service scaffold | ~~Agent 4~~ → Agent 5 (handoff: repeated timeouts, see AGENT_HANDOFF.md) | in-progress | `kiwi-admin/`, `docs/contracts/admin-api.md` | — |
 | T-005 | UI spec + surface registry (rework for standalone app) | Agent 5 (OpenCode #1) | in-review → new task T-020 | `docs/ui-spec.md`, `docs/contracts/ui-surfaces.md` | — |
 | T-006 | Testing/Security/Threat-model docs; fixture catalog; gates; lint baseline | Agent 6 (OpenCode #2) | in-review | `docs/TESTING.md`, `docs/SECURITY.md`, `docs/THREAT-MODEL.md`, `tests/` | — |
@@ -24,14 +24,14 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 |----|-------|-------|--------|-------------------|------------|
 | T-100 | Cargo workspace + kiwi-mail skeleton + crate contracts | Lead | done | `Cargo.toml`, `kiwi-mail/` | — |
 | T-101 | kiwi-mail `transport`: TCP+rustls, TlsObservation capture, SocketSecurity modes, STARTTLS upgrade path | Agent 2 | open | `kiwi-mail/src/transport.rs` | T-100 |
-| T-102 | kiwi-mail `smtp`: EHLO/STARTTLS/AUTH(PLAIN,LOGIN,XOAUTH2)/MAIL/RCPT/DATA + send queue (undo-send/send-later hooks) | Agent 2 | open | `kiwi-mail/src/smtp.rs` | T-101 |
+| T-102 | kiwi-mail `smtp`: EHLO/STARTTLS/AUTH/MAIL/RCPT/DATA + send-queue hooks | Agent 2 | in-review (41 mail tests green incl. real STARTTLS e2e) | `kiwi-mail/src/smtp.rs` | T-101 |
 | T-103 | kiwi-mail `imap`: LOGIN/AUTHENTICATE, SELECT, FETCH envelope+bodystructure, UID sync primitives, IDLE | Agent 2 | open | `kiwi-mail/src/imap.rs` | T-101 |
 | T-104 | kiwi-mail `pop3`: USER/PASS/APOP, LIST/UIDL/RETR/DELE, STLS | Agent 2 | open | `kiwi-mail/src/pop3.rs` | T-101 |
 | T-105 | kiwi-mail `account` + `store`: account model, SQLite mail schema, body/attachment storage | Agent 2 | open | `kiwi-mail/src/{account,store}.rs` | — |
 | T-106 | kiwi-mail `sync` + `mime`: folder sync engine, MIME parse boundary | Agent 2 | open | `kiwi-mail/src/{sync,mime}.rs` | T-105 |
 | T-107 | kiwi-forensics `live` module: `TlsObservation` → `ConnectionSecurityEvent` adapter | Agent 6 (reassigned from Agent 3) | open | `kiwi-forensics/` | T-003, T-101 |
-| T-108 | Policy enforcement bridge: kiwi-admin policy evaluator consulted by kiwi-mail send path (recipient-domain rules) | Agent 5 (reassigned from Agent 4) | open | `kiwi-admin/`, `docs/contracts/admin-api.md` | T-004 |
-| T-109 | Mail-flow metadata emitter contract: client → kiwi-admin ingest events (no bodies) | Agent 5 (reassigned from Agent 4) | open | `docs/contracts/admin-api.md` | T-004 |
+| T-108 | Policy enforcement bridge: evaluate-outbound endpoint + contract §10 | Agent 5 | done (46/46 npm; contract v1.1 Lead-approved) | `kiwi-admin/`, `docs/contracts/admin-api.md` | T-004 |
+| T-109 | Mail-flow emitter: builders + ingest re-validation + contract §11 | Agent 5 | done (contract v1.1 Lead-approved) | `docs/contracts/admin-api.md` | T-004 |
 | T-110 | kiwi-app scaffold: Tauri 2 + Vite + React + TS shell; typed IPC command layer stub | Lead | done | `kiwi-app/` | — |
 | T-111 | Standalone UI spec v2: mailbox/composer/accounts/settings + security surfaces + Mailspring features (unified inbox, snooze, send later, undo send, templates) | Agent 5 | open | `docs/ui-spec.md` (rewrite), `docs/contracts/ui-surfaces.md` | — |
 | T-112 | Frontend scaffold: React app structure in `kiwi-app/` — routes, layout shell, theme tokens from `images/` palette | Agent 5 | unblocked (T-110 done) | `kiwi-app/` (frontend dirs) | T-110, T-111 |

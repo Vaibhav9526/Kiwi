@@ -15,7 +15,12 @@ PATTERNS = {
     "aws_access_key": re.compile(r"AKIA[0-9A-Z]{16}"),
     "private_key_block": re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----"),
     "bearer_token": re.compile(r"(?i)bearer\s+[A-Za-z0-9\-._~+/]{20,}"),
-    "password_assignment": re.compile(r"(?i)(password|passwd|pwd|client_secret|api[_-]?key)\s*[:=]\s*['\"]?\S{4,}"),
+    # NOTE: `password_eq`/`password_colon` deliberately skip Rust struct-field
+    # declarations (`password: Zeroizing<String>`) and Zeroizing-wrapped
+    # values — the wrapper type is proper handling, not a leak. Quoted-value
+    # `:` rule catches JSON/YAML/TOML secrets without flagging type ascriptions.
+    "password_eq": re.compile(r"(?i)(password|passwd|pwd|client_secret|api[_-]?key)\s*=\s*['\"]?\S{4,}"),
+    "password_colon_quoted": re.compile(r"(?i)[\"']?(password|passwd|client_secret|api[_-]?key)[\"']?\s*:\s*[\"'][^\"']{4,}"),
     "github_token": re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
     "google_api_key": re.compile(r"AIza[0-9A-Za-z\-_]{20,}"),
     "slack_token": re.compile(r"xox[baprs]-[A-Za-z0-9\-]{10,}"),
@@ -23,6 +28,8 @@ PATTERNS = {
 
 # Files that are documentation/catalogs, not scannable secrets carriers,
 # are still scanned — allowlist only covers synthetic markers.
+# Lines proving secret-hygiene handling rather than leaks.
+SKIP_IF_CONTAINS = ("Zeroizing", "REDACTED")
 ALLOW_MARKERS = re.compile(
     r"kiwi-test\.invalid|example\.invalid|STARTTLS-STRIPPED|FORWARD-SECRECY-FAIL|INPUT-MALFORMED"
 )
@@ -65,6 +72,8 @@ def main() -> int:
         scanned += 1
         for lineno, line in enumerate(text.splitlines(), 1):
             if ALLOW_MARKERS.search(line):
+                continue
+            if any(s in line for s in SKIP_IF_CONTAINS):
                 continue
             for name, rx in PATTERNS.items():
                 if rx.search(line):

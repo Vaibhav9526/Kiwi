@@ -81,3 +81,67 @@ verified green.
 5. No secrets in code/tests/docs: fixture actors use `*.test` example
    domains; no credentials anywhere (verified by reading all files).
 
+---
+
+## 2026-09-19 — REASSIGNED: T-004 completion, T-108, T-109 → Agent 5 (temporary)
+
+**Status:** `paused / standby-reviewer`. Per Lead + `docs/AGENT_HANDOFF.md`
+(HANDOFF T-004/T-108/T-109 — repeated inference timeouts). I make **no edits**
+to `kiwi-admin/` or `docs/contracts/admin-api.md` until Lead re-clears me
+(prompt.md §8 conflict rule). My only writes are this status file.
+
+### Correction to the handoff record (for Agent 5 + Lead)
+
+The AGENT_HANDOFF.md entry says compile/test state "unverified / tests
+unknown". **That is now superseded** — before standing down I ran read-only
+verification (no source edits):
+
+- `cd kiwi-admin && npx tsc --noEmit` → **0 errors** (strict).
+- `cd kiwi-admin && npx vitest run` → **4 files / 34 tests passed** (526 ms)
+  — rbac 9, audit.chain 5, policy.evaluator 13, services 7.
+
+Agent 5 inherits a **green baseline**, not an unknown one. T-004 deliverables
+are complete as described in my T-004 entry above; my `in-review` status
+stands (Agent 6/Lead still hold `done` authority).
+
+### What T-108/T-109 need (design notes carried over — nothing in code yet)
+
+Contract v1 already reserves both seams; Agent 5 should implement server-side
+against `createServiceContainer()`:
+
+- **T-108 (policy bridge, server side):** endpoint
+  `POST /api/v1/policies/{policyId}/evaluate` → `PolicyService.evaluate`
+  (`src/policy/services.ts`, pure `evaluatePolicy`, reason codes in
+  `src/policy/model.ts`, semantics in contract §5). Open design decisions
+  needing **Lead sign-off** before Agent 5 codes them:
+  1. **Machine-actor model.** RBAC v1 is human-role based
+     (org_admin/security_admin/viewer). The kiwi-mail send path needs an
+     actor with `policy.read` (evaluate) + `mailflow.ingest`. Options:
+     (a) dedicated `service` role (RBAC matrix change → contract v2), or
+     (b) bind a platform-scoped actor per device from the `devices` table.
+     Do NOT shoe-horn a human role for a machine principal.
+  2. **Audit policy for evaluate.** v1 audits mutations + denials. Decide:
+     are *allowed* evaluations audited too? (block/warn decisions are
+     high-value forensic evidence; but every send would grow the chain —
+     possible compromise: audit only warn/block outcomes + all denials.)
+  3. **Failure semantics.** If kiwi-admin is unreachable, kiwi-mail must
+     fail closed or fail open **per org policy** — that choice belongs in
+     the contract, decided by Lead, not improvised client-side.
+- **T-109 (mail-flow ingest):** endpoint `POST /api/v1/mailflow/events` →
+  `MailflowService.ingest` (`src/mailflow/services.ts`; strict parser
+  `parseMailflowIngest` already enforces metadata-only + org_id required for
+  outbound + canonical TLS labels). Considered schema change for Agent 5 to
+  propose: idempotency via `UNIQUE(org_id, message_id, direction)` to dedupe
+  client retries (migration **v2**, sequential migrations make this safe).
+  Hard rule unchanged: **no body/subject/content fields anywhere**
+  (prompt.md §6; unknown fields are already dropped, not stored).
+
+### Reviewer/backup duties while reassigned (read-only)
+
+When Agent 5 lands changes I will review against: strict validation at every
+boundary; audit on every mutation and denial; `verify()` chain still green;
+no body/secret fields; evaluator still pure/deterministic; migrations remain
+sequential and append-only; tests green (`tsc --noEmit` + `vitest run`).
+
+No further entries until I resume or review.
+

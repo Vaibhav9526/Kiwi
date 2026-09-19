@@ -1,0 +1,24 @@
+# Synthetic POP3 retrieve. Wire is CRLF; password is a dummy.
+S: +OK fake.kiwi-test.invalid POP3 FakeKIWI
+C: USER test-user@kiwi-test.invalid
+S: +OK send PASS
+C: PASS REDACTED-DUMMY
+S: +OK logged in, 1 message
+C: LIST
+S: +OK 1 message (320 octets)
+S: 1 320
+S: .
+C: UIDL
+S: +OK
+S: 1 FAKEUID0001
+S: .
+C: RETR 1
+S: +OK 320 octets
+S: From: alice@kiwi-test.invalid
+S: To: bob@kiwi-test.invalid
+S: Subject: synthetic hello
+S:
+S: Hello from the fixture.
+S: .
+C: QUIT
+S: +OK FakeKIWI signing off

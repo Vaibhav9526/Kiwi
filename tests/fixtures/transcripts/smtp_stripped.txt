@@ -1,0 +1,9 @@
+# Synthetic STARTTLS stripping: server omits the extension on a
+# TLS-expected session. Wire is CRLF.
+S: 220 fake.kiwi-test.invalid ESMTP FakeKIWI
+C: EHLO client.kiwi-test.invalid
+S: 250-fake.kiwi-test.invalid
+S: 250-AUTH PLAIN LOGIN
+S: 250 SIZE 10485760
+# No 250-STARTTLS line: client must emit STARTTLS-STRIPPED evidence and
+# refuse-or-warn per policy, never proceed silently in plaintext.

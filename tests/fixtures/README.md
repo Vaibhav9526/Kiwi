@@ -55,6 +55,14 @@ MANIFEST `generation` field when created.
 (header injection attempts), `attachment-spoofed-ext.eml`,
 `oversize-headers.eml` (cap test). Bodies are lorem-style filler.
 
+## Transcript fixtures (T-114; PRESENT)
+
+`transcripts/<proto>_<scenario>.txt` — hand-written synthetic protocol
+sessions (`C:`/`S:` lines; wire is CRLF). Replayed by the `kiwi-mail`
+fake-server harness for deterministic state-machine tests. AUTH secrets are
+dummies (`REDACTED-DUMMY` or base64 of fake values). See
+`tests/mail-server-strategy.md` for the full catalog table.
+
 ## Rules
 
 1. No real addresses, credentials, tokens, or private content — checker

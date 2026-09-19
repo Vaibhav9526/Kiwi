@@ -18,12 +18,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from secret_scan import PATTERNS  # noqa: E402
 
-SUITES = {"pcap", "cert", "message"}
+SUITES = {"pcap", "cert", "message", "transcript"}
 STATUSES = {"planned", "present"}
 NAME_RX = {
     "pcap": re.compile(r"^pcap/(smtp|imap|pop3)_(plaintext|starttls|implicit-tls|stripped)_(notls|tls12|tls13)(_[a-z0-9-]+)?\.pcapng$"),
     "cert": re.compile(r"^certs/[a-z0-9-]+\.pem$"),
     "message": re.compile(r"^messages/[a-z0-9-]+\.eml$"),
+    "transcript": re.compile(r"^transcripts/(smtp|imap|pop3)_[a-z0-9_-]+\.txt$"),
 }
 SINGLE_CAP = 5 * 1024 * 1024
 TOTAL_CAP = 100 * 1024 * 1024
