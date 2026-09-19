@@ -13,7 +13,7 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-001 | ~~Build unmodified Thunderbird~~ — abandoned by pivot (ADR-005); checkout kept as reference | Lead | done (n/a) | `source/` | — |
 | T-002 | Security session model + trust engine; kiwi-core crate | Agent 2 (Devin) | in-review (32 tests green) | `kiwi-core/`, `docs/contracts/security-session.md` | — |
 | T-003 | Forensics engine: model, findings/evidence, rules, PCAP ingest, scoring | Agent 3 (Cline DeepSeek) | in-progress | `kiwi-forensics/`, `docs/contracts/forensics.md` | — |
-| T-004 | Org/policy model + kiwi-admin service scaffold | Agent 4 (Cline GLM) | in-progress | `kiwi-admin/`, `docs/contracts/admin-api.md` | — |
+| T-004 | Org/policy model + kiwi-admin service scaffold | ~~Agent 4~~ → Agent 5 (handoff: repeated timeouts, see AGENT_HANDOFF.md) | in-progress | `kiwi-admin/`, `docs/contracts/admin-api.md` | — |
 | T-005 | UI spec + surface registry (rework for standalone app) | Agent 5 (OpenCode #1) | in-review → new task T-020 | `docs/ui-spec.md`, `docs/contracts/ui-surfaces.md` | — |
 | T-006 | Testing/Security/Threat-model docs; fixture catalog; gates; lint baseline | Agent 6 (OpenCode #2) | in-review | `docs/TESTING.md`, `docs/SECURITY.md`, `docs/THREAT-MODEL.md`, `tests/` | — |
 | T-007 | ~~Thunderbird source map~~ — superseded; TB now read-only reference | Lead | done (n/a) | `docs/ARCHITECTURE.md` §5 | — |
@@ -30,11 +30,11 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-105 | kiwi-mail `account` + `store`: account model, SQLite mail schema, body/attachment storage | Agent 2 | open | `kiwi-mail/src/{account,store}.rs` | — |
 | T-106 | kiwi-mail `sync` + `mime`: folder sync engine, MIME parse boundary | Agent 2 | open | `kiwi-mail/src/{sync,mime}.rs` | T-105 |
 | T-107 | kiwi-forensics: consume live `SecuritySession`/`TlsObservation` events (in addition to PCAP) — analyzer adapter | Agent 3 | open | `kiwi-forensics/` | T-003, T-101 |
-| T-108 | Policy enforcement bridge: kiwi-admin policy evaluator consulted by kiwi-mail send path (recipient-domain rules) | Agent 4 | open | `kiwi-admin/`, `docs/contracts/admin-api.md` | T-004 |
-| T-109 | Mail-flow metadata emitter contract: client → kiwi-admin ingest events (no bodies) | Agent 4 | open | `docs/contracts/admin-api.md` | T-004 |
+| T-108 | Policy enforcement bridge: kiwi-admin policy evaluator consulted by kiwi-mail send path (recipient-domain rules) | Agent 5 (reassigned from Agent 4) | open | `kiwi-admin/`, `docs/contracts/admin-api.md` | T-004 |
+| T-109 | Mail-flow metadata emitter contract: client → kiwi-admin ingest events (no bodies) | Agent 5 (reassigned from Agent 4) | open | `docs/contracts/admin-api.md` | T-004 |
 | T-110 | kiwi-app scaffold: Tauri 2 + Vite + React + TS shell; typed IPC command layer stub | Lead | done | `kiwi-app/` | — |
 | T-111 | Standalone UI spec v2: mailbox/composer/accounts/settings + security surfaces + Mailspring features (unified inbox, snooze, send later, undo send, templates) | Agent 5 | open | `docs/ui-spec.md` (rewrite), `docs/contracts/ui-surfaces.md` | — |
-| T-112 | Frontend scaffold: React app structure in `kiwi-app/` — routes, layout shell, theme tokens from `images/` palette | Agent 5 | open | `kiwi-app/` (frontend dirs) | T-110, T-111 |
+| T-112 | Frontend scaffold: React app structure in `kiwi-app/` — routes, layout shell, theme tokens from `images/` palette | Agent 5 | unblocked (T-110 done) | `kiwi-app/` (frontend dirs) | T-110, T-111 |
 | T-113 | Update TESTING/SECURITY/THREAT-MODEL for standalone architecture; add client-layer test matrix (send/receive/compose/folders/attachments/offline/lock) | Agent 6 | open | `docs/` | T-006 |
 | T-114 | Local test mail server strategy (in-process fake vs mailpit) + fixtures for SMTP/IMAP/POP3 transcripts | Agent 6 | open | `tests/fixtures/`, `tests/tools/` | — |
 | T-115 | Quality-gate review of kiwi-core + kiwi-forensics + kiwi-admin scaffolds (G1–G11) | Agent 6 | open | review only | T-002..T-004 |
