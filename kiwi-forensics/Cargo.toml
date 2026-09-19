@@ -1,0 +1,20 @@
+[package]
+name = "kiwi-forensics"
+version = "0.1.0"
+edition = "2024"
+description = "KIWI forensics engine: bounded PCAP ingest, mail-protocol analyzers, deterministic TLS/certificate/cipher rule engine and scoring. Works with no AI and no network access."
+publish = false
+
+# Dependency policy (prompt.md §15, docs/SECURITY.md):
+#   * minimal, pinned, security-relevant crates only;
+#   * no native/libpcap dependency (Windows-friendly, no C toolchain needed);
+#   * capture-file parsing is implemented in-crate with hard bounds so that
+#     untrusted PCAP bytes can never drive unbounded allocation.
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+
+[lints.rust]
+# Security-sensitive parsing of untrusted input: no unsafe code anywhere.
+unsafe_code = "forbid"

@@ -1,0 +1,23 @@
+# gitleaks config for KIWI (Agent 6-owned mirror).
+# Canonical usage once gitleaks is installed:
+#   gitleaks detect --config tests/tools/gitleaks.toml --source . --verbose
+# Install on Windows: choco install gitleaks  (or GitHub release binary).
+# Until installed, tests/tools/secret_scan.py enforces the same baseline.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "KIWI synthetic test markers — never real secrets"
+paths = [
+  '''tests/fixtures/README\.md$''',
+  '''tests/fixtures/MANIFEST\.json$''',
+  '''docs/.*\.md$''',
+]
+regexes = [
+  '''kiwi-test\.invalid''',
+  '''example\.invalid''',
+  '''STARTTLS-STRIPPED''',
+  '''FORWARD-SECRECY-FAIL''',
+  '''INPUT-MALFORMED''',
+]

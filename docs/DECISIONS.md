@@ -36,3 +36,20 @@
   file — keeps service independence and lets Postgres adoption happen
   per-service. All persistence behind repository/DAO interfaces.
 - **Consequences:** Cross-service queries go through service APIs, not joins.
+
+## ADR-004 — Source checkout at `D:\kiwi-src` + directory junction
+
+- **Date:** 2026-09-19 · **Status:** accepted · **By:** Lead
+- **Context:** mach refuses to run in a checkout whose path contains a space
+  (`build/mach_initialize.py::check_for_spaces`). The workspace path
+  `D:\Hackathon\PROJECTS\Kiwi Mail` has a space and is fixed.
+- **Decision:** Moved the checkout to `D:\kiwi-src` (space-free) and created
+  an NTFS directory junction `D:\Hackathon\PROJECTS\Kiwi Mail\source` →
+  `D:\kiwi-src` so the workspace layout in ARCHITECTURE.md still holds.
+  All mach commands run against `D:\kiwi-src` (realpath).
+  MozillaBuild shell invocation for builds:
+  `C:\mozilla-build\msys2\usr\bin\bash.exe -lc` with env
+  `MOZILLABUILD=C:\mozilla-build`, `HOME/USERPROFILE=C:\Users\VAIBHAV`,
+  `PATH=/c/mozilla-build/python3:/c/mozilla-build/bin:$PATH`.
+- **Consequences:** Build objdir lands in `D:\kiwi-src\obj-*`. `source/`
+  stays gitignored in the project repo.

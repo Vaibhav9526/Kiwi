@@ -17,6 +17,12 @@ target/
 *.db-journal
 *.sqlite*
 
+# Python
+__pycache__/
+
+# Scratch
+err.txt
+
 # OS / editor
 Thumbs.db
 .DS_Store

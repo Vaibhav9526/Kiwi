@@ -85,24 +85,33 @@ per-service schema namespaces — decided in DECISIONS.md ADR-003. All storage
 access behind repository interfaces so Postgres can be substituted later.
 No message bodies in admin/analytics stores by default.
 
-## 5. Thunderbird source map — PENDING (task T-007)
+## 5. Thunderbird source map (task T-007, initial pass)
 
-Blocked on source checkout completing (clone in progress, see DECISIONS.md
-ADR-001). Target areas to map once `source/comm/` lands:
+Checkout: `source/` = mozilla-firefox/firefox @ `b16f852ba6` (main, depth-1),
+`source/comm/` = thunderbird/thunderbird-desktop (main, depth-1).
 
-- `comm/mailnews/compose/` — SMTP send path (`nsSmtpProtocol`, `nsSmtpService`)
-- `comm/mailnews/imap/` — IMAP (`nsImapProtocol`, connection/security state)
-- `comm/mailnews/local/` + `comm/mailnews/pop3/` (POP3 protocol objects)
-- `comm/mailnews/base/` — server/account prefs, incoming server model
-- `comm/mailnews/addrbook/`, `comm/mailnews/mime/` — contacts, rendering
-- `comm/mail/components/compose/` — compose window UI
-- `comm/mail/components/accountcreation/` — account setup wizard
-- `comm/mail/base/` — main mail window, UI surfaces for security indicators
-- `security/manager/ssl/` (mozilla side) — NSS integration, cert error paths
-- `comm/mail/app/` — startup/profile/session lifecycle, `all-thunderbird.js` prefs
+**Key structural finding:** modern Thunderbird has migrated SMTP and POP3 to
+JavaScript ES modules; IMAP remains C++. This means the cheapest, safest KIWI
+integration points are `.sys.mjs` files rather than protocol C++.
 
-Each mapped path gets: file list, integration point candidates, risk notes,
-and the owning agent assignment in TASKS.md before edits begin.
+| Area | Path | Implementation | KIWI integration candidate |
+|------|------|----------------|----------------------------|
+| SMTP client | `comm/mailnews/compose/src/SmtpClient.sys.mjs` | JS, uses `TCPSocket(hostname, port, {useSecureTransport})`; STARTTLS via `_actionSTARTTLS` + `socket.upgradeToSecure()` | Observe/normalize connection security state after socket open/upgrade; `this._server.socketType`, `_secureTransport`, `_capabilities` |
+| SMTP send | `comm/mailnews/compose/src/MessageSend.sys.mjs`, `nsMsgSendLater.cpp`, `SmtpServer.sys.mjs`, `SMTPProtocolHandler.sys.mjs` | JS | outbound policy hook (recipient-domain checks) pre-send |
+| POP3 | `comm/mailnews/local/src/Pop3Client.sys.mjs`, `Pop3Service.sys.mjs`, `Pop3Channel.sys.mjs`, `Pop3IncomingServer.sys.mjs`, `nsPop3Sink.cpp` | JS client (TCPSocket; `STLS` cmd for STARTTLS) + C++ sink | same as SMTP: socket security observation |
+| IMAP | `comm/mailnews/imap/src/nsImapProtocol.cpp`, `nsImapIncomingServer.cpp`, `nsImapService.cpp`, `nsImapServerResponseParser.cpp` | C++, owns `nsISocketTransport` | `m_socketTransport->GetSecurityInfo()` → `nsITransportSecurityInfo` (TLS version, cipher suite, cert chain, key exchange) |
+| TLS/NSS | `security/manager/ssl/` (mozilla side), NSS in `security/nss/` | C++ | `nsITransportSecurityInfo`, `nsIX509Cert` — no second TLS stack; read NSS-negotiated params only |
+| Accounts | `comm/mailnews/base/src/nsMsgAccount(Manager).cpp`, `MsgIncomingServer.sys.mjs`, `MsgProtocolInfo.sys.mjs` | C++ + JS | server prefs (`socketType`, auth method) feed SecuritySession |
+| Auth | `comm/mailnews/base/src/MailAuthenticator.sys.mjs`, `nsMailAuthModule.cpp`, `MsgPasswordAuthModule.sys.mjs`, OAuth2 in `mailnews/base/src/OAuth2*` | JS + C++ | auth-mechanism classification (cleartext vs OAuth vs CRAM) |
+| Compose UI | `comm/mail/components/compose/` | HTML/JS | recipient-domain policy warning surface (Agent 5 S-07) |
+| Account setup | `comm/mail/components/accountcreation/` | JS | security status during account autoconfig |
+| Main UI | `comm/mail/base/` (`chrome://messenger`) | XHTML/JS | security indicator + lock overlay anchors (Agent 5 spec) |
+| Startup/lifecycle | `comm/mail/app/`, `all-thunderbird.js` | JS/prefs | KIWI module init point; lock check before mailbox access |
+| Prefs | `mailnews/mailnews.js`, `comm/mail/app/all-thunderbird.js` | pref files | `mail.kiwi.*` pref namespace for feature flags |
+
+**Rule for all agents:** edits to `source/`/`source/comm/` are Lead-gated.
+Each integration point above needs an assigned task before any file is touched.
+Refinement continues via `searchfox-cli` once bootstrap installs it.
 
 ## 6. Build & toolchain (current status)
 
