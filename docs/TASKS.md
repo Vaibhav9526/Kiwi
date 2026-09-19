@@ -37,7 +37,10 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-112 | Frontend scaffold: React app structure in `kiwi-app/` — routes, layout shell, theme tokens from `images/` palette | Agent 5 | unblocked (T-110 done) | `kiwi-app/` (frontend dirs) | T-110, T-111 |
 | T-113 | Update TESTING/SECURITY/THREAT-MODEL for standalone architecture; add client-layer test matrix (send/receive/compose/folders/attachments/offline/lock) | Agent 6 | open | `docs/` | T-006 |
 | T-114 | Local test mail server strategy (in-process fake vs mailpit) + fixtures for SMTP/IMAP/POP3 transcripts | Agent 6 | open | `tests/fixtures/`, `tests/tools/` | — |
-| T-115 | Quality-gate review of kiwi-core + kiwi-forensics + kiwi-admin scaffolds (G1–G11) | Agent 6 | open | review only | T-002..T-004 |
+| T-115 | Quality-gate review of kiwi-core + kiwi-forensics + kiwi-admin scaffolds (G1–G11) | Agent 6 | in-progress (verdicts recorded in status) | review only | T-002..T-004 |
+| T-120 | kiwi-app src-tauri real IPC command layer: accounts/send/sync/security-status + lock-state gate | Agent 7 (Devin Pro, new) | open | `kiwi-app/src-tauri/`, `docs/contracts/ipc.md` | T-110 |
+| T-121 | Endpoint signal collector → kiwi-core trust evaluation (bounded indicators, Windows) | Agent 7 | open | `kiwi-app/src-tauri/` | T-120 |
+| T-122 | `kiwi-mailauth` crate: SPF/DKIM/DMARC deterministic checks, offline-testable DNS | Agent 8 (Cline Muse, new) | open | `kiwi-mailauth/`, `docs/contracts/mailauth.md` | — |
 
 ## Rules (from prompt.md §8, §14)
 
