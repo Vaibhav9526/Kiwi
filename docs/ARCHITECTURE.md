@@ -128,3 +128,37 @@ Study `source/comm/` (Thunderbird) and Mailspring for behavior only:
 - `kiwi-admin`: npm/TypeScript; `kiwi-app` frontend: Vite + React + TS.
 - Thunderbird build toolchain (MozillaBuild) no longer needed — kept
   installed harmlessly; `D:\kiwi-src` retained as reference only.
+
+## 7. Infrastructure layer (ADR-006/007/008 — owner directive 2026-09-20)
+
+Added before further feature development:
+
+- **Databases** — Drizzle ORM (TypeScript layer). PostgreSQL for
+  service/organization data (kiwi-admin); SQLite for local desktop state,
+  cache, prefs, temporary forensic data. All access behind repository
+  interfaces; migrations via Drizzle Kit; no plaintext secrets in either DB
+  (device-local secrets go to OS credential storage — Windows Credential
+  Manager/DPAPI). Rust crates keep rusqlite internally (kiwi-mail store) —
+  Drizzle governs the TS-facing persistence.
+- **Docker Compose** — reproducible local infra: PostgreSQL, kiwi-admin,
+  dev/test mail server. Health checks, persistent volumes, `.env.example`,
+  documented start/stop. The Tauri desktop app always runs natively — never
+  containerized. No Kubernetes.
+- **Sandbox** — disposable VM boundary (Firecracker where practical,
+  QEMU/KVM + prepared snapshot otherwise) for any active analysis of
+  untrusted attachments/documents/links. Prebuilt base image + snapshot/
+  revert; isolated FS, controlled egress, no host creds/keys/mailbox,
+  resource+time limits, proc/FS/network monitoring, auto-teardown.
+  Docker is infra, not the hostile-code boundary.
+- **Dependency rule (ADR-009)** — any new infra component requires a written
+  justification: need, alternatives, security, cost, testing strategy.
+
+### Execution order (owner directive)
+
+1. PG + Drizzle schema/migrations → 2. SQLite + Drizzle local layer →
+3. docker-compose for local infra → 4. interfaces between desktop,
+   services, DBs → 5. sandbox technology evaluation (host-OS-dependent) →
+6. sandbox base-image/snapshot strategy → 7. basic connectivity/migration/
+   health/sandbox-lifecycle tests → 8. document decisions → 9. feature work
+   proceeds on verified foundations. Unavailable components are isolated
+   behind interfaces — never block unrelated work.

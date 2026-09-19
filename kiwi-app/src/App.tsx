@@ -5,6 +5,7 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "./ipc";
+import { loadPref, savePref } from "./prefs";
 import { DEMO_ACCOUNTS, DEMO_EVENTS, DEMO_FINDINGS, DEMO_FOLDERS, DEMO_MESSAGES } from "./mock";
 import { navigate, useRoute } from "./router";
 import type { AccountInfo, MessageEnvelope, TrustState } from "./kiwi";
@@ -29,9 +30,9 @@ function applyTheme(theme: string) {
 
 export default function App() {
   const route = useRoute();
-  const [theme, setTheme] = useState("system");
+  const [theme, setTheme] = useState(() => loadPref<string>("kiwi.theme", "system"));
   const [accounts, setAccounts] = useState<AccountInfo[]>(DEMO_ACCOUNTS);
-  const [messages] = useState<MessageEnvelope[]>(DEMO_MESSAGES);
+  const [messages, setMessages] = useState<MessageEnvelope[]>(DEMO_MESSAGES);
   const [trust, setTrust] = useState<TrustState>({ trust: "unknown", locked: false });
   const [demo, setDemo] = useState(true);
   const [backendNote, setBackendNote] = useState("probing backend…");
@@ -43,6 +44,15 @@ export default function App() {
   const [verifying, setVerifying] = useState(false);
 
   useEffect(() => applyTheme(theme), [theme]);
+  useEffect(() => savePref("kiwi.theme", theme), [theme]);
+
+  const toggleStar = useCallback((id: string) => {
+    setMessages((ms) => ms.map((m) => (m.id === id ? { ...m, starred: !m.starred } : m)));
+  }, []);
+
+  const toggleRead = useCallback((id: string) => {
+    setMessages((ms) => ms.map((m) => (m.id === id ? { ...m, unread: !m.unread } : m)));
+  }, []);
 
   // Backend probe: ping + accounts + trust; any failure → demo mode.
   useEffect(() => {
@@ -166,6 +176,8 @@ export default function App() {
             findings={DEMO_FINDINGS}
             locked={trust.locked}
             onOpenFinding={(i) => setFindingIndex(i)}
+            onToggleStar={toggleStar}
+            onToggleRead={toggleRead}
           />
         )}
         {route.name === "compose" && <ComposeView />}

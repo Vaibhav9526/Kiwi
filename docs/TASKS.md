@@ -49,3 +49,12 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 - `done` requires: code + tests passing + docs updated + files-changed list +
   no secrets + security review. Missing evidence → `not-ready` (Agent 6 authority).
 - `blocked` requires a handoff note in AGENT_HANDOFF.md.
+
+## Infrastructure tasks (owner directive — before further feature work)
+
+| ID | Title | Owner | Status | Target files/dirs | Depends on |
+|----|-------|-------|--------|-------------------|------------|
+| T-130 | Drizzle ORM foundation for kiwi-admin: PG schema + migrations via Drizzle Kit, SQLite dialect for tests/local, repository interfaces preserved | Agent 5 | open | `kiwi-admin/` (db layer), `drizzle.config.ts`, migrations | — |
+| T-131 | docker-compose infra: PostgreSQL (healthcheck+volume), kiwi-admin Dockerfile, mailpit test server, .env.example, start/stop docs | Agent 6 | open | `docker-compose.yml`, `.env.example`, `kiwi-admin/Dockerfile`, `infra/` | — |
+| T-132 | Sandbox evaluation + design: Firecracker-vs-QEMU/KVM on Windows host, base image + snapshot strategy, isolation contract, PoC lifecycle test | Agent 7 (heavy) | queued (after T-120) | `docs/sandbox.md`, `docs/contracts/sandbox.md`, `sandbox/` | — |
+| T-133 | Infra verification tests: DB connectivity + migrations run, compose health, sandbox create/revert/teardown (stubbed if T-132 pending) | Agent 6 | open | `tests/` | T-130, T-131 |

@@ -32,6 +32,8 @@ export function MailboxView({
   findings,
   locked,
   onOpenFinding,
+  onToggleStar,
+  onToggleRead,
 }: {
   folder: string;
   folderLabel: string;
@@ -40,8 +42,16 @@ export function MailboxView({
   findings: FindingInfo[];
   locked: boolean;
   onOpenFinding: (index: number) => void;
+  onToggleStar: (id: string) => void;
+  onToggleRead: (id: string) => void;
 }) {
   const selected = messages.find((m) => m.id === selectedId) ?? messages[0];
+  const stepSelection = (dir: 1 | -1) => {
+    if (!selected || messages.length === 0) return;
+    const i = messages.findIndex((m) => m.id === selected.id);
+    const next = messages[(i + dir + messages.length) % messages.length];
+    if (next) navigate({ name: "mail", folder, messageId: next.id });
+  };
   return (
     <div style={grid}>
       <section aria-label={`${folderLabel} message list`}>
@@ -49,7 +59,17 @@ export function MailboxView({
           {folderLabel} <small style={{ color: "var(--kiwi-text-secondary)" }}>({messages.length})</small>
         </h1>
         {messages.length === 0 && <p>No messages in this folder.</p>}
-        <div style={listStyle} role="listbox" aria-label="Messages" aria-activedescendant={selected?.id}>
+        <div
+          style={listStyle}
+          role="listbox"
+          aria-label="Messages. Press n or p to move between messages."
+          aria-activedescendant={selected?.id}
+          onKeyDown={(e) => {
+            if (e.key === "n") stepSelection(1);
+            else if (e.key === "p") stepSelection(-1);
+            else if (e.key === "u" && selected) onToggleRead(selected.id);
+          }}
+        >
           {messages.map((m) => (
             <article
               key={m.id}
@@ -120,6 +140,12 @@ export function MailboxView({
             <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap" }}>
               <button type="button" onClick={() => navigate({ name: "compose" })}>
                 Reply
+              </button>
+              <button type="button" onClick={() => onToggleStar(selected.id)} aria-pressed={selected.starred}>
+                {selected.starred ? "Unstar" : "Star"}
+              </button>
+              <button type="button" onClick={() => onToggleRead(selected.id)}>
+                Mark {selected.unread ? "read" : "unread"} (u)
               </button>
               <button type="button" disabled={findings.length === 0} onClick={() => onOpenFinding(0)}>
                 Security details ({findings.length})

@@ -1,0 +1,28 @@
+[package]
+name = "kiwi-mailauth"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "KIWI domain-authentication checks: deterministic SPF/DKIM/DMARC evaluation with an offline-mockable DNS layer. No AI, no ambient clocks, no invented findings."
+publish = false
+
+# Dependency policy (prompt.md §15, docs/SECURITY.md):
+#   * minimal, pinned, security-relevant crates only
+#   * hickory-resolver: DNS stub resolver (real lookups); ALL tests use the
+#     in-crate mock resolver and run fully offline
+#   * rsa + sha2 + ed25519-dalek: DKIM signature verification (established
+#     crypto only — no invented algorithms)
+#   * no unsafe code
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2"
+base64 = "0.22"
+sha2 = "0.10"
+rsa = "0.9"
+ed25519-dalek = "3"
+hickory-resolver = { version = "0.26", features = ["tokio"] }
+tokio = { version = "1", features = ["rt", "time", "net"] }
+
+[lints]
+workspace = true

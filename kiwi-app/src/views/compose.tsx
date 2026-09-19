@@ -6,10 +6,12 @@
  */
 import { useEffect, useRef, useState } from "react";
 import type { PolicyBannerVerdict } from "../kiwi";
+import { loadPref } from "../prefs";
 import { PolicyBanner } from "../components/security";
 
 const TEMPLATES = ["Status update", "Meeting request", "Out of office"];
-const GRACE_SECONDS = 10;
+/** Client-side attachment cap (matches ui-spec total-size guard; server limits arrive with kiwi-mail). */
+const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
 function demoEvaluate(recipients: string[]): { verdict: PolicyBannerVerdict; offenders: string[] } {
   const blocked = recipients.filter((r) => r.trim().toLowerCase().endsWith("@blocked.test"));
@@ -32,6 +34,12 @@ export function ComposeView() {
   const [graceLeft, setGraceLeft] = useState<number | null>(null);
   const [sentNote, setSentNote] = useState<string | null>(null);
   const [showSchedule, setShowSchedule] = useState(false);
+  const [attachments, setAttachments] = useState<{ name: string; size: number }[]>([]);
+  const [attachError, setAttachError] = useState<string | null>(null);
+  const [graceSeconds] = useState(() => {
+    const v = Number(loadPref("kiwi.grace", "10"));
+    return [5, 10, 20, 30].includes(v) ? v : 10;
+  });
   const timer = useRef<number | null>(null);
 
   const evalResult = demoEvaluate(recipients);
@@ -61,7 +69,20 @@ export function ComposeView() {
     if (blocked || sending) return;
     setSentNote(null);
     setSending(true);
-    setGraceLeft(GRACE_SECONDS);
+    setGraceLeft(graceSeconds);
+  };
+
+  const addFiles = (files: FileList | null) => {
+    if (!files) return;
+    setAttachError(null);
+    const current = attachments.reduce((n, a) => n + a.size, 0);
+    const incoming = [...files].map((f) => ({ name: f.name, size: f.size }));
+    const total = current + incoming.reduce((n, a) => n + a.size, 0);
+    if (total > MAX_ATTACHMENT_BYTES) {
+      setAttachError(`Attachments exceed the 25 MB total cap (${(total / 1048576).toFixed(1)} MB).`);
+      return;
+    }
+    setAttachments((a) => [...a, ...incoming]);
   };
 
   const undo = () => {
@@ -143,10 +164,34 @@ export function ComposeView() {
         <button type="button" onClick={() => setShowSchedule((s) => !s)} aria-expanded={showSchedule}>
           Send later
         </button>
-        <button type="button" disabled>
-          Attach (soon)
-        </button>
       </div>
+      <p>
+        <label>
+          Attachments (25 MB total cap): <input type="file" multiple onChange={(e) => addFiles(e.target.files)} />
+        </label>
+        {attachError && (
+          <span role="alert">
+            <br />
+            <small>{attachError}</small>
+          </span>
+        )}
+      </p>
+      {attachments.length > 0 && (
+        <ul aria-label="Attachments">
+          {attachments.map((a) => (
+            <li key={`${a.name}-${a.size}`}>
+              {a.name} <small>({(a.size / 1024).toFixed(1)} KB)</small>{" "}
+              <button
+                type="button"
+                onClick={() => setAttachments((x) => x.filter((y) => y !== a))}
+                aria-label={`Remove attachment ${a.name}`}
+              >
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
       {showSchedule && (
         <p>
           <label>

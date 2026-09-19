@@ -3,18 +3,24 @@
  * Templates (local CRUD stub), Notifications, Privacy, Advanced.
  * Surface KIWI-UI-023 (+003 panel placeholder, 022 template store).
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { loadPref, savePref } from "../prefs";
 
 const SECTIONS = ["General", "Accounts", "KIWI Security", "Templates", "Notifications", "Privacy", "Advanced"] as const;
 type Section = (typeof SECTIONS)[number];
 
 export function SettingsView() {
   const [section, setSection] = useState<Section>("General");
-  const [themeDefault, setThemeDefault] = useState("system");
-  const [grace, setGrace] = useState("10");
-  const [minTls, setMinTls] = useState("tls1.2");
-  const [templates, setTemplates] = useState<string[]>(["Status update", "Meeting request"]);
+  const [themeDefault, setThemeDefault] = useState(() => loadPref("kiwi.theme", "system"));
+  const [grace, setGrace] = useState(() => loadPref("kiwi.grace", "10"));
+  const [minTls, setMinTls] = useState(() => loadPref("kiwi.minTls", "tls1.2"));
+  const [templates, setTemplates] = useState<string[]>(() => loadPref("kiwi.templates", ["Status update", "Meeting request"]));
   const [newTemplate, setNewTemplate] = useState("");
+
+  useEffect(() => savePref("kiwi.theme", themeDefault), [themeDefault]);
+  useEffect(() => savePref("kiwi.grace", grace), [grace]);
+  useEffect(() => savePref("kiwi.minTls", minTls), [minTls]);
+  useEffect(() => savePref("kiwi.templates", templates), [templates]);
 
   return (
     <div style={{ display: "grid", gridTemplateColumns: "200px 1fr", gap: "0.8rem" }}>

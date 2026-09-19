@@ -185,12 +185,18 @@ represent a client-side block as complete organizational enforcement.
 - `verify()` replays the chain from genesis; any field mutation or row
   deletion breaks verification (`chain broken at seq N`). Implemented in
   `src/audit/chain.ts` + `AuditService.verify`.
-- Append-only by convention in v1: application code never UPDATEs or DELETEs
-  audit rows. **Known v1 hardening gap (reported to Lead):** no SQLite
-  trigger/permission prevents raw-SQL tampering from a process holding the
-  DB; a DB-level guard is planned as a follow-up.
-- Concurrency: single-process appends are serialized in-process. Multi-process
-  appends need a file lock (queued with Lead).
+- Append-only enforced at TWO layers: (1) DB triggers `audit_log_no_update` /
+  `audit_log_no_delete` (migration v2) abort any UPDATE or DELETE from any
+  connection, including raw SQL from this process; (2) `verify()` replays the
+  hash chain AND requires contiguous `seq` within the verified window, so a
+  gap left by row removal is flagged even if hashes were recomputed.
+- Residual risks (honest, accepted): a file-write holder can `DROP TRIGGER`
+  first and then tamper — triggers raise the bar, they are not a trust root.
+  Tail truncation (deleting the newest rows) verifies clean without an
+  external high-water mark. Mitigations: OS file ACLs on `kiwi-admin.db`,
+  `verify()` on service startup, backup comparison for high-value
+  deployments. Multi-process appends still need a file lock (queued with
+  Lead) — single-process appends are serialized in-process.
 
 ## 8. Cross-service notes
 
@@ -213,8 +219,9 @@ represent a client-side block as complete organizational enforcement.
 | `tests/services.test.ts` | service-level RBAC + audit wiring, policy determinism through service, mailflow metadata-only ingest, chain verification |
 | `tests/policy.bridge.test.ts` (T-108) | org worst-wins per-recipient verdicts, min-TLS block, alias normalization, no-policy allow, cross-org denial audited, input validation, core determinism |
 | `tests/mailflow.emitter.test.ts` (T-109) | per-recipient expansion, metadata-only keys, unknown-defaulting, ingest round-trip, end-to-end service ingest, inbound builder |
+| `tests/audit.guard.test.ts` (tamper guard) | trigger rejection of UPDATE/DELETE, trigger registration, seq-gap detection, restart-safe idempotent migrations |
 
-Run: `npm run typecheck && npm test` (46 tests, all passing at T-108/T-109 close).
+Run: `npm run typecheck && npm test` (50 tests, all passing at tamper-guard close).
 
 ## 10. Send-path bridge — T-108 (kiwi-mail send path ↔ kiwi-admin)
 

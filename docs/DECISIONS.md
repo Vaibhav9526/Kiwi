@@ -75,3 +75,36 @@
 - **Consequences:** No mach/MozillaBuild dependency; standard cargo+npm
   toolchain (all present). Phase 0 TB build exit criterion replaced by
   "kiwi-app shell runs + kiwi-mail connects to a test server".
+
+## ADR-006 — Drizzle ORM as the database layer
+
+- **Date:** 2026-09-20 · **Status:** accepted (owner directive) · **By:** Lead
+- **Decision:** Drizzle ORM everywhere TypeScript touches a database:
+  - **PostgreSQL + Drizzle ORM + Drizzle Kit** — persistent service/org data (kiwi-admin: orgs, users, roles, devices, policies, mail-flow, audit).
+  - **SQLite + Drizzle ORM** — local desktop/offline state, cache, prefs, temporary forensic data.
+  - All DB access behind repository/service interfaces — PG and SQLite are swappable behind business logic.
+  - Typed schemas, migrations, relations, indexes, transactions, constraints.
+  - **Never** store passwords, private keys, OAuth tokens, secrets as plaintext — OS secure credential/key storage (Windows DPAPI/Credential Manager) for device-local secrets.
+- **Consequences:** kiwi-admin's existing sqlite-org driver gets re-expressed as Drizzle schema+migrations behind the existing repository interfaces. kiwi-mail's Rust store stays rusqlite (Rust, not TS — Drizzle applies to the TS layer; the mail store boundary stays internal to kiwi-mail).
+
+## ADR-007 — Docker Compose for local infrastructure
+
+- **Date:** 2026-09-20 · **Status:** accepted (owner directive) · **By:** Lead
+- **Decision:** `docker-compose.yml` + Dockerfiles + `.env.example` for reproducible local infra: PostgreSQL, kiwi-admin service, dev/test mail server (mailpit), other supporting services as needed. Redis only if a concrete need appears (none today).
+- **Constraint:** the KIWI desktop app (Tauri) runs natively on the host — NEVER in Docker. Docker is for services, not the client.
+- **Required:** health checks, persistent dev volumes, documented start/stop. No Kubernetes, no cloud infra.
+- **Security note:** Docker containers are NOT a hostile-code execution boundary — see ADR-008.
+
+## ADR-008 — Disposable VM sandbox for hostile content
+
+- **Date:** 2026-09-20 · **Status:** proposed → evaluation in progress (T-132) · **By:** Lead
+- **Context:** KIWI must never execute untrusted attachments/documents/links on the host. Docker containers are explicitly NOT an adequate boundary.
+- **Decision:** disposable sandbox via **Firecracker microVM where practical**; **QEMU/KVM with prepared snapshot** otherwise; native OS isolation only if it provides a real boundary. **Prebuilt base image + snapshot/revert** — never fresh VM per analysis.
+- **Sandbox guarantees:** isolated FS, controlled egress, no host credentials, no KIWI private keys, no mailbox access, resource/time limits, process+FS+network monitoring, automatic teardown/revert.
+- **Open question for T-132 (Agent 7):** Firecracker requires KVM (Linux-only). Windows dev host → likely QEMU/WHPX or Hyper-V, or Firecracker inside WSL2 with documented caveats. Evaluation must be honest about what boundary each option actually provides.
+- **Fallback:** isolate the dependency behind an interface; development continues with the sandbox OFF and active analysis clearly marked unavailable (per owner rule: don't block unrelated dev).
+
+## ADR-009 — Infrastructure decision rule
+
+- **Date:** 2026-09-20 · **Status:** accepted (owner directive)
+- Before adding any DB, Docker service, Redis, VM/sandbox component, or external service, the implementing agent must document in `docs/DECISIONS.md` or its status file: why required, problem solved, why a simpler alternative is insufficient, security implications, perf/resource cost, testing strategy. Prefer the simplest secure implementation.

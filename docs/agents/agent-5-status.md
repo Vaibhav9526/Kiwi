@@ -122,3 +122,44 @@
 - **Next:** bind views to real kiwi-mail IPC as Agent 2 lands T-101…T-106;
   composer banner → bridge verdicts; Security views → forensics events.
 
+## 2026-09-19 — v1.1 approved; tamper guard implemented; views deepened
+
+- **Status:** Lead sign-off confirmed (admin-api header → v1.1 active).
+  Approved tamper guard implemented + 2 extra gaps closed. T-112 views
+  deepened with backend-independent interactivity. All suites green.
+- **Files changed — kiwi-admin:**
+  - `src/db/migrations.ts` — v2 `audit-append-only-guard` (BEFORE
+    UPDATE/DELETE triggers on `audit_log`, `RAISE(ABORT)`); `ensureMigrated`
+    now skips applied versions (fixes restart-against-existing-DB throw —
+    second gap closed).
+  - `src/mailflow/services.ts` — `AuditService.verify` requires contiguous
+    `seq` in the verified window (gap detection even if hashes recomputed).
+  - `tests/audit.guard.test.ts` (new, 4 tests) — UPDATE/DELETE rejected,
+    triggers registered, seq-gap flagged, restart reopens same file with data
+    intact and versions [1,2].
+  - `docs/contracts/admin-api.md` — §7 rewritten (two-layer enforcement +
+    honest residual risks: trigger-drop by file-write holder, tail truncation;
+    mitigations: file ACLs, verify-on-startup, backups; multi-process lock
+    still queued with Lead), test map 46→50.
+- **Files changed — kiwi-app/src:**
+  - `prefs.ts` (new) — localStorage UI prefs (never credentials/content).
+  - `App.tsx` — theme persisted; messages stateful with star/read toggles.
+  - `views/mailbox.tsx` — Star/Unstar + Mark read/unread (u) working; n/p
+    message-stepping on the list.
+  - `views/compose.tsx` — real attachment picker (25 MB total cap, per-file
+    remove, overflow alert); undo-grace reads `kiwi.grace` pref.
+  - `views/settings.tsx` — theme/grace/min-TLS/templates persist to prefs.
+- **Commands run:** kiwi-admin `npm run typecheck` + `npm test` (50/50, 7 files);
+  kiwi-app `npm run build` (tsc strict + vite, 41 modules, green).
+- **Tests:** +4 guard tests (1 initial failure was my test-shape bug —
+  fixed, no prod-code change). Chain unit tests untouched (in-memory model —
+  triggers don't affect them, by design: DB tests cover the DB layer).
+- **Assumptions/notes:** triggers live in the same trust domain as the file —
+  documented, not oversold; `verify()` stays the detection layer. Settings +
+  TopBar theme selects both write `kiwi.theme` (TopBar is authoritative live;
+  Settings persists for next launch) — acceptable scaffold overlap, unify when
+  settings IPC lands.
+- **Next:** real IPC bindings as Agent 2/3 land (bridge verdicts → banner,
+  forensics → Security views); vitest for frontend pure modules (router/ipc
+  parsers) proposed for Agent 6 T-113/T-115 pass.
+

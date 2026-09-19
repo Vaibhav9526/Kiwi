@@ -92,7 +92,15 @@ export class AuditService {
   verify(opts: { limit: number }): { valid: boolean; checked: number; error: string | null } {
     const rows = this.repos.audit.range(0, Number.MAX_SAFE_INTEGER, Math.min(opts.limit, 10000));
     let expectedPrev = "genesis";
+    let expectedSeq: number | null = null;
     for (const r of rows) {
+      // Defense in depth alongside the DB append-only guard (admin-api.md §7):
+      // seq values must be contiguous within the verified window, so a gap
+      // left by row removal is flagged even if hashes were recomputed.
+      if (expectedSeq !== null && r.seq !== expectedSeq) {
+        return { valid: false, checked: rows.length, error: `chain non-contiguous: expected seq ${expectedSeq}` };
+      }
+      expectedSeq = r.seq + 1;
       const eventJson = JSON.stringify({
         actor: { subject: r.actor_subject, roles: JSON.parse(r.actor_roles ?? "[]") as string[] },
         org_id: r.org_id,

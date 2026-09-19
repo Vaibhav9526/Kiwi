@@ -5,9 +5,8 @@
  * Table set (v1 org model — docs/contracts/admin-api.md §4):
  *   orgs, domains, users, user_org_roles, devices, policies, mailflow_events,
  *   audit_log.
- * NOTE (v1 limitation, reported to Lead): audit_log integrity is enforced in
- * application logic (hash chain in src/audit); it does NOT yet use SQLite
- * triggers to harden against raw-SQL tampering from this process.
+ * v2 adds the audit append-only guard (DB triggers — admin-api.md §7):
+ *   audit_log rejects UPDATE and DELETE at the storage layer.
  */
 export interface Migration {
   version: number;
@@ -118,16 +117,48 @@ export const MIGRATIONS: readonly Migration[] = [
       );
     `,
   },
+  {
+    version: 2,
+    name: "audit-append-only-guard",
+    up: `
+      -- DB-level append-only guard for audit_log (admin-api.md §7).
+      -- Blocks UPDATE and DELETE from ANY connection, including raw SQL from
+      -- this process. Honest limit: a file-write holder can DROP TRIGGER first,
+      -- so hash-chain verification on read remains the detection layer.
+      CREATE TRIGGER IF NOT EXISTS audit_log_no_update
+      BEFORE UPDATE ON audit_log
+      BEGIN
+        SELECT RAISE(ABORT, 'audit_log is append-only: UPDATE rejected');
+      END;
+
+      CREATE TRIGGER IF NOT EXISTS audit_log_no_delete
+      BEFORE DELETE ON audit_log
+      BEGIN
+        SELECT RAISE(ABORT, 'audit_log is append-only: DELETE rejected');
+      END;
+    `,
+  },
 ];
 
-export function ensureMigrated(driver: { exec: (sql: string) => void }): void {
+export function ensureMigrated(driver: {
+  exec: (sql: string) => void;
+  one: (sql: string, ...params: (null | number | bigint | string | boolean)[]) => unknown;
+}): void {
   driver.exec("BEGIN");
   try {
     driver.exec(
       "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at INTEGER NOT NULL)",
     );
     for (const migration of MIGRATIONS) {
-      driver.exec(`INSERT INTO schema_migrations (version, name, applied_at) VALUES (${migration.version}, '${migration.name.replace(/'/g, "''")}', 0)`);
+      // Idempotent: skip versions already applied so reopening an existing
+      // database file (app restart) works instead of throwing on re-INSERT.
+      const applied = driver.one("SELECT version FROM schema_migrations WHERE version = ?", migration.version) as
+        | { version: number }
+        | undefined;
+      if (applied) continue;
+      driver.exec(
+        `INSERT INTO schema_migrations (version, name, applied_at) VALUES (${migration.version}, '${migration.name.replace(/'/g, "''")}', 0)`,
+      );
       driver.exec(migration.up);
       driver.exec(`UPDATE schema_migrations SET applied_at = 1 WHERE version = ${migration.version}`);
     }

@@ -4,6 +4,7 @@ members = [
     "kiwi-core",
     "kiwi-forensics",
     "kiwi-mail",
+    "kiwi-mailauth",
     "kiwi-app/src-tauri",
 ]
 
