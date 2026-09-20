@@ -19,6 +19,12 @@ Mailspring-replica UI (T-190-192) lands; F-features pair with that UI.
 | F7 | Smart contact autocomplete ranked by sent-mail frequency | `kiwi-contacts` + compose UI | |
 | F8 | Sender avatars LOCAL ONLY: kiwi-contacts photos + deterministic initials; NO remote favicon proxying (metadata leak — privacy-first divergence, deliberate) | `kiwi-app` | Documented divergence |
 | F9 | Per-user remappable keyboard shortcuts + layout switcher (classic/compact/vertical-split) | `kiwi-app` prefs | |
+| F10 | Rich-text WYSIWYG composer: font family/size/color/highlight, tables, emoji picker, links, inline-image resize, Excel-paste fidelity; Mailspring-idiom styling; kiwi-mail mime builder already does multipart/alternative — renderer+editor work only | `kiwi-app` composer | Sanitization gate: ammonia allowlist must cover new markup |
+| F11 | Native OS notifications on new mail via Tauri notification API, driven by existing `mail-changed` events (T-157); per-account toggle; no WebSocket needed | `kiwi-app` | Lock/trust gate: no body content on lock screen when degraded/locked |
+| F12 | Threads include Sent items — inline sent replies in conversation view (extends T-165) | `kiwi-mail` threading + UI | |
+| F13 | Junk marking: IMAP `\Junk` flag + move-to-Junk from context menu/toolbar/bulk; deterministic only (auto-filter = Phase-7 classifier territory) | `kiwi-mail` flags + UI | |
+| F14 | Email priority: X-Priority/Importance headers on compose + display | `kiwi-mail` + composer | low-effort |
+| F15 | Theme schemes beyond light/dark (token system already supports); custom per-user CSS field DEFERRED — power-user, style-injection surface | `kiwi-app` themes | deferred sub-item noted |
 
 ## Exposed gap — OAuth2
 

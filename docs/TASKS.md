@@ -134,3 +134,9 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-206 | F7 contact autocomplete ranked by sent frequency | unassigned | backlog | `kiwi-contacts/` | — |
 | T-207 | F8 local-only avatars (contacts photos + initials; NO remote favicon) | unassigned | backlog | `kiwi-app/` | — |
 | T-208 | F9 remappable shortcuts + layout switcher | unassigned | backlog | `kiwi-app/` | — |
+| T-209 | F10 WYSIWYG composer (fonts/tables/emoji/links/inline-image/Excel-paste; ammonia allowlist review) | unassigned | backlog | `kiwi-app/` | — |
+| T-210 | F11 native notifications via Tauri API on mail-changed; per-account toggle; lock-gated content | unassigned | backlog | `kiwi-app/` | T-157 |
+| T-211 | F12 sent items inside conversation threads | unassigned | backlog | `kiwi-mail/` + UI | T-165 |
+| T-212 | F13 junk marking (\Junk flag + move; context/toolbar/bulk) | unassigned | backlog | `kiwi-mail/` + UI | — |
+| T-213 | F14 email priority headers (compose + display) | unassigned | backlog | `kiwi-mail/` + composer | — |
+| T-214 | F15 extra theme schemes (custom CSS field deferred) | unassigned | backlog | `kiwi-app/` | — |
