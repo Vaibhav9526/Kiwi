@@ -35,3 +35,4 @@ artifacts/
 
 # Tauri generated
 kiwi-app/src-tauri/gen/
+reference/

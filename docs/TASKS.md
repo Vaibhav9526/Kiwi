@@ -116,9 +116,9 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-187 | Verify admin-review-1.md findings + apply safe (non-behavioral) fixes | Agent 6 | done (22/22 verified real; L6+L7 applied; H=Lead rulings) | `kiwi-admin/` | T-185 |
 | T-188 | Contract work: pair/challenge IPC section in ipc.md + admin devices/export endpoint specs | Agent 9 | open | `docs/contracts/` | T-185 |
 | T-189 | Snooze UI | Agent 5 | held — returns in TB idiom post-T-191 | `kiwi-app/src/` | T-182 |
-| T-190 | Thunderbird archaeology: docs/ui-thunderbird-map.md — layout/shortcuts/density/tokens from source/comm/mail | Agent 5 | open | `source/comm/` → `docs/` | — |
-| T-191 | Rebuild kiwi-app/src Thunderbird-faithful: menus, toolbar, folder pane, thread list, msg pane, status bar, density; preserve all IPC | Agent 5 | open | `kiwi-app/src/` | T-190 |
-| T-192 | Re-integrate KIWI security surfaces in TB idiom (header pill, composer banner, lock overlay, security tab) | Agent 5 | open | `kiwi-app/src/` | T-191 |
+| T-190 | Mailspring archaeology: docs/ui-mailspring-map.md + tokens — layout/animations/inventory from reference/mailspring (GPL — study only) | Agent 5 | open | `source/comm/` → `docs/` | — |
+| T-191 | Rebuild kiwi-app/src Mailspring-faithful: sidebar, thread rows w/ hover actions, reading pane, composer modal, tabbed prefs, animations; preserve all IPC | Agent 5 | open | `kiwi-app/src/` | T-190 |
+| T-192 | Re-integrate KIWI security surfaces in Mailspring idiom | Agent 5 | open | `kiwi-app/src/` | T-191 |
 | T-193 | kiwi-admin H1-H8 fixes per Lead rulings + M1-M7 + e2e regression guards | Agent 6 | open | `kiwi-admin/` | T-187 |
 | T-194 | Mobile authenticator screens: pairing QR, approvals, devices, history (mock transport) | Agent 4 (Nemotron 3.5 Lightning) | open | `mobile/` | T-136 |
 | T-195 | OAuth2 flows (device-code + localhost auth-code) for Gmail/Outlook providers | Agent 8 | queued | `kiwi-autoconfig/`, `kiwi-mail/` | T-183 |
