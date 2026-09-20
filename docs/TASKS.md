@@ -23,17 +23,17 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | ID | Title | Owner | Status | Target files/dirs | Depends on |
 |----|-------|-------|--------|-------------------|------------|
 | T-100 | Cargo workspace + kiwi-mail skeleton + crate contracts | Lead | done | `Cargo.toml`, `kiwi-mail/` | — |
-| T-101 | kiwi-mail `transport`: TCP+rustls, TlsObservation capture, SocketSecurity modes, STARTTLS upgrade path | Agent 2 | open | `kiwi-mail/src/transport.rs` | T-100 |
+| T-101 | kiwi-mail `transport`: TCP+rustls, TlsObservation, SocketSecurity, STARTTLS | Agent 2 + A10 hardening | done (live rustls handshakes proven) | `kiwi-mail/src/transport.rs` | T-100 |
 | T-102 | kiwi-mail `smtp`: EHLO/STARTTLS/AUTH/MAIL/RCPT/DATA + send-queue hooks | Agent 2 | in-review (41 mail tests green incl. real STARTTLS e2e) | `kiwi-mail/src/smtp.rs` | T-101 |
-| T-103 | kiwi-mail `imap`: LOGIN/AUTHENTICATE, SELECT, FETCH envelope+bodystructure, UID sync primitives, IDLE | Agent 2 | open | `kiwi-mail/src/imap.rs` | T-101 |
-| T-104 | kiwi-mail `pop3`: USER/PASS/APOP, LIST/UIDL/RETR/DELE, STLS | Agent 2 | open | `kiwi-mail/src/pop3.rs` | T-101 |
-| T-105 | kiwi-mail `account` + `store`: account model, SQLite mail schema, body/attachment storage | Agent 2 | open | `kiwi-mail/src/{account,store}.rs` | — |
-| T-106 | kiwi-mail `sync` + `mime`: folder sync engine, MIME parse boundary | Agent 2 | open | `kiwi-mail/src/{sync,mime}.rs` | T-105 |
-| T-107 | kiwi-forensics `live` module: `TlsObservation` → `ConnectionSecurityEvent` adapter | Agent 6 (reassigned from Agent 3) | open | `kiwi-forensics/` | T-003, T-101 |
+| T-103 | kiwi-mail `imap`: full client + IDLE | Agent 2 + A10 | done (greenmail interop green) | `kiwi-mail/src/imap.rs` | T-101 |
+| T-104 | kiwi-mail `pop3` | Agent 2 + A10 | done (mailpit round-trip + UIDL dedup) | `kiwi-mail/src/pop3.rs` | T-101 |
+| T-105 | kiwi-mail `account` + `store` | Agent 2 + A10 | done | `kiwi-mail/src/{account,store}.rs` | — |
+| T-106 | kiwi-mail `sync` + `mime` | Agent 2 + A10 | done (3-pass sync, IDLE events) | `kiwi-mail/src/{sync,mime}.rs` | T-105 |
+| T-107 | kiwi-forensics `live` adapter | Agent 6 | done | `kiwi-forensics/` | T-003, T-101 |
 | T-108 | Policy enforcement bridge: evaluate-outbound endpoint + contract §10 | Agent 5 | done (46/46 npm; contract v1.1 Lead-approved) | `kiwi-admin/`, `docs/contracts/admin-api.md` | T-004 |
 | T-109 | Mail-flow emitter: builders + ingest re-validation + contract §11 | Agent 5 | done (contract v1.1 Lead-approved) | `docs/contracts/admin-api.md` | T-004 |
 | T-110 | kiwi-app scaffold: Tauri 2 + Vite + React + TS shell; typed IPC command layer stub | Lead | done | `kiwi-app/` | — |
-| T-111 | Standalone UI spec v2: mailbox/composer/accounts/settings + security surfaces + Mailspring features (unified inbox, snooze, send later, undo send, templates) | Agent 5 | open | `docs/ui-spec.md` (rewrite), `docs/contracts/ui-surfaces.md` | — |
+| T-111 | Standalone UI spec v2 + ui-surfaces contract | Agent 5 | done | `docs/ui-spec.md` (rewrite), `docs/contracts/ui-surfaces.md` | — |
 | T-112 | Frontend scaffold: React app structure in `kiwi-app/` — routes, layout shell, theme tokens from `images/` palette | Agent 5 | unblocked (T-110 done) | `kiwi-app/` (frontend dirs) | T-110, T-111 |
 | T-113 | Update TESTING/SECURITY/THREAT-MODEL for standalone architecture; add client-layer test matrix (send/receive/compose/folders/attachments/offline/lock) | Agent 6 | open | `docs/` | T-006 |
 | T-114 | Local test mail server strategy (in-process fake vs mailpit) + fixtures for SMTP/IMAP/POP3 transcripts | Agent 6 | open | `tests/fixtures/`, `tests/tools/` | — |
@@ -70,7 +70,7 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-141 | mailauth fixtures: auth-*.eml corpus + mock-DNS→findings mapping tests (Agent 8's proposal list) | Agent 6 | open | `tests/fixtures/messages/` | T-122 |
 | T-142 | Send queue: outbox + undo-send + send-later | Agent 7 | done (67/67+29/29 tests) | `kiwi-mail/src/` | T-102 |
 | T-143 | Bind kiwi-app frontend to ipc.md | Agent 5 | done (views wired, honest demo fallbacks) | `kiwi-app/src/` | T-120, T-112 |
-| T-144 | Send-path wiring: call §10 evaluate-outbound bridge (fail-closed) + mailflow emitter post-send/receive in src-tauri | Agent 7 | open | `kiwi-app/src-tauri/` | T-120, T-108, T-109 |
+| T-144 | Send-path wiring: fail-closed policy bridge + mailflow emit | Agent 7 | done | `kiwi-app/src-tauri/` | T-120, T-108, T-109 |
 | T-145 | kiwi-app UI elevation: KIWI-brand polish — typography, spacing, badges, states, transitions (Operate mode, keep all function) | Agent 5 | open | `kiwi-app/src/` | T-143 |
 | T-146 | IPC gaps: flag mutation, attachment download, sanitized HTML render | Agent 7 | done (commands landed; Agent 5 wired UI) | `kiwi-app/src-tauri/`, `kiwi-mail/` | T-120 |
 | T-147 | IMAP fixture server in docker-compose (mailpit lacks IMAP — dovecot/greenmail) | Agent 6 | open | `docker-compose.yml`, `infra/` | — |
@@ -82,7 +82,7 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-152 | kiwi-mail hardening + live interop + store queue | Agent 10 | done (mailpit+greenmail green, 67 tests) | `kiwi-mail/src/` | — |
 | T-153 | Productivity layer: palette + shortcuts + toasts | Agent 5 | done | `kiwi-app/src/` | T-143 |
 | T-155 | Wire T-146/T-142 into UI | Agent 5 | done | `kiwi-app/src/` | T-146, T-142 |
-| T-156 | Account setup wizard: email → autoconfig discovery, server presets, credential entry (OS store), test-connection, account management | Agent 5 | open | `kiwi-app/src/views/setup.tsx` | T-135 |
+| T-156 | Account setup wizard | Agent 5 | done | `kiwi-app/src/views/setup.tsx` | T-135 |
 | T-157 | Live sync engine (IDLE loop, mail-changed events, lock-aware) | Agent 7 | done (kiwi-app 34/34) | `kiwi-app/src-tauri/` | T-142 |
 | T-158 | Autoconfig contract completion + discovery-order/malformed/domain tests | Agent 8 | open | `kiwi-autoconfig/`, `docs/contracts/` | T-135 |
 | T-159 | kiwi-mail search module: FTS5 over store (subject/from/to/body), bounded query API | Agent 8 | open | `kiwi-mail/src/` | — |

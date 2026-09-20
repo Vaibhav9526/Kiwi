@@ -66,3 +66,11 @@ _(none yet)_
 - Design constraints from Agent 3 (READ agent-3-status.md in full): no unsafe (forbid); no clocks/RNG/floats in findings or scoring; no X.509 validation in this crate — cert metadata is adapter input; ConnectionSecurityEvent ≠ SecuritySession (needs mapping adapter); own bounded pcap readers (no libpcap/etherparse deps).
 - Next exact action: uncomment `pub mod rules;`, fix compile, then write analyzers → live → pcap → report → contract.
 - Reassignment: Agent 6 (OpenCode #2) — protocol/testing-adjacent, per §9 map fallback when DeepSeek is down. Temporary until Agent 3's quota resets (~1h38m).
+
+## Handoff: Agent 4 → Agent 9 (T-149) — 2026-09-20
+
+- Reason: Agent 4 (Cline GLM-5.3-flash) in repeated inference-timeout loop; terminal parked at prompt, no e2e progress landed.
+- Task: T-149 — kiwi-admin e2e tests vs dockerized service.
+- State: no e2e test files landed from Agent 4; 44 files of earlier work (mobile scaffold + admin contributions) intact on disk.
+- Decision (user-approved via Agent 9's question UI): parametrized e2e covering BOTH SQLite and PostgreSQL dialects; Lead granted Agent 9 §8 clearance for minimal DATABASE_URL branching in kiwi-admin services.ts/server.ts (dockerized admin previously ignored DATABASE_URL — real gap).
+- Agent 4: PARKED — do not assign until model reliability confirmed.
