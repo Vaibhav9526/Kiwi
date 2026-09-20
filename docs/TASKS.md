@@ -122,3 +122,15 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-193 | kiwi-admin H1-H8 fixes per Lead rulings + M1-M7 + e2e regression guards | Agent 6 | open | `kiwi-admin/` | T-187 |
 | T-194 | Mobile authenticator screens: pairing QR, approvals, devices, history (mock transport) | Agent 4 (Nemotron 3.5 Lightning) | open | `mobile/` | T-136 |
 | T-195 | OAuth2 flows (device-code + localhost auth-code) for Gmail/Outlook providers | Agent 8 | queued | `kiwi-autoconfig/`, `kiwi-mail/` | T-183 |
+
+## Backlog — MailFlow feature mine (specs in docs/BACKLOG-MAILFLOW.md; start after current queues + T-190-192)
+
+| T-200 | F1 inbox rules engine (sync-ingest, ordered, block-list-first, deterministic) | unassigned | backlog | `kiwi-mail/` | — |
+| T-201 | F2 categorization tabs (deterministic header/heuristic classifier) | unassigned | backlog | `kiwi-mail/` | — |
+| T-202 | F3 one-click unsubscribe (open URL default; mailto needs confirm) | unassigned | backlog | `kiwi-mail/` + UI | — |
+| T-203 | F4 sender block list (trash-before-rules, per-account) | unassigned | backlog | `kiwi-mail/` | — |
+| T-204 | F5 mark-as-read behavior pref | unassigned | backlog | `kiwi-app/` | — |
+| T-205 | F6 GTD labels as real IMAP folders (t/w/d keys, opt-in, Todo clears on send) | unassigned | backlog | `kiwi-mail/` + UI | — |
+| T-206 | F7 contact autocomplete ranked by sent frequency | unassigned | backlog | `kiwi-contacts/` | — |
+| T-207 | F8 local-only avatars (contacts photos + initials; NO remote favicon) | unassigned | backlog | `kiwi-app/` | — |
+| T-208 | F9 remappable shortcuts + layout switcher | unassigned | backlog | `kiwi-app/` | — |
