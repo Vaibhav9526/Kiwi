@@ -109,7 +109,7 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-180 | Phase C1: kiwi-mail file splits — freeze window required | Agent 10 | in-progress | `kiwi-mail/src/` | — |
 | T-181 | Phase C2: src-tauri splits — freeze window | Agent 7 | in-progress | `kiwi-app/src-tauri/` | — |
 | T-182 | Phase C3: App.tsx split | Agent 5 | SUPERSEDED by T-191 rebuild | `kiwi-app/src/` | — |
-| T-183 | kiwi-mailauth hardening: DKIM canonicalization, SPF limits, DMARC alignment | Agent 8 (GLM-limited) → A10 queue | parked | `kiwi-mailauth/` | T-178 |
+| T-183 | kiwi-mailauth hardening: DKIM canonicalization, SPF lookup limits, DMARC alignment | Agent 8 (Nemotron 3 Ultra) | in-progress | `kiwi-mailauth/` | T-178 |
 | T-184 | Finish T-172 items (lint, transport decision, wording) | Agent 6 (handoff) | done (lint 0/0 + tests/typecheck green; 4x S10 items in contract) | `mobile/`, `docs/contracts/authenticator.md` | T-172 |
 | T-185 | kiwi-admin defect-hunt review → admin-review-1.md | Agent 9 | done (findings pending Lead rulings) | `kiwi-admin/` (read-only) | T-149 |
 | T-186 | Mail filters UI | Agent 5 | done | `kiwi-app/src/` | — |
@@ -120,3 +120,5 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-191 | Rebuild kiwi-app/src Thunderbird-faithful: menus, toolbar, folder pane, thread list, msg pane, status bar, density; preserve all IPC | Agent 5 | open | `kiwi-app/src/` | T-190 |
 | T-192 | Re-integrate KIWI security surfaces in TB idiom (header pill, composer banner, lock overlay, security tab) | Agent 5 | open | `kiwi-app/src/` | T-191 |
 | T-193 | kiwi-admin H1-H8 fixes per Lead rulings + M1-M7 + e2e regression guards | Agent 6 | open | `kiwi-admin/` | T-187 |
+| T-194 | Mobile authenticator screens: pairing QR, approvals, devices, history (mock transport) | Agent 4 (Nemotron 3.5 Lightning) | open | `mobile/` | T-136 |
+| T-195 | OAuth2 flows (device-code + localhost auth-code) for Gmail/Outlook providers | Agent 8 | queued | `kiwi-autoconfig/`, `kiwi-mail/` | T-183 |
