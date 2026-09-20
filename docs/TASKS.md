@@ -97,3 +97,4 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-168 | kiwi-sandbox guest agent: in-guest runner, report.json schema (process tree/file writes/egress), exchange-dir transport | Agent 10 | open | `kiwi-sandbox/` | T-161 |
 | T-169 | MessageView thread fields (inReplyTo/references) + account-add→sync-start wiring | Agent 7 | open | `src-tauri/`, `kiwi-mail/` | T-163/164 |
 | T-170 | Integration review: contract-vs-code consistency audit across all contracts + full gate matrix | Agent 6 | open | repo-wide (read-only review) | T-166 |
+| T-172 | Mobile authenticator follow-ups: ESLint gate, pairing transport decision (WS vs mDNS/TCP), deny-vs-timeout wording alignment | Agent 4 | open | `mobile/`, `docs/contracts/authenticator.md` | T-136 |
