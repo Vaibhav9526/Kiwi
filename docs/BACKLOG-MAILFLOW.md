@@ -35,11 +35,39 @@ Tracked as T-195 (Agent 8, queued after T-183).
 
 ## Rejected — recorded with reasons
 
-- PWA/WebSocket push — native Tauri events cover it.
-- Multi-user/TOTP/SSO/password-recovery — webmail model; KIWI identity is
-  SecureMail + asymmetric authenticator (stronger).
-- Remote favicon proxying — privacy (see F8).
-- CardDAV server, Todoist integration, AI drafting — Phase-7 candidates, not now.
+- Verbatim remote-favicon PROXYING — metadata leak; replaced by opt-in direct
+  fetch (see adapted map).
+- Literal multi-user webmail model — replaced by the kiwi-admin org plane.
+
+## Adapted mappings (PLAN-APPEND-2 — full parity, phase-deferred)
+
+Every remaining MailFlow feature gets a KIWI home. Phase 6+ items require owner
+sign-off before starting; all are registered intent, not current work.
+
+| MailFlow feature | KIWI mapping | Phase | T-task |
+|---|---|---|---|
+| user-management / invites / admin-panel | kiwi-admin org plane | 6 | T-215 |
+| TOTP-2FA | OPTIONAL secondary unlock factor in authenticator spec (RFC-6238; asymmetric challenge-response stays primary; secrets in OS credential store) | 3 | T-216 |
+| SSO / OIDC | OIDC login for admin plane | 6 | T-217 |
+| recovery-email | recovery-address option in SecureMail recovery spec | 3 | T-218 |
+| PWA / push | mobile authenticator app covers it (documented mapping — no new work) | 4 | — |
+| WebSocket toasts | F11 native Tauri notifications | — | T-210 |
+| Todoist export | generic task-export action | 8 | T-219 |
+| CardDAV | CardDAV server exposing kiwi-contacts | 6/7 | T-220 |
+| remote favicons | OPT-IN direct favicon fetch — no proxy, explicit consent, cached, default OFF | 8 | T-221 |
+| custom per-user CSS | power-user theming (style-injection surface — needs sanitization review) | 8 | T-222 |
+| multi-language i18n | locale framework + string extraction | 8 | T-223 |
+| AI assistant (summarize/draft/ask) | AI-layer expansion — stays non-authoritative per SECURITY.md | 7 | T-224 |
+| spam-learning | classifier (deterministic-first; AI only as explanation layer) | 7 | T-225 |
+
+## Standing gates for the whole backlog
+
+- AGPL: `reference/mailflow/` is read-only study — no source copying.
+- Deterministic-first: rules/classifier/spam are deterministic; AI stays
+  explanation-only.
+- Privacy: any network call beyond configured mail servers requires explicit
+  opt-in (favicon direct-fetch is the precedent).
+- Phase 6+ items require owner sign-off before any work starts.
 
 ## Acceptance per feature
 

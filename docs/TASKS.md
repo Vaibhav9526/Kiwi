@@ -140,3 +140,14 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-212 | F13 junk marking (\Junk flag + move; context/toolbar/bulk) | unassigned | backlog | `kiwi-mail/` + UI | — |
 | T-213 | F14 email priority headers (compose + display) | unassigned | backlog | `kiwi-mail/` + composer | — |
 | T-214 | F15 extra theme schemes (custom CSS field deferred) | unassigned | backlog | `kiwi-app/` | — |
+| T-215 | kiwi-admin org plane (user mgmt/invites/admin panel) — Phase 6, needs owner sign-off | unassigned | deferred-P6 | `kiwi-admin/` | — |
+| T-216 | TOTP optional secondary unlock factor (RFC-6238, OS credential store; challenge-response stays primary) | unassigned | deferred-P3 | `mobile/`, `docs/contracts/authenticator.md` | T-136 |
+| T-217 | OIDC login for admin plane — Phase 6, sign-off required | unassigned | deferred-P6 | `kiwi-admin/` | — |
+| T-218 | Recovery-address option in SecureMail recovery spec — Phase 3 | unassigned | deferred-P3 | `docs/contracts/` | — |
+| T-219 | Generic task-export action — Phase 8 | unassigned | deferred-P8 | `kiwi-app/` | — |
+| T-220 | CardDAV server exposing kiwi-contacts — Phase 6/7 | unassigned | deferred-P6/7 | `kiwi-contacts/` | — |
+| T-221 | Opt-in direct favicon fetch (no proxy, consent, cached, OFF default) — Phase 8 | unassigned | deferred-P8 | `kiwi-app/` | — |
+| T-222 | Custom per-user CSS theming — Phase 8 (sanitization review required) | unassigned | deferred-P8 | `kiwi-app/` | — |
+| T-223 | i18n locale framework — Phase 8 | unassigned | deferred-P8 | `kiwi-app/` | — |
+| T-224 | AI assistant (summarize/draft/ask) — Phase 7, non-authoritative per SECURITY.md | unassigned | deferred-P7 | TBD | — |
+| T-225 | Spam-learning classifier — Phase 7, deterministic-first | unassigned | deferred-P7 | `kiwi-mail/` | — |
