@@ -84,8 +84,8 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-155 | Wire T-146/T-142 into UI | Agent 5 | done | `kiwi-app/src/` | T-146, T-142 |
 | T-156 | Account setup wizard | Agent 5 | done | `kiwi-app/src/views/setup.tsx` | T-135 |
 | T-157 | Live sync engine (IDLE loop, mail-changed events, lock-aware) | Agent 7 | done (kiwi-app 34/34) | `kiwi-app/src-tauri/` | T-142 |
-| T-158 | Autoconfig contract completion + discovery-order/malformed/domain tests | Agent 8 | open | `kiwi-autoconfig/`, `docs/contracts/` | T-135 |
-| T-159 | kiwi-mail search module: FTS5 over store (subject/from/to/body), bounded query API | Agent 8 | open | `kiwi-mail/src/` | — |
+| T-158 | Autoconfig contract completion + discovery-order/malformed/domain tests | Agent 8 | done | `kiwi-autoconfig/`, `docs/contracts/` | T-135 |
+| T-159 | kiwi-mail search module: FTS5 over store (subject/from/to/body), bounded query API | Agent 8 | done | `kiwi-mail/src/` | — |
 | T-160 | Search UI + lock screen | Agent 5 | done | `kiwi-app/src/` | T-156, T-159 |
 | T-161 | `kiwi-sandbox` crate: trait + Wsl2Provider + NullProvider | Agent 10 | done | `kiwi-sandbox/` | T-132 |
 | T-162 | Bulk actions + multi-select | Agent 5 | done (needs kiwi_delete_messages IPC) | `kiwi-app/src/` | T-160 |
@@ -93,8 +93,9 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-164 | Forensics IPC | Agent 7 | done (41/41, 7 new tests) | `src-tauri/commands/`, `ipc.md` | T-163 |
 | T-165 | Threading view | Agent 5 | done (needs inReplyTo/references fields — queued for A7) | `kiwi-app/src/` | T-162 |
 | T-166 | Forensics→app seam: contract query shapes + sync→observe→finding integration test | Agent 6 | done (query shapes in forensics.md S11; live auth threading; fixture-send seam test green; audit guard verified) | `kiwi-forensics/`, `docs/contracts/` | T-148 |
-| T-167 | Settings depth: per-account pane, notifications, appearance (theme/density), privacy section | Agent 5 | open | `kiwi-app/src/views/settings.tsx` | T-156 |
+| T-167 | Settings depth + real command wiring (delete/spam/trash/findings) | Agent 5 | done | `kiwi-app/src/views/settings.tsx` | T-156 |
 | T-168 | kiwi-sandbox guest agent: in-guest runner, report.json schema (process tree/file writes/egress), exchange-dir transport | Agent 10 | open | `kiwi-sandbox/` | T-161 |
 | T-169 | MessageView thread fields (inReplyTo/references) + account-add→sync-start wiring | Agent 7 | open | `src-tauri/`, `kiwi-mail/` | T-163/164 |
-| T-170 | Integration review: contract-vs-code consistency audit across all contracts + full gate matrix | Agent 6 | open | repo-wide (read-only review) | T-166 |
+| T-170 | Integration review: contract-vs-code consistency audit across all contracts + full contract + full gate matrix | Agent 6 | done (5 pairs reviewed, mismatches filed file:line; gate matrix reported) | repo-wide (read-only review) | T-166 |
 | T-172 | Mobile authenticator follow-ups: ESLint gate, pairing transport decision (WS vs mDNS/TCP), deny-vs-timeout wording alignment | Agent 4 | open | `mobile/`, `docs/contracts/authenticator.md` | T-136 |
+| T-173 | Contacts UI: contacts view + compose autocomplete + add-from-message; IPC wrappers (demo fallback) | Agent 5 | open | `kiwi-app/src/` | T-150 |
