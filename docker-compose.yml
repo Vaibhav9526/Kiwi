@@ -76,7 +76,11 @@ services:
         required: true
     environment:
       DATABASE_URL: ${DATABASE_URL}
-      PORT: "3001"
+      # The service reads KIWI_ADMIN_PORT (src/server.ts), NOT PORT — compose
+      # previously set PORT, so the container listened on the 8471 default while
+      # the published port, the healthcheck below and the image's HEALTHCHECK
+      # all probed 3001. A bare `PORT` is silently ignored by the service.
+      KIWI_ADMIN_PORT: "3001"
     ports:
       - "${KIWI_ADMIN_PORT:-3001}:3001"
     depends_on:

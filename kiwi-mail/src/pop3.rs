@@ -318,7 +318,7 @@ impl Pop3Client {
 fn check_param(protocol: &'static str, name: &str, value: &str) -> Result<()> {
     if value
         .bytes()
-        .any(|b| b == b'\r' || b == b'\n' || b < 0x20 && b != b'\t')
+        .any(|b| b == b'\r' || b == b'\n' || b == 0x7f || b < 0x20 && b != b'\t')
     {
         return Err(MailError::Protocol {
             protocol,

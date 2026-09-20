@@ -1,11 +1,12 @@
 /**
- * Security components (T-112): SecurityPill (001), PolicyBanner (007),
- * FindingDialog (004), LockOverlay (005), AuthenticatorDialog (006).
+ * Security components (T-112, T-164): SecurityPill (001), PolicyBanner (007),
+ * FindingDialog (004, with kiwi_finding_detail session/signals/siblings),
+ * LockOverlay (005), AuthenticatorDialog (006).
  * All severities render glyph + text (never color-only); dialogs trap focus
  * via Esc-to-close and return focus to the invoker (handled by callers).
  */
 import { useEffect, useRef } from "react";
-import type { FindingInfo, PolicyBannerVerdict, Severity } from "../kiwi";
+import type { FindingDetailView, FindingInfo, PolicyBannerVerdict, Severity } from "../kiwi";
 import { severityGlyph, severityLabel } from "../kiwi";
 
 export function SecurityPill({
@@ -78,6 +79,8 @@ export function FindingDialog({
   finding,
   position,
   total,
+  detail,
+  detailError,
   onClose,
   onPrev,
   onNext,
@@ -85,6 +88,9 @@ export function FindingDialog({
   finding: FindingInfo;
   position: number;
   total: number;
+  /** Live-joined record from kiwi_finding_detail (null in demo / pending). */
+  detail: FindingDetailView | null;
+  detailError: string | null;
   onClose: () => void;
   onPrev: () => void;
   onNext: () => void;
@@ -92,6 +98,16 @@ export function FindingDialog({
   useEsc(onClose);
   const closeRef = useRef<HTMLButtonElement>(null);
   useEffect(() => closeRef.current?.focus(), []);
+  const session = detail?.session ?? null;
+  const sessionLine = (() => {
+    if (!session || typeof session !== "object") return null;
+    const s = session as Record<string, unknown>;
+    const str = (v: unknown) => (typeof v === "string" ? v : "");
+    const host = str(s["serverHost"]);
+    const port = typeof s["serverPort"] === "number" ? `:${s["serverPort"]}` : "";
+    const parts = [str(s["protocol"]).toUpperCase(), `${host}${port}`, str(s["tlsVersion"])].filter(Boolean);
+    return parts.length > 0 ? parts.join(" · ") : str(s["sessionId"]) || null;
+  })();
   return (
     <div className="kiwi-dialog-backdrop" onClick={onClose}>
       <div
@@ -125,6 +141,46 @@ export function FindingDialog({
             <li key={step}>{step}</li>
           ))}
         </ol>
+        {detailError && (
+          <p role="alert">
+            <small>Full record unavailable ({detailError}) — showing the retained summary.</small>
+          </p>
+        )}
+        {detail && (
+          <>
+            <h3>Observed session</h3>
+            {sessionLine ? (
+              <p>
+                <code>{sessionLine}</code>
+              </p>
+            ) : (
+              <p style={{ color: "var(--kiwi-text-secondary)" }}>
+                <small>Source session already evicted from the bounded ring — the finding outlives it by design.</small>
+              </p>
+            )}
+            {detail.signals.length > 0 && (
+              <>
+                <h3>Session signals</h3>
+                <ul>
+                  {detail.signals.map((sig, i) => (
+                    <li key={i}>
+                      <small>
+                        {typeof sig.kind === "string" ? sig.kind : "signal"} ·{" "}
+                        {typeof sig.severity === "string" ? sig.severity : "unknown"}
+                        {typeof sig.penalty === "number" ? ` (−${sig.penalty})` : ""}
+                      </small>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+            {detail.siblingFindingIds.length > 0 && (
+              <p>
+                <small>Same session also produced: {detail.siblingFindingIds.join(", ")}</small>
+              </p>
+            )}
+          </>
+        )}
         <div style={{ display: "flex", gap: "0.4rem", marginTop: "0.8rem" }}>
           <button type="button" onClick={onPrev} disabled={position <= 1}>
             ← Prev
@@ -144,11 +200,20 @@ export function FindingDialog({
 export function LockOverlay({
   reason,
   busy,
+  trustLines,
+  deviceLabel,
+  challengeId,
   onVerify,
   onRetry,
 }: {
   reason: string;
   busy: boolean;
+  /** Trust-reason display: backend state/score/required-action lines. */
+  trustLines: string[];
+  /** Paired device label for the mobile-approve hint (null when none). */
+  deviceLabel: string | null;
+  /** Active challenge id, shown once Verify issues one. */
+  challengeId: string | null;
   onVerify: () => void;
   onRetry: () => void;
 }) {
@@ -156,15 +221,73 @@ export function LockOverlay({
   useEffect(() => verifyRef.current?.focus(), []);
   return (
     <div className="kiwi-lock-overlay" role="alertdialog" aria-modal="true" aria-labelledby="lock-title">
-      <div>
+      <div style={{ maxWidth: "30rem", padding: "0 1rem" }}>
         <div className="kiwi-lock-mark" aria-hidden="true">
           🔒
         </div>
         <h1 id="lock-title">Mailbox locked</h1>
         <p>{reason}</p>
+        {trustLines.length > 0 && (
+          <ul style={{ listStyle: "none", margin: "0 0 0.6rem", padding: 0, color: "var(--kiwi-text-secondary)" }}>
+            {trustLines.map((line) => (
+              <li key={line}>
+                <small>{line}</small>
+              </li>
+            ))}
+          </ul>
+        )}
         <p>
           <small>Message bodies, attachments, and sending are unavailable while locked.</small>
         </p>
+        <div
+          style={{
+            border: "1px dashed var(--kiwi-border)",
+            borderRadius: "10px",
+            padding: "0.7rem",
+            marginBottom: "0.8rem",
+          }}
+          aria-label="Mobile approval"
+        >
+          <p style={{ margin: "0 0 0.3rem" }}>
+            <strong>Approve on mobile</strong>
+          </p>
+          <p style={{ margin: 0, color: "var(--kiwi-text-secondary)" }}>
+            <small>
+              {deviceLabel
+                ? `Open the KIWI authenticator on ${deviceLabel} and approve the unlock request.`
+                : "No authenticator device registered — pair one in Settings → KIWI Security once unlocked."}
+            </small>
+          </p>
+          <div
+            role="img"
+            aria-label="QR code placeholder for mobile approval"
+            title="QR placeholder — real codes arrive with the device-pairing flow"
+            style={{
+              width: "96px",
+              height: "96px",
+              margin: "0.5rem auto 0",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              border: "1px solid var(--kiwi-border)",
+              borderRadius: "8px",
+              color: "var(--kiwi-text-secondary)",
+              fontSize: "0.7rem",
+              textAlign: "center",
+            }}
+          >
+            QR
+            <br />
+            placeholder
+          </div>
+          {challengeId && (
+            <p style={{ margin: "0.4rem 0 0", color: "var(--kiwi-text-secondary)" }}>
+              <small>
+                Challenge <code>{challengeId}</code> — match it on the device before approving.
+              </small>
+            </p>
+          )}
+        </div>
         <div style={{ display: "flex", gap: "0.5rem", justifyContent: "center" }}>
           <button type="button" onClick={onVerify} disabled={busy} ref={verifyRef}>
             {busy ? "Working…" : "Verify with authenticator"}

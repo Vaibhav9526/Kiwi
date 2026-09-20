@@ -1,6 +1,7 @@
 # Contract — Tauri IPC Command Catalog (`kiwi.ipc/1`)
 
-> Owner: Agent 7 · **Contract version: `kiwi.ipc/1`** · Status: implemented (T-120, T-121)
+> Owner: Agent 7 · **Contract version: `kiwi.ipc/1`** · Status: implemented
+> (T-120, T-121, T-142, T-144, T-146, T-157, T-163, T-164, T-169)
 > Implemented by `kiwi-app/src-tauri` (Rust, Tauri 2). This document is
 > authoritative for the frontend ↔ backend boundary; the registered handler
 > list in `kiwi-app/src-tauri/src/lib.rs` is the reference implementation.
@@ -149,7 +150,8 @@ returned. `apop` is valid for POP3 only; `xoauth2` not for POP3.
 
 ### `kiwi_remove_account(accountId) → { removed: bool }`
 Best-effort deletes the account's credential-store keys, drops the account
-from the index. Audited.
+from the index, and cascades the mail.db rows + on-disk payloads
+(`MailStore::delete_account`). Audited.
 
 ### `kiwi_test_account(accountId) → VerifyResult[]`
 Connect + authenticate incoming AND outgoing servers; returns one
@@ -193,19 +195,29 @@ Newest first. `limit` default 50, clamp 1–500. `folderId` must belong to
 { "id": 12, "folderId": 1, "uid": 991, "messageId": "<…>" | null,
   "subject": "…", "fromAddr": "…", "toAddrs": "…",
   "dateUnix": 0, "size": 1234, "flags": ["\\Seen"],
-  "hasAttachments": false, "snippet": "…" }
+  "hasAttachments": false, "snippet": "…",
+  "inReplyTo": "<…>" | null, "references": ["<…>"] }
 ```
+
+`inReplyTo`/`references` (T-169, header-chain threading): populated from
+a bounded sidecar cache (50k entries) filled by the sync-time
+`BODY.PEEK[HEADER.FIELDS (IN-REPLY-TO REFERENCES)]` fetch on newly-seen
+uids, or lazily from stored bodies (≤32 parses per list call). `null`/
+`[]` means "unknown" — no-body messages predating the cache learn on
+their next sync or body fetch.
 
 ### `kiwi_get_message(accountId, folderId, uid) → MessageBodyView`
 Reads the stored body; for IMAP, missing bodies are fetched on demand
 (`BODY[]`) and stored — that fetch is itself recorded as a session.
+`inReplyTo`/`references` come from the parsed body (authoritative).
 
 ```jsonc
 { "folderId": 1, "uid": 991, "messageId": "<…>" | null, "subject": "…",
   "from": ["a@b"], "to": ["…"], "cc": [], "dateUnix": 0,
   "textBody": "…", "htmlBody": "…" | null,
   "attachments": [ { "filename": "…", "contentType": "…", "size": 123 } ],
-  "bodyPresent": true }
+  "bodyPresent": true,
+  "inReplyTo": "<…>" | null, "references": ["<…>"] }
 ```
 
 ### `kiwi_sync_account(accountId, folders?) → SyncReportView[]`
@@ -252,13 +264,85 @@ unfetched bodies. Output capped at 8 MiB.
 Per-account opt-in for remote resources in rendered bodies — default off
 (tracking surface). Persisted in the sidecar index, audited.
 
+### `kiwi_delete_messages(accountId, folderId, uids, permanent?) → DeleteResultView` (T-163)
+Batch delete, uid set bounded at 500. **Soft delete** (default): moves to
+the account's Trash — resolved by local name match → server `\Trash`
+special-use LIST flag → `CREATE "Trash"` (idempotent). IMAP uses
+`UID MOVE` (COPY+`\Deleted`+EXPUNGE fallback inside kiwi-mail); local rows
+move via `store.move_messages` with **fresh destination uids** (UIDs are
+folder-scoped; the map is returned). **Hard delete** — `permanent: true`,
+or the source folder already IS the trash (empty-trash): `\Deleted` +
+`EXPUNGE` on IMAP, row+payload removal locally. POP3 is local-only in
+both paths. Audited.
+```jsonc
+{ "folderId": 1, "movedToTrash": 2, "deleted": 0,
+  "trashFolderId": 4, "uidMap": { "12": 7 } }
+```
+
+### `kiwi_move_messages(accountId, srcFolderId, dstFolderId, uids) → MoveResultView` (T-163)
+Generic folder move. **Cross-account guard**: both folders must resolve
+on `accountId` — a foreign `dstFolderId` is `not-found`, never a partial
+cross-account write. IMAP `UID MOVE` + local move; POP3 local-only.
+Audited.
+```jsonc
+{ "srcFolderId": 1, "dstFolderId": 5, "moved": 3,
+  "uidMap": { "12": 41 } }
+```
+
+## 6c. Live sync engine **[background]** (T-157)
+
+A supervisor (spawned at startup, 2 s reconcile tick) runs one sync worker
+per configured account. Workers are dedicated threads with their own
+current-thread runtime — kiwi-mail clients are `!Send` inside futures, so
+they cannot live on the command runtime (same constraint as
+`run_mail_io`).
+
+- **IMAP:** connect + auth → full `sync_folder` pass over every listed
+  folder (cap 64) → `SELECT INBOX` → `IDLE` cycles (30 s max each). Any
+  untagged EXISTS/EXPUNGE/FETCH notification triggers a `sync_folder`
+  re-sync of INBOX. The connection's session is recorded once
+  (`"imap live"` label) and §11 received-events emit per sync pass.
+- **POP3:** no push channel — `sync_pop3` pass every 60 s.
+- **Lock:** while `SecurityStatusView.locked`, workers pause — no
+  connects, no credential use; a worker that notices the lock mid-IDLE
+  logs out rather than holding an authenticated session.
+- **Failure:** any connect/sync error → exponential backoff 5 s → 120 s
+  cap (`state: "backoff"`, `nextRetryUnix` set), then reconnect.
+- **Removal:** deleting the account stops its worker and drops its status.
+
+### Event `kiwi://mail-changed`
+```jsonc
+{ "accountId": "acct-…", "folder": "INBOX" | null, "folderId": 1 | null,
+  "reason": "sync | idle | poll",
+  "newMessages": 2, "flagUpdates": 1, "expunged": 0, "atUnix": 0 }
+```
+`reason: "sync"` is the connect-time full pass (emitted unconditionally —
+it's the UI's "initial sync done" signal; folder fields are `null`).
+`"idle"` fires per IDLE-triggered INBOX re-sync, `"poll"` per POP3 pass —
+both only when something actually changed.
+
+### `kiwi_sync_status(accountId?) → SyncStatusView[]` **[gated]**
+One row per configured account (all accounts when `accountId` omitted;
+unknown id → `not-found`). A worker that hasn't run yet reports
+`state: "pending"`.
+
+```jsonc
+{ "accountId": "…", "state": "pending | connecting | syncing | idle |
+    polling | backoff | paused-locked | stopped",
+  "lastSyncUnix": 0 | null, "lastError": "…" | null,
+  "nextRetryUnix": 0 | null, "foldersSynced": 3, "newMessages": 5,
+  "attempts": 0 }
+```
+
 ## 7. Commands — send / outbox **[gated]**
 
 ### `kiwi_send_message(accountId, message: ComposeInput, options?) → SendReceipt`
 Validates + MIME-builds + enqueues. Delivery is async via the background
 dispatcher (1 s tick); undo-send grace (`undoGraceSecs`, default 10, clamp
-0–120) and send-later (`sendAtUnix`) are real. Queued sends persist to
-disk (`outbox/<queueId>.{json,eml}`) and reload on restart (T-142).
+0–120) and send-later (`sendAtUnix`) are real. Queued sends persist in
+mail.db's `outbox` table (schema v2 — one row per send, built MIME in-row)
+and reload on restart (T-142). Persist-before-enqueue: a crash between the
+two cannot lose a committed send.
 
 ```jsonc
 // message
@@ -274,7 +358,17 @@ disk (`outbox/<queueId>.{json,eml}`) and reload on restart (T-142).
 ```
 
 ### `kiwi_cancel_send(queueId) → { cancelled: bool }`
-True undo — only while `now < undoWindowUntilUnix`.
+Recall a queued send. Succeeds while the item is still recallable:
+`now < undoWindowUntilUnix` (true undo-send) **or** `now < notBeforeUnix`
+(deleting a scheduled send before its slot). Once committed AND due the
+send belongs to the dispatcher — and once dispatched it no longer exists
+to cancel. Audited; `false` is a normal outcome, not an error.
+
+### `kiwi_schedule_send(queueId, sendAtUnix) → SendReceipt`
+Send-later reschedule — moves a pending send's dispatch time. Works on
+anything still queued (grace-window item, scheduled send, held retry);
+`not-found` if unknown or already dispatched. The undo window is
+untouched — rescheduling is not an undo. Audited.
 
 ### `kiwi_list_outbox() → OutboxItem[]`
 Envelope metadata only (never bodies):
@@ -283,6 +377,8 @@ Envelope metadata only (never bodies):
   "subject": "…", "notBeforeUnix": 0, "undoWindowUntilUnix": 0,
   "attempts": 0, "cancelable": true }
 ```
+`cancelable` mirrors the `kiwi_cancel_send` rule (undo window open or
+send-later slot still ahead).
 
 ### `kiwi_flush_outbox() → { sent, failed, held }`
 Force-drain everything (explicit "send now" — skips remaining grace).
@@ -331,18 +427,34 @@ to `/api/v1/mailflow/events` — metadata only (no subject/body anywhere):
 
 ## 8. Commands — security data **[gated]**
 
-### `kiwi_security_findings(accountId?) → Finding[]`
-Retained deterministic findings (`kiwi.forensics/1` shape, evidence
-included), newest first.
+### `kiwi_security_findings(accountId?, severity?, limit?) → Finding[]`
+Retained deterministic findings (`kiwi.forensics/1` shape verbatim,
+evidence included). This is forensics.md §11 `list_findings`:
+`accountId` (≤256) and `severity` (`info|low|medium|high|critical` —
+unknown string → `invalid-input`, never silently ignored) AND together.
+Sort is binding and total: severity desc → `observedAt` desc → `ruleId`
+asc → `subjectKey` asc. `limit` default 100, clamp 1000.
 
-### `kiwi_security_events(limit?) → EventRow[]`
-Session journal rows, newest first (default 100, clamp 1000):
+### `kiwi_security_events(limit?, accountId?) → EventRow[]`
+Session journal rows, newest first (default 100, clamp 1000);
+`accountId` filters to that account's sessions:
 ```jsonc
 { "id": "app:imap:3", "tsUnix": 0, "accountId": "…" | null,
   "category": "imap sync", "severity": "high",
   "summary": "IMAP imap.x.test:993 tls tls1.3",
   "detailRef": "session:app:imap:3" }
 ```
+
+### `kiwi_finding_detail(findingId) → FindingDetailView`
+One finding's full record + the session it was observed in (finding
+dialog, KIWI-UI-004). `findingId` is the stable `rule|subject` key.
+```jsonc
+{ "finding": { /* full kiwi.forensics/1 Finding, evidence included */ },
+  "session": SessionView | null,   // null once the session ring evicts it
+  "signals": [SignalView],         // that session's trust signals
+  "siblingFindingIds": ["KIWI-AUTH-001|imap:h:993"] }
+```
+Unknown id → `not-found`.
 
 ### `kiwi_session_detail(sessionId) → SessionDetailView`
 ```jsonc
@@ -439,15 +551,19 @@ Collection caps at 32 observations per run.
 
 ## 12. Notes & known gaps (see agent-7-status.md)
 
-- `MailStore` has no `delete_account`/`list_accounts`; account removal is
-  effective via the sidecar index (orphaned row, documented).
+- `MailStore::delete_account` cascades account→folders/messages/pop3_seen/
+  outbox rows and sweeps on-disk payload dirs; `kiwi_remove_account` calls
+  it (gap closed by Agent 2's T-105 work landing mid-session).
 - `SendQueue` has no item iterator; `outbox_meta` backs `kiwi_list_outbox`.
-  Outbox **persists** across restarts (T-142): each send is
-  `data_dir/outbox/<queueId>.json` (meta) + `.eml` (MIME), reloaded on
-  boot (≤256 items, ≤32 MiB each, ≤100 MiB total; malformed files skipped).
-  Expired undo windows simply aren't cancelable after restart. The
-  mailflow pending queue (§11 retry) is in-memory only — events queued
-  while the admin service is down are lost on restart.
+  Outbox **persists** across restarts (T-142): each send is one row in
+  mail.db's `outbox` table (schema v2 — meta + built MIME together, so a
+  committed send is a single atomic write). Reload is bounded (≤256 items,
+  ≤32 MiB MIME enforced at enqueue). Pre-SQLite `outbox/*.json|.eml` files
+  are imported once at open, then removed. Expired undo windows simply
+  aren't cancelable after restart; a still-future `notBeforeUnix` is
+  honored — the dispatcher picks it up on its next tick. The mailflow
+  pending queue (§11 retry) is in-memory only — events queued while the
+  admin service is down are lost on restart.
 - `device_id` on `SecuritySession` is `null` (endpoint binds the session,
   not a device); challenge `sessionId` binds to the boot session.
 - Session/findings journals are bounded in-memory rings (512 / 4096).

@@ -6,7 +6,10 @@
 //! host pair that the user must review. Nothing here is asserted as
 //! correct — `source = manual` + `needs_manual_review = true`.
 
-use crate::suggest::{AccountSuggestion, AuthKind, IncomingKind, IncomingSuggestion, OutgoingSuggestion, SuggestionSource};
+use crate::suggest::{
+    AccountSuggestion, AuthKind, IncomingKind, IncomingSuggestion, OutgoingSuggestion,
+    SuggestionSource,
+};
 use kiwi_mail::transport::SocketSecurity;
 
 /// User-editable account fields (exactly the subset the app UI exposes).
@@ -123,5 +126,89 @@ impl ManualEntry {
             },
         }
         .checked()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::suggest::{IncomingKind, SuggestionSource};
+
+    #[test]
+    fn blank_entry_is_placeholder_with_placeholders() {
+        let m = ManualEntry::blank("u@selfhosted.test");
+        assert_eq!(m.incoming_host, "imap.selfhosted.test");
+        assert_eq!(m.incoming_port, 993);
+        assert_eq!(m.incoming_security, SocketSecurity::ImplicitTls);
+        assert_eq!(m.outgoing_host, "smtp.selfhosted.test");
+        assert_eq!(m.outgoing_port, 587);
+        assert_eq!(m.outgoing_security, SocketSecurity::StartTls);
+        assert_eq!(m.incoming_auth, AuthKind::Password);
+        assert_eq!(m.username, ""); // empty = use email address
+        let s = m.to_suggestion("u@selfhosted.test").unwrap();
+        assert_eq!(s.source, SuggestionSource::Manual);
+        assert_eq!(s.incoming.username, "u@selfhosted.test");
+        // to_mail_account conversion exists via AccountSuggestion — this
+        // test only covers the manual fallback shape; pipeline tests in
+        // discovery.rs cover the full mapping.
+        let _ = s;
+    }
+
+    #[test]
+    fn blank_entry_handles_invalid_email_domain() {
+        // Manual fallback must never panic on a bad address.
+        let m = ManualEntry::blank("not-an-email");
+        assert_eq!(m.incoming_host, "imap.example.invalid");
+    }
+
+    #[test]
+    fn edits_apply_and_validate() {
+        let m = ManualEntry::blank("u@x.test")
+            .with_incoming("mail.corp.test", 143, SocketSecurity::StartTls)
+            .with_outgoing("relay.corp.test", 25, SocketSecurity::Plaintext);
+        let s = m.to_suggestion("u@x.test").unwrap();
+        assert_eq!(s.incoming.host, "mail.corp.test");
+        assert_eq!(s.incoming.port, 143);
+        assert_eq!(s.incoming.security, SocketSecurity::StartTls);
+        assert_eq!(s.outgoing.host, "relay.corp.test");
+        assert_eq!(s.outgoing.security, SocketSecurity::Plaintext);
+        assert_eq!(s.incoming.kind, IncomingKind::Imap);
+        // Custom username sticks.
+        let m2 = ManualEntry {
+            username: "  login@corp.test  ".into(),
+            ..m
+        };
+        let s2 = m2.to_suggestion("u@x.test").unwrap();
+        assert_eq!(s2.incoming.username, "login@corp.test");
+        assert_eq!(s2.outgoing.username, "login@corp.test");
+    }
+
+    #[test]
+    fn host_validation_is_enforced() {
+        // Empty host / whitespace-only username → checked() rejects.
+        let bad = ManualEntry {
+            incoming_host: "   ".into(),
+            ..ManualEntry::blank("u@x.test")
+        };
+        assert!(bad.to_suggestion("u@x.test").is_none());
+        // Invalid email → None, not panic.
+        assert!(
+            ManualEntry::blank("u@x.test")
+                .to_suggestion("bogus")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn from_suggestion_prefills_fields() {
+        let s = crate::ispdb::lookup_email("a@gmail.com").unwrap();
+        let m = ManualEntry::from_suggestion(&s);
+        assert_eq!(m.incoming_host, "imap.gmail.com");
+        assert_eq!(m.incoming_port, 993);
+        assert_eq!(m.incoming_auth, AuthKind::XOAuth2);
+        // Round-trip: same suggestion re-derived (modulo display name).
+        let s2 = m.to_suggestion("a@gmail.com").unwrap();
+        assert_eq!(s2.incoming, s.incoming);
+        assert_eq!(s2.outgoing, s.outgoing);
     }
 }

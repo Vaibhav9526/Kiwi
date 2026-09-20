@@ -28,7 +28,9 @@ const viewerHeaders = { "x-kiwi-subject": "viewer", "x-kiwi-roles": "viewer", "x
 let orgId = "";
 
 beforeAll(async () => {
-  handle = await startServer({ dbPath: makeTempDbPath(), port: 0 });
+  // `databaseUrl: null` pins the SQLite dialect so the suite never follows an
+  // ambient DATABASE_URL into a real Postgres instance.
+  handle = await startServer({ dbPath: makeTempDbPath(), databaseUrl: null, port: 0 });
   base = `http://127.0.0.1:${handle.port}`;
   const created = await api("/api/v1/orgs", { method: "POST", body: { name: "http.test" }, headers: adminHeaders });
   expect(created.status).toBe(201);
@@ -38,7 +40,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await new Promise<void>((resolve, reject) => handle.server.close((e) => (e ? reject(e) : resolve())));
-  handle.container.close();
+  await handle.container.close();
 });
 
 describe("server transport", () => {
@@ -158,5 +160,55 @@ describe("server transport", () => {
     const missing = await api("/api/v1/nope", { headers: adminHeaders });
     expect(missing.status).toBe(404);
     expect(missing.json.error.code).toBe("not.found");
+  });
+
+  it("fails closed when the roles header is absent or unusable", async () => {
+    // No `x-kiwi-roles` at all: unauthenticated, so refused — never promoted
+    // to a default org_admin.
+    const anonymous = await api("/api/v1/orgs", {
+      method: "POST",
+      body: { name: "should-not-exist.test" },
+      headers: { "x-kiwi-subject": "anonymous" },
+    });
+    expect(anonymous.status).toBe(403);
+    expect(anonymous.json.error.code).toBe("auth.denied");
+
+    // A role name that parses to nothing is equally not a role.
+    const typo = await api("/api/v1/orgs", {
+      method: "POST",
+      body: { name: "should-not-exist.test" },
+      headers: { "x-kiwi-subject": "typo", "x-kiwi-roles": "org-admin,admin,superuser" },
+    });
+    expect(typo.status).toBe(403);
+  });
+
+  it("requires audit.read to read or verify the audit log", async () => {
+    const anonymous = await api("/api/v1/audit?limit=5", { headers: { "x-kiwi-subject": "anonymous" } });
+    expect(anonymous.status).toBe(403);
+
+    const anonymousVerify = await api("/api/v1/audit/verify", { headers: { "x-kiwi-subject": "anonymous" } });
+    expect(anonymousVerify.status).toBe(403);
+
+    // A viewer holds audit.read, so the read succeeds.
+    const allowed = await api("/api/v1/audit?limit=5", { headers: viewerHeaders });
+    expect(allowed.status).toBe(200);
+  });
+
+  it("scopes the audit log to one org with ?org=", async () => {
+    const all = await api(`/api/v1/audit?limit=1000`, { headers: adminHeaders });
+    expect(all.status).toBe(200);
+    // `org.create` is audited with a NULL org_id (it is a platform-level act),
+    // so it is the marker for "rows belonging to no org".
+    expect((all.json.items as { action: string }[]).some((r) => r.action === "org.create")).toBe(true);
+
+    const scoped = await api(`/api/v1/audit?org=${orgId}&limit=1000`, { headers: adminHeaders });
+    expect(scoped.status).toBe(200);
+    const scopedItems = scoped.json.items as { action: string; seq: number }[];
+    // The filter must actually narrow the result — this is the regression
+    // guard for the parameter the server accepted but AuditService ignored.
+    expect(scopedItems.length).toBeLessThan((all.json.items as unknown[]).length);
+    expect(scopedItems.some((r) => r.action === "org.create")).toBe(false);
+    // Rows that ARE in the org come through.
+    expect(scopedItems.some((r) => r.action === "policy.create")).toBe(true);
   });
 });

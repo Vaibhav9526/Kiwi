@@ -29,18 +29,18 @@ pub mod suggest;
 
 pub use autoconfig_xml::{ClientConfig, OAuth2Spec, ServerSpec};
 pub use discovery::{
-    DiscoveryOutcome, StageAttempt, StageOutcome, autoconfig_host_url, discover, discover_with_table,
-    well_known_url,
+    DiscoveryOutcome, StageAttempt, StageOutcome, autoconfig_host_url, discover,
+    discover_with_table, well_known_url,
 };
 pub use heuristics::MxHint;
 pub use ispdb::{ISPDB_FIXTURES, IspdbEntry};
 pub use manual::ManualEntry;
 pub use net::{DiscoveryNet, MockNet, MxRecord};
+pub use suggest::AccountSuggestion as Suggestion;
 pub use suggest::{
     AccountSuggestion, AuthKind, IncomingKind, IncomingSuggestion, OutgoingSuggestion,
     SuggestionSource,
 };
-pub use suggest::AccountSuggestion as Suggestion;
 
 /// Contract identifier (`docs/contracts/autoconfig.md`).
 pub const CONTRACT_VERSION: &str = "kiwi.autoconfig/1";
@@ -137,5 +137,72 @@ pub fn split_email(email: &str) -> Result<(String, DomainName), Error> {
     if local.starts_with('.') || local.ends_with('.') || local.contains("..") {
         return Err(Error::InvalidEmail);
     }
-    Ok((local.to_string(), DomainName::parse(domain).map_err(|_| Error::InvalidEmail)?))
+    Ok((
+        local.to_string(),
+        DomainName::parse(domain).map_err(|_| Error::InvalidEmail)?,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn domain_parse_normalizes_and_bounds() {
+        let d = DomainName::parse("  EXAMPLE.Test.  ").unwrap();
+        assert_eq!(d.as_str(), "example.test");
+        assert_eq!(d.to_string(), "example.test");
+        // Trailing dot stripped; all-dot is rejected. (No "last @" rule for
+        // domains: `trim_end_matches('.')` removes every trailing dot, and
+        // empty labels after that are rejected.)
+        assert_eq!(
+            DomainName::parse("example.test..").unwrap().as_str(),
+            "example.test"
+        );
+        // Empty label / leading-trailing hyphen / bad bytes.
+        assert!(DomainName::parse("bad..domain").is_err());
+        assert!(DomainName::parse("-bad.domain").is_err());
+        assert!(DomainName::parse("bad-.domain").is_err());
+        assert!(DomainName::parse("under_score.test").is_err());
+        assert!(DomainName::parse("").is_err());
+        assert!(DomainName::parse(&"a".repeat(MAX_DOMAIN_LEN + 1)).is_err());
+        // 63-char label ok, 64-char label rejected.
+        assert!(DomainName::parse(&format!("{}.test", "a".repeat(63))).is_ok());
+        assert!(DomainName::parse(&format!("{}.test", "a".repeat(64))).is_err());
+    }
+
+    #[test]
+    fn split_email_accepts_and_normalizes() {
+        let (local, domain) = split_email("  User@EXAMPLE.Test ").unwrap();
+        assert_eq!(local, "User"); // local part case is preserved
+        assert_eq!(domain.as_str(), "example.test");
+        // `@` is not in the local-part charset, so "a@b@c.test" is rejected.
+        assert!(split_email("a@b@c.test").is_err());
+    }
+
+    #[test]
+    fn split_email_rejects_bad_input() {
+        for bad in [
+            "",
+            "   ",
+            "no-at-sign",
+            "@example.test",
+            "user@",
+            ".dot@example.test",
+            "dot.@example.test",
+            "do..t@example.test",
+            "sp ace@example.test",
+            &"x".repeat(MAX_EMAIL_LEN + 1),
+        ] {
+            assert_eq!(split_email(bad), Err(Error::InvalidEmail), "input: {bad:?}");
+        }
+        // 64-char local part is the limit.
+        assert!(split_email(&format!("{}@x.test", "a".repeat(64))).is_ok());
+        assert!(split_email(&format!("{}@x.test", "a".repeat(65))).is_err());
+    }
+
+    #[test]
+    fn contract_version_is_stable() {
+        assert_eq!(CONTRACT_VERSION, "kiwi.autoconfig/1");
+    }
 }

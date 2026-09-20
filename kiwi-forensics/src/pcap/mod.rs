@@ -5,13 +5,19 @@
 //! enforced before allocation at every step, and every failure is a
 //! [`CaptureError`] value — never a panic, never an unbounded allocation.
 //!
-//! Scope: frame-level records only. TCP reassembly is a Phase-5 interface
-//! (see `reassembly`); analyzers consume frames directly until it exists.
+//! Scope: frame-level records ([`PcapReader`]), link/transport decoding
+//! ([`decode`]), and deterministic TCP reassembly ([`reassembly`]). The
+//! capture-to-report composition lives in `crate::pipeline`.
 
+pub mod decode;
 pub mod reader;
 pub mod reassembly;
 
+pub use decode::{DecodeSkip, TcpSegment, decode_tcp, skip_reasons};
 pub use reader::PcapReader;
+pub use reassembly::{
+    ReassembledFlow, Reassembler, ReassemblyLimits, StreamExtent, StreamReassembler,
+};
 
 use serde::{Deserialize, Serialize};
 

@@ -20,6 +20,7 @@ pub mod imap;
 pub mod lines;
 pub mod mime;
 pub mod pop3;
+pub mod search;
 pub mod smtp;
 pub mod store;
 pub mod sync;

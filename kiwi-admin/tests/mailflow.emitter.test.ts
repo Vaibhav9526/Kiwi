@@ -16,13 +16,13 @@ const idGen = (() => {
   return () => `evt-test-${++n}`;
 })();
 
-beforeAll(() => {
-  container = createServiceContainer(makeTempDbPath());
-  orgId = container.orgs.createOrg(admin, "emitter-acme.test", 2000).id;
+beforeAll(async () => {
+  container = await createServiceContainer(makeTempDbPath());
+  orgId = (await container.orgs.createOrg(admin, "emitter-acme.test", 2000)).id;
 });
 
-afterAll(() => {
-  container.close();
+afterAll(async () => {
+  await container.close();
 });
 
 describe("buildSendAttemptEvents", () => {
@@ -98,7 +98,7 @@ describe("buildSendAttemptEvents", () => {
     ).toThrow(/tlsVersion/);
   });
 
-  it("emitter output ingests end-to-end through the service", () => {
+  it("emitter output ingests end-to-end through the service", async () => {
     const actor: Actor = { ...admin, orgId };
     const events = buildSendAttemptEvents(
       {
@@ -111,7 +111,7 @@ describe("buildSendAttemptEvents", () => {
       idGen,
     );
     for (const e of events) {
-      const res = container.mailflow.ingest(actor, {
+      const res = await container.mailflow.ingest(actor, {
         direction: e.direction,
         sender: e.sender,
         recipient: e.recipient,
@@ -124,7 +124,8 @@ describe("buildSendAttemptEvents", () => {
       });
       expect(res.id).toBeTruthy();
     }
-    expect(container.mailflow.query(actor, { orgId, limit: 10 }).items.length).toBeGreaterThanOrEqual(1);
+    const page = await container.mailflow.query(actor, { orgId, limit: 10 });
+    expect(page.items.length).toBeGreaterThanOrEqual(1);
   });
 });
 

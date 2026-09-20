@@ -172,3 +172,55 @@ Hard requirements:
   crypto/key/token handling, new admin privileged op, scoring-rule changes,
   transport/TLS-config changes, CSP changes, any `unsafe`.
 - Residual risk tracked in THREAT-MODEL.md, reviewed each phase.
+
+## 7. Dependency audit (T-154, Agent 6-operated, 2026-09-20)
+
+Method: `cargo audit` (cargo-audit 0.22.2, RustSec DB 1251 advisories)
+over the workspace lockfile; full `npm audit` (incl. dev) per JS
+package. Production-only `npm audit --omit=dev` is clean everywhere it
+runs. Re-run on every dependency change and monthly; findings below are
+the baseline — closing them belongs to the owning agent (flagged, not
+fixed here).
+
+### Rust (`cargo audit`: 1 vulnerability + 7 warnings)
+
+- **rsa 0.9.10 — RUSTSEC-2023-0071 (Marvin timing sidechannel, medium
+  5.9). No fixed upgrade available.** Direct dep of `kiwi-mailauth`
+  (Agent 8, T-122) for DKIM verification. Assessment: Marvin recovers
+  plaintext through RSA *decryption* (private-key op); this crate uses
+  RSA for public-key *verification* only (`verify_rsa_sha256`), and the
+  sole private-key use is 1024-bit test keygen (`dkim.rs` round-trip
+  tests). **Not exploitable in this usage.** Action for Agent 8: track
+  upstream; prefer removal (verify-only crates such as `rsa` verify path
+  stay affected on paper) or migration when a fixed release exists.
+- **Unmaintained warnings (transitive, inherited):** `unic-char-*`
+  (×5, via `tauri-utils → urlpattern`), `proc-macro-error` (Linux-only
+  target, not compiled on this host). Action: ride Tauri upgrades; no
+  direct action.
+- **Unsound warning:** `glib 0.18.5` RUSTSEC-2024-0429
+  (`VariantStrIter`, Linux-only GTK path via Tauri). Not compiled on
+  this target; Linux CI/packaging owners note. No direct action.
+
+### npm (full audit, dev included)
+
+- **kiwi-admin (Agent 5): 6 vulns (1 critical + 5 moderate), all
+  dev-only, fixes available.** Critical: `vitest`
+  GHSA-5xrq-8626-4rwp (9.8 — UI-server file read/RCE, range <3.2.6;
+  installed 3.2.4 → non-breaking upgrade ≥3.2.6 also clears the
+  moderate `@vitest/mocker` path-traversal GHSA-82fw-gwwq-j7x9:
+  `npm audit fix`). Moderate: `esbuild` dev-server request forgery
+  (GHSA-67mh-4wv8-2f99) via `drizzle-kit` chain — `fix --force`
+  (breaking: drizzle-kit 0.18.1) — accept or isolate dev-server
+  binding instead. None ship in the runner image beyond devDeps pruned
+  at build; still: run `npm audit fix` (Agent 5).
+- **kiwi-admin-ui, kiwi-app: 0 vulnerabilities** (full audit clean).
+- **mobile (Agent 4): NOT AUDITABLE — no `package-lock.json`.**
+  `npm audit` refuses without a lockfile. Action for Agent 4/Lead:
+  generate (`npm i --package-lock-only`) and commit so CI can gate it.
+
+### Rules going forward
+
+- New dependencies (any ecosystem) need owner + justification in the
+  owning agent's status log; `cargo audit` / `npm audit` re-run before
+  merge. Any **critical** or **exploitable-in-our-usage** finding blocks
+  `done` until fixed, mitigated, or Lead-accepted in writing here.

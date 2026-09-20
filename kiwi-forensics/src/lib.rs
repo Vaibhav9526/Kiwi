@@ -15,6 +15,7 @@
 //! | [`rules`] | Deterministic rule engine + catalog (TLS, cipher, key-exchange, cert, auth, STARTTLS) |
 //! | [`score`] | Integer-only deterministic scoring and grading |
 //! | [`pcap`] | Bounded `.pcap`/`.pcapng` ingest; every byte is untrusted input |
+//! | [`pipeline`] | Capture-to-report composition (contract §10) |
 //! | [`report`] | Versioned forensic report aggregate + JSON renderer interface |
 //!
 //! # Design rules enforced here
@@ -58,6 +59,7 @@ pub mod score;
 pub mod analyzers;
 pub mod live;
 pub mod pcap;
+pub mod pipeline;
 pub mod report;
 pub mod rules;
 

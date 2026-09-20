@@ -1,21 +1,63 @@
 /**
- * Account setup wizard (T-143): live server verification
- * (kiwi_verify_server, incoming + outgoing with step detail) and creation
- * (kiwi_add_account). Secrets are sent once over local IPC, never stored or
- * logged by the UI, and cleared from component state after Add.
+ * Account setup wizard (T-143, T-156): email → autoconfig discovery chain
+ * (`kiwi_lookup_autoconfig` via the ipc wrapper; backend IPC pending so a
+ * labeled local stub fills in), server presets, credential entry, live
+ * server verification (kiwi_verify_server, incoming + outgoing with step
+ * detail) and creation (kiwi_add_account). Secrets are sent once over local
+ * IPC, land in the OS credential store, and are cleared from component state
+ * after Add — never in DB/localStorage/logs.
  */
-import { useState } from "react";
-import { api, IpcError } from "../ipc";
-import type { VerifyResult } from "../kiwi";
+import { useEffect, useState } from "react";
+import { api, BackendUnavailableError, IpcError } from "../ipc";
+import type { AutoconfigSuggestion, VerifyResult } from "../kiwi";
 import { navigate } from "../router";
 
 const STEPS = ["Address", "Servers", "Credentials", "Verify & add"] as const;
+
+/** Transient reconfigure handoff (Settings → wizard), never secrets. */
+export const EDIT_HANDOFF_KEY = "kiwi.editAccount";
 
 type Security = "tls" | "starttls" | "plaintext";
 
 function toPort(v: string, fallback: number): number {
   const n = Number(v);
   return Number.isSafeInteger(n) && n > 0 && n < 65536 ? n : fallback;
+}
+
+/**
+ * Local discovery stub (T-156): used until `kiwi_lookup_autoconfig` lands in
+ * the backend. Provider presets for the two big hosts plus a generic
+ * `mail.<domain>` guess — always TLS, always password, always labeled
+ * `local-guess` so the verify step (not the guess) is the source of truth.
+ */
+export function localAutoconfigGuess(email: string): AutoconfigSuggestion | null {
+  const at = email.lastIndexOf("@");
+  if (at <= 0) return null;
+  const domain = email.slice(at + 1).trim().toLowerCase();
+  if (!domain || domain.includes(" ") || !domain.includes(".")) return null;
+  const user = email.trim();
+  if (domain === "gmail.com" || domain === "googlemail.com") {
+    return {
+      source: "local-guess", protocol: "imap",
+      inHost: "imap.gmail.com", inPort: 993, inSec: "tls",
+      outHost: "smtp.gmail.com", outPort: 465, outSec: "tls",
+      username: user, authKind: "password",
+    };
+  }
+  if (domain === "outlook.com" || domain === "hotmail.com" || domain === "live.com" || domain === "office365.com") {
+    return {
+      source: "local-guess", protocol: "imap",
+      inHost: "outlook.office365.com", inPort: 993, inSec: "tls",
+      outHost: "smtp.office365.com", outPort: 587, outSec: "starttls",
+      username: user, authKind: "password",
+    };
+  }
+  return {
+    source: "local-guess", protocol: "imap",
+    inHost: `mail.${domain}`, inPort: 993, inSec: "tls",
+    outHost: `mail.${domain}`, outPort: 465, outSec: "tls",
+    username: user, authKind: "password",
+  };
 }
 
 export function SetupWizardView({ mode, onAdded }: { mode: "live" | "demo"; onAdded: () => void }) {
@@ -39,6 +81,36 @@ export function SetupWizardView({ mode, onAdded }: { mode: "live" | "demo"; onAd
   const [outgoing, setOutgoing] = useState<VerifyResult | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [added, setAdded] = useState(false);
+  const [lookingUp, setLookingUp] = useState(false);
+  const [lookupNote, setLookupNote] = useState<string | null>(null);
+  const [reconfiguring, setReconfiguring] = useState<string | null>(null);
+
+  // Reconfigure handoff: Settings stores server fields (never secrets) under
+  // EDIT_HANDOFF_KEY; the wizard prefills and consumes it once.
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(EDIT_HANDOFF_KEY);
+      if (!raw) return;
+      window.localStorage.removeItem(EDIT_HANDOFF_KEY);
+      const h = JSON.parse(raw) as Record<string, unknown>;
+      const s = (v: unknown) => (typeof v === "string" ? v : "");
+      if (!s(h["email"])) return;
+      setEmail(s(h["email"]));
+      if (s(h["displayName"])) setDisplayName(s(h["displayName"]));
+      if (h["protocol"] === "pop3" || h["protocol"] === "imap") setProtocol(h["protocol"]);
+      if (s(h["inHost"])) setInHost(s(h["inHost"]));
+      if (s(h["outHost"])) setOutHost(s(h["outHost"]));
+      if (typeof h["inPort"] === "number") setInPort(String(h["inPort"]));
+      if (typeof h["outPort"] === "number") setOutPort(String(h["outPort"]));
+      if (h["inSec"] === "tls" || h["inSec"] === "starttls" || h["inSec"] === "plaintext") setInSec(h["inSec"]);
+      if (h["outSec"] === "tls" || h["outSec"] === "starttls" || h["outSec"] === "plaintext") setOutSec(h["outSec"]);
+      if (s(h["username"])) setUsername(s(h["username"]));
+      setReconfiguring(s(h["email"]));
+      setStep(1);
+    } catch {
+      // Corrupt handoff — start blank.
+    }
+  }, []);
 
   const emailOk = email.includes("@") && email.indexOf("@") > 0;
   const serversOk = inHost.trim().length > 0 && outHost.trim().length > 0 && /^\d+$/.test(inPort) && /^\d+$/.test(outPort);
@@ -48,6 +120,86 @@ export function SetupWizardView({ mode, onAdded }: { mode: "live" | "demo"; onAd
 
   const authInput = () =>
     authKind === "none" || authKind === "xoauth2" ? null : { kind: authKind, secret: password };
+
+  const applySuggestion = (s: AutoconfigSuggestion, note: string) => {
+    setProtocol(s.protocol);
+    setInHost(s.inHost);
+    setInPort(String(s.inPort));
+    setInSec((s.inSec === "starttls" || s.inSec === "plaintext" ? s.inSec : "tls") as Security);
+    setOutHost(s.outHost);
+    setOutPort(String(s.outPort));
+    setOutSec((s.outSec === "starttls" || s.outSec === "plaintext" ? s.outSec : "tls") as Security);
+    if (s.username) setUsername(s.username);
+    if (s.authKind === "apop" && s.protocol === "pop3") setAuthKind("apop");
+    else if (s.authKind === "none" || s.authKind === "xoauth2") setAuthKind("xoauth2");
+    else setAuthKind("password");
+    // A new lookup invalidates earlier probe results.
+    setIncoming(null);
+    setOutgoing(null);
+    setAdded(false);
+    setLookupNote(note);
+  };
+
+  /** Discovery chain: backend IPC first, labeled local stub on any failure. */
+  const lookup = async () => {
+    if (!emailOk) return;
+    setLookingUp(true);
+    setLookupNote(null);
+    try {
+      const found = await api.lookupAutoconfig(email.trim());
+      if (found) {
+        applySuggestion(found, `Settings filled from ${found.source} discovery. Review on the next step, then Verify.`);
+        return;
+      }
+      const guess = localAutoconfigGuess(email.trim());
+      if (guess) {
+        applySuggestion(guess, "The server found nothing for this address — filled a local guess instead. Verify before adding.");
+      } else {
+        setLookupNote("No settings found — enter the servers manually on the next step.");
+      }
+    } catch (e) {
+      // Backend IPC absent (or lookup failed): the local stub keeps the
+      // wizard usable. The verify step remains the source of truth.
+      const guess = localAutoconfigGuess(email.trim());
+      if (guess) {
+        const why =
+          e instanceof BackendUnavailableError
+            ? "Autoconfig IPC is not in the backend yet — filled a local guess instead."
+            : `Discovery failed (${e instanceof Error ? e.message : String(e)}) — filled a local guess instead.`;
+        applySuggestion(guess, `${why} Verify before adding.`);
+      } else {
+        setLookupNote(
+          e instanceof BackendUnavailableError
+            ? "Autoconfig IPC is not in the backend yet and no guess fits — enter the servers manually."
+            : `Discovery failed (${e instanceof Error ? e.message : String(e)}) — enter the servers manually.`,
+        );
+      }
+    } finally {
+      setLookingUp(false);
+    }
+  };
+
+  /** One-click secure presets — TLS everywhere unless STARTTLS is wanted. */
+  const applyPreset = (kind: "tls" | "starttls") => {
+    if (kind === "tls") {
+      setInSec("tls");
+      setOutSec("tls");
+      if (protocol === "imap") setInPort("993");
+      else setInPort("995");
+      setOutPort("465");
+    } else {
+      // STARTTLS required-upgrade (fail-closed server-side); ports are the
+      // plaintext-then-upgrade submission ports.
+      setInSec("starttls");
+      setOutSec("starttls");
+      if (protocol === "imap") setInPort("143");
+      else setInPort("110");
+      setOutPort("587");
+    }
+    setIncoming(null);
+    setOutgoing(null);
+    setAdded(false);
+  };
 
   const verify = async () => {
     setChecking(true);
@@ -139,7 +291,14 @@ export function SetupWizardView({ mode, onAdded }: { mode: "live" | "demo"; onAd
       <h1>Add account</h1>
       {mode === "demo" && (
         <div className="kiwi-banner warn" role="status">
-          Demo mode — verification and creation need the backend. Run the Tauri app for live setup.
+          Demo mode — verification and creation need the backend. Discovery falls back to a labeled local guess; run
+          the Tauri app for live setup.
+        </div>
+      )}
+      {reconfiguring && (
+        <div className="kiwi-banner warn" role="status">
+          Reconfiguring {reconfiguring}: servers prefilled (no secret carried over). Verify, Add, then remove the old
+          entry in Settings → Accounts.
         </div>
       )}
       <ol style={{ display: "flex", gap: "0.6rem", listStyle: "none", padding: 0, flexWrap: "wrap" }}>
@@ -176,11 +335,35 @@ export function SetupWizardView({ mode, onAdded }: { mode: "live" | "demo"; onAd
               <small>Enter a valid email address.</small>
             </p>
           )}
+          <p>
+            <button type="button" onClick={() => void lookup()} disabled={!emailOk || lookingUp}>
+              {lookingUp ? "Looking up…" : "Look up settings"}
+            </button>{" "}
+            <small style={{ color: "var(--kiwi-text-secondary)" }}>
+              Autoconfig discovery (ISPDB → server config → MX guess) fills the next step.
+            </small>
+          </p>
+          {lookupNote && (
+            <div className="kiwi-banner warn" role="status">
+              <small>{lookupNote}</small>
+            </div>
+          )}
         </>
       )}
 
       {step === 1 && (
         <>
+          <p>
+            <button type="button" onClick={() => applyPreset("tls")}>
+              SSL/TLS defaults
+            </button>{" "}
+            <button type="button" onClick={() => applyPreset("starttls")}>
+              STARTTLS defaults
+            </button>{" "}
+            <small style={{ color: "var(--kiwi-text-secondary)" }}>
+              Presets set ports + security only — hosts are never overwritten.
+            </small>
+          </p>
           <h2>Incoming ({protocol.toUpperCase()})</h2>
           <p>
             <label>
@@ -264,8 +447,8 @@ export function SetupWizardView({ mode, onAdded }: { mode: "live" | "demo"; onAd
           )}
           <p style={{ color: "var(--kiwi-text-secondary)" }}>
             <small>
-              Secrets travel over local IPC once and land in the OS credential store — the UI never stores or logs
-              them, and clears them after Add.
+              Secrets travel over local IPC once and land in the <strong>OS credential store</strong> — never in the
+              mail DB, never in localStorage, never in logs. The UI clears them from memory right after Add.
             </small>
           </p>
         </>

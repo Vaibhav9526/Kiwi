@@ -1,14 +1,16 @@
 /**
- * Composer (T-143): live send via kiwi_send_message with real undo-grace
- * receipts, send-later scheduling, attachment upload (≤25 MiB), and
- * server-side policy outcomes (policy-blocked / policy-unavailable) rendered
- * as the S-07 banner. No client-side policy invention in live mode — the
- * bridge runs in the backend (T-144); demo mode keeps the labeled local
- * simulation from T-112.
+ * Composer (T-143, T-151): live send via kiwi_send_message with real
+ * undo-grace receipts, send-later scheduling, attachment upload (≤25 MiB),
+ * and server-side policy outcomes (policy-blocked / policy-unavailable)
+ * rendered as the S-07 banner. Formatting toolbar inserts plaintext
+ * markers (the send path is text-only; no HTML is generated). Drafts
+ * autosave to this device's localStorage (no draft command in kiwi.ipc/1 —
+ * attachments are never part of the autosave). Demo mode keeps the labeled
+ * local simulation from T-112.
  */
 import { useEffect, useRef, useState } from "react";
 import type { PolicyBannerVerdict } from "../kiwi";
-import { loadPref } from "../prefs";
+import { accountPref, loadPref } from "../prefs";
 import { api, IpcError } from "../ipc";
 import { PolicyBanner } from "../components/security";
 
@@ -50,12 +52,29 @@ export function ComposeView({
   mode,
   accounts,
   onSent,
+  onNotify,
 }: {
   mode: "live" | "demo";
   accounts: { id: string; email: string; displayName: string }[];
   onSent: () => void;
+  onNotify: (
+    kind: "info" | "ok" | "warn" | "error",
+    text: string,
+    opts?: { action?: { label: string; run: () => void }; ttlMs?: number },
+  ) => void;
 }) {
-  const [accountId, setAccountId] = useState(accounts[0]?.id ?? "");
+  const [accountId, setAccountId] = useState(() => {
+    try {
+      const preferred = window.localStorage.getItem("kiwi.defaultAccount");
+      if (preferred) {
+        const want = JSON.parse(preferred) as string;
+        if (typeof want === "string" && accounts.some((a) => a.id === want)) return want;
+      }
+    } catch {
+      // Fall through to the first account.
+    }
+    return accounts[0]?.id ?? "";
+  });
   const [to, setTo] = useState("");
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
@@ -71,11 +90,66 @@ export function ComposeView({
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
   const [readingFiles, setReadingFiles] = useState(false);
+  const [draftNote, setDraftNote] = useState<string | null>(null);
+  const [includeSig, setIncludeSig] = useState(true);
+  const bodyRef = useRef<HTMLTextAreaElement | null>(null);
   const [graceSeconds] = useState(() => {
     const v = Number(loadPref("kiwi.grace", "10"));
     return [5, 10, 20, 30].includes(v) ? v : 10;
   });
   const timer = useRef<number | null>(null);
+
+  // Per-account signature (T-167): stored in prefs (Settings → Accounts),
+  // appended at send time only — drafts and the outbox never gain it silently.
+  const signature = accountId ? loadPref(accountPref("kiwi.signature", accountId), "") : "";
+  const sendText = includeSig && signature ? `${body}\n\n-- \n${signature}` : body;
+
+  // Draft autosave (T-151): no draft command exists in kiwi.ipc/1, so drafts
+  // persist to this device's localStorage only — never credentials, never
+  // attachments (b64 blobs would blow the quota). One draft per account.
+  const draftKey = `kiwi.draft.${accountId || "default"}`;
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(draftKey);
+      if (!raw) return;
+      const d = JSON.parse(raw) as { recipients?: unknown; subject?: unknown; body?: unknown; scheduled?: unknown };
+      if (Array.isArray(d.recipients)) setRecipients(d.recipients.filter((r): r is string => typeof r === "string"));
+      if (typeof d.subject === "string") setSubject(d.subject);
+      if (typeof d.body === "string") setBody(d.body);
+      if (typeof d.scheduled === "string" || d.scheduled === null) setScheduled(d.scheduled as string | null);
+      setDraftNote("Draft restored (this device only).");
+    } catch {
+      // Corrupt draft — autosave overwrites it on next keystroke.
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftKey]);
+
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      if (recipients.length === 0 && !subject && !body) return;
+      try {
+        window.localStorage.setItem(draftKey, JSON.stringify({ recipients, subject, body, scheduled, at: Date.now() }));
+        setDraftNote(`Draft autosaved ${new Date().toLocaleTimeString()} (this device only, no attachments).`);
+      } catch {
+        setDraftNote("Draft autosave failed (storage full?) — copy your text before leaving.");
+      }
+    }, 1000);
+    return () => window.clearTimeout(t);
+  }, [draftKey, recipients, subject, body, scheduled]);
+
+  const clearDraft = () => {
+    try {
+      window.localStorage.removeItem(draftKey);
+    } catch {
+      // Already gone — nothing to do.
+    }
+    setRecipients([]);
+    setSubject("");
+    setBody("");
+    setScheduled(null);
+    setDraftNote("Draft discarded.");
+  };
 
   const demoResult = mode === "demo" ? demoEvaluate(recipients) : null;
   const blocked = mode === "demo" && demoResult?.verdict === "block";
@@ -86,7 +160,9 @@ export function ComposeView({
       if (graceLeft <= 0) {
         setGraceLeft(null);
         setSending(false);
-        setSentNote(scheduled ? `Scheduled for ${scheduled}.` : "Message sent.");
+        const note = scheduled ? `Scheduled for ${scheduled}.` : "Message sent.";
+        setSentNote(note);
+        onNotify("ok", `Demo: ${note}`);
         return;
       }
       timer.current = window.setTimeout(() => setGraceLeft((g) => (g === null ? null : g - 1)), 1000);
@@ -94,7 +170,7 @@ export function ComposeView({
         if (timer.current !== null) window.clearTimeout(timer.current);
       };
     }
-  }, [mode, graceLeft, scheduled]);
+  }, [mode, graceLeft, scheduled, onNotify]);
 
   useEffect(() => {
     if (mode !== "live") return;
@@ -104,6 +180,7 @@ export function ComposeView({
       setQueueId(null);
       setSending(false);
       setSentNote("Queued for dispatch.");
+      onNotify("ok", "Message queued for dispatch.");
       onSent();
       return;
     }
@@ -111,7 +188,7 @@ export function ComposeView({
     return () => {
       if (timer.current !== null) window.clearTimeout(timer.current);
     };
-  }, [mode, graceLeft, onSent]);
+  }, [mode, graceLeft, onSent, onNotify]);
 
   // Ctrl+Enter sends.
   useEffect(() => {
@@ -132,14 +209,44 @@ export function ComposeView({
     setTo("");
   };
 
+  // Plaintext formatting toolbar: wraps the textarea selection with markers
+  // (the send path is text-only — no HTML leaves this view).
+  const wrapSelection = (before: string, after: string = before, linePrefix?: string) => {
+    const el = bodyRef.current;
+    if (!el) return;
+    const { selectionStart: s, selectionEnd: e, value } = el;
+    const sel = value.slice(s, e) || "text";
+    const insert = linePrefix
+      ? sel.split("\n").map((l) => `${linePrefix}${l}`).join("\n")
+      : `${before}${sel}${after}`;
+    setBody(value.slice(0, s) + insert + value.slice(e));
+    const innerStart = linePrefix ? s : s + before.length;
+    window.setTimeout(() => {
+      el.focus();
+      el.setSelectionRange(innerStart, innerStart + sel.length);
+    }, 0);
+  };
+
   const send = async () => {
     if (sending || blocked) return;
     setSentNote(null);
     setSendError(null);
     setBanner(null);
+    // Sending consumes the autosaved draft (fields stay for undo).
+    try {
+      window.localStorage.removeItem(draftKey);
+    } catch {
+      // Non-fatal — the draft simply persists.
+    }
+    setDraftNote(null);
     if (mode === "demo") {
       setSending(true);
       setGraceLeft(graceSeconds);
+      // Demo undo is local-only; the toast action reuses the same path.
+      onNotify("info", `Demo: sending — undo open for ${graceSeconds}s.`, {
+        action: { label: "Undo send", run: () => void undo() },
+        ttlMs: graceSeconds * 1000,
+      });
       return;
     }
     if (!accountId) {
@@ -150,9 +257,22 @@ export function ComposeView({
       setSendError("Add at least one recipient.");
       return;
     }
+    // Send-later validation: the backend treats sendAtUnix as not-before.
+    let sendAtUnix: number | null = null;
+    if (scheduled) {
+      const t = new Date(scheduled).getTime();
+      if (Number.isNaN(t)) {
+        setSendError("Scheduled time is not a valid date.");
+        return;
+      }
+      sendAtUnix = Math.floor(t / 1000);
+      if (sendAtUnix <= Date.now() / 1000) {
+        setSendError("Scheduled time must be in the future.");
+        return;
+      }
+    }
     setSending(true);
     try {
-      const sendAtUnix = scheduled ? Math.floor(new Date(scheduled).getTime() / 1000) : null;
       const receipt = await api.sendMessage(
         accountId,
         {
@@ -160,7 +280,7 @@ export function ComposeView({
           cc: [],
           bcc: [],
           subject,
-          text: body,
+          text: sendText,
           html: null,
           inReplyTo: null,
           references: [],
@@ -174,40 +294,58 @@ export function ComposeView({
       if (left <= 0) {
         setSending(false);
         setSentNote("Queued for dispatch.");
+        onNotify("ok", "Message queued for dispatch.");
         onSent();
+      } else {
+        onNotify("info", `Message queued — undo open for ${left}s.`, {
+          action: { label: "Undo send", run: () => void undo(receipt.queueId) },
+          ttlMs: left * 1000,
+        });
       }
     } catch (e) {
       setSending(false);
       if (e instanceof IpcError && e.code === "policy-blocked") {
         setBanner({ verdict: "block", offenders: recipients });
         setSendError(`Policy blocked this send: ${e.message}`);
+        onNotify("error", `Policy blocked this send: ${e.message}`);
       } else if (e instanceof IpcError && e.code === "policy-unavailable") {
         setBanner({ verdict: "warn", offenders: recipients });
         setSendError(`Policy service unreachable — the server held the send (fail-closed): ${e.message}`);
+        onNotify("warn", "Policy service unreachable — the server held the send (fail-closed).");
       } else {
-        setSendError(e instanceof Error ? e.message : String(e));
+        const msg = e instanceof Error ? e.message : String(e);
+        setSendError(msg);
+        onNotify("error", msg);
       }
     }
   };
 
-  const undo = async () => {
+  const undo = async (explicitQueueId?: string) => {
     if (mode === "demo") {
       if (timer.current !== null) window.clearTimeout(timer.current);
       setGraceLeft(null);
       setSending(false);
       setSentNote("Send undone — back to draft.");
+      onNotify("info", "Demo: send undone — back to draft.");
       return;
     }
-    if (!queueId) return;
+    // Toast actions fire after render, so the queued id is passed explicitly
+    // (the `queueId` state in this closure would still be the pre-send null).
+    const id = explicitQueueId ?? queueId;
+    if (!id) return;
     try {
-      const r = await api.cancelSend(queueId);
+      const r = await api.cancelSend(id);
       setGraceLeft(null);
       setQueueId(null);
       setSending(false);
-      setSentNote(r.cancelled ? "Send undone — back to draft." : "Undo window already closed — message dispatching.");
+      const note = r.cancelled ? "Send undone — back to draft." : "Undo window already closed — message dispatching.";
+      setSentNote(note);
+      onNotify("info", note);
       onSent();
     } catch (e) {
-      setSendError(e instanceof Error ? e.message : String(e));
+      const msg = e instanceof Error ? e.message : String(e);
+      setSendError(msg);
+      onNotify("error", msg);
     }
   };
 
@@ -314,10 +452,62 @@ export function ComposeView({
         </label>
       </p>
       <p>
-        <label htmlFor="compose-body">Body</label>
+        <label htmlFor="compose-body">Body</label>{" "}
+        <small style={{ color: "var(--kiwi-text-secondary)" }}>
+          (plaintext — toolbar inserts markers, no HTML is sent)
+        </small>
         <br />
-        <textarea id="compose-body" rows={10} value={body} onChange={(e) => setBody(e.target.value)} style={{ width: "100%" }} />
+        <span role="toolbar" aria-label="Format body text" style={{ display: "inline-flex", gap: "0.25rem", marginBottom: "0.25rem" }}>
+          <button type="button" title="Bold (**text**)" aria-label="Bold" onClick={() => wrapSelection("**")}>
+            <strong>B</strong>
+          </button>
+          <button type="button" title="Italic (*text*)" aria-label="Italic" onClick={() => wrapSelection("*")}>
+            <em>I</em>
+          </button>
+          <button type="button" title="Underline (__text__)" aria-label="Underline" onClick={() => wrapSelection("__")}>
+            <u>U</u>
+          </button>
+          <button type="button" title="Code (`text`)" aria-label="Code" onClick={() => wrapSelection("`")}>
+            {"</>"}
+          </button>
+          <button type="button" title="Quote selected lines" aria-label="Quote" onClick={() => wrapSelection("", "", "> ")}>
+            “”
+          </button>
+          <button type="button" title="Bulleted list" aria-label="Bulleted list" onClick={() => wrapSelection("", "", "- ")}>
+            ☰
+          </button>
+        </span>
+        <textarea
+          id="compose-body"
+          ref={bodyRef}
+          rows={10}
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          style={{ width: "100%" }}
+        />
       </p>
+      {draftNote && (
+        <p role="status">
+          <small style={{ color: "var(--kiwi-text-secondary)" }}>
+            {draftNote}{" "}
+            <button type="button" onClick={clearDraft}>
+              Discard draft
+            </button>
+          </small>
+        </p>
+      )}
+      {signature && (
+        <p>
+          <label>
+            <input type="checkbox" checked={includeSig} onChange={(e) => setIncludeSig(e.target.checked)} />{" "}
+            Append signature
+          </label>{" "}
+          <small style={{ color: "var(--kiwi-text-secondary)" }}>
+            <pre style={{ display: "inline", fontFamily: "inherit", whiteSpace: "pre-wrap" }}>{signature}</pre> (Settings →
+            Accounts)
+          </small>
+        </p>
+      )}
       <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap" }}>
         <button type="button" className="kiwi-btn-primary" onClick={() => void send()} disabled={blocked || sending} aria-disabled={blocked || sending}>
           {sending ? `Sending in ${graceLeft ?? "…"}s…` : scheduled ? "Schedule send" : "Send (Ctrl+Enter)"}

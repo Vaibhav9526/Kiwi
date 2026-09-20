@@ -2275,6 +2275,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "kiwi-contacts"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
 name = "kiwi-core"
 version = "0.1.0"
 
@@ -2282,8 +2292,11 @@ version = "0.1.0"
 name = "kiwi-forensics"
 version = "0.1.0"
 dependencies = [
+ "kiwi-mail",
  "serde",
  "serde_json",
+ "tokio",
+ "zeroize",
 ]
 
 [[package]]
@@ -2301,7 +2314,6 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "thiserror 2.0.20",
  "time",
  "tokio",
@@ -2309,7 +2321,6 @@ dependencies = [
  "tokio-test",
  "tracing",
  "webpki-roots 0.26.11",
- "x509-parser",
  "zeroize",
 ]
 
@@ -2325,6 +2336,17 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
+name = "kiwi-sandbox"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "serde",
+ "serde_json",
  "thiserror 2.0.20",
  "tokio",
 ]

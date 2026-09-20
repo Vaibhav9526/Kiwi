@@ -29,6 +29,15 @@ pub mod limitation_codes {
     pub const TRANSPORT_UNKNOWN: &str = "transport-unknown";
     /// AI enrichment cited finding keys absent from this report.
     pub const AI_UNCITED_KEYS: &str = "ai-uncited-keys";
+    /// Reassembled stream(s) had TCP sequence gaps; bytes across the gaps
+    /// were not analyzed.
+    pub const STREAM_GAP: &str = "stream-gap";
+    /// Reassembly bounds dropped segments or refused flows; those bytes
+    /// were not analyzed.
+    pub const CAPTURE_OVER_LIMIT: &str = "capture-over-limit";
+    /// The engine dropped finding(s) for lack of evidence; a rule needs
+    /// review (must be 0 in production).
+    pub const EVIDENCELESS_DROPPED: &str = "rule-dropped-without-evidence";
 }
 
 /// One explicit boundary of the analysis.

@@ -10,7 +10,10 @@
 //! field is length-checked and only the small vocabulary we understand is
 //! mapped — unknown elements/attributes are ignored, never fatal.
 
-use crate::suggest::{AccountSuggestion, AuthKind, IncomingKind, IncomingSuggestion, OutgoingSuggestion, SuggestionSource};
+use crate::suggest::{
+    AccountSuggestion, AuthKind, IncomingKind, IncomingSuggestion, OutgoingSuggestion,
+    SuggestionSource,
+};
 use crate::{DomainName, Error, MAX_CANDIDATES, MAX_XML_DEPTH, MAX_XML_LEN};
 use kiwi_mail::transport::SocketSecurity;
 
@@ -25,10 +28,14 @@ pub(crate) struct Element {
 
 impl Element {
     fn child(&self, name: &str) -> Option<&Element> {
-        self.children.iter().find(|c| c.name.eq_ignore_ascii_case(name))
+        self.children
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(name))
     }
     fn children_named(&self, name: &str) -> impl Iterator<Item = &Element> {
-        self.children.iter().filter(move |c| c.name.eq_ignore_ascii_case(name))
+        self.children
+            .iter()
+            .filter(move |c| c.name.eq_ignore_ascii_case(name))
     }
     /// Direct child text, trimmed and length-capped (256 chars).
     fn child_text(&self, name: &str) -> Option<String> {
@@ -85,7 +92,11 @@ impl Parser<'_> {
         self.rest().chars().next()
     }
     fn skip_ws(&mut self) {
-        let n = self.rest().len() - self.rest().trim_start_matches([' ', '\t', '\r', '\n']).len();
+        let n = self.rest().len()
+            - self
+                .rest()
+                .trim_start_matches([' ', '\t', '\r', '\n'])
+                .len();
         self.pos += n;
     }
     /// Skip comments, XML declarations and processing instructions.
@@ -97,7 +108,9 @@ impl Parser<'_> {
                 let end = r.find("?>").ok_or(Error::MalformedXml("unterminated PI"))?;
                 self.pos += end + 2;
             } else if r.starts_with("<!--") {
-                let end = r.find("-->").ok_or(Error::MalformedXml("unterminated comment"))?;
+                let end = r
+                    .find("-->")
+                    .ok_or(Error::MalformedXml("unterminated comment"))?;
                 self.pos += end + 3;
             } else {
                 return Ok(());
@@ -131,7 +144,9 @@ impl Parser<'_> {
     fn parse_entity(&mut self) -> Result<char, Error> {
         let r = self.rest();
         debug_assert!(r.starts_with('&'));
-        let end = r.find(';').ok_or(Error::MalformedXml("unterminated entity"))?;
+        let end = r
+            .find(';')
+            .ok_or(Error::MalformedXml("unterminated entity"))?;
         let raw = &r[1..end];
         if raw.len() > 10 {
             return Err(Error::MalformedXml("unknown entity"));
@@ -177,7 +192,6 @@ impl Parser<'_> {
     }
 }
 
-
 impl Parser<'_> {
     /// Parse one element (assumes cursor is at `<`). Depth-bounded by caller.
     fn parse_element(&mut self, depth: usize) -> Result<Element, Error> {
@@ -196,7 +210,12 @@ impl Parser<'_> {
                 }
                 Some('/') => {
                     self.expect("/>")?;
-                    return Ok(Element { name, attrs, children: Vec::new(), text: String::new() });
+                    return Ok(Element {
+                        name,
+                        attrs,
+                        children: Vec::new(),
+                        text: String::new(),
+                    });
                 }
                 Some(_) => {
                     let key = self.parse_name()?;
@@ -222,7 +241,12 @@ impl Parser<'_> {
                 None => return Err(Error::MalformedXml("unterminated element")),
             }
         }
-        let mut el = Element { name, attrs, children: Vec::new(), text: String::new() };
+        let mut el = Element {
+            name,
+            attrs,
+            children: Vec::new(),
+            text: String::new(),
+        };
         loop {
             if self.rest().starts_with("</") {
                 self.pos += 2;
@@ -240,7 +264,10 @@ impl Parser<'_> {
             }
             if self.rest().starts_with("<![CDATA[") {
                 self.pos += 9;
-                let end = self.rest().find("]]>").ok_or(Error::MalformedXml("unterminated CDATA"))?;
+                let end = self
+                    .rest()
+                    .find("]]>")
+                    .ok_or(Error::MalformedXml("unterminated CDATA"))?;
                 el.text.push_str(&self.rest()[..end]);
                 self.pos += end + 3;
                 continue;
@@ -267,7 +294,6 @@ impl Parser<'_> {
         }
     }
 }
-
 
 /// One `<incomingServer>` / `<outgoingServer>` entry, verbatim (bounded).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -336,11 +362,11 @@ impl ClientConfig {
             };
         let matches_domain = |p: &&Element, strict: bool| -> bool {
             if strict {
-                p.children_named("domain").any(|d| {
-                    DomainName::parse(d.text.trim()).is_ok_and(|x| x == *domain)
-                })
+                p.children_named("domain")
+                    .any(|d| DomainName::parse(d.text.trim()).is_ok_and(|x| x == *domain))
             } else {
-                p.attr("id").is_some_and(|id| DomainName::parse(id).is_ok_and(|x| x == *domain))
+                p.attr("id")
+                    .is_some_and(|id| DomainName::parse(id).is_ok_and(|x| x == *domain))
             }
         };
         let chosen = providers
@@ -362,7 +388,9 @@ impl ClientConfig {
                         hostname,
                         port: s.child_text("port").and_then(|p| p.parse::<u16>().ok()),
                         socket_type: s.child_text("socketType").unwrap_or_else(|| "plain".into()),
-                        username: s.child_text("username").unwrap_or_else(|| "%EMAILADDRESS%".into()),
+                        username: s
+                            .child_text("username")
+                            .unwrap_or_else(|| "%EMAILADDRESS%".into()),
                         authentication: s.child_text("authentication").unwrap_or_default(),
                     })
                 })
@@ -371,7 +399,11 @@ impl ClientConfig {
         let domains: Vec<String> = chosen
             .children_named("domain")
             .take(MAX_CANDIDATES)
-            .filter_map(|d| DomainName::parse(d.text.trim()).ok().map(|x| x.as_str().to_string()))
+            .filter_map(|d| {
+                DomainName::parse(d.text.trim())
+                    .ok()
+                    .map(|x| x.as_str().to_string())
+            })
             .collect();
         Ok(Self {
             version,
@@ -472,7 +504,6 @@ fn substitute(template: &str, email: &str, local: &str, domain: &str) -> String 
     out.chars().take(256).collect()
 }
 
-
 impl ClientConfig {
     /// Convert the selected provider into an [`AccountSuggestion`] for
     /// `email`. `None` when the document publishes no usable
@@ -483,7 +514,11 @@ impl ClientConfig {
     /// ImplicitTLS before STARTTLS before plaintext; ties resolve in
     /// document order.
     #[must_use]
-    pub fn to_suggestion(&self, email: &str, source: SuggestionSource) -> Option<AccountSuggestion> {
+    pub fn to_suggestion(
+        &self,
+        email: &str,
+        source: SuggestionSource,
+    ) -> Option<AccountSuggestion> {
         let (local, domain) = crate::split_email(email).ok()?;
         let domain_s = domain.as_str();
         let incoming = self
@@ -498,7 +533,10 @@ impl ClientConfig {
                 };
                 let port = s.port.or_else(|| default_port(&s.kind, security))?;
                 Some((
-                    (u8::from(kind == IncomingKind::Pop3), security_rank(security)),
+                    (
+                        u8::from(kind == IncomingKind::Pop3),
+                        security_rank(security),
+                    ),
                     IncomingSuggestion {
                         kind,
                         host: s.hostname.clone(),
@@ -541,5 +579,243 @@ impl ClientConfig {
             outgoing,
         }
         .checked()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::suggest::{AuthKind, IncomingKind};
+
+    /// Minimal well-formed Thunderbird clientConfig document.
+    const FIXTURE_OK: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
+<clientConfig version="1.1">
+  <emailProvider id="example.test">
+    <domain>example.test</domain>
+    <displayName>Example Provider</displayName>
+    <incomingServer type="imap">
+      <hostname>imap.example.test</hostname>
+      <port>993</port>
+      <socketType>SSL</socketType>
+      <username>%EMAILADDRESS%</username>
+      <authentication>password-cleartext</authentication>
+    </incomingServer>
+    <incomingServer type="pop3">
+      <hostname>pop.example.test</hostname>
+      <port>110</port>
+      <socketType>plain</socketType>
+      <username>%EMAILLOCALPART%</username>
+      <authentication>password-cleartext</authentication>
+    </incomingServer>
+    <outgoingServer type="smtp">
+      <hostname>smtp.example.test</hostname>
+      <port>587</port>
+      <socketType>STARTTLS</socketType>
+      <username>%EMAILADDRESS%</username>
+      <authentication>password-cleartext</authentication>
+    </outgoingServer>
+  </emailProvider>
+</clientConfig>"#;
+
+    const FIXTURE_OAUTH2: &str = r#"<clientConfig>
+  <emailProvider id="oauth.test">
+    <domain>oauth.test</domain>
+    <displayName>OAuth Corp</displayName>
+    <incomingServer type="imap">
+      <hostname>imap.oauth.test</hostname>
+      <port>993</port>
+      <socketType>SSL</socketType>
+      <username>%EMAILADDRESS%</username>
+      <authentication>OAuth2</authentication>
+    </incomingServer>
+    <outgoingServer type="smtp">
+      <hostname>smtp.oauth.test</hostname>
+      <port>465</port>
+      <socketType>SSL</socketType>
+    </outgoingServer>
+    <oAuth2>
+      <issuer>accounts.oauth.test</issuer>
+      <scope>mail.read</scope>
+      <authURL>https://accounts.oauth.test/auth</authURL>
+      <tokenURL>https://accounts.oauth.test/token</tokenURL>
+    </oAuth2>
+  </emailProvider>
+</clientConfig>"#;
+
+    #[test]
+    fn parses_full_client_config() {
+        let d = DomainName::parse("example.test").unwrap();
+        let cfg = ClientConfig::parse(FIXTURE_OK, &d).unwrap();
+        assert_eq!(cfg.provider_id.as_deref(), Some("example.test"));
+        assert_eq!(cfg.display_name.as_deref(), Some("Example Provider"));
+        assert_eq!(cfg.domains, vec!["example.test"]);
+        assert_eq!(cfg.incoming.len(), 2);
+        assert_eq!(cfg.outgoing.len(), 1);
+        let imap = &cfg.incoming[0];
+        assert_eq!(imap.hostname, "imap.example.test");
+        assert_eq!(imap.port, Some(993));
+        assert_eq!(imap.socket_type, "SSL");
+    }
+
+    #[test]
+    fn domain_selection_exact_beats_order() {
+        let xml = r#"<clientConfig>
+  <emailProvider id="a.test">
+    <domain>a.test</domain>
+    <displayName>A</displayName>
+  </emailProvider>
+  <emailProvider id="b.test">
+    <domain>b.test</domain>
+    <displayName>B</displayName>
+  </emailProvider>
+</clientConfig>"#;
+        let d = DomainName::parse("b.test").unwrap();
+        let cfg = ClientConfig::parse(xml, &d).unwrap();
+        assert_eq!(cfg.display_name.as_deref(), Some("B"));
+        assert_eq!(cfg.provider_id.as_deref(), Some("b.test"));
+    }
+
+    #[test]
+    fn oauth2_doc_maps_to_xoauth2_and_defaults_port() {
+        let d = DomainName::parse("oauth.test").unwrap();
+        let cfg = ClientConfig::parse(FIXTURE_OAUTH2, &d).unwrap();
+        let s = cfg
+            .to_suggestion("u@oauth.test", SuggestionSource::AutoconfigHost)
+            .unwrap();
+        assert_eq!(s.incoming.auth, AuthKind::XOAuth2);
+        assert_eq!(s.incoming.port, 993);
+        // outgoing port was explicit (465) with SSL.
+        assert_eq!(s.outgoing.host, "smtp.oauth.test");
+        assert_eq!(s.outgoing.port, 465);
+        assert_eq!(s.outgoing.security, SocketSecurity::ImplicitTls);
+        assert_eq!(cfg.oauth2.as_ref().unwrap().issuer, "accounts.oauth.test");
+    }
+
+    #[test]
+    fn substitutes_placeholders() {
+        assert_eq!(
+            substitute("%EMAILADDRESS%", "u@x.test", "u", "x.test"),
+            "u@x.test"
+        );
+        assert_eq!(
+            substitute("%EMAILLOCALPART%@host", "u@x.test", "u", "x.test"),
+            "u@host"
+        );
+        assert_eq!(
+            substitute("u@%EMAILDOMAIN%", "u@x.test", "u", "x.test"),
+            "u@x.test"
+        );
+        // Unknown placeholders preserved verbatim.
+        assert_eq!(substitute("%NOPE%", "u@x.test", "u", "x.test"), "%NOPE%");
+        // Case-insensitive.
+        assert_eq!(
+            substitute("%emailaddress%", "u@x.test", "u", "x.test"),
+            "u@x.test"
+        );
+    }
+
+    #[test]
+    fn socket_and_auth_mapping() {
+        assert_eq!(socket_security("SSL"), Some(SocketSecurity::ImplicitTls));
+        assert_eq!(socket_security("starttls"), Some(SocketSecurity::StartTls));
+        assert_eq!(socket_security("plain"), Some(SocketSecurity::Plaintext));
+        assert_eq!(socket_security("tls-unknown"), None);
+        assert_eq!(auth_kind("OAuth2"), Some(AuthKind::XOAuth2));
+        assert_eq!(auth_kind("password-cleartext"), Some(AuthKind::Password));
+        assert_eq!(auth_kind("password-encrypted"), Some(AuthKind::Password));
+        assert_eq!(auth_kind("gssapi"), None);
+        assert_eq!(auth_kind("SMTP"), None);
+    }
+
+    #[test]
+    fn ranking_imap_tls_first() {
+        let d = DomainName::parse("example.test").unwrap();
+        let cfg = ClientConfig::parse(FIXTURE_OK, &d).unwrap();
+        let s = cfg
+            .to_suggestion("u@example.test", SuggestionSource::WellKnown)
+            .unwrap();
+        assert_eq!(s.incoming.kind, IncomingKind::Imap);
+        assert_eq!(s.incoming.security, SocketSecurity::ImplicitTls);
+        assert_eq!(s.incoming.username, "u@example.test");
+        assert_eq!(s.outgoing.port, 587);
+        assert_eq!(s.source, SuggestionSource::WellKnown);
+    }
+
+    #[test]
+    fn doctype_rejected() {
+        let evil = r#"<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><clientConfig/>"#;
+        assert!(matches!(
+            parse_root(evil),
+            Err(Error::MalformedXml("prohibited XML construct"))
+        ));
+    }
+
+    #[test]
+    fn entities_and_cdata_decode() {
+        let xml = "<a><t>a&lt;b&amp;c&#65;&#x42;</t><c><![CDATA[raw<ok>]]></c></a>";
+        let root = parse_root(xml).unwrap();
+        assert_eq!(root.child("t").unwrap().text, "a<b&cAB");
+        assert_eq!(root.child("c").unwrap().text, "raw<ok>");
+    }
+
+    #[test]
+    fn unknown_entity_rejected() {
+        assert!(matches!(
+            parse_root("<a>&evil;</a>"),
+            Err(Error::MalformedXml("unknown entity"))
+        ));
+    }
+
+    #[test]
+    fn deep_nesting_rejected() {
+        let mut xml = String::new();
+        for _ in 0..40 {
+            xml.push_str("<a>");
+        }
+        xml.push('x');
+        for _ in 0..40 {
+            xml.push_str("</a>");
+        }
+        assert!(parse_root(&xml).is_err());
+    }
+
+    #[test]
+    fn mismatched_tag_rejected() {
+        assert!(parse_root("<a><b></c></a>").is_err());
+    }
+
+    #[test]
+    fn overlong_document_rejected() {
+        let big = format!("<a>{}</a>", "x".repeat(MAX_XML_LEN + 1));
+        assert_eq!(parse_root(&big), Err(Error::TooLong));
+    }
+
+    #[test]
+    fn unsupported_socket_or_auth_skips_server() {
+        // Only a gssapi imap server → no usable incoming → no suggestion.
+        let xml = r#"<clientConfig><emailProvider id="x.test"><domain>x.test</domain>
+            <incomingServer type="imap">
+              <hostname>imap.x.test</hostname><port>993</port>
+              <socketType>SSL</socketType><authentication>gssapi</authentication>
+            </incomingServer>
+            <outgoingServer type="smtp">
+              <hostname>smtp.x.test</hostname><port>587</port>
+              <socketType>STARTTLS</socketType><authentication>password-cleartext</authentication>
+            </outgoingServer>
+        </emailProvider></clientConfig>"#;
+        let d = DomainName::parse("x.test").unwrap();
+        let cfg = ClientConfig::parse(xml, &d).unwrap();
+        assert!(
+            cfg.to_suggestion("u@x.test", SuggestionSource::AutoconfigHost)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn non_clientconfig_root_rejected() {
+        // parse_root is generic; ClientConfig::parse enforces the root name.
+        assert!(parse_root("<html><body/></html>").is_ok());
+        let d = DomainName::parse("x.test").unwrap();
+        assert!(ClientConfig::parse("<html/>", &d).is_err());
     }
 }

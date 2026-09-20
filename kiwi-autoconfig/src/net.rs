@@ -43,9 +43,10 @@ impl MockNet {
         let v: Vec<MxRecord> = records
             .iter()
             .filter_map(|(h, p)| {
-                DomainName::parse(h)
-                    .ok()
-                    .map(|d| MxRecord { host: d.as_str().to_string(), preference: *p })
+                DomainName::parse(h).ok().map(|d| MxRecord {
+                    host: d.as_str().to_string(),
+                    preference: *p,
+                })
             })
             .take(crate::MAX_CANDIDATES)
             .collect();
@@ -69,5 +70,59 @@ impl super::DiscoveryNet for MockNet {
     }
     fn fetch_https(&self, url: &str) -> Option<String> {
         self.https.get(url).cloned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mock_net_empty_by_default() {
+        let net = MockNet::new();
+        let d = DomainName::parse("nothing.test").unwrap();
+        assert!(net.lookup_mx(&d).is_empty());
+        assert!(net.fetch_https("https://x.test/a.xml").is_none());
+    }
+
+    #[test]
+    fn mock_net_serves_configured_records() {
+        let net = MockNet::new()
+            .with_mx(
+                "mx.test",
+                &[("alt2.aspmx.l.google.com", 20), ("aspmx.l.google.com", 10)],
+            )
+            .with_https(
+                "https://autoconfig.mx.test/mail/config-v1.1.xml",
+                "<clientConfig/>",
+            );
+        let d = DomainName::parse("MX.TEST").unwrap();
+        let mx = net.lookup_mx(&d);
+        assert_eq!(mx.len(), 2);
+        // hosts are normalized via DomainName
+        assert_eq!(mx[0].host, "alt2.aspmx.l.google.com");
+        assert_eq!(mx[0].preference, 20);
+        assert_eq!(
+            net.fetch_https("https://autoconfig.mx.test/mail/config-v1.1.xml"),
+            Some("<clientConfig/>".to_string())
+        );
+    }
+
+    #[test]
+    fn mock_net_rejects_invalid_mx_host() {
+        let net = MockNet::new().with_mx("bad.test", &[("not a host!", 10)]);
+        let d = DomainName::parse("bad.test").unwrap();
+        assert!(net.lookup_mx(&d).is_empty());
+    }
+
+    #[test]
+    fn mock_net_caps_mx_records() {
+        let hosts: Vec<String> = (0..40).map(|i| format!("mx{i}.t")).collect();
+        let refs: Vec<(&str, u16)> = hosts.iter().map(|h| (h.as_str(), 10)).collect();
+        let net = MockNet::new().with_mx("cap.test", &refs);
+        assert_eq!(
+            net.lookup_mx(&DomainName::parse("cap.test").unwrap()).len(),
+            crate::MAX_CANDIDATES
+        );
     }
 }

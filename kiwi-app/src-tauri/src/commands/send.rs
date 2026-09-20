@@ -25,7 +25,7 @@ use super::{bounded, gate, resolve_secret, run_mail_io, valid_addr};
 use crate::bridge;
 use crate::error::{CmdResult, IpcError};
 use crate::observe::{self, ObservationContext};
-use crate::state::{AppState, OutboxMeta, new_id, now_unix};
+use crate::state::{AppState, MAX_OUTBOX_ITEM_BYTES, OutboxMeta, new_id, now_unix, outbox_row_of};
 use crate::types::{ComposeInput, OutboxEvent, OutboxItem, SendOptions, SendReceipt};
 
 const MAX_RECIPIENTS: usize = 100;
@@ -183,19 +183,24 @@ pub(crate) async fn send_impl(
         undo_window_until_unix: undo_until,
         attempts: 0,
     };
+    if mime_bytes.len() > MAX_OUTBOX_ITEM_BYTES {
+        return Err(IpcError::invalid("queued message exceeds 32 MiB"));
+    }
     // T-142: persist BEFORE enqueue — a crash between the two must not
-    // lose a committed send.
-    crate::state::persist_outbox_item(&state.data_dir, &queue_id, &meta, &mime_bytes)?;
+    // lose a committed send. One row in mail.db's outbox table is the
+    // atomic write (meta + MIME together).
+    let row = outbox_row_of(&queue_id, &meta, mime_bytes, now);
+    state.store.lock().await.outbox_put(&row)?;
     state.send_queue.lock().await.enqueue(QueuedSend {
         queue_id: queue_id.clone(),
         request: SendRequest {
-            from: acct.email.clone(),
-            to: all_rcpts.clone(),
-            message: mime_bytes,
+            from: row.from_addr.clone(),
+            to: row.to_addrs.clone(),
+            message: row.mime.clone(),
         },
-        not_before_unix: not_before,
-        undo_window_until_unix: undo_until,
-        attempts: 0,
+        not_before_unix: row.not_before_unix,
+        undo_window_until_unix: row.undo_window_until_unix,
+        attempts: row.attempts,
     });
     state
         .outbox_meta
@@ -217,37 +222,94 @@ pub(crate) async fn send_impl(
     })
 }
 
-/// Undo-send: cancel while still inside the grace window.
+/// Undo-send / unschedule: cancel while the send is still recallable —
+/// inside the undo window, or awaiting a future send-later slot.
 #[tauri::command]
 pub async fn kiwi_cancel_send(
     state: State<'_, Arc<AppState>>,
     queue_id: String,
 ) -> CmdResult<serde_json::Value> {
     gate(state.inner()).await?;
-    bounded("queueId", &queue_id, 128)?;
-    let cancelled = state
-        .inner()
-        .send_queue
-        .lock()
-        .await
-        .cancel(&queue_id, now_unix());
-    if cancelled {
-        drop_outbox(state.inner(), &queue_id).await;
-        state
-            .inner()
-            .audit
-            .lock()
-            .await
-            .record("send-cancelled", &queue_id, now_unix())?;
-    }
+    let cancelled = cancel_impl(state.inner(), &queue_id).await?;
     Ok(serde_json::json!({ "cancelled": cancelled }))
 }
 
-/// Terminal-removal helper: in-memory meta + persisted files together.
+pub(crate) async fn cancel_impl(state: &AppState, queue_id: &str) -> CmdResult<bool> {
+    bounded("queueId", queue_id, 128)?;
+    let cancelled = state.send_queue.lock().await.cancel(queue_id, now_unix());
+    if cancelled {
+        drop_outbox(state, queue_id).await;
+        state
+            .audit
+            .lock()
+            .await
+            .record("send-cancelled", queue_id, now_unix())?;
+    }
+    Ok(cancelled)
+}
+
+/// Terminal-removal helper: in-memory meta + persisted row together.
 /// Idempotent.
 pub(crate) async fn drop_outbox(state: &AppState, queue_id: &str) {
     state.outbox_meta.lock().await.remove(queue_id);
-    crate::state::remove_outbox_item(&state.data_dir, queue_id);
+    if let Err(e) = state.store.lock().await.outbox_delete(queue_id) {
+        eprintln!("[kiwi-app] outbox delete {queue_id} failed: {e}");
+    }
+}
+
+/// Send-later reschedule: move a pending send's dispatch time. Works on
+/// anything still in the queue (grace-window item, scheduled send, or a
+/// held retry). The undo window is untouched — rescheduling is not an
+/// undo. Audited.
+#[tauri::command]
+pub async fn kiwi_schedule_send(
+    state: State<'_, Arc<AppState>>,
+    queue_id: String,
+    send_at_unix: i64,
+) -> CmdResult<SendReceipt> {
+    gate(state.inner()).await?;
+    schedule_impl(state.inner(), &queue_id, send_at_unix).await
+}
+
+pub(crate) async fn schedule_impl(
+    state: &AppState,
+    queue_id: &str,
+    send_at_unix: i64,
+) -> CmdResult<SendReceipt> {
+    bounded("queueId", queue_id, 128)?;
+    if !state
+        .send_queue
+        .lock()
+        .await
+        .reschedule(queue_id, send_at_unix)
+    {
+        return Err(IpcError::not_found("unknown or already-dispatched send"));
+    }
+    let (undo_until, attempts) = {
+        let mut metas = state.outbox_meta.lock().await;
+        match metas.get_mut(queue_id) {
+            Some(m) => {
+                m.not_before_unix = send_at_unix;
+                (m.undo_window_until_unix, m.attempts)
+            }
+            None => (0, 0),
+        }
+    };
+    state
+        .store
+        .lock()
+        .await
+        .outbox_set_timing(queue_id, send_at_unix, attempts)?;
+    state.audit.lock().await.record(
+        "send-rescheduled",
+        &format!("{queue_id} → {send_at_unix}"),
+        now_unix(),
+    )?;
+    Ok(SendReceipt {
+        queue_id: queue_id.to_string(),
+        not_before_unix: send_at_unix,
+        undo_window_until_unix: undo_until,
+    })
 }
 
 /// Pending sends (envelope metadata only — bodies never leave this process
@@ -268,7 +330,7 @@ pub async fn kiwi_list_outbox(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<
             not_before_unix: m.not_before_unix,
             undo_window_until_unix: m.undo_window_until_unix,
             attempts: m.attempts,
-            cancelable: now < m.undo_window_until_unix,
+            cancelable: now < m.undo_window_until_unix || now < m.not_before_unix,
         })
         .collect())
 }
@@ -392,18 +454,19 @@ pub(crate) async fn deliver(
                 attempts: attempts + 1,
                 ..item
             });
-            let updated_meta = {
+            {
                 let mut metas = s.outbox_meta.lock().await;
-                metas.get_mut(&queue_id).map(|m| {
+                if let Some(m) = metas.get_mut(&queue_id) {
                     m.attempts = attempts + 1;
                     m.not_before_unix = now_unix() + backoff;
-                    m.clone()
-                })
-            };
-            if let Some(m) = updated_meta {
-                // Keep the persisted meta in step with the retry state.
-                let _ = crate::state::update_outbox_meta(&s.data_dir, &queue_id, &m);
+                }
             }
+            // Keep the persisted row in step with the retry state.
+            let _ = s.store.lock().await.outbox_set_timing(
+                &queue_id,
+                now_unix() + backoff,
+                attempts + 1,
+            );
             Ok(Delivered::Held)
         } else {
             // Exhausted retries land as failed; sent/blocked pass through.
@@ -747,17 +810,23 @@ mod tests {
         });
     }
 
-    #[test]
-    fn outbox_survives_reopen() {
-        // Same data dir across two opens — the persisted item must reload.
-        let dir = std::env::temp_dir().join(format!(
-            "kiwi-outbox-persist-{}-{}",
+    fn unique_dir(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "kiwi-{tag}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
-        ));
+        ))
+    }
+
+    #[test]
+    fn outbox_survives_reopen() {
+        // Same data dir across two opens — the persisted SQLite row must
+        // rebuild the queue, and the send-later slot must still dispatch
+        // on schedule after the "restart".
+        let dir = unique_dir("outbox-persist");
         let queue_id = {
             let state = AppState::open_test(dir.clone()).unwrap();
             block_on(async {
@@ -782,10 +851,16 @@ mod tests {
         let state2 = AppState::open_test(dir.clone()).unwrap();
         block_on(async {
             assert_eq!(state2.send_queue.lock().await.pending_count(), 1);
-            let meta = state2.outbox_meta.lock().await;
-            let m = meta.get(&queue_id).expect("meta reloaded");
-            assert_eq!(m.subject, "s");
-            assert!(!m.message_id.is_empty());
+            let not_before = {
+                let meta = state2.outbox_meta.lock().await;
+                let m = meta.get(&queue_id).expect("meta reloaded");
+                assert_eq!(m.subject, "s");
+                assert!(!m.message_id.is_empty());
+                m.not_before_unix
+            };
+            // Not due yet; due at its persisted slot — resume dispatch.
+            assert!(state2.send_queue.lock().await.due(now_unix()).is_empty());
+            assert_eq!(state2.send_queue.lock().await.due(not_before).len(), 1);
         });
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -808,14 +883,113 @@ mod tests {
             )
             .await
             .unwrap();
+            assert!(cancel_impl(&state, &r.queue_id).await.unwrap());
+            // Queue and the persisted row both cleared.
+            assert_eq!(state.send_queue.lock().await.pending_count(), 0);
+            assert!(state.store.lock().await.outbox_list(10).unwrap().is_empty());
+            // Second cancel is a no-op.
+            assert!(!cancel_impl(&state, &r.queue_id).await.unwrap());
+        });
+    }
+
+    #[test]
+    fn scheduled_send_recalled_past_undo_window() {
+        // Send-later item: the undo window expires seconds after enqueue,
+        // but the send stays recallable until its dispatch slot.
+        let state = test_state("send-sched-cancel");
+        block_on(async {
+            let acct = crate::commands::accounts::add_account_impl(&state, acct_input())
+                .await
+                .unwrap();
+            let r = send_impl(
+                &state,
+                &acct.id,
+                compose(),
+                Some(SendOptions {
+                    send_at_unix: Some(now_unix() + 7200),
+                    undo_grace_secs: Some(0),
+                }),
+            )
+            .await
+            .unwrap();
+            assert!(cancel_impl(&state, &r.queue_id).await.unwrap());
+        });
+    }
+
+    #[test]
+    fn reschedule_moves_dispatch_and_persists() {
+        let state = test_state("send-resched");
+        block_on(async {
+            let acct = crate::commands::accounts::add_account_impl(&state, acct_input())
+                .await
+                .unwrap();
+            let r = send_impl(&state, &acct.id, compose(), None).await.unwrap();
+            let later = now_unix() + 7200;
+            let receipt = schedule_impl(&state, &r.queue_id, later).await.unwrap();
+            assert_eq!(receipt.not_before_unix, later);
+            // In-memory queue + persisted row moved together.
+            assert!(state.send_queue.lock().await.due(now_unix()).is_empty());
+            let rows = state.store.lock().await.outbox_list(10).unwrap();
+            assert_eq!(rows[0].not_before_unix, later);
+            // Unknown queue id → not-found.
             assert!(
-                state
-                    .send_queue
-                    .lock()
+                schedule_impl(&state, "send-nope", later)
                     .await
-                    .cancel(&r.queue_id, now_unix())
+                    .is_err_and(|e| e.code == "not-found")
             );
         });
+    }
+
+    #[test]
+    fn legacy_file_outbox_imported() {
+        // Pre-SQLite format: outbox/<id>.json + .eml — folded into mail.db
+        // on open, files removed.
+        let dir = unique_dir("outbox-legacy");
+        {
+            // The account must already exist in mail.db (outbox FK), as it
+            // would for any real pre-upgrade profile.
+            let state = AppState::open_test(dir.clone()).unwrap();
+            block_on(async {
+                crate::commands::accounts::add_account_impl(&state, acct_input())
+                    .await
+                    .unwrap();
+            });
+        }
+        let account_id = {
+            let state = AppState::open_test(dir.clone()).unwrap();
+            block_on(async { state.index.lock().await.account_ids[0].clone() })
+        };
+        let meta = OutboxMeta {
+            account_id,
+            from: "a@x.test".into(),
+            to: vec!["b@y.test".into()],
+            subject: "legacy".into(),
+            message_id: "<legacy@x>".into(),
+            not_before_unix: now_unix() + 3600,
+            undo_window_until_unix: now_unix() + 30,
+            attempts: 2,
+        };
+        let od = dir.join("outbox");
+        std::fs::create_dir_all(&od).unwrap();
+        std::fs::write(
+            od.join("send-legacy1.json"),
+            serde_json::to_vec(&meta).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(od.join("send-legacy1.eml"), b"Subject: legacy\r\n\r\nx").unwrap();
+
+        let state = AppState::open_test(dir.clone()).unwrap();
+        block_on(async {
+            assert_eq!(state.send_queue.lock().await.pending_count(), 1);
+            let m = state.outbox_meta.lock().await;
+            assert_eq!(m["send-legacy1"].attempts, 2);
+            let rows = state.store.lock().await.outbox_list(10).unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].queue_id, "send-legacy1");
+        });
+        assert!(!od.join("send-legacy1.json").exists());
+        assert!(!od.join("send-legacy1.eml").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

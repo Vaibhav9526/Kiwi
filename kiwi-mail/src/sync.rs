@@ -188,12 +188,24 @@ pub async fn sync_pop3(
     Ok(report)
 }
 
-/// Compact UID set notation ("1,2,3" or collapsed "a:b" runs).
+/// UID set notation ("1,2,3"); runs are not collapsed — chunking bounds
+/// command length, so collapsing buys nothing here.
 fn uid_set(uids: &[u64]) -> String {
     uids.iter()
         .map(|u| u.to_string())
         .collect::<Vec<_>>()
         .join(",")
+}
+
+/// IMAP INTERNALDATE ("17-Sep-2025 10:00:00 +0000", day may be space-padded)
+/// → Unix seconds. Returns None on unparseable input — absent fact, no guess.
+fn parse_internal_date(s: &str) -> Option<i64> {
+    const FMT: &[time::format_description::FormatItem<'static>] = time::macros::format_description!(
+        "[day padding:none]-[month repr:short]-[year] [hour]:[minute]:[second] [offset_hour sign:mandatory][offset_minute]"
+    );
+    time::OffsetDateTime::parse(s.trim(), FMT)
+        .ok()
+        .map(|d| d.unix_timestamp())
 }
 
 fn to_meta(item: &FetchItem) -> NewMessageMeta {
@@ -212,7 +224,7 @@ fn to_meta(item: &FetchItem) -> NewMessageMeta {
         subject: env.subject,
         from_addr: join(&env.from),
         to_addrs: join(&env.to),
-        date_unix: None, // INTERNALDATE is a display string; parsed by mime later
+        date_unix: item.internal_date.as_deref().and_then(parse_internal_date),
         size: item.size,
         flags: item.flags.clone(),
         has_attachments: item
@@ -249,6 +261,21 @@ mod tests {
     fn uid_set_format() {
         assert_eq!(uid_set(&[1, 2, 5]), "1,2,5");
         assert_eq!(uid_set(&[]), "");
+    }
+
+    #[test]
+    fn internal_date_parses() {
+        assert_eq!(
+            parse_internal_date("17-Sep-2025 10:00:00 +0000"),
+            Some(1_758_103_200)
+        );
+        // space-padded day-of-month is legal (RFC 3501 date-day-fixed)
+        assert_eq!(
+            parse_internal_date(" 1-Jan-2024 00:00:00 +0100"),
+            Some(1_704_063_600)
+        );
+        assert_eq!(parse_internal_date("garbage"), None);
+        assert_eq!(parse_internal_date(""), None);
     }
 
     #[test]

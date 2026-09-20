@@ -3,7 +3,9 @@
 //! login name (usually the full email); credential keys are derived by the
 //! app layer, never here.
 
-use kiwi_mail::account::{AuthRef, IncomingAccount, IncomingProtocol, MailAccount, OutgoingAccount, ServerConfig};
+use kiwi_mail::account::{
+    AuthRef, IncomingAccount, IncomingProtocol, MailAccount, OutgoingAccount, ServerConfig,
+};
 use kiwi_mail::transport::SocketSecurity;
 
 /// How the account authenticates — carries no secret material, only which
@@ -132,8 +134,14 @@ impl AccountSuggestion {
     /// skip to the next stage instead of failing.
     #[must_use]
     pub fn checked(mut self) -> Option<Self> {
-        self.incoming.host = crate::DomainName::parse(&self.incoming.host).ok()?.as_str().to_string();
-        self.outgoing.host = crate::DomainName::parse(&self.outgoing.host).ok()?.as_str().to_string();
+        self.incoming.host = crate::DomainName::parse(&self.incoming.host)
+            .ok()?
+            .as_str()
+            .to_string();
+        self.outgoing.host = crate::DomainName::parse(&self.outgoing.host)
+            .ok()?
+            .as_str()
+            .to_string();
         if self.incoming.port == 0 || self.outgoing.port == 0 {
             return None;
         }
@@ -151,8 +159,7 @@ impl AccountSuggestion {
         {
             return None;
         }
-        if self.outgoing.security == SocketSecurity::Plaintext
-            && matches!(self.outgoing.port, 465)
+        if self.outgoing.security == SocketSecurity::Plaintext && matches!(self.outgoing.port, 465)
         {
             return None;
         }
@@ -176,8 +183,12 @@ impl AccountSuggestion {
                 security: self.incoming.security,
             },
             auth: match self.incoming.auth {
-                AuthKind::Password => AuthRef::Password { credential_key: format!("autoconfig/{stem}/incoming") },
-                AuthKind::XOAuth2 => AuthRef::XOAuth2 { credential_key: format!("autoconfig/{stem}/incoming") },
+                AuthKind::Password => AuthRef::Password {
+                    credential_key: format!("autoconfig/{stem}/incoming"),
+                },
+                AuthKind::XOAuth2 => AuthRef::XOAuth2 {
+                    credential_key: format!("autoconfig/{stem}/incoming"),
+                },
             },
             username: self.incoming.username.clone(),
         };
@@ -188,8 +199,12 @@ impl AccountSuggestion {
                 security: self.outgoing.security,
             },
             auth: match self.outgoing.auth {
-                AuthKind::Password => AuthRef::Password { credential_key: format!("autoconfig/{stem}/outgoing") },
-                AuthKind::XOAuth2 => AuthRef::XOAuth2 { credential_key: format!("autoconfig/{stem}/outgoing") },
+                AuthKind::Password => AuthRef::Password {
+                    credential_key: format!("autoconfig/{stem}/outgoing"),
+                },
+                AuthKind::XOAuth2 => AuthRef::XOAuth2 {
+                    credential_key: format!("autoconfig/{stem}/outgoing"),
+                },
             },
             username: self.outgoing.username.clone(),
         };

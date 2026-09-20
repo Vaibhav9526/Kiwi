@@ -9,10 +9,19 @@ use kiwi_mail::transport::{SocketSecurity, TlsSettings, Transport};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let transport =
-        Transport::connect("127.0.0.1", 1025, SocketSecurity::Plaintext, TlsSettings::default())
-            .await?;
-    println!("connected: {}:{} ({:?})", transport.host(), transport.port(), transport.socket_security());
+    let transport = Transport::connect(
+        "127.0.0.1",
+        1025,
+        SocketSecurity::Plaintext,
+        TlsSettings::default(),
+    )
+    .await?;
+    println!(
+        "connected: {}:{} ({:?})",
+        transport.host(),
+        transport.port(),
+        transport.socket_security()
+    );
 
     let mut client = SmtpClient::connect(
         transport,

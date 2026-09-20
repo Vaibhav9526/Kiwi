@@ -310,11 +310,15 @@ export class DrizzleAuditRepository implements AuditRepository {
     return row ? toAuditRecord(row) : undefined;
   }
 
-  range(since: number, until: number, limit: number): AuditRecord[] {
+  range(since: number, until: number, limit: number, orgId?: string | null): AuditRecord[] {
+    // Org filtering happens in SQL, not after the fact — see the interface
+    // note: a post-filter would let `limit` truncate the window first.
+    const conditions = [gte(s.auditLog.ts, since), lte(s.auditLog.ts, until)];
+    if (orgId) conditions.push(eq(s.auditLog.orgId, orgId));
     return this.db
       .select()
       .from(s.auditLog)
-      .where(and(gte(s.auditLog.ts, since), lte(s.auditLog.ts, until)))
+      .where(and(...conditions))
       .orderBy(asc(s.auditLog.seq))
       .limit(limit)
       .all()

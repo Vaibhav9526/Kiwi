@@ -12,10 +12,19 @@ use zeroize::Zeroizing;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // ---- SEND (SMTP :1025, plaintext — local dev server) ----
-    let t = Transport::connect("127.0.0.1", 1025, SocketSecurity::Plaintext, TlsSettings::default()).await?;
+    let t = Transport::connect(
+        "127.0.0.1",
+        1025,
+        SocketSecurity::Plaintext,
+        TlsSettings::default(),
+    )
+    .await?;
     let mut smtp = SmtpClient::connect(
         t,
-        SmtpConfig { require_starttls: false, ..Default::default() },
+        SmtpConfig {
+            require_starttls: false,
+            ..Default::default()
+        },
     )
     .await?;
     let marker = format!("roundtrip-{}@kiwi.local", std::process::id());
@@ -29,13 +38,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             message: msg.into_bytes(),
         })
         .await?;
-    println!("SMTP  → accepted={:?} rejected={:?}", out.accepted, out.rejected);
+    println!(
+        "SMTP  → accepted={:?} rejected={:?}",
+        out.accepted, out.rejected
+    );
 
     // ---- RECEIVE (POP3 :1100) ----
-    let t = Transport::connect("127.0.0.1", 1100, SocketSecurity::Plaintext, TlsSettings::default()).await?;
+    let t = Transport::connect(
+        "127.0.0.1",
+        1100,
+        SocketSecurity::Plaintext,
+        TlsSettings::default(),
+    )
+    .await?;
     let mut pop3 = Pop3Client::connect(
         t,
-        Pop3Config { require_stls: false, allow_plaintext_auth: true },
+        Pop3Config {
+            require_stls: false,
+            allow_plaintext_auth: true,
+        },
     )
     .await?;
     pop3.authenticate(&Pop3Auth::UserPass {
@@ -48,7 +69,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let list = pop3.retr(count as u32).await?;
     let body = String::from_utf8_lossy(&list);
     let hit = body.contains(&marker);
-    println!("POP3  → retr #{count}: {} bytes, our message found: {hit}", list.len());
+    println!(
+        "POP3  → retr #{count}: {} bytes, our message found: {hit}",
+        list.len()
+    );
     println!("----\n{body}\n----");
     pop3.quit().await?;
     if !hit {

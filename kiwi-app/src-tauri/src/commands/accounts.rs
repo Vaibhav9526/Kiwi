@@ -271,14 +271,14 @@ pub async fn kiwi_remove_account(
     index.folders.remove(&account_id);
     index.save(&state.data_dir)?;
     drop(index);
+    // MailStore::delete_account (schema v2) cascades folders/messages/
+    // pop3_seen/outbox rows and sweeps on-disk payload dirs.
+    state.store.lock().await.delete_account(&account_id)?;
     state
         .audit
         .lock()
         .await
         .record("account-removed", &account_id, crate::state::now_unix())?;
-    // NOTE: MailStore has no `delete_account`/`list_accounts` yet — the
-    // config row is orphaned in mail.db (documented gap; removal is
-    // effective because the index no longer surfaces it).
     Ok(serde_json::json!({ "removed": removed.is_some() }))
 }
 

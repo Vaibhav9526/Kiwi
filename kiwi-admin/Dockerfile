@@ -35,6 +35,12 @@ COPY package.json package-lock.json ./
 # `npm install`, then this restores pruning). Keeps the image honest today.
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
+# The SQL migration files are RUNTIME data, not build input: openSqlite/openPg
+# resolve `../../drizzle/{sqlite,pg}` relative to the compiled module, i.e.
+# /app/drizzle/<dialect>. Without them the migrator cannot find
+# meta/_journal.json and the container dies before it can bind a port — which
+# is what kept the compose healthcheck red.
+COPY drizzle/ ./drizzle/
 EXPOSE 3001
 # node:22 has global fetch: healthcheck needs no curl in the image.
 HEALTHCHECK --interval=10s --timeout=5s --retries=6 --start-period=60s \

@@ -18,7 +18,8 @@ use kiwi_core::session::{
 use kiwi_core::trust::{SignalKind, SignalSeverity, TrustEvaluation, TrustSignal};
 use kiwi_forensics::findings::Finding;
 use kiwi_forensics::live::{
-    LiveCertVerdict, LiveSessionInput, LiveTlsObservation, SocketMode, event_from_live,
+    LiveAuthObservation, LiveCertVerdict, LiveSessionInput, LiveTlsObservation, SocketMode,
+    event_from_live,
 };
 use kiwi_forensics::rules::{RuleEngine, SecurityPolicy};
 use kiwi_mail::transport::{CertVerdict, SocketSecurity, TlsObservation, Transport};
@@ -236,6 +237,9 @@ fn forensics_findings(
         mode,
         observation: obs.as_ref(),
         started_at_unix_ms: now_unix_ms(),
+        // T-164-adjacent (contract §11): observed auth facts now flow —
+        // AUTH rules (001–006) are live, not capture-only.
+        auth: live_auth_of(ctx).as_ref(),
     });
     let engine = RuleEngine::new(SecurityPolicy::default());
     let mut findings = engine.evaluate_session(&event);
@@ -245,6 +249,29 @@ fn forensics_findings(
         }
     }
     findings
+}
+
+/// Map the core `AuthMechanism` observation into the forensics adapter's
+/// auth input — contract forensics.md §11: `from_token` over the core
+/// spelling; `none` → no observation at all (AUTH rules stay silent);
+/// `client-cert` → `External`; `other:<name>` → `from_token(<name>)`
+/// (`Unknown` on mismatch — conservatism, not guessing). `attempts` is 1
+/// whenever a mechanism was observed; `failures` is 1 on `succeeded ==
+/// Some(false)`; `succeeded` passes verbatim.
+fn live_auth_of(ctx: &ObservationContext) -> Option<LiveAuthObservation> {
+    use kiwi_forensics::model::AuthMechanism as FAuth;
+    let spelling = crate::types::auth_mechanism(&ctx.auth_mechanism);
+    let mechanism = match spelling.as_str() {
+        "none" => return None,
+        "client-cert" => FAuth::External,
+        s => FAuth::from_token(s.strip_prefix("other:").unwrap_or(s)),
+    };
+    Some(LiveAuthObservation {
+        mechanism: Some(mechanism),
+        succeeded: ctx.auth_succeeded,
+        attempts: 1,
+        failures: u32::from(ctx.auth_succeeded == Some(false)),
+    })
 }
 
 fn tls_version(name: Option<&str>) -> Option<TlsVersion> {
@@ -331,5 +358,50 @@ mod tests {
         assert_eq!(kex_group("X25519"), KeyExchangeGroup::X25519);
         assert_eq!(kex_group("secp256r1"), KeyExchangeGroup::SecP256r1);
         assert!(matches!(kex_group("mlkem768"), KeyExchangeGroup::Other(_)));
+    }
+
+    // T-164-adjacent: §11 auth threading into the live adapter.
+    fn ctx_with(mech: AuthMechanism, succeeded: Option<bool>) -> ObservationContext {
+        ObservationContext {
+            protocol: Protocol::Imap,
+            account_id: None,
+            starttls_offered: None,
+            auth_mechanism: mech,
+            auth_succeeded: succeeded,
+            label: "test",
+        }
+    }
+
+    #[test]
+    fn auth_threading_none_stays_absent() {
+        // "none" → no LiveAuthObservation at all — AUTH rules stay silent.
+        assert!(live_auth_of(&ctx_with(AuthMechanism::None, None)).is_none());
+    }
+
+    #[test]
+    fn auth_threading_maps_verbatim_and_counts() {
+        use kiwi_forensics::model::AuthMechanism as FAuth;
+        let ok = live_auth_of(&ctx_with(AuthMechanism::Login, Some(true))).unwrap();
+        assert_eq!(ok.mechanism, Some(FAuth::Login));
+        assert_eq!(ok.succeeded, Some(true));
+        assert_eq!((ok.attempts, ok.failures), (1, 0));
+
+        let fail = live_auth_of(&ctx_with(AuthMechanism::Plain, Some(false))).unwrap();
+        assert_eq!(fail.mechanism, Some(FAuth::Plain));
+        assert_eq!((fail.attempts, fail.failures), (1, 1));
+
+        // client-cert → External; other:<name> → from_token; unknown → Unknown.
+        let cert = live_auth_of(&ctx_with(AuthMechanism::ClientCertificate, None)).unwrap();
+        assert_eq!(cert.mechanism, Some(FAuth::External));
+        let other = live_auth_of(&ctx_with(
+            AuthMechanism::Other("digest-md5".into()),
+            Some(true),
+        ))
+        .unwrap();
+        assert_eq!(other.mechanism, Some(FAuth::DigestMd5));
+        let bogus = live_auth_of(&ctx_with(AuthMechanism::Other("zzz".into()), None)).unwrap();
+        assert_eq!(bogus.mechanism, Some(FAuth::Unknown));
+        let unk = live_auth_of(&ctx_with(AuthMechanism::Unknown, None)).unwrap();
+        assert_eq!(unk.mechanism, Some(FAuth::Unknown));
     }
 }

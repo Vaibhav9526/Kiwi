@@ -39,6 +39,13 @@ export const DEMO_MESSAGES: MessageEnvelope[] = [
     unread: false, starred: false, hasAttachments: false, trust: "secure",
     snippet: "Sounds good — shipping Friday…",
   },
+  {
+    id: "msg-5", accountId: "acc-demo-1", accountEmail: "ava@example.test", folder: "inbox",
+    folderId: 1, uid: 105,
+    from: "ops@project.test", subject: "Fwd: launch checklist", date: "2026-09-19T07:55:00Z",
+    unread: true, starred: false, hasAttachments: false, trust: "secure",
+    snippet: "Forwarding the checklist for the on-call rotation…",
+  },
 ];
 
 export const DEMO_FINDINGS: FindingInfo[] = [

@@ -377,3 +377,394 @@
 - **Next:** owner visual review of the screenshots; any taste deltas go
   through another operate-mode pass (tokens/classes only).
 
+## 2026-09-20 — T-151 T-146 gaps wired; compose + settings deepened (branch release/v0.1.0)
+
+- **Status:** Agent 7's T-146 commands (`kiwi_update_message`,
+  `kiwi_download_attachment`, `kiwi_render_body`, `kiwi_set_remote_content` —
+  verified present in `commands/message.rs` + registered in `lib.rs`
+  generate_handler, contract ipc.md §6b) are now wired through the whole
+  frontend. Compose gained a plaintext formatting toolbar + per-account
+  localStorage draft autosave (no draft command exists in kiwi.ipc/1 — local
+  only, attachments excluded, labeled). Settings Privacy/Notifications/
+  Advanced sections completed without inventing backend behavior.
+  `npm run build` green (tsc strict + vite, 42 modules). `src-tauri/`
+  untouched. No commits made.
+- **Files changed — kiwi-app/src:**
+  - `kiwi.ts` — new tolerant views: `MessagePatch`, `MessageUpdateView`,
+    `AttachmentSavedView`, `RenderedBodyView`, `RemoteContentView`.
+  - `ipc.ts` — 4 new wrappers (`updateMessage`, `downloadAttachment`,
+    `renderBody`, `setRemoteContent`), camelCase args per contract; same
+    transport/verdict error split.
+  - `App.tsx` — `applyPatch` path: live flag/archive via
+    `kiwi_update_message` (returned flags become the override source of
+    truth; archive moves bump `mailboxRev` + reload folders; failures keep a
+    local override + honest syncNote, reconciles on next sync); demo stays
+    local-only. Rendered-body load chained after `getMessage` (render failure
+    never hides plaintext); `setAllowRemote` re-renders after toggle;
+    `saveAttachment` via `kiwi_download_attachment` with notes. New state:
+    rendered/renderLoading/renderError, remoteContent map, attachNote/
+    attachBusy, mailboxRev.
+  - `views/mailbox.tsx` — new Archive button; `AttachmentList` (per-file
+    save-path input defaulting to MIME filename + Save via backend, demo
+    labeled needs-backend); `BodyPane` (sanitized `rendered.html` via
+    dangerouslySetInnerHTML — never raw `htmlBody` — with blocked-count
+    notice + allow/block toggle, plaintext toggle; honest fallbacks for
+    text-only/demo/render-error). Reader footnote corrected (no more
+    "no flag-mutation command").
+  - `views/compose.tsx` — toolbar (Bold/Italic/Underline/Code/Quote/List,
+    wraps textarea selection with markers; text-only send path unchanged);
+    draft autosave `kiwi.draft.<accountId>` (recipients/subject/body/
+    scheduled, 1 s debounce, restore on account switch, consumed on send,
+    Discard button; quota-failure note).
+  - `views/settings.tsx` — Privacy: per-account remote-content allow/block
+    via `kiwi_set_remote_content` (pre-toggle state honestly labeled backend
+    default since no getter command exists); Notifications: local-only
+    `kiwi.notify`/`kiwi.poll` prefs; Advanced: contract label, draft count +
+    Clear-all-drafts, backend-data boundary note. Placeholders gone.
+- **Commands run:** `npm run build` in kiwi-app (green first try — tsc
+  strict + vite, 42 modules, no new deps).
+- **Assumptions/limits:** no `@tauri-apps/plugin-dialog` dep — save uses a
+  typed path input (backend still bounds + refuses app-data-dir paths);
+  dialog-plugin file picker is a follow-up. Remote-content pre-toggle state
+  is unknowable without a render — labeled, not guessed. Drafts in
+  localStorage are device-local plaintext (same trust as prefs; never
+  credentials/attachments).
+- **Needs:** (1) Agent 7 T-144 send-path (bridge/emitter) — UI already
+  renders both policy codes. (2) Click-through vs the Tauri shell + a11y
+  re-audit (Agent 6 T-113). (3) TASKS.md has no T-151 row — Lead to confirm
+  numbering (worked per session brief).
+- **Next:** T-142 send-queue UI polish if Agent 2 changes outbox shapes;
+  otherwise idle until review feedback.
+
+## 2026-09-20 — T-153 productivity layer done (branch release/v0.1.0)
+
+- **Status:** Mailspring-style layer delivered: Ctrl+K command palette,
+  full keyboard map with `?` help overlay, toast system for send/sync/
+  policy events. Demo-mode fallbacks kept everywhere (backend-only actions
+  no-op with an explanatory toast). `npm run build` green first try (tsc
+  strict + vite, 42→45 modules). `src-tauri/` untouched. No commits made.
+- **Files changed — kiwi-app/src (new):**
+  - `components/toasts.tsx` — `Toast`/`ToastKind`/`ToastStack` (aria-live
+    polite, error role=alert, glyph+text per kind, dismiss buttons).
+  - `components/palette.tsx` — `CommandPalette` dialog (combobox input,
+    ↑↓/Enter/Esc, per-row search including current TopBar query, "Search
+    messages for …" row driving the query + mail route).
+  - `components/shortcuts.tsx` — `ShortcutsHelp` dialog (static 11-row map,
+    Esc/backdrop close).
+- **Files changed — kiwi-app/src (edited):**
+  - `theme.css` — `.kiwi-toasts`/`.kiwi-toast` (+kind accents reusing
+    severity tokens) and `.kiwi-palette(-row)` styles for both themes.
+  - `App.tsx` — `notify`/`dismissToast` (max 5, 6 s auto-dismiss); global
+    keys: Ctrl+K toggles palette (replaces old focus-search), `/` focuses
+    search, `?` opens help (all guarded off text fields); `paletteActions`
+    memo (compose, search-focus, theme cycle with toast, security, settings,
+    shortcuts, go-to per folder, sync/lock live with labeled demo no-ops);
+    palette search routes to mail folder; toasts wired into doSync (incl.
+    demo early-return), doFlushOutbox (ok/warn/error by outcome),
+    doCancelSend, applyPatch archive/failure, saveAttachment, doLock,
+    allow-remote untouched (in-view note stands); `ComposeView` gains
+    `onNotify`.
+  - `components/chrome.tsx` — TopBar: palette button (⌘ Commands) +
+    shortcuts button (?), search placeholder now `(/)`.
+  - `views/mailbox.tsx` — listbox keys: ArrowDown/j + ArrowUp/k + n/p move,
+    s star, e archive, r reply→composer, u read/unread; aria-label updated.
+  - `views/compose.tsx` — `onNotify` prop: queued/undo/policy-blocked/
+    policy-unavailable/send-error toasts in both modes (demo labeled).
+- **Commands run:** `npm run build` in kiwi-app (green first try, 45
+  modules, no new deps).
+- **Assumptions/limits:** palette go-to list grows with folder count —
+  filter handles it; shortcuts `r` opens a blank composer (no quoted reply
+  — no reply-context plumbing exists yet). Toasts are UI-local (no
+  persistence, no backend).
+- **Next:** owner click-through (palette focus/keys, toast timing); a11y
+  re-audit with Agent 6 T-113.
+
+## 2026-09-20 — T-155 send-path UI closure (branch release/v0.1.0)
+
+- **Status:** All six items verified against ipc.md §6b/§7/§12. Backend
+  surface is unchanged since T-151 (same 31 handlers in `lib.rs` — no new
+  Agent 7 commands), so items 3–6 were already live and re-verified; the two
+  real gaps (outbox countdown, toast Cancel action) are now closed.
+  `npm run build` green first try (tsc strict + vite, 45 modules).
+  `src-tauri/` untouched. No commits made.
+- **Files changed — kiwi-app/src:**
+  - `components/toasts.tsx` — `ToastAction { label, run }` + optional
+    `Toast.action`; action renders as a primary button that runs then
+    dismisses.
+  - `App.tsx` — `notify` accepts `opts { action?, ttlMs? }` (default 6 s).
+  - `views/compose.tsx` — `onNotify` gains the same opts; send fires an
+    undo toast with a working **Undo send** action (ttl = grace window, both
+    modes); `undo()` takes an explicit queue id (fixes a real stale-closure
+    bug: the toast fires before `queueId` state commits, so the old path
+    would have no-op'd); send-later validation added (invalid/past datetime
+    rejected client-side with an error, before IPC).
+  - `views/mailbox.tsx` — `OutboxList` now ticks (1 s, skipped under
+    `prefers-reduced-motion`): per-row "Undo open — Ns left" on the button
+    + status line, "Scheduled — sends <locale>" from `notBeforeUnix`,
+    "Dispatching… (attempt N)" after the window; exact timestamps stay in
+    `title` attributes.
+- **Verified, no change needed:** (3) send-later picker → `sendAtUnix`
+  (plus the new validation above); (4) Mark read/Star/Archive all go
+  through `kiwi_update_message` — zero stub paths in live mode (remaining
+  "local-only" strings are honest demo-mode labels); (5) reader Save via
+  `kiwi_download_attachment`; (6) reader + Settings toggles via
+  `kiwi_set_remote_content`, default off, audited server-side.
+- **Commands run:** `npm run build` in kiwi-app (green first try, 45
+  modules, no new deps).
+- **Assumptions/limits:** outbox ticking re-renders one small subtree per
+  second while the outbox folder is open — negligible. Toast action callbacks
+  are UI-local closures (no persistence).
+- **Next:** T-144 send-path review support if needed; otherwise idle until
+  review feedback.
+
+## 2026-09-20 — T-156 setup wizard + account management (branch release/v0.1.0)
+
+- **Status:** All items delivered. No autoconfig IPC exists in the backend
+  yet (verified: no `kiwi_lookup_autoconfig` in `src-tauri/`, no
+  `docs/contracts/autoconfig.md` — Agent 8's T-135 crate
+  `kiwi.autoconfig/1` exists with ISPDB/XML/MX/manual stages), so the
+  resolver runs behind the permanent `api.lookupAutoconfig` wrapper with a
+  labeled local stub until the IPC lands (zero view changes needed on land).
+  `npm run build` green first try (tsc strict + vite, 45 modules).
+  `src-tauri/` untouched. No commits made.
+- **Files changed — kiwi-app/src:**
+  - `kiwi.ts` — `AutoconfigSuggestion` (flat wizard shape, source incl.
+    `local-guess`) + tolerant `parseAutoconfigSuggestion` (accepts flat and
+    nested Rust `AccountSuggestion` shapes, both security vocabularies —
+    `tls/starttls/plaintext` and `ImplicitTls/StartTls/Plaintext`).
+  - `ipc.ts` — `lookupAutoconfig(email)` → `kiwi_lookup_autoconfig`
+    (throws BackendUnavailableError until the backend lands).
+  - `views/setup.tsx` — step 0 "Look up settings": IPC first, local stub on
+    any failure (BackendUnavailable vs lookup-failed labeled differently),
+    backend-null falls back too; applied fields invalidate prior probe
+    results; source note shown. `localAutoconfigGuess`: gmail + outlook
+    presets, generic `mail.<domain>` guess — always TLS/password, always
+    labeled, verify remains source of truth. Step 1 preset buttons (SSL/TLS
+    993-995/465, STARTTLS 143-110/587; ports+security only, hosts never
+    overwritten). Reconfigure handoff (`kiwi.editAccount`, server fields
+    only — never secrets): prefills, jumps to step 1, banner explains
+    add-then-remove-old. Credential copy hardened (OS store; never DB/
+    localStorage/logs). Plaintext ack gate + STARTTLS-required posture
+    unchanged (fail-closed server-side).
+  - `views/settings.tsx` — Accounts: default badge + Set/Clear default
+    (`kiwi.defaultAccount` pref, cleared on remove), Reconfigure… (live
+    only; stages handoff, routes to setup).
+  - `views/compose.tsx` — From selector honors `kiwi.defaultAccount` when
+    it matches a known account, else first account.
+- **Commands run:** `npm run build` in kiwi-app (green first try, 45
+  modules, no new deps).
+- **Assumptions/limits:** no edit IPC in kiwi.ipc/1 — reconfigure is
+  honestly add-then-remove-old, stated in both banners. Stub guesses must
+  survive verify to be used. Default account is frontend-local (no backend
+  default concept).
+- **Next:** drop the stub the moment Agent 8's lookup IPC lands (wrapper +
+  parser already match `kiwi.autoconfig/1` shapes); otherwise idle until
+  review feedback.
+
+## 2026-09-20 — T-160 search UI + lock screen (branch release/v0.1.0)
+
+- **Status:** Both views delivered. No search IPC exists in the backend yet
+  (verified: no `search` in `src-tauri/` — Agent 8's command pending), so
+  search runs behind the permanent `api.searchMessages` wrapper with a
+  labeled client-side fallback (zero view changes on land). Lock screen
+  upgraded per ui-surfaces KIWI-UI-005. `npm run build` green first try
+  (tsc strict + vite, 45→46 modules). `src-tauri/` untouched. No commits
+  made.
+- **Files changed — kiwi-app/src (new):**
+  - `views/search.tsx` — `SearchView`: debounced (300 ms) server attempt,
+    labeled fallback (`server` / `local demo fixtures` / `local — IPC
+    pending, loaded messages only` + error banner when the server fails but
+    local covers); `parseSearchQuery` (`from:`/`has:attachment`/`folder:`
+    tokens + terms, honored by the fallback); chips rewrite the query
+    (sender input, attachment toggle, folder input, clear-filters);
+    case-insensitive `<mark>` `Highlight`; rows open the message in its
+    folder (keyboard Enter included).
+- **Files changed — kiwi-app/src (edited):**
+  - `router.ts` — `search` route (`#/search`).
+  - `kiwi.ts` — `SearchHit` + tolerant `parseSearchHit` (accepts
+    `fromAddr`/`from` spellings; null when unusable).
+  - `ipc.ts` — `searchMessages(query, limit?)` → `kiwi_search_messages`.
+  - `App.tsx` — `visibleMessages` split into `baseMessages` (overrides, no
+    query — feeds mailbox + search) with identical mailbox behavior;
+    `#/search` render (hit → mail folder/messageId); palette "Search
+    messages for …" now routes to the results view; TopBar gains
+    `onSubmitSearch` (Enter → results).
+  - `components/chrome.tsx` — search placeholder notes Enter-for-results.
+  - `components/shortcuts.tsx` — help map gains the Enter-in-search row.
+  - `components/security.tsx` — `LockOverlay` gains trust-reason lines
+    (state/score/required-action), paired-device mobile-approve hint, QR
+    **placeholder** box (explicitly labeled, real codes come with
+    device-pairing), and challenge-id match line once Verify issues one.
+  - App lock render passes all three (demo: Demo authenticator, no
+    challenge id).
+- **Commands run:** `npm run build` in kiwi-app (green first try, 46
+  modules, no new deps).
+- **Assumptions/limits:** fallback searches loaded messages only (current
+  folder scope live, fixtures in demo) — stated in-view. QR box is a
+  placeholder, not a code. Challenge flow itself unchanged (T-143).
+- **Next:** drop the fallback the moment Agent 8's search IPC lands;
+  otherwise idle until review feedback.
+
+## 2026-09-20 — T-162 bulk actions + selection model (branch release/v0.1.0)
+
+- **Status:** Selection model + action bar delivered. Backend reality
+  checked first: kiwi.ipc/1 has flags/archive moves ONLY
+  (`kiwi_update_message` seen/starred/archived — verified in
+  `commands/message.rs`; no delete/spam/empty-trash command exists), so
+  destructive actions are rendered disabled with the reason rather than
+  faked. `npm run build` green first try (tsc strict + vite, 46 modules).
+  `src-tauri/` untouched. No commits made.
+- **Files changed — kiwi-app/src:**
+  - `App.tsx` — `bulkPatch(ids, patch, label)`: sequential live pass over
+    N (per-message verdict → overrides, one reload on moves, one summary
+    toast + syncNote); demo applies seen/starred locally, archive honestly
+    refused as demo-no-backend. Passed as `onBulkPatch`.
+  - `views/mailbox.tsx` — selection (`picked` ids + range anchor, cleared
+    on folder change / after moves): hover checkbox (real
+    `<input type=checkbox>`, native checked semantics), Ctrl/Cmd-click
+    toggle, Shift-click range, header select-all with indeterminate state;
+    listbox `aria-multiselectable`, rows announce "Selected for bulk
+    actions"; `BulkBar` toolbar (count, Mark read/unread, Archive,
+    Move-to select limited to the backend's real targets Archive/Inbox,
+    disabled Delete + Spam with titled reasons, Clear); header Mark-all-read
+    with live unread count (direct — reversible, toast confirms count) and
+    Empty-trash disabled with titled reason; focus returns to the folder
+    heading when moves unmount the bar.
+  - `theme.css` — `.kiwi-select-box` reveal (hover/focus-within/checked),
+    `.kiwi-actionbar` styling for both themes.
+  - `components/shortcuts.tsx` — help map gains the Ctrl/Shift-click row.
+- **Commands run:** `npm run build` in kiwi-app (green first try, 46
+  modules, no new deps).
+- **Assumptions/limits:** move submenu is Archive/Inbox only (the backend's
+  whole move vocabulary); cross-account moves in All-Inboxes apply per
+  message's own account. Empty-trash has no confirm because it has no
+  action — enabling it needs backend work, flagged below.
+- **Needs (Agent 7, proposed):** `kiwi_delete_messages`
+  (folder-scoped uids → Trash semantics + expunge?) to enable Delete /
+  Spam / Empty-trash (with count-naming confirms) — UI surface is ready
+  and waiting.
+- **Next:** enable the three disabled actions the moment the delete IPC
+  lands; otherwise idle until review feedback.
+
+## 2026-09-20 — T-165 conversation threading (branch release/v0.1.0)
+
+- **Status:** Threading delivered as pure client-side grouping. Store
+  reality checked first: list views expose `message_id` + `subject` but NOT
+  `In-Reply-To`/`References` (verified in `kiwi-mail/src/store.rs` +
+  `src-tauri/src/types.rs` — headers live only in the MIME parser and the
+  compose input), so threads group by normalized subject within an account
+  and the limitation is stated in-view and in code. `npm run build` green
+  first try (tsc strict + vite, 46→47 modules). `src-tauri/` untouched. No
+  commits made.
+- **Files changed — kiwi-app/src (new):**
+  - `threading.ts` — `normalizeSubject` (iterative Re/Fw/Fwd/Aw/Sv strip,
+    `[tag]` drop, case-fold; conservative prefix set), `displaySubject`,
+    `buildThreads` (account-scoped groups, members oldest→newest to match a
+    future header-chain fold, threads newest-activity-first).
+- **Files changed — kiwi-app/src (edited):**
+  - `mock.ts` — third demo message (`Fwd: launch checklist`) so the demo
+    shows a 3-message thread exercising prefix normalization.
+  - `views/mailbox.tsx` — Threads/List toggle (`kiwi.threadMode` pref,
+    threads default); collapsed `ThreadGroup` rows (chevron + subject +
+    participants + `N msgs` + `N unread` badges, latest date/snippet,
+    whole-thread checkbox, Enter toggles, `aria-expanded`); expanded
+    children reuse the extracted `MessageRow` (single-message threads
+    render identically to list mode); selection/bulk/j-k stepping unchanged
+    (ids are flat); reader `ThreadStrip` (collapsible sibling list, current
+    marked, only for 2+ threads).
+- **Commands run:** `npm run build` in kiwi-app (green first try, 47
+  modules, no new deps).
+- **Assumptions/limits:** subject collisions across distinct conversations
+  can over-group (inherent to subject threading — header chains fix it when
+  IPC exposes the fields; no view changes needed then). Cross-folder
+  threads appear only where the loaded list spans folders (all-inboxes).
+- **Needs (Agent 7, proposed):** expose `inReplyTo`/`references` on
+  `MessageView` for header-chain threading.
+- **Next:** chain fold when the fields land; otherwise idle until review
+  feedback.
+
+## 2026-09-20 — T-167 settings depth + prefs chain (branch release/v0.1.0)
+
+- **Status:** All sections deepened. Backend reality checked first: NO
+  prefs IPC exists (only `prefix` string matches in `src-tauri/` — no
+  `kiwi_get/set_prefs`, no rename/update-account command), so prefs run on
+  localStorage with permanent wrappers + merge policy ready for land (zero
+  view changes then). `npm run build` green first try (tsc strict + vite,
+  47 modules). `src-tauri/` untouched. No commits made.
+- **Files changed — kiwi-app/src:**
+  - `prefs.ts` — `PREF_KEYS` registry, `accountPref()` suffixed keys,
+    `collectPrefs` (incl. signature/syncFreq enumeration),
+    `applyPrefsBag` (backend-wins merge + `applyUiPrefs`),
+    `loadMuted`, `applyUiPrefs` (theme/accent/density attrs).
+  - `ipc.ts` — `getPrefs`/`setPrefs` wrappers (throw until backend lands).
+  - `theme.css` — `[data-density=compact]` (tighter rows/cards/inputs) +
+    `[data-accent=subtle|vivid]` treatments for both themes.
+  - `App.tsx` — `notify` honors the toast kill-switch (in-view lines still
+    update) + best-effort WebAudio blip when sound is on (guarded, no
+    assets); muted accounts excluded from unread counts; theme state
+    follows Settings via `kiwi-theme` event; `applyTheme` replaced by
+    `applyUiPrefs`.
+  - `kiwi.ts` + `chrome.tsx` — `AccountInfo.muted?`; sidebar muted pill +
+    muted unread label.
+  - `views/settings.tsx` — new Appearance section (theme/accent/density,
+    theme moved out of General); Accounts cards gain per-account pane
+    (display name read-only + rename-via-reconfigure note, Re-probe
+    servers staged as wizard handoff, sync-frequency pref with honest
+    manual-today note, mute checkbox, signature textarea); Notifications
+    replaced the dead `kiwi.notify` toggle with toasts on/off + sound +
+    per-account mute list; Privacy states the blocked-by-default +
+    always-strip receipts posture above the per-account toggles; prefs
+    pull on live mount + debounced push with a visible store note.
+  - `views/compose.tsx` — per-account signature appended at send
+    (`-- ` separator) behind a checkbox shown only when a signature
+    exists; drafts never gain it silently.
+- **Commands run:** `npm run build` in kiwi-app (green first try, 47
+  modules, no new deps).
+- **Assumptions/limits:** display-name rename and sync-frequency actuation
+  need backend commands (`kiwi_update_account`, scheduler) — both flagged
+  honestly in-view. Dropped the orphaned `kiwi.notify` toggle (superseded
+  by `kiwi.toasts`; stored value untouched). Sound is a synthesized blip
+  (no audio assets shipped).
+- **Needs (Agent 7, proposed):** `kiwi_get/set_prefs` (localStorage merge
+  already implements the contract side), `kiwi_update_account` (rename).
+- **Next:** wire the push/pull live the moment the prefs IPC lands;
+  otherwise idle until review feedback.
+
+## 2026-09-20 — T-163/T-164 enablement: delete/spam/empty-trash + finding detail (branch release/v0.1.0)
+
+- **Status:** Agent 7's T-163 (`kiwi_delete_messages`,
+  `kiwi_move_messages` — verified in `commands/message.rs` + `lib.rs` +
+  ipc.md §6b) and T-164 (`kiwi_finding_detail` — `commands/security.rs` +
+  ipc.md §8) wired through. T-162's disabled actions are now live with
+  count-naming confirms; the finding dialog joins the full record.
+  `npm run build` green first try (tsc strict + vite, 47 modules).
+  `src-tauri/` untouched. No commits made.
+- **Files changed — kiwi-app/src:**
+  - `kiwi.ts` — `DeleteResultView`, `MoveResultView`,
+    `FindingDetailView` (tolerant).
+  - `ipc.ts` — `deleteMessages`, `moveMessages`, `findingDetail`.
+  - `App.tsx` — `bulkDelete` (folder-grouped, 400-uid chunks under the
+    500 bound, soft→Trash vs permanent-from-Trash reported separately, one
+    summary toast + reload; demo toasts); `bulkSpam` (per-account Spam/
+    Junk resolve from folder lists, same-account moves only, missing
+    folders named not failed-silently, already-there counts as done);
+    `openFinding`/`closeFinding` (list renders instantly, live joins
+    `kiwi_finding_detail` on stable `rule|…` ids, `finding-N` fallbacks
+    skip); empty-trash delegates to `bulkDelete` over the visible list.
+  - `views/mailbox.tsx` — BulkBar Delete (two-step confirm naming count,
+    permanent copy in Trash) + Spam (two-step confirm) enabled, demo
+    labeled; header Empty-trash enabled in Trash folders
+    (`/trash|deleted|bin/i`) with count confirm, hidden elsewhere.
+  - `components/security.tsx` — FindingDialog detail sections (observed
+    session line, session signals, sibling ids, evicted-session note,
+    fetch-error fallback to the retained summary).
+- **Commands run:** `npm run build` in kiwi-app (green first try, 47
+  modules, no new deps).
+- **Assumptions/limits:** spam needs a known Spam/Junk folder (sync
+  first — stated when absent); backend Trash auto-create covers delete.
+  Move-to select stays Archive/Inbox (arbitrary-folder moves need dst
+  resolution UI — follow-up if wanted). `kiwi_schedule_send` also landed
+  but is out of this brief's scope (send-later already works via
+  `sendAtUnix`).
+- **Next:** idle until review feedback.
+

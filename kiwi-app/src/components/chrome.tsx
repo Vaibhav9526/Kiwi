@@ -63,9 +63,12 @@ interface TopBarProps {
   onQuery: (q: string) => void;
   theme: string;
   onTheme: (t: string) => void;
+  onOpenPalette: () => void;
+  onOpenShortcuts: () => void;
+  onSubmitSearch: () => void;
 }
 
-export function TopBar({ trust, demo, query, onQuery, theme, onTheme }: TopBarProps) {
+export function TopBar({ trust, demo, query, onQuery, theme, onTheme, onOpenPalette, onOpenShortcuts, onSubmitSearch }: TopBarProps) {
   return (
     <header style={topbarStyle}>
       <strong aria-label="KIWI home" className="kiwi-brand">
@@ -78,12 +81,24 @@ export function TopBar({ trust, demo, query, onQuery, theme, onTheme }: TopBarPr
         <input
           id="kiwi-search"
           type="search"
-          placeholder="Search mail (Ctrl+K)"
+          placeholder="Search mail (/) — Enter for results"
           value={query}
           onChange={(e) => onQuery(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              onSubmitSearch();
+            }
+          }}
           style={{ flex: 1, maxWidth: "28rem" }}
         />
       </div>
+      <button type="button" onClick={onOpenPalette} aria-label="Open command palette" title="Commands (Ctrl+K)">
+        ⌘ Commands
+      </button>
+      <button type="button" onClick={onOpenShortcuts} aria-label="Show keyboard shortcuts" title="Shortcuts (?)">
+        ?
+      </button>
       {demo && (
         <span className="kiwi-pill unknown" title="Backend unreachable — showing local demo data">
           ? demo data
@@ -141,10 +156,15 @@ export function Sidebar({ folders, accounts, activeFolder, unreadByFolder }: Sid
               style={{ width: "0.6rem", height: "0.6rem", borderRadius: "50%", background: a.color }}
             />
             <span>
-              {a.displayName}
+              {a.displayName}{" "}
+              {a.muted && (
+                <span className="kiwi-pill unknown" title="Muted — unread excluded from counts">
+                  muted
+                </span>
+              )}
               <br />
               <small style={{ color: "var(--kiwi-text-secondary)" }}>
-                {a.email} · {a.unread} unread · trust {severityLabel(a.trust).toLowerCase()}
+                {a.email} · {a.muted ? "muted" : `${a.unread} unread`} · trust {severityLabel(a.trust).toLowerCase()}
               </small>
             </span>
           </li>

@@ -16,7 +16,7 @@ import type {
   PolicyRuleRepository,
 } from "./interfaces.js";
 import type { ExternalRecipientBehavior, OrgRole, RecipientDomainAction } from "../types.js";
-import type { MailflowIngest } from "../mailflow/model.js";
+import type { MailflowIngest, MailflowEvent } from "../mailflow/model.js";
 import type { AuditEventInput, AuditRecord } from "../audit/model.js";
 
 const bit = (b: boolean): number => (b ? 1 : 0);
@@ -221,7 +221,7 @@ export class PgMailflowRepository implements AsyncInterface<MailflowRepository> 
     sinceTs?: number;
     untilTs?: number;
     limit: number;
-  }): Promise<ReturnType<MailflowRepository["query"]>> {
+  }): Promise<MailflowEvent[]> {
     const conditions = [];
     if (filter.orgId) conditions.push(eq(p.mailflowEvents.orgId, filter.orgId));
     if (filter.recipientDomain) conditions.push(like(p.mailflowEvents.recipient, `%@${filter.recipientDomain}`));
@@ -295,11 +295,15 @@ export class PgAuditRepository implements AsyncInterface<AuditRepository> {
     return row ? toAuditRecord(row) : undefined;
   }
 
-  async range(since: number, until: number, limit: number): Promise<AuditRecord[]> {
+  async range(since: number, until: number, limit: number, orgId?: string | null): Promise<AuditRecord[]> {
+    // Org filtering happens in SQL, not after the fact — see the interface
+    // note: a post-filter would let `limit` truncate the window first.
+    const conditions = [gte(p.auditLog.ts, since), lte(p.auditLog.ts, until)];
+    if (orgId) conditions.push(eq(p.auditLog.orgId, orgId));
     const rows = await this.db
       .select()
       .from(p.auditLog)
-      .where(and(gte(p.auditLog.ts, since), lte(p.auditLog.ts, until)))
+      .where(and(...conditions))
       .orderBy(asc(p.auditLog.seq))
       .limit(limit);
     return rows.map(toAuditRecord);

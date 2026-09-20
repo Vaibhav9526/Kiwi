@@ -1,7 +1,8 @@
 /**
- * Security event center (T-143): live events + retained findings via
- * kiwi.ipc/1, session-detail dialog, JSON report export. Demo mode renders
- * the T-112 fixtures, badged.
+ * Security event center (T-143, T-164): live events + retained findings via
+ * kiwi.ipc/1 (kiwi_security_findings/events; finding dialog joins
+ * kiwi_finding_detail), session-detail dialog, JSON report export. Demo mode
+ * renders the T-112 fixtures, badged.
  */
 import { useEffect, useState } from "react";
 import type { FindingInfo, SecurityEventRow, Severity } from "../kiwi";

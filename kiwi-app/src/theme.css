@@ -413,6 +413,140 @@ input:focus, select:focus, textarea:focus {
   clip: rect(0 0 0 0);
 }
 
+/* ---------- T-153: toasts + command palette ---------- */
+
+.kiwi-toasts {
+  position: fixed;
+  right: 1rem;
+  bottom: 2.6rem;
+  z-index: 80;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  max-width: min(26rem, calc(100vw - 2rem));
+}
+.kiwi-toast {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: var(--kiwi-surface);
+  color: var(--kiwi-text);
+  border: 1px solid var(--kiwi-border);
+  border-left-width: 3px;
+  border-radius: 10px;
+  padding: 0.55rem 0.7rem;
+  box-shadow: var(--kiwi-shadow);
+  font-size: 0.85rem;
+}
+.kiwi-toast.ok { border-left-color: var(--kiwi-secure); }
+.kiwi-toast.info { border-left-color: var(--kiwi-brand); }
+.kiwi-toast.warn { border-left-color: var(--kiwi-warning); }
+.kiwi-toast.error { border-left-color: var(--kiwi-danger); }
+.kiwi-toast-glyph {
+  font-weight: 800;
+  flex: none;
+}
+.kiwi-toast.ok .kiwi-toast-glyph { color: var(--kiwi-secure); }
+.kiwi-toast.info .kiwi-toast-glyph { color: var(--kiwi-brand); }
+.kiwi-toast.warn .kiwi-toast-glyph { color: var(--kiwi-warning); }
+.kiwi-toast.error .kiwi-toast-glyph { color: var(--kiwi-danger); }
+.kiwi-toast button {
+  margin-left: auto;
+  padding: 0.15rem 0.45rem;
+  flex: none;
+}
+
+.kiwi-palette {
+  align-self: flex-start;
+  margin-top: 12vh;
+}
+.kiwi-palette-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  margin-bottom: 0.15rem;
+}
+.kiwi-palette-row.is-active {
+  border-color: rgba(234, 161, 50, 0.45);
+  background: var(--kiwi-hover-bg);
+  box-shadow: inset 2px 0 0 var(--kiwi-brand);
+}
+
+/* ---------- T-162: bulk selection + action bar ---------- */
+
+.kiwi-select-box {
+  flex: none;
+  opacity: 0;
+}
+.kiwi-row:hover .kiwi-select-box,
+.kiwi-row:focus-within .kiwi-select-box,
+.kiwi-select-box[data-checked="true"] {
+  opacity: 1;
+}
+.kiwi-select-box:focus-visible {
+  opacity: 1;
+}
+
+.kiwi-actionbar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  background: var(--kiwi-surface);
+  border: 1px solid var(--kiwi-border);
+  border-left: 3px solid var(--kiwi-brand);
+  border-radius: 10px;
+  padding: 0.5rem 0.65rem;
+  margin-bottom: 0.5rem;
+}
+
+/* ---------- T-167: density + accent intensity ---------- */
+
+[data-density="compact"] {
+  font-size: 13px;
+}
+[data-density="compact"] .kiwi-row {
+  padding: 0.3rem 0.45rem;
+}
+[data-density="compact"] .kiwi-reader {
+  padding: 0.6rem 0.7rem;
+}
+[data-density="compact"] button,
+[data-density="compact"] input,
+[data-density="compact"] select,
+[data-density="compact"] textarea {
+  padding: 0.25rem 0.5rem;
+}
+[data-density="compact"] .kiwi-card {
+  padding: 0.55rem 0.65rem;
+  margin-bottom: 0.5rem;
+}
+
+/* Subtle: flat brand accents, no gradient glow. */
+[data-accent="subtle"] .kiwi-btn-primary {
+  background: var(--kiwi-brand);
+  box-shadow: none;
+}
+[data-accent="subtle"] .kiwi-brand {
+  background: none;
+  color: var(--kiwi-brand);
+}
+[data-accent="subtle"] .kiwi-reader::before {
+  background: var(--kiwi-brand);
+}
+/* Vivid: stronger gradient presence. */
+[data-accent="vivid"] .kiwi-btn-primary {
+  box-shadow: 0 4px 26px rgba(234, 161, 50, 0.5);
+}
+[data-accent="vivid"] .kiwi-row[aria-selected="true"] {
+  border-color: var(--kiwi-brand);
+  box-shadow: inset 3px 0 0 var(--kiwi-brand), 0 6px 22px rgba(234, 161, 50, 0.25);
+}
+
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {

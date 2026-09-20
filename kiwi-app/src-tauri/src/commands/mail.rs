@@ -65,9 +65,18 @@ pub async fn kiwi_list_messages(
     limit: Option<u32>,
 ) -> CmdResult<Vec<MessageView>> {
     gate(state.inner()).await?;
+    list_messages_impl(state.inner(), account_id, folder_id, limit).await
+}
+
+pub(crate) async fn list_messages_impl(
+    state: &AppState,
+    account_id: String,
+    folder_id: i64,
+    limit: Option<u32>,
+) -> CmdResult<Vec<MessageView>> {
     bounded("accountId", &account_id, 128)?;
     let limit = super::clamp_u32(limit, 50, 500);
-    let store = state.inner().store.lock().await;
+    let store = state.store.lock().await;
     // Folder must belong to the claimed account (cross-account reads denied).
     let meta = store
         .folder_meta(folder_id)?
@@ -75,12 +84,64 @@ pub async fn kiwi_list_messages(
     if meta.account_id != account_id {
         return Err(IpcError::not_found("folder not on account"));
     }
-    let mut msgs = store
-        .list_messages(folder_id, limit)?
+    let metas = store.list_messages(folder_id, limit)?;
+    // Pre-resolve body paths for lazy threading-header learning — the
+    // store lock is dropped before the index lock (no nested locks).
+    let mut body_paths: Vec<Option<std::path::PathBuf>> = metas
         .iter()
-        .map(MessageView::from)
-        .collect::<Vec<_>>();
+        .map(|m| {
+            if m.body_path.is_some() {
+                store.body_file(m.folder_id, m.uid).ok().flatten()
+            } else {
+                None
+            }
+        })
+        .collect();
+    drop(store);
+    let mut msgs = metas.iter().map(MessageView::from).collect::<Vec<_>>();
     msgs.reverse();
+    body_paths.reverse(); // same permutation as msgs
+
+    // T-169: join the threading-header cache; lazily learn from stored
+    // bodies (≤32 parses per call — bounded work).
+    let mut index = state.index.lock().await;
+    let mut dirty = false;
+    let mut budget = 32usize;
+    for (i, v) in msgs.iter_mut().enumerate() {
+        let key = crate::state::thread_key(v.folder_id, v.uid);
+        if let Some(h) = index.thread_headers.get(&key) {
+            v.in_reply_to = h.in_reply_to.clone();
+            v.references = h.references.clone();
+            continue;
+        }
+        if budget == 0 {
+            continue;
+        }
+        let Some(path) = body_paths.get(i).and_then(|p| p.as_ref()) else {
+            continue;
+        };
+        budget -= 1;
+        let Ok(bytes) = std::fs::read(path) else {
+            continue;
+        };
+        let Ok(p) = parse_message(&bytes) else {
+            continue;
+        };
+        v.in_reply_to = p.in_reply_to.clone();
+        v.references = p.references.clone();
+        index.remember_thread_headers(
+            v.folder_id,
+            v.uid,
+            crate::state::ThreadHeaders {
+                in_reply_to: p.in_reply_to,
+                references: p.references,
+            },
+        );
+        dirty = true;
+    }
+    if dirty {
+        let _ = index.save(&state.data_dir);
+    }
     Ok(msgs)
 }
 
@@ -124,6 +185,8 @@ pub(crate) async fn get_message_impl(
             html_body: None,
             attachments: vec![],
             body_present: false,
+            in_reply_to: None,
+            references: vec![],
         }),
     }
 }
@@ -151,15 +214,16 @@ pub(crate) async fn load_body_raw(
         (meta.name, acct.incoming.protocol)
     };
 
-    // Body on disk? Read it.
+    // Body on disk? Read it (and harvest threading headers once — T-169).
     let raw = {
         let store = state.store.lock().await;
         store
             .body_file(folder_id, uid)?
             .and_then(|p| std::fs::read(p).ok())
     };
-    if raw.is_some() {
-        return Ok(raw);
+    if let Some(raw) = raw {
+        remember_threading(state, folder_id, uid, &raw).await;
+        return Ok(Some(raw));
     }
 
     // Not stored — fetch on demand for IMAP (recorded observation).
@@ -203,7 +267,84 @@ pub(crate) async fn load_body_raw(
         return Ok(None);
     };
     state.store.lock().await.store_body(folder_id, uid, &raw)?;
+    remember_threading(state, folder_id, uid, &raw).await;
     Ok(Some(raw))
+}
+
+/// Cache a body-bearing message's threading headers into the sidecar
+/// index (T-169). Called from every path that has a body in hand —
+/// never fails the caller (headers are best-effort derived data).
+pub(crate) async fn remember_threading(state: &AppState, folder_id: i64, uid: u64, raw: &[u8]) {
+    // Cheap pre-check: cached already → skip the parse entirely.
+    let key = crate::state::thread_key(folder_id, uid);
+    if state.index.lock().await.thread_headers.contains_key(&key) {
+        return;
+    }
+    let Ok(parsed) = parse_message(raw) else {
+        return;
+    };
+    let mut index = state.index.lock().await;
+    index.remember_thread_headers(
+        folder_id,
+        uid,
+        crate::state::ThreadHeaders {
+            in_reply_to: parsed.in_reply_to,
+            references: parsed.references,
+        },
+    );
+    let _ = index.save(&state.data_dir);
+}
+
+/// Fetch `In-Reply-To`/`References` for freshly-synced uids via
+/// `BODY.PEEK[HEADER.FIELDS]` — one fetch per ≤200-uid chunk, only for
+/// uids the store just learned. Best-effort: a hiccup leaves the fields
+/// null rather than failing the sync. (T-169)
+pub(crate) async fn capture_thread_headers(
+    state: &AppState,
+    client: &mut ImapClient,
+    folder_id: i64,
+    new_uids: &[u64],
+) {
+    for chunk in new_uids
+        .iter()
+        .take(2000)
+        .copied()
+        .collect::<Vec<_>>()
+        .chunks(200)
+    {
+        let set = chunk
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let Ok(items) = client
+            .uid_fetch(
+                &set,
+                &["UID", "BODY.PEEK[HEADER.FIELDS (IN-REPLY-TO REFERENCES)]"],
+            )
+            .await
+        else {
+            return;
+        };
+        let mut index = state.index.lock().await;
+        for item in &items {
+            let Some(uid) = item.uid else { continue };
+            for (_, bytes) in &item.bodies {
+                let Ok(p) = parse_message(bytes) else {
+                    continue;
+                };
+                index.remember_thread_headers(
+                    folder_id,
+                    uid,
+                    crate::state::ThreadHeaders {
+                        in_reply_to: p.in_reply_to,
+                        references: p.references,
+                    },
+                );
+            }
+        }
+        let _ = index.save(&state.data_dir);
+    }
 }
 
 async fn body_view(folder_id: i64, uid: u64, raw: &[u8]) -> CmdResult<MessageBodyView> {
@@ -232,6 +373,8 @@ async fn body_view(folder_id: i64, uid: u64, raw: &[u8]) -> CmdResult<MessageBod
             })
             .collect(),
         body_present: true,
+        in_reply_to: parsed.in_reply_to.clone(),
+        references: parsed.references.clone(),
     })
 }
 
@@ -326,7 +469,8 @@ pub(crate) async fn sync_account_impl(
 
 /// Per-message facts needed for a §11 received event — collected from the
 /// store for messages that are new since the sync's UID snapshot.
-struct ReceivedFact {
+/// `pub(crate)` for the live-sync worker (T-157).
+pub(crate) struct ReceivedFact {
     sender: Option<String>,
     message_id: Option<String>,
     /// Message time (`date_unix`) per §6 `ts` semantics.
@@ -335,7 +479,8 @@ struct ReceivedFact {
 
 /// Diff a folder's UID set around a sync and collect §11 facts for the
 /// newly-arrived messages (bounded — §11 emit failures never fail sync).
-async fn collect_received(
+/// `pub(crate)` for the live-sync worker (T-157).
+pub(crate) async fn collect_received(
     state: &AppState,
     folder_id: i64,
     before: &std::collections::BTreeSet<u64>,
@@ -373,7 +518,8 @@ async fn collect_received(
 /// Emit §11 inbound events for everything `collect_received` gathered.
 /// Sender-less messages can't honestly emit (§6 requires a non-empty
 /// sender) — they're skipped. Never fails the sync.
-async fn emit_received(
+/// `pub(crate)` for the live-sync worker (T-157).
+pub(crate) async fn emit_received(
     state: &AppState,
     endpoint: &crate::bridge::AdminEndpoint,
     acct: &MailAccount,
@@ -438,6 +584,21 @@ async fn imap_sync(
         if endpoint.is_some() {
             collect_received(state, folder_id, &before_uids, &mut received).await?;
         }
+        // T-169: harvest threading headers for just-arrived uids.
+        {
+            let new_uids: Vec<u64> = state
+                .store
+                .lock()
+                .await
+                .folder_uids(folder_id)?
+                .into_iter()
+                .filter(|u| !before_uids.contains(u))
+                .take(2000)
+                .collect();
+            if !new_uids.is_empty() {
+                capture_thread_headers(state, &mut client, folder_id, &new_uids).await;
+            }
+        }
         reports.push(SyncReportView {
             protocol: "imap".into(),
             folder: name.clone(),
@@ -484,7 +645,12 @@ async fn imap_sync(
     Ok(reports)
 }
 
-async fn pop3_sync(state: &AppState, acct: &MailAccount) -> CmdResult<Vec<SyncReportView>> {
+/// `pub(crate)`: the live-sync worker reuses this as its POP3 poll pass
+/// (T-157) — it already does connect → auth → sync → observe → §11 emit.
+pub(crate) async fn pop3_sync(
+    state: &AppState,
+    acct: &MailAccount,
+) -> CmdResult<Vec<SyncReportView>> {
     let accept_invalid = state
         .index
         .lock()
@@ -589,4 +755,175 @@ async fn pop3_sync(state: &AppState, acct: &MailAccount) -> CmdResult<Vec<SyncRe
         remote_exists: report.remote_drops,
         ..Default::default()
     }])
+}
+
+/// `kiwi_sync_status { accountId? }` → per-account live-sync worker status
+/// (T-157). One row per configured account; a worker that hasn't run yet
+/// reports `state: "pending"`. Unknown `accountId` → `not-found`.
+#[tauri::command]
+pub async fn kiwi_sync_status(
+    state: State<'_, Arc<AppState>>,
+    account_id: Option<String>,
+) -> CmdResult<Vec<crate::types::SyncStatusView>> {
+    gate(state.inner()).await?;
+    let state = state.inner();
+    if let Some(id) = &account_id {
+        bounded("accountId", id, 128)?;
+    }
+    let index = state.index.lock().await;
+    let known: Vec<String> = match &account_id {
+        Some(id) => {
+            if !index.account_ids.contains(id) {
+                return Err(IpcError::not_found("unknown account"));
+            }
+            vec![id.clone()]
+        }
+        None => index.account_ids.clone(),
+    };
+    let map = state.sync_status.lock().await;
+    Ok(known
+        .into_iter()
+        .map(|id| {
+            let s = map.get(&id);
+            crate::types::SyncStatusView {
+                account_id: id,
+                state: s
+                    .map(|s| s.state.clone())
+                    .unwrap_or_else(|| "pending".into()),
+                last_sync_unix: s.and_then(|s| s.last_sync_unix),
+                last_error: s.and_then(|s| s.last_error.clone()),
+                next_retry_unix: s.and_then(|s| s.next_retry_unix),
+                folders_synced: s.map(|s| s.folders_synced).unwrap_or(0),
+                new_messages: s.map(|s| s.new_messages).unwrap_or(0),
+                attempts: s.map(|s| s.attempts).unwrap_or(0),
+            }
+        })
+        .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kiwi_mail::store::NewMessageMeta;
+
+    /// T-169: stored bodies teach the threading cache; list_messages
+    /// joins it into MessageView.
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_messages_fills_threading_from_stored_body() {
+        let dir = std::env::temp_dir().join(format!(
+            "kiwi-thread-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let state = AppState::open_test(dir.clone()).unwrap();
+        let acct = MailAccount {
+            account_id: "a1".into(),
+            display_name: "A".into(),
+            email: "a@x.test".into(),
+            incoming: kiwi_mail::account::IncomingAccount {
+                protocol: IncomingProtocol::Pop3,
+                server: kiwi_mail::account::ServerConfig {
+                    host: "pop.x.test".into(),
+                    port: 995,
+                    security: kiwi_mail::transport::SocketSecurity::ImplicitTls,
+                },
+                username: "a".into(),
+                auth: kiwi_mail::account::AuthRef::None,
+            },
+            outgoing: kiwi_mail::account::OutgoingAccount {
+                server: kiwi_mail::account::ServerConfig {
+                    host: "smtp.x.test".into(),
+                    port: 465,
+                    security: kiwi_mail::transport::SocketSecurity::ImplicitTls,
+                },
+                username: "a".into(),
+                auth: kiwi_mail::account::AuthRef::None,
+            },
+        };
+        let fid;
+        {
+            let store = state.store.lock().await;
+            store.upsert_account(&acct).unwrap();
+            fid = store.ensure_folder("a1", "INBOX").unwrap();
+            store
+                .upsert_message(
+                    fid,
+                    &NewMessageMeta {
+                        uid: 7,
+                        message_id: Some("<m2@x>".into()),
+                        subject: Some("Re: t".into()),
+                        from_addr: None,
+                        to_addrs: None,
+                        date_unix: None,
+                        size: None,
+                        flags: vec![],
+                        has_attachments: false,
+                        snippet: None,
+                    },
+                    now_unix(),
+                )
+                .unwrap();
+            store
+                .store_body(
+                    fid,
+                    7,
+                    b"From: a@x\r\nTo: b@y\r\nSubject: Re: t\r\nMessage-ID: <m2@x>\r\nIn-Reply-To: <m1@x>\r\nReferences: <m0@x>\r\n  <m1@x>\r\n\r\nbody\r\n",
+                )
+                .unwrap();
+        }
+
+        let views = list_messages_impl(&state, "a1".into(), fid, None)
+            .await
+            .unwrap();
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].in_reply_to.as_deref(), Some("m1@x"));
+        assert_eq!(views[0].references, vec!["m0@x", "m1@x"]); // folded hdr
+        // Cached in the index for subsequent lists.
+        assert!(
+            state
+                .index
+                .lock()
+                .await
+                .thread_headers
+                .contains_key(&crate::state::thread_key(fid, 7))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn remember_threading_is_idempotent() {
+        let dir = std::env::temp_dir().join(format!(
+            "kiwi-thread2-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let state = AppState::open_test(dir.clone()).unwrap();
+        let raw = b"Subject: x\r\nIn-Reply-To: <p@x>\r\n\r\nb";
+        remember_threading(&state, 1, 9, raw).await;
+        remember_threading(&state, 1, 9, raw).await; // no dup / no panic
+        let index = state.index.lock().await;
+        let h = index
+            .thread_headers
+            .get(&crate::state::thread_key(1, 9))
+            .unwrap();
+        assert_eq!(h.in_reply_to.as_deref(), Some("p@x"));
+        // Empty-headers bodies are not cached (absence = "unknown").
+        drop(index);
+        remember_threading(&state, 1, 10, b"Subject: y\r\n\r\nb").await;
+        assert!(
+            !state
+                .index
+                .lock()
+                .await
+                .thread_headers
+                .contains_key(&crate::state::thread_key(1, 10))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

@@ -5,8 +5,11 @@
 //! short-circuits the network: discovery works with zero connectivity for
 //! every provider listed in [`ISPDB_FIXTURES`].
 
-use crate::suggest::{AccountSuggestion, AuthKind, IncomingKind, IncomingSuggestion, OutgoingSuggestion, SuggestionSource};
 use crate::DomainName;
+use crate::suggest::{
+    AccountSuggestion, AuthKind, IncomingKind, IncomingSuggestion, OutgoingSuggestion,
+    SuggestionSource,
+};
 use kiwi_mail::transport::SocketSecurity;
 
 /// One fixture provider: one IMAP + one SMTP endpoint (POP3 optional).
@@ -63,7 +66,6 @@ impl IspdbEntry {
         .checked()
     }
 }
-
 
 /// Bundled fixture table. Endpoints are published provider facts; the
 /// table is data, not policy — apps may pass their own slice to
@@ -147,15 +149,23 @@ pub const ISPDB_FIXTURES: &[IspdbEntry] = &[
 /// Deterministic: table order; exact matches always win.
 #[must_use]
 pub fn lookup_in<'a>(table: &'a [IspdbEntry], domain: &DomainName) -> Option<&'a IspdbEntry> {
-    let matches = |e: &&IspdbEntry| e.domains.iter().any(|d| DomainName::parse(d).is_ok_and(|x| x == *domain));
+    let matches = |e: &&IspdbEntry| {
+        e.domains
+            .iter()
+            .any(|d| DomainName::parse(d).is_ok_and(|x| x == *domain))
+    };
     let suffix = |e: &&IspdbEntry| {
         e.domains.iter().any(|d| {
             DomainName::parse(d).is_ok_and(|x| {
-                domain.as_str() == x.as_str() || domain.as_str().ends_with(&format!(".{}", x.as_str()))
+                domain.as_str() == x.as_str()
+                    || domain.as_str().ends_with(&format!(".{}", x.as_str()))
             })
         })
     };
-    table.iter().find(matches).or_else(|| table.iter().find(suffix))
+    table
+        .iter()
+        .find(matches)
+        .or_else(|| table.iter().find(suffix))
 }
 
 /// Look up the bundled fixture table for an address.
@@ -165,3 +175,103 @@ pub fn lookup_email(email: &str) -> Option<AccountSuggestion> {
     lookup_in(ISPDB_FIXTURES, &domain)?.to_suggestion(email)
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::suggest::SuggestionSource;
+
+    #[test]
+    fn fixture_google_lookup() {
+        let s = lookup_email("someone@gmail.com").expect("gmail fixture");
+        assert_eq!(s.source, SuggestionSource::Ispdb);
+        assert_eq!(s.display_name, "Google");
+        assert_eq!(s.incoming.host, "imap.gmail.com");
+        assert_eq!(s.incoming.port, 993);
+        assert_eq!(s.incoming.security, SocketSecurity::ImplicitTls);
+        assert_eq!(s.incoming.auth, AuthKind::XOAuth2);
+        assert_eq!(s.incoming.username, "someone@gmail.com");
+        assert_eq!(s.outgoing.host, "smtp.gmail.com");
+        assert_eq!(s.email, "someone@gmail.com");
+    }
+
+    #[test]
+    fn fixture_lookup_is_case_and_subdomain_tolerant() {
+        assert!(lookup_email("User@GOOGLEMAIL.com").is_some());
+        let d = DomainName::parse("mail.mycompany.example.test").unwrap();
+        let table = [IspdbEntry {
+            provider: "T",
+            domains: &["example.test"],
+            imap: ("imap.t.test", 993, SocketSecurity::ImplicitTls),
+            pop3: None,
+            smtp: ("smtp.t.test", 587, SocketSecurity::StartTls),
+            auth: AuthKind::Password,
+        }];
+        assert!(
+            lookup_in(&table, &d).is_some(),
+            "suffix match on parent domain"
+        );
+        // Exact match still wins over a later suffix match.
+        let exact = DomainName::parse("example.test").unwrap();
+        assert_eq!(lookup_in(&table, &exact).unwrap().provider, "T");
+    }
+
+    #[test]
+    fn lookup_misses_unknown_domain() {
+        assert!(lookup_email("nobody@unknown.invalid").is_none());
+        let d = DomainName::parse("unknown.invalid").unwrap();
+        assert!(lookup_in(ISPDB_FIXTURES, &d).is_none());
+    }
+
+    #[test]
+    fn every_fixture_entry_is_wellformed() {
+        // Static data sanity: hosts parse, ports non-zero, domains valid,
+        // at least one incoming endpoint per entry.
+        for e in ISPDB_FIXTURES {
+            assert!(!e.domains.is_empty(), "{}: no domains", e.provider);
+            for d in e.domains {
+                assert!(
+                    DomainName::parse(d).is_ok(),
+                    "{}: bad domain {d}",
+                    e.provider
+                );
+            }
+            assert!(
+                !e.imap.0.is_empty() || e.pop3.is_some(),
+                "{}: no incoming",
+                e.provider
+            );
+            for (host, port, _sec) in [e.imap, e.smtp].into_iter().chain(e.pop3) {
+                assert!(
+                    DomainName::parse(host).is_ok(),
+                    "{}: bad host {host}",
+                    e.provider
+                );
+                assert!(port > 0, "{}: zero port for {host}", e.provider);
+            }
+        }
+    }
+
+    #[test]
+    fn custom_table_overrides_bundled() {
+        let d = DomainName::parse("example.test").unwrap();
+        let table = [IspdbEntry {
+            provider: "LocalCorp",
+            domains: &["example.test"],
+            imap: ("imap.corp.test", 143, SocketSecurity::StartTls),
+            pop3: None,
+            smtp: ("smtp.corp.test", 25, SocketSecurity::Plaintext),
+            auth: AuthKind::Password,
+        }];
+        let s = lookup_in(&table, &d)
+            .unwrap()
+            .to_suggestion("u@example.test")
+            .unwrap();
+        assert_eq!(s.display_name, "LocalCorp");
+        assert_eq!(s.incoming.host, "imap.corp.test");
+        assert_eq!(s.incoming.port, 143);
+        assert_eq!(s.incoming.security, SocketSecurity::StartTls);
+        assert_eq!(s.outgoing.port, 25);
+        // Bundled table must NOT contain example.test (no overlap).
+        assert!(lookup_in(ISPDB_FIXTURES, &d).is_none());
+    }
+}

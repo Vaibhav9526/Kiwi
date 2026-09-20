@@ -27,7 +27,7 @@ export class MailflowService {
     private readonly ctx: ServiceContainerLike,
   ) {}
 
-  ingest(actor: Actor, raw: ExternalMailflowInput): { id: string } {
+  async ingest(actor: Actor, raw: ExternalMailflowInput): Promise<{ id: string }> {
     return this.ctx.auditWrap(
       actor,
       raw.org_id,
@@ -41,10 +41,13 @@ export class MailflowService {
     );
   }
 
-  query(actor: Actor, filter: { orgId?: string; recipientDomain?: string; sinceTs?: number; untilTs?: number; limit: number }): { items: MailflowEvent[] } {
+  async query(
+    actor: Actor,
+    filter: { orgId?: string; recipientDomain?: string; sinceTs?: number; untilTs?: number; limit: number },
+  ): Promise<{ items: MailflowEvent[] }> {
     requirePermission(actor, "mailflow.read", filter.orgId ?? null);
     const bounded = { ...filter, limit: Math.min(Math.max(filter.limit ?? 50, 1), 1000) };
-    return { items: this.repos.mailflow.query(bounded) };
+    return { items: await this.repos.mailflow.query(bounded) };
   }
 }
 
@@ -67,18 +70,30 @@ export interface AuditQueryRow {
 export class AuditService {
   constructor(private readonly repos: { audit: AuditRepository }) {}
 
-  append(input: AuditEventInput, ts: number): { seq: number; entry_hash: string } {
-    const last = this.repos.audit.last();
+  async append(input: AuditEventInput, ts: number): Promise<{ seq: number; entry_hash: string }> {
+    const last = await this.repos.audit.last();
     const prevHash = last?.entry_hash ?? "genesis";
     const seq = (last?.seq ?? 0) + 1;
     const entryHash = computeEntryHash(canonicalEventJson(input), prevHash);
-    this.repos.audit.append(input, prevHash, entryHash, seq, ts);
+    await this.repos.audit.append(input, prevHash, entryHash, seq, ts);
     return { seq, entry_hash: entryHash };
   }
 
-  query(filter: AuditQueryFilter): AuditQueryRow[] {
+  /**
+   * Read audit history. Requires `audit.read` (SECURITY.md rule 11: the audit
+   * log is a security control, so reading it is a permission, not a given).
+   * `filter.orgId` narrows to one org and is applied in SQL — an absent orgId
+   * means the whole log, which is what the org-agnostic read is for.
+   */
+  async query(actor: Actor, filter: AuditQueryFilter): Promise<AuditQueryRow[]> {
+    requirePermission(actor, "audit.read", filter.orgId ?? null);
     const bounded = Math.min(Math.max(filter.limit, 1), 1000);
-    const rows = this.repos.audit.range(filter.since ?? 0, filter.until ?? Number.MAX_SAFE_INTEGER, bounded);
+    const rows = await this.repos.audit.range(
+      filter.since ?? 0,
+      filter.until ?? Number.MAX_SAFE_INTEGER,
+      bounded,
+      filter.orgId ?? null,
+    );
     return rows.map((r) => ({
       seq: r.seq,
       ts: r.ts,
@@ -89,8 +104,17 @@ export class AuditService {
     }));
   }
 
-  verify(opts: { limit: number }): { valid: boolean; checked: number; error: string | null } {
-    const rows = this.repos.audit.range(0, Number.MAX_SAFE_INTEGER, Math.min(opts.limit, 10000));
+  /**
+   * Verify the whole hash chain. Also `audit.read`: the result describes the
+   * integrity of the entire log, so it is no less sensitive than reading it.
+   *
+   * Always reads EVERY row, never an org-scoped slice — a hash chain only
+   * validates over the full sequence, and a filtered window would report a
+   * false "valid" for a log whose other rows were tampered with.
+   */
+  async verify(actor: Actor, opts: { limit: number }): Promise<{ valid: boolean; checked: number; error: string | null }> {
+    requirePermission(actor, "audit.read", null);
+    const rows = await this.repos.audit.range(0, Number.MAX_SAFE_INTEGER, Math.min(opts.limit, 10000));
     let expectedPrev = "genesis";
     let expectedSeq: number | null = null;
     for (const r of rows) {

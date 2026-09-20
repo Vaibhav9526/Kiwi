@@ -37,8 +37,7 @@ pub fn load(name: &str) -> Vec<Step> {
         "{}/../tests/fixtures/transcripts/{name}",
         env!("CARGO_MANIFEST_DIR")
     );
-    let text = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("fixture {path}: {e}"));
+    let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("fixture {path}: {e}"));
     parse(&text)
 }
 
@@ -107,8 +106,8 @@ fn client_matches(proto: Proto, expected: &str, actual: &str) -> bool {
         Proto::Imap => {
             // Strip the tag and normalize parens/spacing for compare.
             let norm = |s: &str| {
-                s.splitn(2, ' ')
-                    .nth(1)
+                s.split_once(' ')
+                    .map(|x| x.1)
                     .unwrap_or(s)
                     .replace(['(', ')', ' ', '"'], "")
             };
@@ -209,7 +208,7 @@ pub async fn serve(
                     None => {
                         return Err(format!(
                             "transcript divergence: expected {expected:?}, client sent {actual:?}"
-                        ))
+                        ));
                     }
                 }
             },
@@ -232,14 +231,11 @@ pub fn spawn_script(
 /// Self-signed TLS acceptor + DER for transcript tests that cross a
 /// TLS boundary. `names` must cover the client's server_name.
 pub fn tls_acceptor(names: &[&str]) -> (TlsAcceptor, Vec<u8>) {
-    let certified = rcgen::generate_simple_self_signed(
-        names.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-    )
-    .unwrap();
+    let certified =
+        rcgen::generate_simple_self_signed(names.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+            .unwrap();
     let der = certified.cert.der().clone();
-    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(
-        certified.key_pair.serialize_der().into(),
-    );
+    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(certified.key_pair.serialize_der().into());
     let cfg = rustls::ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(vec![der.clone()], key)
@@ -267,7 +263,7 @@ mod tests {
     async fn fixture_smtp_send_ok() {
         let (c, s) = duplex(1 << 16);
         let steps = load("smtp_send_ok.txt");
-        let server = tokio::spawn(serve(s, &leak(steps), Proto::Smtp, None));
+        let server = tokio::spawn(serve(s, leak(steps), Proto::Smtp, None));
 
         let mut client = crate::smtp::SmtpClient::connect(
             transport_for(c, "fake.kiwi-test.invalid", 25, SocketSecurity::Plaintext),
@@ -302,7 +298,7 @@ mod tests {
     async fn fixture_smtp_auth_fail() {
         let (c, s) = duplex(1 << 16);
         let steps = load("smtp_auth_fail.txt");
-        let server = tokio::spawn(serve(s, &leak(steps), Proto::Smtp, None));
+        let server = tokio::spawn(serve(s, leak(steps), Proto::Smtp, None));
 
         let mut client = crate::smtp::SmtpClient::connect(
             transport_for(c, "fake.kiwi-test.invalid", 25, SocketSecurity::Plaintext),
@@ -327,7 +323,7 @@ mod tests {
     async fn fixture_smtp_mixed_results() {
         let (c, s) = duplex(1 << 16);
         let steps = load("smtp_auth-mixed-results.txt");
-        let server = tokio::spawn(serve(s, &leak(steps), Proto::Smtp, None));
+        let server = tokio::spawn(serve(s, leak(steps), Proto::Smtp, None));
 
         let mut client = crate::smtp::SmtpClient::connect(
             transport_for(c, "fake.kiwi-test.invalid", 25, SocketSecurity::Plaintext),
@@ -353,7 +349,7 @@ mod tests {
     async fn fixture_smtp_stripped_fails_closed() {
         let (c, s) = duplex(1 << 16);
         let steps = load("smtp_stripped.txt");
-        let server = tokio::spawn(serve(s, &leak(steps), Proto::Smtp, None));
+        let server = tokio::spawn(serve(s, leak(steps), Proto::Smtp, None));
 
         let r = crate::smtp::SmtpClient::connect(
             transport_for(c, "fake.kiwi-test.invalid", 587, SocketSecurity::StartTls),
@@ -370,7 +366,7 @@ mod tests {
     async fn fixture_pop3_retr() {
         let (c, s) = duplex(1 << 16);
         let steps = load("pop3_retr.txt");
-        let server = tokio::spawn(serve(s, &leak(steps), Proto::Pop3, None));
+        let server = tokio::spawn(serve(s, leak(steps), Proto::Pop3, None));
 
         let mut client = crate::pop3::Pop3Client::connect(
             transport_for(c, "fake.kiwi-test.invalid", 110, SocketSecurity::Plaintext),
@@ -405,7 +401,7 @@ mod tests {
         let (acceptor, cert_der) = tls_acceptor(&["fake.kiwi-test.invalid"]);
         let (c, s) = duplex(1 << 16);
         let steps = load("pop3_stls.txt");
-        let server = tokio::spawn(serve(s, &leak(steps), Proto::Pop3, Some(acceptor)));
+        let server = tokio::spawn(serve(s, leak(steps), Proto::Pop3, Some(acceptor)));
 
         let client = crate::pop3::Pop3Client::connect(
             Transport::from_stream(
@@ -436,7 +432,7 @@ mod tests {
     async fn fixture_imap_select_fetch() {
         let (c, s) = duplex(1 << 16);
         let steps = load("imap_select_fetch.txt");
-        let server = tokio::spawn(serve(s, &leak(steps), Proto::Imap, None));
+        let server = tokio::spawn(serve(s, leak(steps), Proto::Imap, None));
 
         let mut client = crate::imap::ImapClient::connect_with(
             transport_for(c, "fake.kiwi-test.invalid", 143, SocketSecurity::Plaintext),
@@ -475,7 +471,7 @@ mod tests {
     async fn fixture_imap_hostile_literal_rejected() {
         let (c, s) = duplex(1 << 16);
         let steps = load("imap_hostile_fetch.txt");
-        let server = tokio::spawn(serve(s, &leak(steps), Proto::Imap, None));
+        let server = tokio::spawn(serve(s, leak(steps), Proto::Imap, None));
 
         let mut client = crate::imap::ImapClient::connect_with(
             transport_for(c, "fake.kiwi-test.invalid", 143, SocketSecurity::Plaintext),
@@ -609,6 +605,78 @@ mod tests {
         let text = String::from_utf8_lossy(&msg);
         assert!(text.contains("Subject: kiwi interop"));
         pop3.quit().await.ok();
+    }
+
+    /// GreenMail IMAP :1143 (compose `greenmail` service, auth disabled):
+    /// LOGIN → SELECT INBOX → APPEND (LITERAL+ path) → UID SEARCH →
+    /// UID FETCH ENVELOPE round-trip, then delete+expunge cleanup.
+    #[tokio::test]
+    async fn greenmail_imap_append_fetch_roundtrip() {
+        if !mailpit() {
+            eprintln!("skipped: set KIWI_MAILPIT=1 to run against greenmail");
+            return;
+        }
+        let t = Transport::connect(
+            "127.0.0.1",
+            1143,
+            SocketSecurity::Plaintext,
+            TlsSettings::default(),
+        )
+        .await
+        .expect("imap connect");
+        let mut imap = crate::imap::ImapClient::connect_with(
+            t,
+            crate::imap::ImapConfig {
+                allow_plaintext_auth: true,
+            },
+        )
+        .await
+        .expect("imap handshake");
+        imap.authenticate(&crate::imap::ImapAuth::Login {
+            user: "demo".into(),
+            password: Zeroizing::new("demo".into()),
+        })
+        .await
+        .expect("imap login");
+
+        let sel = imap.select("INBOX", false).await.expect("select");
+        assert!(sel.uid_validity.is_some());
+
+        let marker = format!("kiwi imap interop {}", std::process::id());
+        let message = format!(
+            "From: interop@kiwi-test.invalid\r\nTo: demo@localhost\r\nSubject: {marker}\r\n\r\nbody\r\n"
+        );
+        imap.append("INBOX", &["\\Seen"], message.as_bytes())
+            .await
+            .expect("append");
+
+        // Poll until the appended UID appears (GreenMail delivery is fast).
+        let mut found_uid = None;
+        for _ in 0..20 {
+            let uids = imap.uid_search("ALL").await.expect("search");
+            if let Some(&last) = uids.iter().max() {
+                let items = imap
+                    .uid_fetch(&last.to_string(), &["UID", "ENVELOPE"])
+                    .await
+                    .expect("fetch");
+                if let Some(item) = items.first()
+                    && item.envelope.as_ref().and_then(|e| e.subject.as_deref())
+                        == Some(marker.as_str())
+                {
+                    found_uid = Some(last);
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        }
+        let uid = found_uid.expect("appended message never appeared");
+
+        // Cleanup so reruns stay deterministic.
+        imap.uid_store(&uid.to_string(), "+FLAGS.SILENT", &["\\Deleted"])
+            .await
+            .expect("flag deleted");
+        imap.expunge().await.expect("expunge");
+        imap.logout().await.ok();
     }
 
     // ---- Cross-module engine tests (T-105/T-106 via scripted servers) ------
@@ -808,6 +876,42 @@ mod tests {
             .append("Sent", &["\\Seen"], b"hi there")
             .await
             .unwrap();
+        server.await.unwrap().unwrap();
+    }
+
+    /// APPEND sync-literal path (`{n}`, server without LITERAL+): the client
+    /// must wait for `+`, send exactly the literal + CRLF, and nothing else —
+    /// a stray extra CRLF would surface as an empty command line and make the
+    /// trailing LOGOUT expectation diverge.
+    #[tokio::test]
+    async fn imap_append_sync_literal() {
+        let (c, s) = duplex(1 << 16);
+        let server = spawn_script(
+            s,
+            Proto::Imap,
+            "S: * OK ready\n\
+             C: x CAPABILITY\n\
+             S: * CAPABILITY IMAP4rev1\n\
+             S: a OK done\n\
+             C: x APPEND \"Sent\" (\\Seen) {8}\n\
+             S: + go ahead\n\
+             C: hi there\n\
+             S: a OK APPEND completed\n\
+             C: x LOGOUT\n\
+             S: a OK bye\n",
+            None,
+        );
+        let mut client = crate::imap::ImapClient::connect_with(
+            transport_for(c, "h", 143, SocketSecurity::Plaintext),
+            crate::imap::ImapConfig::default(),
+        )
+        .await
+        .unwrap();
+        client
+            .append("Sent", &["\\Seen"], b"hi there")
+            .await
+            .unwrap();
+        client.logout().await.unwrap();
         server.await.unwrap().unwrap();
     }
 

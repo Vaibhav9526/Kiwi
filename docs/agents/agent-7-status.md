@@ -2,6 +2,331 @@
 
 > Append dated entries: status, files changed, commands run, tests, assumptions, risks.
 
+## 2026-09-20 — T-164 completion: §11 query params + live auth threading
+
+**Status:** implemented + verified. `cargo test -p kiwi-app` → 46/46
+green (3 new); clippy `-p kiwi-app --all-targets --no-deps` + fmt clean.
+
+Agent 6's forensics.md §11 is now the binding contract for the Security
+view seam. Conformance:
+
+- **`kiwi_security_findings` ≡ `list_findings`**: gained `severity`
+  (`info|low|medium|high|critical`; unknown → `invalid-input`, never
+  silently dropped) and `limit` (default 100, clamp 1000) params,
+  ANDed with `accountId`. Sort changed to the binding total order:
+  severity weight desc → `observed_at_unix_ms` desc → `rule_id` asc →
+  `subject_key` asc. `kiwi_security_report` deliberately does NOT reuse
+  the limited path — it aggregates the full retained set (a 1000-cap
+  would silently truncate reports).
+- **`kiwi_security_events` ≡ `list_events`**: gained `accountId` filter
+  (sessions already carry it — was client-side-filtered before).
+- **`kiwi_finding_detail` ≡ `finding_detail`**: already implemented per
+  §11 (Agent 6 recorded the command name in the contract).
+- **Live auth threading** (the T-164-adjacent item): `observe.rs` now
+  builds `LiveAuthObservation` from `ctx.auth_mechanism`/`auth_succeeded`
+  per the §11 mapping — core spelling → `AuthMechanism::from_token`,
+  `none` → absent (AUTH rules stay silent for unauthenticated
+  connections, as designed), `client-cert` → `External`,
+  `other:<name>` → `from_token(name)` (`Unknown` on mismatch),
+  `succeeded` verbatim, `attempts`/`failures` counted from the observed
+  exchange. AUTH rules 001–006 are now live on the real path, not
+  capture-only. The shared spelling helper (`types::auth_mechanism`)
+  is `pub(crate)` so the core spelling can't drift between session
+  serialization and the adapter mapping.
+
+### Files changed
+
+`commands/security.rs` (§11 params + sort + events accountId + 1 test),
+`observe.rs` (`live_auth_of` + 2 tests), `types.rs` (`auth_mechanism` →
+`pub(crate)`), `ipc.md` (§8 signatures).
+
+## 2026-09-20 — T-169: threading headers (inReplyTo/references) on views
+
+**Status:** implemented + verified. `cargo test -p kiwi-app` → 43/43
+green (2 new); clippy + fmt clean on my files.
+
+**Coordination honored:** Agent 8's `search.rs`/`store.rs` were actively
+mid-edit (uncompilable at check time) — so this feature is deliberately
+implemented WITHOUT touching kiwi-mail. Threading headers live in the
+sidecar index as a derived cache (`thread_headers`, key `f<fid>:u<uid>`,
+bounded 50k, crude key-order eviction). When Agent 8's work settles and
+`MessageMeta` grows real columns, the cache can be replaced or left as
+the join layer — both are compatible.
+
+### How it works
+
+- `MessageView` + `MessageBodyView` gained `inReplyTo` / `references`.
+- **Sync capture** (`capture_thread_headers`, mail.rs): after each
+  `sync_folder` pass — manual sync, live full pass, and IDLE-wake INBOX
+  re-sync — newly-seen uids get one `UID FETCH (BODY.PEEK[HEADER.FIELDS
+  (IN-REPLY-TO REFERENCES)])` per ≤200-uid chunk (≤2000 uids). Folded
+  References headers parse via `mime::parse_message`. Best-effort:
+  failures leave fields null, never fail sync.
+- **Lazy fill** in `kiwi_list_messages`: index miss + stored body →
+  parse (≤32/call) → cache + return. POP3 bodies are always stored, so
+  POP3 threading fully populates on first list.
+- **`load_body_raw`** records headers on every body fetch/read (get,
+  render, attachment paths converge there) — idempotent, skips parse
+  when the key is cached.
+- `MessageBodyView.inReplyTo/references` come from the parsed body —
+  authoritative, also feeds the reply composer.
+
+### Files changed
+
+`state.rs` (ThreadHeaders, index field, cap), `types.rs` (2 view
+fields each), `commands/mail.rs` (capture + lazy fill + `list_messages_impl`
+extraction + 2 tests), `syncer.rs` (capture in live pass + IDLE wake),
+`ipc.md` (§6a shape + provenance note).
+
+### Known gaps added
+
+- Messages with no stored body AND no post-feature sync pass show
+  `null`/`[]` until either happens — acceptable for a derived cache.
+- Index eviction is key-order, not LRU — crude bound; documented.
+
+## 2026-09-20 — T-163 delete/move IPC + T-164 finding detail
+
+**Status:** implemented + verified. `cargo test -p kiwi-app` → 41/41
+green (7 new); `clippy -p kiwi-app --all-targets --no-deps` clean;
+`rustfmt --check` clean on my files. **Caveat for Lead:**
+`cargo test -p kiwi-mail` currently fails 5 tests — all in Agent 2's
+in-flight `search.rs` FTS5 module (quoted-phrase parsing, bare `-`
+negation, `NOT` in MATCH grammar). Not mine; left for its owner. My
+kiwi-mail additions all pass (`move_messages_remaps_uids_and_moves_payloads`,
+`outbox_*`, `delete_account_*`).
+
+### T-163 — `kiwi_delete_messages` + `kiwi_move_messages`
+
+- **Store** (`kiwi-mail/store.rs`): `list_folders(account_id)` (name
+  order — trash discovery + pickers) and `move_messages(src, dst, uids)`.
+  Move re-inserts each row under a **fresh dst uid** (UID COPY semantics —
+  uids never reused across folders), relocates the body file +
+  attachment dir, then deletes the source row. Crash order is
+  dst-then-src: worst case a duplicate the next sync reconciles, never a
+  loss. Returns `Vec<(src_uid → dst_uid)>`.
+- **`kiwi_delete_messages(accountId, folderId, uids, permanent?)`** —
+  uid set bounded 500. Soft: move to Trash — resolved local-name →
+  server `\Trash` LIST flag → `CREATE "Trash"`. Hard — `permanent` OR
+  source IS the trash (empty-trash): `\Deleted` + `EXPUNGE`. IMAP
+  write-through via `uid_move`/`uid_store`+`expunge`; POP3 local-only.
+  Returns `{movedToTrash, deleted, trashFolderId, uidMap}`.
+- **`kiwi_move_messages(accountId, srcFolderId, dstFolderId, uids)`** —
+  cross-account guard per Agent 5's note: BOTH folders must resolve on
+  `accountId` (`owned_folder` on each → foreign id = `not-found`); src≠dst
+  enforced. IMAP `UID MOVE` + local move; POP3 local-only.
+- Both audited (`messages-deleted` / `messages-moved`) and IMAP sessions
+  journaled (`imap delete` / `imap move`).
+
+### T-164 — `kiwi_finding_detail(findingId)`
+
+The forensics feed already existed (`kiwi_security_findings`,
+`kiwi_security_events`, `kiwi_session_detail`, `kiwi_security_report` —
+all real `kiwi.forensics/1` data). The missing piece was per-finding
+detail for the dialog (KIWI-UI-004): full `Finding` (evidence, impact,
+remediation) + the producing session (nullable — findings outlive the
+bounded session ring on purpose) + that session's signals + sibling
+finding ids. Joined via `finding.subject.session_id`. Unknown id →
+`not-found`.
+
+### Files changed
+
+`kiwi-mail/src/store.rs` (list_folders, move_messages + test),
+`commands/message.rs` (delete/move + 5 tests), `commands/security.rs`
+(`kiwi_finding_detail` + 2 tests), `types.rs` (DeleteResultView,
+MoveResultView, FindingDetailView), `lib.rs` (3 registrations — 36 total),
+`ipc.md` (§6b + §8).
+
+### Cross-agent notes (flagged for Lead)
+
+- Agent 2's `search.rs` landed mid-session twice in broken states — I
+  applied mechanical fixes only (missing `Scoped`→`Subject` variant,
+  `conn_for_test` → new `pub(crate) MailStore::conn()`, unclosed
+  `mod tests` + duplicate `#[cfg(test)]`). Remaining 5 test failures are
+  real logic gaps in their FTS5 module — theirs to finish.
+- `store.root` is private — my test reads it (same-module access); fine.
+
+### Known gaps added
+
+- Trash resolution guesses by name/special-use only — a custom-named
+  trash folder the server doesn't flag `\Trash` will miss and create a
+  parallel "Trash". Acceptable: RFC 6154 servers flag it; others get a
+  working Trash.
+- `move_local` (T-146 archive path) still same-uid re-inserts while
+  `move_messages` remaps — intentional (archive preserves the archive
+  test's uid expectations); converging them is cosmetic.
+- Findings/sessions are bounded in-memory rings — detail lookup after
+  eviction returns `session: null` by design.
+
+## 2026-09-20 — T-157: live sync engine (IMAP IDLE + POP3 poll)
+
+**Status:** implemented + verified. `cargo test -p kiwi-app` → 34/34
+green (5 new syncer tests); `clippy -p kiwi-app --all-targets --no-deps`
+clean; `cargo fmt -p kiwi-app --check` clean.
+
+### What was built
+
+New module `syncer.rs` — supervisor + per-account workers:
+
+- **Supervisor** (`sync_supervisor`, spawned in `setup()`): 2 s reconcile
+  tick — spawns a worker for every `index.account_ids` entry without one,
+  reaps finished handles, prunes status for removed accounts.
+- **Workers are dedicated `std::thread`s** each with a current-thread
+  tokio runtime — kiwi-mail clients are `!Send` inside futures (the
+  `run_mail_io` constraint), so they can't live on the command runtime.
+  Emission crosses back via a `Arc<dyn Fn(&MailChangedEvent)>` — `app.emit`
+  in production, capture vec in tests.
+- **IMAP worker** (`imap_live`): `connect_imap` → full `sync_folder` pass
+  over all listed folders (cap 64) → record session once (`"imap live"`)
+  → `SELECT INBOX` → `idle_collect` 30 s cycles. Any EXISTS/EXPUNGE/FETCH
+  untagged notification → `sync_folder` INBOX → `mail-changed` emit +
+  §11 received events (same session's tls_label/security_status reused —
+  same connection, same facts).
+- **POP3 worker**: reuses `pop3_sync` (connect→auth→sync→observe→§11 emit
+  all inside) every 60 s; emits `mail-changed` only on actual changes.
+- **Lock**: workers pause while `Locked` — checked before connect, and a
+  worker that notices the lock mid-IDLE logs out rather than holding an
+  authenticated session. Account-existence is checked BEFORE the lock so
+  removal still kills a paused worker.
+- **Backoff**: 5 s doubling to 120 s cap; `interruptible_sleep` wakes
+  early on lock or account removal.
+- **`kiwi://mail-changed`**: `{accountId, folder?, folderId?, reason:
+  sync|idle|poll, newMessages, flagUpdates, expunged, atUnix}`. `"sync"`
+  emits unconditionally after the connect pass (UI's initial-sync signal);
+  `idle`/`poll` only on real changes.
+- **`kiwi_sync_status(accountId?)`** — 33rd registered command, gated.
+  Per-account `{state, lastSyncUnix, lastError, nextRetryUnix,
+  foldersSynced, newMessages, attempts}`; missing worker → `"pending"`;
+  unknown id → `not-found`.
+
+### Files changed
+
+`syncer.rs` (new), `state.rs` (`AccountSyncStatus` + `sync_status` map),
+`types.rs` (`MailChangedEvent`, `SyncStatusView`), `commands/mail.rs`
+(`collect_received`/`emit_received`/`pop3_sync` → `pub(crate)` for worker
+reuse; `kiwi_sync_status`), `lib.rs` (mod + supervisor spawn + command —
+33 total), `ipc.md` (new §6c + header task list).
+
+### Cross-agent fixes (flagged for Lead — workspace was mid-edit)
+
+- `kiwi-forensics/pcap/reassembly.rs:336` — typo `Some(end)` →
+  `Some(start + length)` (hard compile break, one line).
+- `kiwi-mail/search.rs` (Agent 2's new FTS5 module, mid-flight):
+  `SearchColumn::Scoped` variant didn't exist → `Some(Self::Subject)`;
+  production code called `#[cfg(test)]` `conn_for_test` → added
+  `MailStore::conn()` as `pub(crate)` and pointed the call there.
+
+### Tests added (5)
+
+- `backoff_progression` — 5/10/20/40/80/120 cap shape.
+- `mail_changed_event_shape` — camelCase wire shape.
+- `worker_pauses_when_locked_never_connects` — locked endpoint: status
+  `paused-locked`, zero sessions journaled (no credential use).
+- `worker_marks_backoff_on_refused_connect` — real worker thread vs
+  127.0.0.1:1 → `backoff` + `nextRetryUnix` + attempts=1.
+- `worker_exits_when_account_removed` — clean `stopped` exit + join.
+
+### Known gaps added
+
+- IDLE watches INBOX only — non-INBOX folders refresh on the connect-time
+  pass and on the next reconnect; per-folder IDLE or periodic fan-out is a
+  follow-up if the UI needs it.
+- Lock-pause latency is bounded by the 30 s IDLE cycle, not instant.
+- `kiwi_sync_account` (manual) doesn't share the worker's connection —
+  it opens its own; both paths record sessions independently (honest —
+  they ARE separate connections).
+- No e2e IDLE test yet — needs the fixture IMAP server (T-147, Agent 6).
+
+## 2026-09-20 — T-142 done properly: SQLite outbox + send-later reschedule
+
+**Status:** implemented + verified. `cargo test -p kiwi-mail -p kiwi-app`
+→ 67/67 + 29/29 green; `clippy -p kiwi-app --all-targets --no-deps` clean;
+`rustfmt --check` clean on every file I touched.
+
+Owner note: TASKS.md lists T-142 under Agent 2 (`kiwi-mail/`); Lead
+re-dispatched it to me spanning kiwi-mail + src-tauri. Agent 2 was
+concurrently editing kiwi-mail mid-session — we converged: their
+`list_accounts`/`delete_account`/`outbox_due`/`outbox_next_due_at` landed
+alongside my `outbox` table without conflict, and I wired
+`kiwi_remove_account` → `store.delete_account` (closes a documented gap).
+
+### What changed
+
+- **kiwi-mail `store.rs`** — schema v2: `outbox` table (queue_id PK,
+  account_id FK cascade, from/to/subject/message_id, `mime BLOB` in-row,
+  not_before/undo_until/attempts/created_unix). In-row MIME makes a
+  committed send ONE atomic write — no torn meta/body pair. API:
+  `outbox_put` (INSERT OR REPLACE), `outbox_list(limit)` (corrupt rows
+  skipped, never fatal), `outbox_set_timing`, `outbox_delete`.
+- **kiwi-mail `smtp.rs`** — `SendQueue::reschedule(queue_id, not_before)`;
+  `cancel` semantics widened: recallable while `now < undo_until` **or**
+  `now < not_before` — a send-later item must be deletable until its slot,
+  not just inside a 10 s undo window.
+- **src-tauri `state.rs`** — file-based `outbox/*.json|.eml` persistence
+  replaced by the store table; `reload_outbox` imports legacy files once
+  (bounded 256/32 MiB/100 MiB, then deletes them) → `outbox_list` rebuild
+  of queue + meta map. `open_test` switched to a real file-backed
+  `MailStore` so restart-resume is exercised honestly.
+- **src-tauri `send.rs`** — persist = `outbox_put` before enqueue (32 MiB
+  bound kept); terminal paths → `outbox_delete`; retry backoff →
+  `outbox_set_timing`. New command `kiwi_schedule_send(queueId,
+  sendAtUnix)` (32 total) — reschedules any still-queued send; undo window
+  untouched; audited. `cancel_impl`/`schedule_impl` extracted for tests.
+- **`kiwi_remove_account`** now calls `store.delete_account` (cascade +
+  payload sweep) — no more orphaned config row.
+- **ipc.md §7/§12** — `kiwi_schedule_send` documented; cancel rule
+  precise; persistence note rewritten for the SQLite design.
+
+### Cross-agent fixes (flagged for Lead)
+
+- `kiwi-forensics/src/pcap/reassembly.rs:336` — one-line typo fix
+  (`cursor = Some(end)` → `Some(start + length)`); it was a hard compile
+  error in Agent 6's dirty file blocking the whole workspace build.
+- Transient test failure `delete_account_cascades…` was a mid-edit
+  snapshot of Agent 2's code — passes on current tree.
+
+### Tests added (4 new in kiwi-app, 29 total)
+
+- `outbox_survives_reopen` — extended: restart-resume dispatch at the
+  persisted `not_before` slot.
+- `enqueue_then_cancel_within_grace` — now asserts the SQLite row is
+  deleted with the queue entry + double-cancel no-op.
+- `scheduled_send_recalled_past_undo_window` — send-later recallable until
+  its slot even with undo window closed.
+- `reschedule_moves_dispatch_and_persists` — `not_before` moved in queue +
+  row; unknown id → `not-found`.
+- `legacy_file_outbox_imported` — pre-SQLite files fold into mail.db and
+  are removed.
+
+### Known gaps added
+
+- `outbox_next_due_at`/`outbox_due` (Agent 2's additions) are unused by my
+  dispatcher — it drains via the 1 s tick + in-memory `due()`, which is
+  correct but leaves a smarter store-driven wake-up on the table.
+- Undo-send window remains per-send (`undoGraceSecs` opt); no global
+  account-level default knob yet.
+
+## 2026-09-20 — Session restart: re-verified T-146 + T-142, no work outstanding
+
+**Status:** verified, no changes needed. Resume prompt listed T-146/T-142
+as remaining, but both were completed and logged in the prior session.
+Re-verified this session:
+
+- All 4 T-146 commands registered in `lib.rs` (31 total) and lock-gated
+  (`gate()` first statement in each: `message.rs` lines 59/291/394/559).
+- `ammonia` 4.x + `mail-parser` 0.11 deps present in `Cargo.toml`.
+- Outbox persistence wired in `send.rs`; `outbox_survives_reopen` green.
+- `cargo test -p kiwi-app` → **26/26 pass** (4.09s), clean compile.
+- `ipc.md` §6b/§7/§12 already document the new surface.
+- `git status`: only foreign files dirty (`kiwi-app/src/*` Agent 5,
+  `kiwi-autoconfig` Agent 8) — my src-tauri changes are committed.
+
+Note: TASKS.md still lists T-144/T-146 as `open` — ledger is Lead-maintained
+and stale relative to this log; both are done from the src-tauri side.
+T-142's kiwi-mail-side queue work is Agent 2's scope (ledger row T-142);
+the app-side persistence + undo-send + send-later wiring is complete here.
+
+**No open Agent 7 tasks.** Awaiting next assignment from Lead.
+
 ## 2026-02-14 — T-146 + T-142: message actions + outbox persistence
 
 **Status:** implemented + verified. `cargo check -p kiwi-app` clean,

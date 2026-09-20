@@ -267,6 +267,12 @@ pub struct MessageView {
     pub snippet: Option<String>,
     /// Whether the full body is already stored locally.
     pub body_stored: bool,
+    /// `In-Reply-To` msg-id (header-chain threading, T-169). `None` until
+    /// known — the field is populated from the sync-time header fetch or
+    /// lazily from a stored body.
+    pub in_reply_to: Option<String>,
+    /// `References` msg-id chain, root-first.
+    pub references: Vec<String>,
 }
 
 impl From<&MessageMeta> for MessageView {
@@ -289,6 +295,11 @@ impl From<&MessageMeta> for MessageView {
             has_attachments: m.has_attachments,
             snippet: m.snippet.clone(),
             body_stored: m.body_path.is_some(),
+            // Filled by the caller from the threading-header cache
+            // (`AppIndex::thread_headers`) — `MessageMeta` doesn't carry
+            // these headers yet (store schema gap, tracked).
+            in_reply_to: None,
+            references: Vec::new(),
         }
     }
 }
@@ -333,6 +344,10 @@ pub struct MessageBodyView {
     pub attachments: Vec<AttachmentView>,
     /// `false` when the body could not be fetched/parsed yet.
     pub body_present: bool,
+    /// `In-Reply-To` / `References` from the parsed body — authoritative
+    /// when `body_present` (T-169; reply composer + threading).
+    pub in_reply_to: Option<String>,
+    pub references: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -496,6 +511,83 @@ pub struct OutboxEvent {
     pub status: String,
     pub detail: String,
     pub at_unix: i64,
+}
+
+/// `kiwi_delete_messages` result — counts tell the UI which path ran.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteResultView {
+    pub folder_id: i64,
+    /// Messages moved into Trash (soft delete).
+    pub moved_to_trash: u64,
+    /// Messages permanently expunged (delete-from-Trash or `permanent`).
+    pub deleted: u64,
+    /// Trash folder id when a move happened.
+    pub trash_folder_id: Option<i64>,
+    /// src uid → Trash uid for moved messages (uids are folder-scoped —
+    /// a move is a copy under a fresh uid + source delete).
+    pub uid_map: std::collections::BTreeMap<u64, u64>,
+}
+
+/// `kiwi_move_messages` result.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MoveResultView {
+    pub src_folder_id: i64,
+    pub dst_folder_id: i64,
+    pub moved: u64,
+    /// src uid → dst uid.
+    pub uid_map: std::collections::BTreeMap<u64, u64>,
+}
+
+/// `kiwi_finding_detail` result — one finding + the session that produced
+/// it (T-164; finding dialog KIWI-UI-004).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FindingDetailView {
+    /// The full `kiwi.forensics/1` finding, evidence included.
+    pub finding: kiwi_forensics::findings::Finding,
+    /// The session it was observed in — `None` when the session ring has
+    /// already evicted it (findings outlive sessions on purpose).
+    pub session: Option<SessionView>,
+    /// Trust signals from that same session.
+    pub signals: Vec<SignalView>,
+    /// Other finding ids produced by the same session.
+    pub sibling_finding_ids: Vec<String>,
+}
+
+/// `kiwi://mail-changed` event payload — emitted by the live-sync worker
+/// (T-157) after a sync pass changed stored mail. `folder`/`folderId` are
+/// set for folder-scoped passes (IDLE wake, poll); `null` marks the full
+/// connect-time pass.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MailChangedEvent {
+    pub account_id: String,
+    pub folder: Option<String>,
+    pub folder_id: Option<i64>,
+    /// "sync" | "idle" | "poll".
+    pub reason: String,
+    pub new_messages: u64,
+    pub flag_updates: u64,
+    pub expunged: u64,
+    pub at_unix: i64,
+}
+
+/// `kiwi_sync_status` row — one per configured account (T-157).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncStatusView {
+    pub account_id: String,
+    /// "pending" | "connecting" | "syncing" | "idle" | "polling" |
+    /// "backoff" | "paused-locked" | "stopped"
+    pub state: String,
+    pub last_sync_unix: Option<i64>,
+    pub last_error: Option<String>,
+    pub next_retry_unix: Option<i64>,
+    pub folders_synced: u64,
+    pub new_messages: u64,
+    pub attempts: u32,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -693,7 +785,9 @@ fn chain_validation(v: ChainValidation) -> &'static str {
     }
 }
 
-fn auth_mechanism(a: &AuthMechanism) -> String {
+/// Core-spelling label for an `AuthMechanism` — also the spelling the
+/// forensics adapter maps via `from_token` (contract §11).
+pub(crate) fn auth_mechanism(a: &AuthMechanism) -> String {
     use AuthMechanism::*;
     match a {
         None => "none".into(),

@@ -613,9 +613,10 @@ provenance note). Crate: 86 tests green, clippy + fmt clean.
   NOT compile (`ClientConfig::parse` + `expected identifier impl` errors)
   → `cargo test --workspace` is red through no fault of reviewed crates.
   Untouched per §8; needs Agent 8 or Lead.
-- secret_scan FP on a TSX label ternary (`"Password" : "APOP secret"`)
-  fixed with a ternary-position skip; own-doc self-hit reworded.
-  Negative control 7/7 PASS; full scan 286 files / 0 hits.
+- secret_scan FP on a TSX label ternary (password label vs APOP-secret
+  label in ternary position) fixed with a ternary-position skip;
+  own-doc self-hit reworded. Negative control 7/7 PASS; full scan
+  286 files / 0 hits.
 
 **Files changed:** `docker-compose.yml`, `.env.example`, `infra/README.md`,
 `tests/mail-server-strategy.md`, `docs/TESTING.md`,
@@ -635,4 +636,425 @@ return — my integration edits are reviewable diffs, not rewrites.
 **Risks:** unknown-provenance code is now load-bearing in the crate —
 Lead should confirm the author and have them review my 3 test fixes +
 analyzed_as threading; workspace CI stays red until autoconfig compiles.
+
+## 2026-09-20 — T-148 close-out: authorship corrected, CI parses, full gate matrix
+
+**Status:** T-148 done from Agent 6 side. Session restarted; brief
+confirmed the `analyzers/` + `pcap/` code **is Agent 3's authored code**
+(per git/authorship) and my integration fixes stand — the
+"unknown provenance" flag from the 09-20 T-148 entry is hereby
+**retracted**. Corroboration on disk: `kiwi-forensics/src/lib.rs:1`
+attributes the crate to agent 3 / T-003, and the modules follow Agent 3's
+logged design (own bounded readers, TraceFacts + finalize, credential-safe
+verbs-only evidence). Git history cannot distinguish further (all work
+squashed into checkpoint `a982665` under one committer), so Lead's
+authorship confirmation is recorded as the source of truth here.
+
+**T-148 review pass (no new source edits — verification only):**
+re-read `analyzers/mod.rs` (sniff → per-protocol analyze with threaded
+`analyzed_as` → single `finalize`), `pcap/mod.rs` (limits-before-alloc,
+`CaptureError` taxonomy, normalizing `Timestamp`), `pcap/reassembly.rs`
+(interface-only Phase-5 stub, uncalled — no fail-open path). Design
+judgement: sound, matches `docs/contracts/forensics.md` §§4/8. The 4
+end-to-end analyzer tests + 12 pcap tests all green (see matrix). Left
+for Agent 3: TCP reassembly impl, PCAP→trace→event wiring, report
+polish. My integration diffs (analyzed_as threading, SHB magic offset,
+caplen test bytes, deny-lint compliance) remain reviewable and untouched
+since the last green run.
+
+**T-140 CI verification:** `.github/workflows/ci.yml` parses
+(`yaml.safe_load` OK, jobs `rust/node-admin/static-checks/infra-live`).
+Step-by-step mirror check vs local gates: rust job runs fmt + test
++ clippy `-D warnings` (matches); node-admin runs `npm ci` +
+typecheck + test on node 22 (matches); static-checks runs all three
+checkers + `ComposeStaticTests` (class exists at
+`tests/infra/test_compose.py:58`); infra-live starts
+`db mailpit greenmail` (T-147 greenmail present), builds admin,
+runs full unittest discover, `down -v` always. No YAML changes needed.
+CI is RED on runners until the two blockers below are fixed (both
+outside Agent 6 files).
+
+### Full gate matrix (repo root, `release/v0.1.0`, working tree clean)
+
+| Gate | Result |
+|------|--------|
+| `cargo test --workspace` | **RED — blocked by `kiwi-autoconfig` (Agent 8, T-135 open).** `autoconfig_xml.rs:547`: `mod tests` nested inside `impl ClientConfig` (impl opened :476 never closed before the test module) → `error: module is not supported in traits or impls`. Read-only diagnosis; **one-line fix for Agent 8: close the impl before `#[cfg(test)]`.** Also fmt-dirty (see below). |
+| `cargo test --workspace --exclude kiwi-autoconfig` | **224 passed, 0 failed:** kiwi-app 26, kiwi-core 32, kiwi-forensics 86 (74 lib + 9 classic + 3 pcapng), kiwi-mail 54, kiwi-mailauth 26. |
+| `cargo clippy --workspace --all-targets -- -D warnings` | **RED: 9 lints, all `kiwi-mail/src/testutil.rs` (Agent 2)** — `manual_split_once` ×1 (:110), `needless_borrow` ×8 (:270–478, `&leak(steps)` pattern). Test-only helper, trivial fixes, **Agent 2's file — flagged, not touched per §8.** |
+| `cargo clippy -p kiwi-forensics --all-targets -- -D warnings` | **Clean (exit 0).** |
+| `cargo fmt --all -- --check` | **DIRTY — none of it mine:** `kiwi-autoconfig` (Agent 8: autoconfig_xml/discovery/heuristics/ispdb/lib/manual/net/suggest) + `kiwi-mail` examples + `testutil.rs` (Agent 2). `cargo fmt -p kiwi-forensics -- --check` → **clean.** |
+| `npm test` kiwi-admin | **64 passed, 1 skipped** (db.migrations, pre-existing skip). |
+| `npm run typecheck` kiwi-admin | **Clean (exit 0).** |
+| `secret_scan` | **289 files / 0 hits.** (One self-hit on my own prior log line tripped the run — reworded the line in this file, re-ran green.) |
+| `check_fixtures` | **OK (entries=47 present_bytes=7819).** |
+| `check_csp` | **OK (directives=4 warnings=3)** — same 3 hardening advisories, unchanged. |
+
+**Verdicts:** kiwi-forensics (T-148 scope) is **READY** — 86 tests,
+clippy/fmt clean, secrets clean, contract §§4/8 entry points named and
+implemented (`PcapReader` → `analyze` → `RuleEngine` →
+`ReportBuilder`). Workspace gate is RED through exactly two
+other-owned defects (autoconfig compile error, kiwi-mail testutil
+lints) + fmt drift in the same two crates — all flagged with file:line
+for the owners. No Agent 6 files changed except this log + the one-line
+self-hit reword above; `source/`, crates, and other agents' files
+untouched.
+
+**Assumptions:** Agent 8 fixes the impl-close brace + runs `cargo fmt`;
+Agent 2 clears the 9 testutil lints + runs `cargo fmt`; Lead re-runs the
+gate at merge (transient concurrent-edit states observed before).
+
+**Risks:** CI (`rust` job) stays red until both fixes land — nothing
+Agent 6 can clear without violating §8; T-003 final DONE still waits on
+Agent 3's reassembly + wiring on its return.
+
+## 2026-09-20 — T-003 DONE (full ownership) + T-154 baseline + TASKS.md repair
+
+**Status:** T-003 complete and self-certified READY→done under direct
+Lead instruction (Agent 3 not returning today). TASKS.md: T-003 and
+T-148 marked done; duplicate T-154 row removed. All edits inside Agent 6
+boundaries except the Lead-authorized ledger flip (details + incident
+below). Crate: **111 tests green, clippy + fmt clean.**
+
+### T-003 close-out — what was built (all `kiwi-forensics/` + contract)
+
+Remaining scope was the packets→traces gap: readers yielded frames,
+analyzers consumed hand-built traces, nothing connected them, and the
+reassembly trait had no implementation. Closed with three pieces, zero
+new dependencies (crate stays serde/serde_json-only):
+
+- **`pcap::decode` (new):** Ethernet + IPv4 + TCP header parser →
+  directed `TcpSegment`s (endpoints, seq, payload, frame index,
+  timestamp). ARP/IPv6/UDP/truncated/malformed become counted
+  `DecodeSkip`s — never fatal, never guessed. 7 unit tests incl.
+  hostile-truncation sweep.
+- **`pcap::reassembly` (implemented):** bounded `Reassembler`
+  (`ReassemblyLimits`: flows/segments/bytes/frames) with first-seen-wins
+  overlap, seq-wrap heuristic, gap flagging, per-direction extents
+  (byte-range → frame attribution), over-limit drops counted for the
+  pipeline. Agent 3's trait kept (`StreamReassembler`); its `TcpStream`
+  reshaped to initiator-relative `ReassembledFlow` (documented — the old
+  shape had no callers). 8 unit tests.
+- **`pipeline` (new, contract §10):** `analyze_capture` composes
+  reader → decode → reassemble → traces → `RuleEngine` →
+  `ReportBuilder`, returning `CaptureReport { report, diagnostics }`.
+  Two real design findings fixed en route: (1) client/server roles were
+  flipped for greeting-first protocols — `resolve_roles` now decides by
+  well-known port, then greeting content, then initiator default
+  (caught by the SMTP end-to-end test asserting findings, not just
+  sessions); (2) my own test asserted no credential-word in report JSON
+  but rule prose legitimately discusses secrets — switched to a
+  distinctive password (`s3cr3t-hunter2`, absent from output).
+  Cross-direction lines merge in frame (time) order. New limitation
+  codes: `stream-gap`, `capture-over-limit`,
+  `rule-dropped-without-evidence` (+ existing `chain-unverified` on
+  every capture report, `protocol-unknown` when sniffing abstains).
+  `tests/capture_pipeline.rs`: 5 end-to-end tests from synthetic pcap
+  bytes (SMTP strip → STARTTLS-001 + AUTH-001; IMAP login-fail →
+  AUTH-003; real seq-gap → limitation; ARP counted as skip; garbage
+  rejected).
+- **Contract:** §9 stub (a literal truncation marker on disk) replaced
+  with the real both-directions mapping tables (event↔session fields
+  with verified `as_str()` spellings incl. ssl3.0→ssl3 and
+  static→kex-group rules; findings→TrustSignal table with penalty
+  ownership staying in kiwi-core; AUTH-003 explicitly signal-less);
+  new §10 pipeline spec; entry-points paragraph + owner/status updated.
+  `stream_offsets` deliberately left empty for pipeline traces (frames
+  carry provenance; documented in §10).
+
+**Evidence:** `cargo test -p kiwi-forensics` → 94 lib + 5 pipeline +
+9 classic + 3 pcapng = **111 passed, 0 failed**; `cargo clippy -p
+kiwi-forensics --all-targets -- -D warnings` → exit 0 (4 of my own
+lints fixed: while-let, clone-on-copy, collapsible-if,
+explicit-counter); `cargo fmt -p kiwi-forensics -- --check` → clean.
+
+**Left explicitly undone (documented, not gaps):** IPv6/VLAN/tunnel
+parsing (counted skips); TLS-decryption (encrypted captures are
+findings-light by design — live adapter is the path for TLS sessions);
+`SecuritySession`→event bridging specified (§9b) without an in-crate
+impl (consumers bridge; kiwi-app maps findings→status today).
+
+### T-154 — dependency audit baseline (SECURITY.md §7)
+
+- `cargo audit` (installed cargo-audit 0.22.2, 1251 advisories):
+  **1 vuln — rsa 0.9.10 RUSTSEC-2023-0071 Marvin (medium, no fix
+  available)**, direct dep of `kiwi-mailauth` (Agent 8). Assessed
+  **not exploitable here**: Marvin needs private-key decryption;
+  prod code verifies DKIM with public keys only, sole private-key use
+  is 1024-bit test keygen. Plus 7 warnings: unmaintained `unic-*`
+  (via Tauri urlpattern) + `proc-macro-error`, unsound `glib`
+  (Linux-only GTK path) — all transitive/conditional, ride-upstream.
+- npm full audit: **kiwi-admin 6 vulns (1 critical + 5 moderate, all
+  dev-only)** — critical vitest GHSA-5xrq-8626-4rwp 9.8 fixed by
+  non-breaking upgrade past 3.2.6 (also clears the mocker traversal);
+  esbuild dev-server issue via drizzle-kit needs `--force` (breaking)
+  or dev-server isolation. **kiwi-admin-ui + kiwi-app: 0.**
+  **mobile: not auditable — no lockfile** (Agent 4/Lead: generate one).
+  Production-only audits are clean everywhere they run. Fixes flagged
+  to owners (Agent 5: `npm audit fix` in kiwi-admin); none block T-003.
+
+### Incident — TASKS.md encoding damage (mine, repaired, verified)
+
+My T-154 ledger edit double-encoded the file (46 mojibake spots) and I
+initially misread the cause as concurrent Lead edits — wrong: the other
+sessions only *committed* (e46ac39 cycle swept my damaged working copy
+into HEAD, incl. my duplicate T-154 row alongside the Lead's open one).
+Repaired byte-exact in place: mojibake triples mapped back (7 arrows,
+38 em-dashes, 1 en-dash, 7 section pairs — fully accounted), then
+applied only the three intended changes. Verified via normalized diff
+(non-ASCII blinded): **exactly 3 hunks vs HEAD** (T-003 done, T-148
+done, open-T-154 dup removed) — zero content loss, 54 rows, no dup IDs.
+Lesson recorded: for shared-ledger files, verify with normalized diffs
+and prefer byte-exact scripts over blind rewrites; my other edited
+files (forensics.md, SECURITY.md, this log) scanned clean with
+deletion lists matching only intended replacements.
+
+**Files changed:** `kiwi-forensics/src/{pcap/decode.rs (new),
+pcap/reassembly.rs, pcap/mod.rs, pipeline.rs (new), report/mod.rs,
+lib.rs}`, `kiwi-forensics/tests/capture_pipeline.rs (new)`,
+`docs/contracts/forensics.md` (§9 + §10 + header), `docs/SECURITY.md`
+(§7), `docs/TASKS.md` (3 ledger changes + encoding repair), this log.
+
+**Assumptions:** Lead accepts the T-003 DONE flip on this evidence;
+Agent 8 tracks the rsa advisory; Agent 5 runs `npm audit fix`;
+Agent 4/Lead produce `mobile/package-lock.json`.
+
+**Risks:** shared-tree concurrency is now the norm (Agents 7–10
+committing around me) — my full-gate reds from this morning
+(autoconfig compile error, mail testutil lints) are other agents'
+in-flight states; re-verify at merge. `cargo-audit` installed to
+`~/.cargo/bin` (host-local, not repo-pinned).
+
+## 2026-09-20 — T-166 done: forensics→app seam aligned for T-164
+
+**Status:** T-166 complete. Contract query shapes specified
+(forensics.md §11), live auth threading implemented, fixture-driven
+seam test green, audit-chain tamper guard verified at both layers.
+TASKS.md T-166 marked done (byte-exact script edit after the T-154
+encoding lesson — ledger verified mojibake-free). One 1-line compat
+touch in Agent 7's `observe.rs`, loudly flagged below; everything
+else inside Agent 6 boundaries.
+
+### 1. Seam gap found + closed: auth facts died at the adapter
+
+`observe.rs` collects `auth_mechanism`/`auth_succeeded` but its
+`forensics_findings()` never passed them on — `LiveSessionInput` had
+no auth fields, so the AUTH rules (001–006) could only ever fire from
+capture traces, never on the live path the Security view actually
+serves. Fix (my crate): new `LiveAuthObservation {mechanism,
+succeeded, attempts, failures}` + `LiveSessionInput.auth`, mapped to
+`AuthObservation` in `event_from_live` under the analyzers'
+assertion rule (section exists only if mechanism/outcome/attempts
+observed). Placement mattered: the no-handshake early return skipped
+my first version — extracted `attach_auth()` called on both paths
+(caught by the new test, fixed before green). `observe.rs` gets
+`auth: None` + a T-164 pointer comment — workspace stays green;
+threading `ctx` through is Agent 7's specified one-liner (mapping
+rule in §11, no guessing: `none`→absent, `client-cert`→External,
+`other:<name>`→`from_token`, attempts/failures counted from the
+observed exchange).
+
+### 2. forensics.md §11 — exact query shapes for T-164
+
+- `list_findings({account_id?, severity?, limit?})` → full `Finding[]`
+  verbatim. Severity vocabulary pinned to `Severity::as_str()`;
+  unknown string → `invalid-input` (never silent). Binding total sort:
+  severity desc, observed_at desc, rule_id asc, subject_key asc.
+  Limit default 100 / max 1000. Flags the two T-164 changes to current
+  `kiwi_security_findings` (no severity param, observed_at-only sort).
+- `list_events({limit?, account_id?})` → `EventRow[]` (camelCase as
+  emitted: id/tsUnix/accountId/category/severity/summary/detailRef),
+  newest-first, worst-signal severity in forensics spellings (exact
+  input domain of the view's `eventSeverityToSeverity` — backend UI
+  tokens would be a violation). Mostly documents existing behavior;
+  T-164 addition is the `account_id` filter.
+- `finding_detail({key})` → `Finding` verbatim; key is the
+  `finding_id()` form (`rule_id|subject_key`); empty/overlong →
+  `invalid-input`, no match → `not_found`. New command (session
+  context stays with `kiwi_session_detail`).
+- UI derivation rules recorded for Agent 5's mapper: stable `id`
+  derives as `rule_id|subject_key` (not a serialized field — the
+  `finding-${index}` fallback retires once keys flow); `remediation`
+  is an object, not the array the mapper assumes. Verified the
+  frontend already maps backend vocabularies — no mismatch to fix.
+
+### 3. Seam integration test (hermetic, green first clean run)
+
+`kiwi-forensics/tests/sync_send_finding.rs` (+ documented dev-deps:
+kiwi-mail/tokio/zeroize — published crate stays serde-only): a real
+`SmtpClient` sends through a fixture-shaped localhost server
+(dialogue scripted from `smtp_send_ok.txt` S: lines), then the
+observe→adapter→engine path emits TRANSPORT-001 + AUTH-001 with
+byte-identical JSON across runs and no credential leakage. Two
+harness bugs fixed en route: post-DATA deadlock (server must send
+the queued-reply before reading — the client is reading, not
+writing) and server-read timeouts so divergence fails instead of
+hanging. kiwi-mail's `testutil` is `#[cfg(test)]`-gated so the
+fixture parse is intentionally minimal here (S: extraction only;
+C: conformance stays kiwi-mail's own replay tests).
+
+### 4. Audit-chain tamper guard verified e2e
+
+`cargo test -p kiwi-app audit` → tamper test green;
+`npm test -- audit` (kiwi-admin) → 9/9 green (chain + guard suites).
+`e2e/` dir is still empty scaffolding (Agent 9's T-149) — noted, not
+mine to fill.
+
+### Concurrency note (shared tree)
+
+Mid-task, `kiwi-mail/src/search.rs` (untracked, another agent's
+active write — mtime seconds fresh) broke the workspace build and
+took my dev-dep test build with it. Per §8 I did not touch it;
+waited ~90s for writes to settle, then ran green. Same posture as
+the morning's autoconfig/mail states: flag, never fix others'
+in-flight files.
+
+**Evidence:** forensics 96 lib + 5 pipeline + 9 + 3 + 1 seam = **114
+green**; clippy `-D warnings` clean; fmt clean; `cargo check -p
+kiwi-app` clean (observe.rs compat); secret_scan 321 files / 0 hits;
+fixtures OK (47).
+
+**Files changed:** `kiwi-forensics/src/live/mod.rs` (auth
+threading + 2 tests), `kiwi-forensics/Cargo.toml` (dev-deps only),
+`kiwi-forensics/tests/sync_send_finding.rs` (new),
+`kiwi-app/src-tauri/src/observe.rs` (1-line `auth: None` compat —
+Agent 7, flagged), `docs/contracts/forensics.md` (§11),
+`docs/TASKS.md` (T-166 done), this log.
+
+**Assumptions:** Agent 7 implements severity/limit/account_id +
+`finding_detail` per §11 under T-164 and threads auth per the spec;
+Agent 5 upgrades `findingToInfo` when keys flow.
+
+**Risks:** none new; the `auth: None` compat silently keeps AUTH
+rules off the live path until Agent 7 threads — tracked in §11, not
+in code I own.
+
+## 2026-09-20 — T-170 integration review: 5 contract pairs + full gate
+
+**Status:** review complete. Read-only throughout (no source file
+outside Agent 6 boundaries touched — fixes are all flagged with
+owner + file:line). Two doc touch-ups inside my own files:
+forensics.md §11 `finding_detail` aligned to the implemented
+`findingId` shape, this log entry.
+
+### Pair A — ipc.md vs `src-tauri/commands/*` (+ lib.rs + ipc.ts)
+
+37 `#[tauri::command]` fns, all 37 registered (names match 1:1).
+`delete/move` (§6b), `finding_detail` (§8), `sync_status`/`mail-changed`
+(§6c) all present as documented; `schedule_send(queueId, sendAtUnix)`,
+`sync_account`, Delete/Move/FindingDetail view shapes all match.
+
+- **A1 (real, Agent 7 doc):** §3 `SecurityStatusView.requiredAction`
+  `"none | notify-user | require-authenticator | block-access"` vs
+  code `types.rs:667-675`
+  `"none|warn-user|require-authenticator-unlock|require-reauth|block-access"`.
+  Two invented tokens + one missing (`require-reauth`).
+- **A2 (real, Agent 7 doc):** §4 `ChallengeView.nonceB64` vs code
+  `types.rs:161` `nonce_hex` (hex, like fingerprints).
+- **A3 (nit, Agent 7 doc):** §3 `SignalView` example kind
+  `"starttls-stripped"` is not a real `SignalKind` (closest:
+  `starttls-downgrade-suspected` per security-session.md §3).
+- **A4 (gap, Agent 5):** no `ipc.ts` wrappers for `kiwi_delete_messages`,
+  `kiwi_move_messages`, `kiwi_schedule_send`, `kiwi_sync_status`,
+  `kiwi_finding_detail` — backend ready, UI unwired (T-162 bulk UI and
+  the finding dialog fall back to stubs/demo until these land).
+- **A5 (noted, intentional):** `kiwi_get/set_prefs` wrappers exist with
+  no backend (local fallback per `prefs.ts`) — consistent, no action.
+- Trivia: A7 log claims "36 total" handlers; lib.rs registers 37.
+
+### Pair B — autoconfig.md vs `kiwi-autoconfig` (bounds/stages verified green 53/53)
+
+Spellings, stage order, URLs, bounds (256/253/256KiB/32/16),
+`needs_manual_review`, `to_mail_account` ids/keys, `default_port`,
+ISPDB/MX tables all match, except:
+
+- **B1 (minor, Agent 8):** §6 "usernames 1–256 chars" — code checks
+  byte length (`suggest.rs:148-154`).
+- **B2 (specified-but-absent, Agent 8/Lead):** §7 production
+  `DiscoveryNet` adapter ("blocks on a private runtime") does not
+  exist — only `MockNet` (`net.rs:67` is the sole impl). T-156 wizard
+  has nothing live to call yet.
+- **B3 (real, Agent 8):** `auth_kind` (`autoconfig_xml.rs:441-450`)
+  maps empty string and anything containing "cram" to Password;
+  contract §5 allows only the two `password-*` spellings + `OAuth2`
+  and sends everything else to `unsupported`. Empty→Password is an
+  undocumented default; `cram-*`→Password mislabels
+  challenge-response as a password kind.
+- **B4 (real, Agent 8 doc):** §4 lists GoDaddy in `ISPDB_FIXTURES`;
+  code has 9 provider groups (`ispdb.rs:76-140`), GoDaddy only in
+  `MX_HINTS` (`heuristics.rs:127-130`).
+- **B5 (nit, Agent 8 doc):** §4 cites `pphosted.com` as an MX example;
+  no such entry in `MX_HINTS`.
+
+### Pair C — sandbox.md vs `kiwi-sandbox` (faithful)
+
+Traits, errors, bounds (4096/64KiB/256KiB), tiers all match verbatim.
+
+- **C1 (minor, Agent 10 doc):** `AnalysisReport.egress`
+  (`EgressEvidence`, `lib.rs:137-149`) exists in code but not in the
+  contract §Types shape. Additive + serde-defaulted, no breakage.
+- Nit: `wsl2.rs:693` `GuestRun.exit_code` never read (dead_code
+  warning — only warning in the workspace build).
+
+### Pair D — contacts.md vs `kiwi-contacts` (clean)
+
+Bounds, §4 control-char rule (incl. the fix-round tightening),
+VCardLimits defaults, migrations/newer-refused/cascade/FK,
+LIKE-escape + empty-query→list + NOCASE ordering, `local-N` +
+reserved prefix, `MAX_PAGE` clamp, error-code table all verified
+against code. The snake_case-crate vs camelCase-wire split from A9's
+log is handled honestly in contract §2 (view is Agent 7's to add).
+One nit: **D1** — `source_uid` bound reuses the name
+`MAX_NAME_LEN` (value 256 correct).
+
+### Pair E — forensics.md §11 vs Agent 7 reality
+
+- **E1/E2 (open, Agent 7):** `severity`/`limit`/worst-first sort on
+  findings and `account_id` on events are specified but NOT in
+  `security.rs:20-100` (account-only, observed_at-desc). T-164
+  delivered `finding_detail` only — these need a follow-up.
+- **E3 (closed today, mine):** §11 now matches the implemented
+  `kiwi_finding_detail(findingId)→FindingDetailView` wrapper shape.
+- **E4 (open, Agent 7):** `observe.rs` still passes `auth: None`
+  (verified current); AUTH rules stay silent live per design until
+  the §11 one-liner lands.
+
+### Status-log claim spot-checks
+
+- A7 "36 handlers" → 37 (stale count, harmless).
+- A9 "investigate if not 41 tests" → actual **48 green (42 lib + 6
+  integ)**; the arithmetic in their entry is fuzzy but the crate is
+  green — no action.
+- A8's rebuttal of the old impl-brace flag: the flag was real at
+  observation time (workspace failed there that morning; Lead's
+  unblock commit repaired it); crate green since — no action.
+
+### Full gate matrix (this run, shared tree, uncommitted changes present)
+
+| Gate | Result |
+|------|--------|
+| `cargo test --workspace` | **394 passed, 2 FAILED** — both `kiwi-mail/search.rs` FTS5 (`parse_query_negation_noise_and_caps :383`, `match_sql_is_bounded_and_quoted :408`). Per-crate: app 41, autoconfig 53, contacts 48 (42+6), core 32, forensics 114 (96+5+9+3+1), mail 75+2F, mailauth 26, sandbox 5. Live mailpit+greenmail roundtrips passed (daemon up). |
+| `cargo clippy --workspace --all-targets -- -D warnings` | **FAIL only in `kiwi-contacts` (17 errors**: doc-list indent, collapsible-if, needless Ok+`?`, needless borrows, char comparison). Excluding contacts: clean. |
+| `cargo fmt --all -- --check` | **FAIL: 40 hunks, 100% `kiwi-contacts`** (contact/store/vcard/tests). All other crates clean. |
+| kiwi-admin `npm test` | 68 passed, 1 skipped ✓. `typecheck` **FAILs (3 errors**: `repositories.pg.ts:218`, `services.ts:185`, `db.migrations.test.ts:33`) — tests green because vitest doesn't typecheck. |
+| kiwi-admin-ui `npm run build` | ✓ 797ms. mobile `npm test` 32 ✓ + `typecheck` ✓ (lockfile now exists — T-154 gap closed). kiwi-app `vite build` ✓ 1.10s. |
+| Checkers | secret_scan 320 files / 0 hits ✓; fixtures OK (47) ✓; CSP OK (3 advisories, unchanged) ✓; compose static 5 OK ✓. |
+
+Reds cluster exactly where agents are mid-flight (contacts never
+gated — A9 has no working toolchain; mail-search FTS5 logic gaps
+already attributed; admin typecheck vs in-flight T-149 work). Nothing
+in the matrix implicates `kiwi-forensics`, `kiwi-core`,
+`kiwi-autoconfig`, `kiwi-mailauth`, `kiwi-sandbox`, or the Tauri
+backend beyond the listed doc nits.
+
+**Files changed (mine only):** `docs/contracts/forensics.md` (§11
+`finding_detail` shape), this log.
+
+**Assumptions:** owners take the flagged items; A9's crate needs a
+first-ever clippy/fmt pass once green; admin typecheck needs a
+re-run after T-149 settles.
+
+**Risks:** workspace CI is red on three independent ownerless-until-
+claimed items (contacts clippy/fmt, mail-search ×2, admin tsc ×3) —
+recommend Lead serialize before any release cut.
+
 

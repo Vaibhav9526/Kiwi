@@ -1,0 +1,2 @@
+# Shell scripts are executed inside Linux guests — must stay LF.
+*.sh text eol=lf

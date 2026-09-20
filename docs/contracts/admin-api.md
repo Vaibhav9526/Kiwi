@@ -309,15 +309,74 @@ builders in `src/mailflow/emitter.ts`; transport is `MailflowService.ingest`
 
 ## 12. Dev HTTP transport — T-134 scaffold (`src/server.ts`)
 
-`npm run build && npm run serve` (env `KIWI_ADMIN_DB`, `KIWI_ADMIN_PORT`;
-defaults `kiwi-admin.db`, `8471`). Implements the §3 + §10 wire mapping over
-the services plus extra-contract `GET /healthz` (`{status, service, version,
-contract}`) for process supervision (Agent 6 T-133). Binds **127.0.0.1 only**.
+`npm run build && npm run serve` (env `KIWI_ADMIN_DB`, `KIWI_ADMIN_PORT`,
+`DATABASE_URL`; defaults `kiwi-admin.db`, `8471`, unset). Implements the §3 +
+§10 wire mapping over the services plus extra-contract `GET /healthz`
+(`{status, service, version, contract}`) for process supervision (Agent 6
+T-133). Binds **127.0.0.1 only**.
+
+### 12.1 Dialect selection (`src/services.ts`)
+
+`createServiceContainer` branches on `DATABASE_URL`:
+
+| `DATABASE_URL` | driver | migrations applied |
+|----------------|--------|--------------------|
+| set | Postgres (ADR-006) | `drizzle/pg` via `migratePg` |
+| unset/empty | SQLite (ADR-003) | `drizzle/sqlite` via `migrateSqlite` |
+
+Compose sets `DATABASE_URL`, so the containerized service is Postgres-backed
+and `depends_on: db: service_healthy` is load-bearing. A bare dev shell has no
+`DATABASE_URL` and stays on SQLite.
+
+ONE service layer serves both. `db/interfaces.ts` declares repository methods
+as `MaybePromise<T>` and every service awaits them — `await` on a non-Promise is
+a no-op, so SQLite stays synchronous end to end while Postgres resolves
+normally. The pure cores (policy evaluator, audit chain, validation, RBAC) did
+not gain async. `ServiceContainer.dialect` names the driver in use and is logged
+at startup; `ServiceContainer.db` (the raw synchronous SQL facade) is SQLite
+only and is `null` on Postgres.
+
+The migration SQL is runtime data, not build input: the image must ship
+`drizzle/` or the migrator cannot find `meta/_journal.json` and the container
+exits before binding a port.
+
+### 12.2 Dev auth — header actors
 
 DEV-AUTH WARNING (scaffold only): actor identity arrives via `x-kiwi-subject`
 / `x-kiwi-roles` / `x-kiwi-org` headers — convenient, NOT secure. kiwi-core
 session auth (Phase 3+) replaces header actors before this transport serves
 anything beyond local development. The header scheme must never survive
-contact with a non-loopback listener.
+contact with a non-loopback listener. **Header actors are a dev scaffold, not
+authentication**: a caller can claim any subject and any role.
+
+What the scaffold DOES guarantee, so that removing it later is a swap rather
+than a rewrite:
+
+- **`x-kiwi-roles` is fail-closed.** An absent header, an empty string, or a
+  value whose tokens are all unrecognized yields an EMPTY role set, and every
+  permission check then refuses with `403 auth.denied`. It does not fall back
+  to `org_admin`. `x-kiwi-subject` falls back to the placeholder
+  `local-unauthenticated` only so the denial is attributable in the audit log.
+- **Every route is permission-checked, the audit reads included.**
+  `GET /api/v1/audit` and `GET /api/v1/audit/verify` both require `audit.read`
+  (§2, §3), enforced in `AuditService` so a denial is attributed to the actor.
+  `verify` reads the FULL chain regardless of any org filter — a hash chain
+  only validates over every row, so an org-scoped window would report a
+  false `valid`.
+
+### 12.3 Audit query filters
+
+`GET /api/v1/audit` accepts `org`, `since`, `until`, `limit` (≤ 1000).
+
+- `org` narrows to that org's rows, applied in SQL. Rows with a NULL `org_id`
+  — platform-level acts such as `org.create` — belong to no org and are
+  excluded from an org-scoped read. Omitting `org` returns the whole log.
+  Filtering must happen in the query rather than after it, so `limit` cannot
+  truncate the window before the filter is applied.
+- `since`/`until` are Unix-second bounds on `ts`; rows come back ordered by
+  `seq` ascending, which is the order `verify` requires.
+- An org-scoped caller (session `org_id` bound) cannot read another org's
+  slice: `hasPermission` refuses the cross-org target with `403`.
+
 
 

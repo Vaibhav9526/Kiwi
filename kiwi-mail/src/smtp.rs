@@ -581,8 +581,9 @@ fn dot_stuff(body: &[u8]) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
-// Send queue — hooks for undo-send and send-later (Mailspring-style).
-// In-memory for now; persistence behind the store layer (T-105) later.
+// Send queue — undo-send + send-later (Mailspring-style, T-142).
+// In-memory dispatch order lives here; durability lives in MailStore's
+// `outbox` table — callers persist at enqueue and rebuild on open.
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
@@ -621,13 +622,30 @@ impl SendQueue {
         self.pending.push(item);
     }
 
-    /// Undo-send: remove a queued item. Only valid while its undo window
-    /// is still open and it hasn't been dispatched.
+    /// Undo-send / unschedule: remove a queued item. Succeeds while the
+    /// send is still recallable — inside its undo window, OR awaiting a
+    /// future send-later slot (`now < not_before`). Once committed AND due
+    /// it belongs to the dispatcher; once dispatched it isn't in `pending`
+    /// at all, so cancel naturally fails.
     pub fn cancel(&mut self, queue_id: &str, now: i64) -> bool {
         let before = self.pending.len();
-        self.pending
-            .retain(|q| !(q.queue_id == queue_id && now < q.undo_window_until_unix));
+        self.pending.retain(|q| {
+            !(q.queue_id == queue_id && (now < q.undo_window_until_unix || now < q.not_before_unix))
+        });
         self.pending.len() != before
+    }
+
+    /// Move a pending send's dispatch time (send-later reschedule).
+    /// Returns false when the item is gone — already due/dispatched or
+    /// cancelled. Does not touch the undo window.
+    pub fn reschedule(&mut self, queue_id: &str, not_before_unix: i64) -> bool {
+        match self.pending.iter_mut().find(|q| q.queue_id == queue_id) {
+            Some(q) => {
+                q.not_before_unix = not_before_unix;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Drain sends whose `not_before` has arrived. Callers run `send_mail`
@@ -639,6 +657,17 @@ impl SendQueue {
             .partition(|q| q.not_before_unix <= now);
         self.pending = pending;
         due
+    }
+
+    /// Iterate pending items — lets callers build outbox views/reload
+    /// bookkeeping without a parallel index.
+    pub fn pending(&self) -> impl Iterator<Item = &QueuedSend> {
+        self.pending.iter()
+    }
+
+    /// Earliest `not_before` among pending sends (scheduler wake-up hint).
+    pub fn next_due_at(&self) -> Option<i64> {
+        self.pending.iter().map(|q| q.not_before_unix).min()
     }
 
     pub fn pending_count(&self) -> usize {
@@ -832,9 +861,26 @@ mod tests {
             undo_window_until_unix: 50,
             attempts: 0,
         });
-        assert!(!q.cancel("q2", 60)); // window closed
-        assert_eq!(q.due(99).len(), 0);
-        assert_eq!(q.due(100).len(), 1);
+        // Scheduled send: recallable until its dispatch time even though
+        // the undo window already closed.
+        assert!(q.cancel("q2", 60));
+        q.enqueue(QueuedSend {
+            queue_id: "q3".into(),
+            request: SendRequest {
+                from: "a".into(),
+                to: vec!["b".into()],
+                message: vec![],
+            },
+            not_before_unix: 100,
+            undo_window_until_unix: 50,
+            attempts: 0,
+        });
+        assert!(!q.cancel("q3", 150)); // committed AND past due — dispatcher's
+        // Reschedule moves the dispatch time of a pending item.
+        assert!(q.reschedule("q3", 500));
+        assert!(!q.reschedule("gone", 500));
+        assert_eq!(q.due(499).len(), 0);
+        assert_eq!(q.due(500).len(), 1);
         assert_eq!(q.pending_count(), 0);
     }
 

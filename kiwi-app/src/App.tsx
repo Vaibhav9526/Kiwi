@@ -1,12 +1,15 @@
 /**
- * KIWI root (T-143): live backend orchestration over kiwi.ipc/1 with labeled
- * demo fallback outside the Tauri webview. The renderer owns NO security
- * verdicts — trust/lock/findings/policy outcomes all come from the backend;
- * star/read flags stay local-only (no flag command in kiwi.ipc/1).
+ * KIWI root (T-143, T-151): live backend orchestration over kiwi.ipc/1 with
+ * labeled demo fallback outside the Tauri webview. The renderer owns NO
+ * security verdicts — trust/lock/findings/policy outcomes all come from the
+ * backend; star/read/archive go through kiwi_update_message in live mode
+ * (T-146), attachments through kiwi_download_attachment, HTML through
+ * kiwi_render_body (sanitized server-side, remote content opt-in per
+ * account).
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, BackendUnavailableError, IpcError } from "./ipc";
-import { loadPref, savePref } from "./prefs";
+import { applyUiPrefs, loadMuted, loadPref, savePref } from "./prefs";
 import {
   DEMO_ACCOUNTS,
   DEMO_EVENTS,
@@ -19,14 +22,19 @@ import type {
   AccountInfo,
   AccountView,
   AppInfoView,
+  AttachmentSavedView,
   ChallengeView,
   DeviceView,
+  FindingDetailView,
   FindingInfo,
   FolderView,
   MessageBodyView,
   MessageEnvelope,
+  MessagePatch,
   MessageView,
   OutboxItem,
+  RemoteContentView,
+  RenderedBodyView,
   SecurityEventRow,
   Severity,
   TrustState,
@@ -41,21 +49,18 @@ import {
 import { AppShell, Sidebar, TopBar } from "./components/chrome";
 import { AuthenticatorDialog, FindingDialog, LockOverlay } from "./components/security";
 import type { AuthStatus } from "./components/security";
+import { CommandPalette } from "./components/palette";
+import type { PaletteAction } from "./components/palette";
+import { ShortcutsHelp } from "./components/shortcuts";
+import { ToastStack } from "./components/toasts";
+import type { Toast, ToastKind } from "./components/toasts";
 import { MailboxView } from "./views/mailbox";
 import { ComposeView } from "./views/compose";
 import { SetupWizardView } from "./views/setup";
 import { SettingsView } from "./views/settings";
 import { SecurityCenterView } from "./views/security-center";
-
-function applyTheme(theme: string) {
-  const root = document.documentElement;
-  if (theme === "system") {
-    const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-    root.setAttribute("data-theme", dark ? "dark" : "light");
-  } else {
-    root.setAttribute("data-theme", theme);
-  }
-}
+import { SearchView } from "./views/search";
+import type { SearchResultRow } from "./views/search";
 
 const DEMO_TRUST: TrustState = { trust: "unknown", locked: false, state: "unknown", score: null, requiredAction: "none" };
 
@@ -106,6 +111,13 @@ export default function App() {
   const [body, setBody] = useState<MessageBodyView | null>(null);
   const [bodyLoading, setBodyLoading] = useState(false);
   const [bodyError, setBodyError] = useState<string | null>(null);
+  const [rendered, setRendered] = useState<RenderedBodyView | null>(null);
+  const [renderLoading, setRenderLoading] = useState(false);
+  const [renderError, setRenderError] = useState<string | null>(null);
+  const [remoteContent, setRemoteContent] = useState<Record<string, boolean>>({});
+  const [attachNote, setAttachNote] = useState<string | null>(null);
+  const [attachBusy, setAttachBusy] = useState(false);
+  const [mailboxRev, setMailboxRev] = useState(0);
   const [findings, setFindings] = useState<FindingInfo[]>(DEMO_FINDINGS);
   const [events, setEvents] = useState<SecurityEventRow[]>(DEMO_EVENTS);
   const [outbox, setOutbox] = useState<OutboxItem[]>([]);
@@ -114,6 +126,8 @@ export default function App() {
   const [flagOverrides, setFlagOverrides] = useState<Record<string, { starred?: boolean; unread?: boolean }>>({});
   const [query, setQuery] = useState("");
   const [findingIndex, setFindingIndex] = useState<number | null>(null);
+  const [findingDetail, setFindingDetail] = useState<FindingDetailView | null>(null);
+  const [findingDetailError, setFindingDetailError] = useState<string | null>(null);
   const [authOpen, setAuthOpen] = useState(false);
   const [authStatus, setAuthStatus] = useState<AuthStatus>("waiting");
   const [authExpiry, setAuthExpiry] = useState<number | null>(null);
@@ -121,11 +135,30 @@ export default function App() {
   const [challenge, setChallenge] = useState<ChallengeView | null>(null);
   const [verifying, setVerifying] = useState(false);
   const [lockReason, setLockReason] = useState("Trust reduced — verify with your authenticator to unlock.");
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const toastId = useRef(0);
 
   const demo = mode === "demo";
 
-  useEffect(() => applyTheme(theme), [theme]);
-  useEffect(() => savePref("kiwi.theme", theme), [theme]);
+  // UI prefs (theme/accent/density) apply from storage; the theme state
+  // writes through first so applyUiPrefs reads the fresh value.
+  useEffect(() => applyUiPrefs(), []);
+  useEffect(() => {
+    savePref("kiwi.theme", theme);
+    applyUiPrefs();
+  }, [theme]);
+
+  // Settings → Appearance writes through the same pref; follow it live.
+  useEffect(() => {
+    const onTheme = (e: Event) => {
+      const v = (e as CustomEvent).detail;
+      if (typeof v === "string" && (v === "light" || v === "dark" || v === "system")) setTheme(v);
+    };
+    window.addEventListener("kiwi-theme", onTheme);
+    return () => window.removeEventListener("kiwi-theme", onTheme);
+  }, []);
 
   /* ---------- probe ---------- */
 
@@ -185,12 +218,26 @@ export default function App() {
     return () => window.clearInterval(t);
   }, [demo, refreshStatus]);
 
-  // Ctrl+K focuses search.
+  // Ctrl+K opens the palette; `/` focuses search; `?` opens shortcuts.
+  // Single-letter keys never fire while typing in a text field.
   useEffect(() => {
+    const isTyping = (t: EventTarget | null) => {
+      const el = t as HTMLElement | null;
+      return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable);
+    };
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
+        setPaletteOpen((o) => !o);
+        return;
+      }
+      if (isTyping(e.target) || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.key === "/") {
+        e.preventDefault();
         document.getElementById("kiwi-search")?.focus();
+      } else if (e.key === "?") {
+        e.preventDefault();
+        setHelpOpen(true);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -198,6 +245,10 @@ export default function App() {
   }, []);
 
   /* ---------- derived account/folder model ---------- */
+
+  // Muted accounts (T-167): re-read when accounts or routes change so the
+  // Settings toggle takes effect on return without a reload.
+  const muted = useMemo(() => loadMuted(), [accountsRaw, route.name]);
 
   const emailById = useMemo(() => {
     const m = new Map<string, string>();
@@ -214,8 +265,9 @@ export default function App() {
       trust: trustTokenToSeverity(a.trustToken),
       unread: typeof a.unreadCount === "number" ? a.unreadCount : 0,
       color: typeof a.color === "string" && a.color ? a.color : ["#2563eb", "#7a5b00", "#b23a22"][i % 3],
+      muted: muted.includes(a.id),
     }));
-  }, [demo, accountsRaw]);
+  }, [demo, accountsRaw, muted]);
 
   const folders = useMemo(() => {
     if (demo) return [...DEMO_FOLDERS, { id: "outbox", label: "Outbox" }];
@@ -248,6 +300,7 @@ export default function App() {
     }
     const counts: Record<string, number> = { "all-inboxes": 0 };
     for (const a of accountsRaw) {
+      if (muted.includes(a.id)) continue;
       for (const f of folderLists[a.id] ?? []) {
         const key = `${a.id}:${f.id}`;
         counts[key] = f.unseen ?? 0;
@@ -255,7 +308,7 @@ export default function App() {
       }
     }
     return counts;
-  }, [demo, accountsRaw, folderLists]);
+  }, [demo, accountsRaw, folderLists, muted]);
 
   /* ---------- live loaders ---------- */
 
@@ -340,7 +393,7 @@ export default function App() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [demo, trust.locked, folderKey, accountsRaw, folderLists, emailById]);
+  }, [demo, trust.locked, folderKey, accountsRaw, folderLists, emailById, mailboxRev]);
 
   const selectedId = route.name === "mail" ? route.messageId : undefined;
 
@@ -348,22 +401,45 @@ export default function App() {
     if (demo || !selectedId || trust.locked) {
       setBody(null);
       setBodyError(null);
+      setRendered(null);
+      setRenderError(null);
+      setAttachNote(null);
       return;
     }
     const parts = selectedId.split(":");
     if (parts.length !== 3) return;
     const [accountId, folderIdRaw, uidRaw] = parts as [string, string, string];
+    const folderId = Number(folderIdRaw);
+    const uid = Number(uidRaw);
     let cancelled = false;
     setBodyLoading(true);
     setBodyError(null);
+    setRenderLoading(true);
+    setRenderError(null);
+    setRendered(null);
+    setAttachNote(null);
     (async () => {
       try {
-        const b = await api.getMessage(accountId, Number(folderIdRaw), Number(uidRaw));
+        const b = await api.getMessage(accountId, folderId, uid);
         if (!cancelled) setBody(b);
       } catch (e) {
         if (!cancelled) setBodyError(e instanceof Error ? e.message : String(e));
       } finally {
         if (!cancelled) setBodyLoading(false);
+      }
+      // Sanitized HTML render (T-146) — server-side ammonia allowlist.
+      // Failure here never hides the plaintext body above.
+      try {
+        const r = await api.renderBody(accountId, folderId, uid);
+        if (cancelled) return;
+        setRendered(r);
+        if (typeof r.remoteContentAllowed === "boolean") {
+          setRemoteContent((m) => ({ ...m, [accountId]: r.remoteContentAllowed }));
+        }
+      } catch (e) {
+        if (!cancelled) setRenderError(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (!cancelled) setRenderLoading(false);
       }
     })();
     return () => {
@@ -387,6 +463,38 @@ export default function App() {
     void loadSecurity();
   }, [demo, loadSecurity, route.name]);
 
+  /**
+   * Finding dialog data (T-164): the list-mapped FindingInfo renders
+   * immediately; live mode then joins the full record (session + signals +
+   * siblings) via kiwi_finding_detail. Backend ids are stable `rule|…`
+   * keys — `finding-N` fallbacks have no backend key and skip the fetch.
+   * Demo keeps fixtures only.
+   */
+  const openFinding = useCallback(
+    (i: number) => {
+      setFindingIndex(i);
+      setFindingDetail(null);
+      setFindingDetailError(null);
+      if (demo) return;
+      const rawId = findings[i]?.id;
+      if (!rawId || rawId.startsWith("finding-")) return;
+      void (async () => {
+        try {
+          setFindingDetail(await api.findingDetail(rawId));
+        } catch (e) {
+          setFindingDetailError(e instanceof Error ? e.message : String(e));
+        }
+      })();
+    },
+    [demo, findings],
+  );
+
+  const closeFinding = useCallback(() => {
+    setFindingIndex(null);
+    setFindingDetail(null);
+    setFindingDetailError(null);
+  }, []);
+
   const refreshOutbox = useCallback(async () => {
     if (demo) return;
     try {
@@ -403,23 +511,350 @@ export default function App() {
 
   /* ---------- actions ---------- */
 
-  const toggleStar = useCallback((id: string) => {
-    setFlagOverrides((m) => {
-      const cur = m[id]?.starred;
-      const base = (demo ? DEMO_MESSAGES : messages).find((x) => x.id === id)?.starred ?? false;
-      return { ...m, [id]: { ...m[id], starred: cur ?? !base } };
-    });
-  }, [demo, messages]);
+  const setLocalOverride = useCallback((id: string, patch: { starred?: boolean; unread?: boolean }) => {
+    setFlagOverrides((m) => ({ ...m, [id]: { ...m[id], ...patch } }));
+  }, []);
 
-  const toggleRead = useCallback((id: string) => {
-    setFlagOverrides((m) => {
-      const cur = m[id]?.unread;
-      const base = (demo ? DEMO_MESSAGES : messages).find((x) => x.id === id)?.unread ?? false;
-      return { ...m, [id]: { ...m[id], unread: cur ?? !base } };
-    });
-  }, [demo, messages]);
+  /* ---------- toasts (T-153): ephemeral send/sync/policy notices ---------- */
 
-  const visibleMessages = useMemo(() => {
+  const dismissToast = useCallback((id: number) => {
+    setToasts((ts) => ts.filter((t) => t.id !== id));
+  }, []);
+
+  const notify = useCallback(
+    (kind: ToastKind, text: string, opts?: { action?: { label: string; run: () => void }; ttlMs?: number }) => {
+      // Toast kill-switch (T-167): in-view status lines still update, so
+      // nothing is lost — the popup is just skipped.
+      try {
+        if (loadPref<string>("kiwi.toasts", "on") === "off") return;
+      } catch {
+        // Prefs unreadable — notify anyway.
+      }
+      toastId.current += 1;
+      const id = toastId.current;
+      setToasts((ts) => [...ts.slice(-4), { id, kind, text, action: opts?.action }]);
+      window.setTimeout(() => dismissToast(id), opts?.ttlMs ?? 6000);
+      // Optional UI sound (T-167): tiny WebAudio blip, best-effort only —
+      // never throws, never blocks, no assets.
+      try {
+        if (loadPref<string>("kiwi.sound", "off") === "on") {
+          const Ctx = (window as unknown as { AudioContext?: new () => AudioContext }).AudioContext;
+          if (Ctx) {
+            const ctx = new Ctx();
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.frequency.value = kind === "error" ? 220 : 660;
+            gain.gain.value = 0.04;
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start();
+            osc.stop(ctx.currentTime + 0.12);
+            window.setTimeout(() => void ctx.close().catch(() => undefined), 300);
+          }
+        }
+      } catch {
+        // Audio unavailable — the toast itself already rendered.
+      }
+    },
+    [dismissToast],
+  );
+
+  const applyPatch = useCallback(
+    async (id: string, patch: MessagePatch) => {
+      const base = (demo ? DEMO_MESSAGES : messages).find((x) => x.id === id);
+      if (!base) return;
+      if (demo) {
+        // Demo fixtures have no backend — local-only, labeled in-view.
+        if (patch.starred !== undefined) setLocalOverride(id, { starred: patch.starred });
+        if (patch.seen !== undefined) setLocalOverride(id, { unread: !patch.seen });
+        return;
+      }
+      try {
+        const v = await api.updateMessage(base.accountId, base.folderId, base.uid, patch);
+        const has = (name: string) => v.flags.some((f) => f.toLowerCase() === name.toLowerCase());
+        setLocalOverride(id, { starred: has("\\Flagged"), unread: !has("\\Seen") });
+        if (v.movedToFolderId !== null && v.movedToFolderId !== undefined) {
+          const msg = patch.archived
+            ? "Message archived — moved to the Archive folder."
+            : "Message unarchived — moved back to INBOX.";
+          setSyncNote(msg);
+          notify("ok", msg);
+          // Reload the list: the row now lives in another folder.
+          setMailboxRev((n) => n + 1);
+          await loadFolders();
+        }
+      } catch (e) {
+        // Offline / gated failure: keep a local override so the UI stays
+        // usable, and say so — the next sync reconciles with the server.
+        if (patch.starred !== undefined) setLocalOverride(id, { starred: patch.starred });
+        if (patch.seen !== undefined) setLocalOverride(id, { unread: !patch.seen });
+        const msg =
+          e instanceof Error
+            ? `Flag update failed (${e.message}) — kept locally, reconciles on next sync.`
+            : String(e);
+        setSyncNote(msg);
+        notify("warn", msg);
+      }
+    },
+    [demo, messages, setLocalOverride, loadFolders, notify],
+  );
+
+  const toggleStar = useCallback(
+    (id: string) => {
+      const base = (demo ? DEMO_MESSAGES : messages).find((x) => x.id === id);
+      const cur = flagOverrides[id]?.starred ?? base?.starred ?? false;
+      void applyPatch(id, { starred: !cur });
+    },
+    [demo, messages, flagOverrides],
+  );
+
+  const toggleRead = useCallback(
+    (id: string) => {
+      const base = (demo ? DEMO_MESSAGES : messages).find((x) => x.id === id);
+      const cur = flagOverrides[id]?.unread ?? base?.unread ?? false;
+      void applyPatch(id, { seen: cur });
+    },
+    [demo, messages, flagOverrides],
+  );
+
+  const archiveMessage = useCallback(
+    (id: string, archived: boolean) => {
+      void applyPatch(id, { archived });
+    },
+    [applyPatch],
+  );
+
+  /**
+   * Bulk flag/archive over N messages (T-162): one sequential pass, one
+   * summary toast. Per-message overrides update from each backend verdict;
+   * any move triggers a single list reload. Demo applies seen/starred
+   * locally (archive has no local meaning — stated, not faked).
+   */
+  const bulkPatch = useCallback(
+    async (ids: string[], patch: MessagePatch, actionLabel: string) => {
+      const pool = demo ? DEMO_MESSAGES : messages;
+      if (demo) {
+        if (patch.seen !== undefined || patch.starred !== undefined) {
+          setFlagOverrides((m) => {
+            const next = { ...m };
+            for (const id of ids) {
+              next[id] = {
+                ...next[id],
+                ...(patch.seen !== undefined ? { unread: !patch.seen } : {}),
+                ...(patch.starred !== undefined ? { starred: patch.starred } : {}),
+              };
+            }
+            return next;
+          });
+          notify("info", `Demo: ${actionLabel} — ${ids.length} message(s), local only.`);
+        } else {
+          notify("info", "Demo mode — archiving needs the Tauri backend.");
+        }
+        return;
+      }
+      let ok = 0;
+      let fail = 0;
+      let moved = false;
+      for (const id of ids) {
+        const base = pool.find((x) => x.id === id);
+        if (!base) {
+          fail++;
+          continue;
+        }
+        try {
+          const v = await api.updateMessage(base.accountId, base.folderId, base.uid, patch);
+          const has = (name: string) => v.flags.some((f) => f.toLowerCase() === name.toLowerCase());
+          setLocalOverride(id, { starred: has("\\Flagged"), unread: !has("\\Seen") });
+          if (v.movedToFolderId !== null && v.movedToFolderId !== undefined) moved = true;
+          ok++;
+        } catch {
+          fail++;
+        }
+      }
+      if (moved) {
+        setMailboxRev((n) => n + 1);
+        await loadFolders();
+      }
+      const summary =
+        fail === 0
+          ? `${actionLabel} — ${ok} message(s).`
+          : `${actionLabel} — ${ok} ok, ${fail} failed (kept locally, reconcile on sync).`;
+      setSyncNote(summary);
+      notify(fail === 0 ? "ok" : "warn", summary);
+    },
+    [demo, messages, setLocalOverride, loadFolders, notify],
+  );
+
+  /** Group envelope ids by (accountId, folderId) — delete/move are folder-scoped. */
+  const groupByFolder = useCallback(
+    (ids: string[]) => {
+      const pool = demo ? DEMO_MESSAGES : messages;
+      const groups = new Map<string, { accountId: string; folderId: number; uids: number[] }>();
+      let missing = 0;
+      for (const id of ids) {
+        const base = pool.find((x) => x.id === id);
+        if (!base) {
+          missing++;
+          continue;
+        }
+        const key = `${base.accountId}\n${base.folderId}`;
+        const g = groups.get(key);
+        if (g) g.uids.push(base.uid);
+        else groups.set(key, { accountId: base.accountId, folderId: base.folderId, uids: [base.uid] });
+      }
+      return { groups: [...groups.values()], missing };
+    },
+    [demo, messages],
+  );
+
+  const reloadMail = useCallback(async () => {
+    setMailboxRev((n) => n + 1);
+    await loadFolders();
+  }, [loadFolders]);
+
+  /**
+   * Bulk delete (T-163): soft→Trash by default, permanent from Trash or
+   * when asked (backend decides Trash-source too). Chunked at 400 uids
+   * (backend bound is 500). One summary toast; rows always reload.
+   */
+  const bulkDelete = useCallback(
+    async (ids: string[], permanent: boolean, actionLabel: string) => {
+      if (demo || ids.length === 0) {
+        if (ids.length === 0) return;
+        notify("info", "Demo mode — delete needs the Tauri backend.");
+        return;
+      }
+      const { groups, missing } = groupByFolder(ids);
+      let trashed = 0;
+      let destroyed = 0;
+      let fail = 0;
+      fail += missing;
+      for (const g of groups) {
+        for (let i = 0; i < g.uids.length; i += 400) {
+          try {
+            const r = await api.deleteMessages(g.accountId, g.folderId, g.uids.slice(i, i + 400), permanent);
+            trashed += r.movedToTrash;
+            destroyed += r.deleted;
+          } catch {
+            fail += g.uids.slice(i, i + 400).length;
+          }
+        }
+      }
+      await reloadMail();
+      const bits: string[] = [];
+      if (trashed > 0) bits.push(`${trashed} → Trash`);
+      if (destroyed > 0) bits.push(`${destroyed} permanently deleted`);
+      const summary =
+        fail === 0 ? `${actionLabel} — ${bits.join(", ") || "nothing deleted"}.` : `${actionLabel} — ${bits.join(", ") || "nothing deleted"}, ${fail} failed.`;
+      setSyncNote(summary);
+      notify(fail === 0 ? "ok" : "warn", summary);
+    },
+    [demo, groupByFolder, reloadMail, notify],
+  );
+
+  /**
+   * Bulk spam (T-163): move to the account's Spam/Junk folder via
+   * kiwi_move_messages (same-account only — enforced server-side too).
+   * Accounts without a known Spam folder are skipped and named.
+   */
+  const bulkSpam = useCallback(
+    async (ids: string[]) => {
+      if (demo || ids.length === 0) {
+        if (ids.length === 0) return;
+        notify("info", "Demo mode — spam needs the Tauri backend.");
+        return;
+      }
+      const { groups, missing } = groupByFolder(ids);
+      let moved = 0;
+      let fail = missing;
+      const noSpam: string[] = [];
+      for (const g of groups) {
+        const spam = (folderLists[g.accountId] ?? []).find((f) => /spam|junk/i.test(f.name));
+        if (!spam) {
+          fail += g.uids.length;
+          noSpam.push(g.accountId);
+          continue;
+        }
+        if (spam.id === g.folderId) {
+          moved += g.uids.length; // already there — counts as done
+          continue;
+        }
+        for (let i = 0; i < g.uids.length; i += 400) {
+          try {
+            const r = await api.moveMessages(g.accountId, g.folderId, spam.id, g.uids.slice(i, i + 400));
+            moved += r.moved;
+          } catch {
+            fail += g.uids.slice(i, i + 400).length;
+          }
+        }
+      }
+      await reloadMail();
+      let summary = fail === 0 ? `Marked spam — ${moved} message(s).` : `Marked spam — ${moved} moved, ${fail} failed.`;
+      if (noSpam.length > 0) summary += ` No Spam folder on: ${[...new Set(noSpam)].join(", ")} (sync first).`;
+      setSyncNote(summary);
+      notify(fail === 0 ? "ok" : "warn", summary);
+    },
+    [demo, groupByFolder, folderLists, reloadMail, notify],
+  );
+
+  const selectedEnvelope = useMemo(
+    () => (demo ? DEMO_MESSAGES : messages).find((m) => m.id === selectedId) ?? null,
+    [demo, messages, selectedId],
+  );
+  const setAllowRemote = useCallback(
+    async (allowed: boolean) => {
+      if (demo || !selectedEnvelope) return;
+      setRenderError(null);
+      try {
+        const v: RemoteContentView = await api.setRemoteContent(selectedEnvelope.accountId, allowed);
+        setRemoteContent((m) => ({ ...m, [v.accountId]: v.remoteContentAllowed }));
+        // Re-render so the stripped/allowed image set updates immediately.
+        const r: RenderedBodyView = await api.renderBody(
+          selectedEnvelope.accountId,
+          selectedEnvelope.folderId,
+          selectedEnvelope.uid,
+        );
+        setRendered(r);
+      } catch (e) {
+        setRenderError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [demo, selectedEnvelope],
+  );
+
+  const saveAttachment = useCallback(
+    async (attachmentIndex: number, destPath: string) => {
+      if (demo || !selectedEnvelope) return;
+      const dest = destPath.trim();
+      if (!dest) {
+        setAttachNote("Choose a destination path first.");
+        return;
+      }
+      setAttachBusy(true);
+      setAttachNote(null);
+      try {
+        const saved: AttachmentSavedView = await api.downloadAttachment(
+          selectedEnvelope.accountId,
+          selectedEnvelope.folderId,
+          selectedEnvelope.uid,
+          attachmentIndex,
+          dest,
+        );
+        setAttachNote(`Saved ${saved.filename} (${saved.size} B) → ${saved.path}.`);
+        notify("ok", `Attachment saved: ${saved.filename}.`);
+      } catch (e) {
+        const msg = e instanceof Error ? `Save failed: ${e.message}` : String(e);
+        setAttachNote(msg);
+        notify("error", msg);
+      } finally {
+        setAttachBusy(false);
+      }
+    },
+    [demo, selectedEnvelope, notify],
+  );
+
+  /** Flag/star overrides applied, query NOT applied — feeds mailbox + search. */
+  const baseMessages = useMemo(() => {
     const base = demo
       ? folderKey === "all-inboxes"
         ? DEMO_MESSAGES
@@ -431,21 +866,28 @@ export default function App() {
           const ov = flagOverrides[m.id];
           return ov ? { ...m, starred: ov.starred ?? m.starred, unread: ov.unread ?? m.unread } : m;
         });
-    const withDemoOverrides = demo
-      ? withOverrides.map((m) => {
-          const ov = flagOverrides[m.id];
-          return ov ? { ...m, starred: ov.starred ?? m.starred, unread: ov.unread ?? m.unread } : m;
-        })
-      : withOverrides;
+    if (demo) {
+      return withOverrides.map((m) => {
+        const ov = flagOverrides[m.id];
+        return ov ? { ...m, starred: ov.starred ?? m.starred, unread: ov.unread ?? m.unread } : m;
+      });
+    }
+    return withOverrides;
+  }, [demo, folderKey, messages, flagOverrides]);
+
+  const visibleMessages = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return withDemoOverrides;
-    return withDemoOverrides.filter(
+    if (!q) return baseMessages;
+    return baseMessages.filter(
       (m) => m.from.toLowerCase().includes(q) || m.subject.toLowerCase().includes(q) || m.snippet.toLowerCase().includes(q),
     );
-  }, [demo, folderKey, messages, flagOverrides, query]);
+  }, [baseMessages, query]);
 
   const doSync = useCallback(async () => {
-    if (demo) return;
+    if (demo) {
+      notify("info", "Demo mode — sync needs the Tauri backend.");
+      return;
+    }
     setSyncing(true);
     setSyncNote(null);
     try {
@@ -457,45 +899,116 @@ export default function App() {
           if (typeof n === "number") added += n;
         }
       }
-      setSyncNote(`Sync complete — ${added} new message(s).`);
+      const msg = `Sync complete — ${added} new message(s).`;
+      setSyncNote(msg);
+      notify("ok", msg);
       await Promise.all([loadFolders(), loadSecurity(), refreshStatus()]);
     } catch (e) {
-      setSyncNote(e instanceof Error ? `Sync failed: ${e.message}` : String(e));
+      const msg = e instanceof Error ? `Sync failed: ${e.message}` : String(e);
+      setSyncNote(msg);
+      notify("error", msg);
     } finally {
       setSyncing(false);
     }
-  }, [demo, accountsRaw, loadFolders, loadSecurity, refreshStatus]);
+  }, [demo, accountsRaw, loadFolders, loadSecurity, refreshStatus, notify]);
 
   const doFlushOutbox = useCallback(async () => {
+    if (demo) {
+      notify("info", "Demo mode — the outbox needs the Tauri backend.");
+      return;
+    }
     try {
       const r = await api.flushOutbox();
-      setSyncNote(`Send-all: ${r.sent} sent, ${r.failed} failed, ${r.held} held.`);
+      const msg = `Send-all: ${r.sent} sent, ${r.failed} failed, ${r.held} held.`;
+      setSyncNote(msg);
+      notify(r.failed > 0 || r.held > 0 ? "warn" : "ok", msg);
       await refreshOutbox();
     } catch (e) {
-      setSyncNote(e instanceof Error ? `Send-all failed: ${e.message}` : String(e));
+      const msg = e instanceof Error ? `Send-all failed: ${e.message}` : String(e);
+      setSyncNote(msg);
+      notify("error", msg);
     }
-  }, [refreshOutbox]);
+  }, [demo, refreshOutbox, notify]);
 
   const doCancelSend = useCallback(
     async (queueId: string) => {
       try {
-        await api.cancelSend(queueId);
+        const r = await api.cancelSend(queueId);
+        notify("info", r.cancelled ? "Send undone — back to draft." : "Undo window already closed — message dispatching.");
       } catch (e) {
-        setSyncNote(e instanceof Error ? `Undo failed: ${e.message}` : String(e));
+        const msg = e instanceof Error ? `Undo failed: ${e.message}` : String(e);
+        setSyncNote(msg);
+        notify("error", msg);
       }
       await refreshOutbox();
     },
-    [refreshOutbox],
+    [refreshOutbox, notify],
   );
 
   const doLock = useCallback(async () => {
     if (demo) return;
     try {
       setTrust(toTrustState(await api.lock()));
+      notify("info", "Mailbox locked.");
     } catch (e) {
-      setBackendNote(e instanceof Error ? e.message : String(e));
+      const msg = e instanceof Error ? e.message : String(e);
+      setBackendNote(msg);
+      notify("error", msg);
     }
-  }, [demo]);
+  }, [demo, notify]);
+
+  /* ---------- command palette actions (T-153) ---------- */
+
+  const cycleTheme = useCallback(() => {
+    setTheme((t) => {
+      const next = t === "dark" ? "light" : t === "light" ? "system" : "dark";
+      notify("info", `Theme: ${next}.`);
+      return next;
+    });
+  }, [notify]);
+
+  const paletteActions: PaletteAction[] = useMemo(() => {
+    const list: PaletteAction[] = [
+      { id: "compose", label: "Compose new message", hint: "r", run: () => navigate({ name: "compose" }) },
+      {
+        id: "search",
+        label: "Focus message search",
+        hint: "/",
+        run: () => document.getElementById("kiwi-search")?.focus(),
+      },
+      { id: "theme", label: `Toggle theme (now ${theme})`, hint: "light/dark/system", run: cycleTheme },
+      { id: "security", label: "Open Security Center", run: () => navigate({ name: "security" }) },
+      { id: "settings", label: "Open Settings", run: () => navigate({ name: "settings" }) },
+      { id: "shortcuts", label: "Show keyboard shortcuts", hint: "?", run: () => setHelpOpen(true) },
+    ];
+    for (const f of folders) {
+      list.push({
+        id: `goto-${f.id}`,
+        label: `Go to ${f.label}`,
+        hint: "folder",
+        run: () => navigate({ name: "mail", folder: f.id }),
+      });
+    }
+    list.push(
+      demo
+        ? {
+            id: "sync",
+            label: "Sync now (demo — needs backend)",
+            hint: "live only",
+            run: () => notify("info", "Demo mode — sync needs the Tauri backend."),
+          }
+        : { id: "sync", label: "Sync now", run: () => void doSync() },
+      demo
+        ? {
+            id: "lock",
+            label: "Lock now (demo — needs backend)",
+            hint: "live only",
+            run: () => notify("info", "Demo mode — locking needs the Tauri backend."),
+          }
+        : { id: "lock", label: "Lock mailbox now", run: () => void doLock() },
+    );
+    return list;
+  }, [folders, theme, cycleTheme, demo, doSync, doLock, notify]);
 
   /* ---------- challenge flow ---------- */
 
@@ -584,7 +1097,17 @@ export default function App() {
 
   return (
     <>
-      <TopBar trust={trust} demo={demo} query={query} onQuery={setQuery} theme={theme} onTheme={setTheme} />
+      <TopBar
+        trust={trust}
+        demo={demo}
+        query={query}
+        onQuery={setQuery}
+        theme={theme}
+        onTheme={setTheme}
+        onOpenPalette={() => setPaletteOpen(true)}
+        onOpenShortcuts={() => setHelpOpen(true)}
+        onSubmitSearch={() => navigate({ name: "search" })}
+      />
       <AppShell
         sidebar={
           <Sidebar
@@ -623,14 +1146,30 @@ export default function App() {
             body={body}
             bodyLoading={bodyLoading}
             bodyError={bodyError}
+            rendered={rendered}
+            renderLoading={renderLoading}
+            renderError={renderError}
+            remoteAllowed={
+              selectedEnvelope ? (remoteContent[selectedEnvelope.accountId] ?? rendered?.remoteContentAllowed ?? false) : false
+            }
+            attachNote={attachNote}
+            attachBusy={attachBusy}
             findings={findings}
             locked={trust.locked}
+            demo={demo}
             syncing={syncing}
             syncNote={syncNote}
             outbox={outbox}
-            onOpenFinding={(i) => setFindingIndex(i)}
+            onOpenFinding={openFinding}
             onToggleStar={toggleStar}
             onToggleRead={toggleRead}
+            onArchive={archiveMessage}
+            onBulkPatch={(ids, patch, label) => void bulkPatch(ids, patch, label)}
+            onBulkDelete={(ids, permanent, label) => void bulkDelete(ids, permanent, label)}
+            onBulkSpam={(ids) => void bulkSpam(ids)}
+            onEmptyTrash={() => void bulkDelete(visibleMessages.map((m) => m.id), false, "Emptied trash")}
+            onAllowRemote={(allowed) => void setAllowRemote(allowed)}
+            onSaveAttachment={(index, destPath) => void saveAttachment(index, destPath)}
             onSync={() => void doSync()}
             onFlushOutbox={() => void doFlushOutbox()}
             onCancelSend={(q) => void doCancelSend(q)}
@@ -645,6 +1184,7 @@ export default function App() {
               void refreshOutbox();
               void refreshStatus();
             }}
+            onNotify={notify}
           />
         )}
         {route.name === "setup" && (
@@ -677,7 +1217,23 @@ export default function App() {
           />
         )}
         {route.name === "security" && (
-          <SecurityCenterView events={events} findings={findings} demo={demo} onOpenFinding={(i) => setFindingIndex(i)} />
+          <SecurityCenterView events={events} findings={findings} demo={demo} onOpenFinding={openFinding} />
+        )}
+        {route.name === "search" && (
+          <SearchView
+            query={query}
+            onQuery={setQuery}
+            demo={demo}
+            messages={baseMessages}
+            emailOf={(accountId) => emailById.get(accountId) ?? accountId}
+            onOpenHit={(r: SearchResultRow) =>
+              navigate({
+                name: "mail",
+                folder: `${r.accountId}:${r.folderId}`,
+                messageId: `${r.accountId}:${r.folderId}:${r.uid}`,
+              })
+            }
+          />
         )}
       </AppShell>
 
@@ -686,9 +1242,11 @@ export default function App() {
           finding={findings[findingIndex]}
           position={findingIndex + 1}
           total={findings.length}
-          onClose={() => setFindingIndex(null)}
-          onPrev={() => setFindingIndex((i) => (i === null ? i : Math.max(0, i - 1)))}
-          onNext={() => setFindingIndex((i) => (i === null ? i : Math.min(findings.length - 1, i + 1)))}
+          detail={findingDetail}
+          detailError={findingDetailError}
+          onClose={closeFinding}
+          onPrev={() => openFinding(Math.max(0, (findingIndex ?? 0) - 1))}
+          onNext={() => openFinding(Math.min(findings.length - 1, (findingIndex ?? 0) + 1))}
         />
       )}
 
@@ -696,6 +1254,13 @@ export default function App() {
         <LockOverlay
           reason={demo ? `${lockReason} (Demo: auto-approves.)` : lockReason}
           busy={verifying}
+          trustLines={[
+            `Trust state: ${trust.state}`,
+            `Score: ${trust.score === null ? "—" : trust.score}`,
+            `Required action: ${trust.requiredAction}`,
+          ]}
+          deviceLabel={demo ? "Demo authenticator" : (activeDevice?.label ?? null)}
+          challengeId={demo ? null : (challenge?.challengeId ?? null)}
           onVerify={() => void startVerify()}
           onRetry={() => {
               if (demo) {
@@ -723,6 +1288,19 @@ export default function App() {
           }}
         />
       )}
+
+      <CommandPalette
+        open={paletteOpen}
+        query={query}
+        onQuery={(q) => {
+          setQuery(q);
+          navigate({ name: "search" });
+        }}
+        actions={paletteActions}
+        onClose={() => setPaletteOpen(false)}
+      />
+      <ShortcutsHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
+      <ToastStack toasts={toasts} onDismiss={dismissToast} />
     </>
   );
 }

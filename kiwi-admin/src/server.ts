@@ -34,18 +34,31 @@ function errBody(code: string, message: string, details?: Record<string, unknown
   return details === undefined ? { error: { code, message } } : { error: { code, message, details } };
 }
 
+/**
+ * DEV-SCAFFOLD AUTH: the actor is taken from request headers. This is
+ * LOCAL-DEV-ONLY scaffolding, NOT authentication — a caller can claim any
+ * subject and any role. The service binds 127.0.0.1 and refuses any other
+ * interface, and real session auth (kiwi-core identity, Phase 3+) replaces
+ * this before the port is exposed to anything. See admin-api.md §3.2.
+ *
+ * The role set IS fail-closed, though: an absent or unparseable `x-kiwi-roles`
+ * yields NO roles rather than a default admin. A request that forgets the
+ * header is unauthenticated, so it must be refused — silently promoting it to
+ * org_admin (the previous behaviour) turned a typo into full privilege. The
+ * subject keeps a placeholder only so the resulting denial is attributable.
+ */
 function actorFromHeaders(req: IncomingMessage): Actor {
   const get = (name: string): string | undefined => {
     const v = req.headers[name];
     return typeof v === "string" ? v : undefined;
   };
-  const subject = get("x-kiwi-subject")?.trim() || "local-admin";
-  const roles = (get("x-kiwi-roles") ?? "org_admin")
+  const subject = get("x-kiwi-subject")?.trim() || "local-unauthenticated";
+  const roles = (get("x-kiwi-roles") ?? "")
     .split(",")
     .map((r) => r.trim())
     .filter((r): r is OrgRole => (ALL_ORG_ROLES as readonly string[]).includes(r));
   const orgId = get("x-kiwi-org")?.trim() || null;
-  return { subject, roles: roles.length ? roles : ["org_admin"], orgId };
+  return { subject, roles, orgId };
 }
 
 function readJson(req: IncomingMessage): Promise<unknown> {
@@ -169,7 +182,7 @@ async function route(container: ServiceContainer, req: IncomingMessage, res: Ser
   // POST /api/v1/orgs
   if (method === "POST" && rest.length === 1 && rest[0] === "orgs") {
     const body = (await readJson(req)) as Record<string, unknown>;
-    send(res, 201, container.orgs.createOrg(actor, strField(body, "name", 200), now));
+    send(res, 201, await container.orgs.createOrg(actor, strField(body, "name", 200), now));
     return;
   }
 
@@ -180,11 +193,11 @@ async function route(container: ServiceContainer, req: IncomingMessage, res: Ser
     if (rest[2] === "users" && rest.length === 3) {
       if (method === "POST") {
         const body = (await readJson(req)) as Record<string, unknown>;
-        send(res, 201, container.orgs.createUser(actor, orgId, strField(body, "email", 254), now));
+        send(res, 201, await container.orgs.createUser(actor, orgId, strField(body, "email", 254), now));
         return;
       }
       if (method === "GET") {
-        send(res, 200, { items: container.orgs.listUsers(actor, orgId) });
+        send(res, 200, { items: await container.orgs.listUsers(actor, orgId) });
         return;
       }
     }
@@ -195,14 +208,14 @@ async function route(container: ServiceContainer, req: IncomingMessage, res: Ser
       if (role !== "org_admin" && role !== "security_admin" && role !== "viewer") {
         throw new RequestValidationError("role", "must be org_admin|security_admin|viewer");
       }
-      container.orgs.grantRole(actor, rest[3], orgId, role, now);
+      await container.orgs.grantRole(actor, rest[3], orgId, role, now);
       send(res, 200, { ok: true });
       return;
     }
     // GET|POST /policies
     if (rest[2] === "policies" && rest.length === 3) {
       if (method === "GET") {
-        send(res, 200, { items: container.policies.listPolicies(actor, orgId) });
+        send(res, 200, { items: await container.policies.listPolicies(actor, orgId) });
         return;
       }
       if (method === "POST") {
@@ -210,7 +223,7 @@ async function route(container: ServiceContainer, req: IncomingMessage, res: Ser
         send(
           res,
           201,
-          container.policies.createPolicy(actor, orgId, input.name, {
+          await container.policies.createPolicy(actor, orgId, input.name, {
             name: input.name,
             enabled: input.enabled,
             minTls: input.minTls,
@@ -227,7 +240,7 @@ async function route(container: ServiceContainer, req: IncomingMessage, res: Ser
       send(
         res,
         200,
-        container.policies.evaluateOutbound(actor, orgId, {
+        await container.policies.evaluateOutbound(actor, orgId, {
           sender: body["sender"],
           recipients: body["recipients"],
           tlsVersion: body["tlsVersion"] ?? body["tls_version"] ?? null,
@@ -239,7 +252,7 @@ async function route(container: ServiceContainer, req: IncomingMessage, res: Ser
 
   // POST /api/v1/devices/:device/revoke
   if (method === "POST" && rest[0] === "devices" && typeof rest[1] === "string" && rest[2] === "revoke" && rest.length === 3) {
-    container.orgs.revokeDevice(actor, rest[1], now);
+    await container.orgs.revokeDevice(actor, rest[1], now);
     send(res, 200, { ok: true });
     return;
   }
@@ -260,7 +273,7 @@ async function route(container: ServiceContainer, req: IncomingMessage, res: Ser
     send(
       res,
       200,
-      container.policies.evaluate(rest[1], {
+      await container.policies.evaluate(rest[1], {
         direction,
         sender: strField(body, "sender", 254),
         recipient: strField(body, "recipient", 254),
@@ -277,7 +290,7 @@ async function route(container: ServiceContainer, req: IncomingMessage, res: Ser
       send(
         res,
         201,
-        container.mailflow.ingest(actor, {
+        await container.mailflow.ingest(actor, {
           direction: body["direction"] as "inbound" | "outbound",
           sender: body["sender"] as string,
           recipient: body["recipient"] as string,
@@ -301,15 +314,18 @@ async function route(container: ServiceContainer, req: IncomingMessage, res: Ser
       if (rd !== null) filter.recipientDomain = rd;
       if (url.searchParams.has("since")) filter.sinceTs = numParam(url, "since", 0);
       if (url.searchParams.has("until")) filter.untilTs = numParam(url, "until", Number.MAX_SAFE_INTEGER);
-      send(res, 200, container.mailflow.query(actor, filter));
+      send(res, 200, await container.mailflow.query(actor, filter));
       return;
     }
   }
 
   // GET /api/v1/audit | GET /api/v1/audit/verify
+  // Both require `audit.read` (enforced in AuditService, where a denial is also
+  // attributed to the actor). The audit log is a security control: reading it,
+  // and reading whether its chain is intact, are permissions — not givens.
   if (rest[0] === "audit" && rest.length <= 2 && method === "GET") {
     if (rest[1] === "verify") {
-      send(res, 200, container.audit.verify({ limit: numParam(url, "limit", 1000) }));
+      send(res, 200, await container.audit.verify(actor, { limit: numParam(url, "limit", 1000) }));
       return;
     }
     if (rest.length === 1) {
@@ -320,7 +336,7 @@ async function route(container: ServiceContainer, req: IncomingMessage, res: Ser
       if (org !== null) filter.orgId = org;
       if (url.searchParams.has("since")) filter.since = numParam(url, "since", 0);
       if (url.searchParams.has("until")) filter.until = numParam(url, "until", Number.MAX_SAFE_INTEGER);
-      send(res, 200, { items: container.audit.query(filter) });
+      send(res, 200, { items: await container.audit.query(actor, filter) });
       return;
     }
   }
@@ -335,8 +351,20 @@ export interface ServerHandle {
 }
 
 /** Starts the localhost-only server. Never binds anything but 127.0.0.1. */
-export async function startServer(opts: { dbPath?: string; port?: number; container?: ServiceContainer } = {}): Promise<ServerHandle> {
-  const container = opts.container ?? createServiceContainer(opts.dbPath ?? "kiwi-admin.db");
+export async function startServer(
+  opts: {
+    // `| undefined` is required on the two forwarded options, not decorative:
+    // this function passes them straight through to `createServiceContainer`
+    // and `exactOptionalPropertyTypes` distinguishes absent from explicitly
+    // undefined. See `ServiceContainerOptions`.
+    dbPath?: string | undefined;
+    databaseUrl?: string | null | undefined;
+    port?: number;
+    container?: ServiceContainer;
+  } = {},
+): Promise<ServerHandle> {
+  const container =
+    opts.container ?? (await createServiceContainer({ dbPath: opts.dbPath, databaseUrl: opts.databaseUrl }));
   const server = createHttpServer(container);
   const port = opts.port ?? Number(process.env["KIWI_ADMIN_PORT"] ?? DEFAULT_PORT);
   await new Promise<void>((resolve) => server.listen(port, HOST, resolve));
@@ -352,9 +380,12 @@ if (isMain) {
   // eslint-disable-next-line no-console
   console.warn("[kiwi-admin] DEV-SCAFFOLD transport: localhost-only, header actors — NOT production auth.");
   startServer({ dbPath })
-    .then(({ port }) => {
+    .then(({ port, container }) => {
       // eslint-disable-next-line no-console
-      console.log(`[kiwi-admin] listening on http://${HOST}:${port} (db ${dbPath})`);
+      console.log(
+        `[kiwi-admin] listening on http://${HOST}:${port} (${container.dialect}` +
+          `${container.dialect === "sqlite" ? ` db ${dbPath}` : ""})`,
+      );
     })
     .catch((err: unknown) => {
       // eslint-disable-next-line no-console

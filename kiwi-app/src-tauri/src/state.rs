@@ -80,9 +80,9 @@ pub struct FolderEntry {
 }
 
 /// Per-queued-send metadata kept alongside `SendQueue` (which has no item
-/// iterator) for `kiwi_list_outbox` and dispatch context. Serialized —
-/// outbox items persist to `data_dir/outbox/<queue_id>.{json,eml}` so
-/// pending sends survive a restart (T-142).
+/// iterator) for `kiwi_list_outbox` and dispatch context. Durability lives
+/// in mail.db's `outbox` table (T-142) — this map is its in-memory view.
+/// `Deserialize` is retained for the legacy file-outbox import.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutboxMeta {
     pub account_id: String,
@@ -103,7 +103,48 @@ pub struct OrgBinding {
     pub base_url: String,
 }
 
+/// Live-sync worker status (T-157) — one entry per account the supervisor
+/// has spawned a worker for. Written by `syncer`, read by
+/// `kiwi_sync_status`.
+#[derive(Debug, Clone, Default)]
+pub struct AccountSyncStatus {
+    /// "pending" | "connecting" | "syncing" | "idle" | "polling" |
+    /// "backoff" | "paused-locked" | "stopped"
+    pub state: String,
+    pub last_sync_unix: Option<i64>,
+    pub last_error: Option<String>,
+    pub next_retry_unix: Option<i64>,
+    /// Folders synced on the most recent full pass.
+    pub folders_synced: u64,
+    /// New messages pulled since the worker started (cumulative).
+    pub new_messages: u64,
+    /// Consecutive connection/sync failures (drives backoff).
+    pub attempts: u32,
+}
+
+/// Threading headers for one stored message (T-169). Derived cache —
+/// recomputed lazily from stored bodies or fetched at sync time; the
+/// mail store remains the system of record for the messages themselves.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ThreadHeaders {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub in_reply_to: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<String>,
+}
+
+/// Key form for the thread-headers cache.
+pub fn thread_key(folder_id: i64, uid: u64) -> String {
+    format!("f{folder_id}:u{uid}")
+}
+
+/// Bound on cached threading headers — evicts by key order (crude but
+/// bounded; the cache is rebuildable from bodies/sync at any time).
+pub const MAX_THREAD_HEADERS: usize = 50_000;
+
 /// Sidecar index — app-layer bookkeeping that is NOT mail data.
+/// (`thread_headers` is a derived cache of header fields, not a copy of
+/// mail data — it can be dropped and repopulated losslessly.)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppIndex {
     pub schema_version: u32,
@@ -122,6 +163,10 @@ pub struct AppIndex {
     pub device_ids: Vec<String>,
     #[serde(default)]
     pub org: Option<OrgBinding>,
+    /// Threading header cache (T-169): `"f<folderId>:u<uid>"` →
+    /// `In-Reply-To`/`References`. Bounded at [`MAX_THREAD_HEADERS`].
+    #[serde(default)]
+    pub thread_headers: BTreeMap<String, ThreadHeaders>,
 }
 
 impl Default for AppIndex {
@@ -134,6 +179,7 @@ impl Default for AppIndex {
             folders: BTreeMap::new(),
             device_ids: Vec::new(),
             org: None,
+            thread_headers: BTreeMap::new(),
         }
     }
 }
@@ -171,20 +217,32 @@ impl AppIndex {
             });
         }
     }
+
+    /// Record threading headers for one message (T-169). Over-cap evicts
+    /// the smallest key — a bounded rebuildable cache, not an LRU.
+    pub fn remember_thread_headers(&mut self, folder_id: i64, uid: u64, h: ThreadHeaders) {
+        if h.in_reply_to.is_none() && h.references.is_empty() {
+            return; // nothing to cache — absence means "no threading data"
+        }
+        if self.thread_headers.len() >= MAX_THREAD_HEADERS {
+            self.thread_headers.pop_first();
+        }
+        self.thread_headers.insert(thread_key(folder_id, uid), h);
+    }
 }
 
 // --- Outbox persistence (T-142) ----------------------------------------------
-// Each queued send is two files: `outbox/<queue_id>.json` (OutboxMeta) and
-// `outbox/<queue_id>.eml` (the built MIME message). Writes are
-// write-then-rename; loads bound count (256) and size (32 MiB/item,
-// 100 MiB total). Body bytes at rest share mail.db's sensitivity — local
-// disk only, never IPC.
+// Queued sends live in mail.db's `outbox` table (schema v2) — one row per
+// committed send, built MIME in-row, so enqueue is a single atomic write.
+// `outbox/<queue_id>.{json,eml}` files from the pre-SQLite format are
+// imported once at open, then removed. Body bytes at rest share mail.db's
+// sensitivity — local disk only, never IPC.
 
 /// Max persisted outbox items reloaded at boot.
-const MAX_OUTBOX_ITEMS: usize = 256;
-/// Max size of one persisted message.
-const MAX_OUTBOX_ITEM_BYTES: usize = 32 * 1024 * 1024;
-/// Max total persisted payload.
+pub const MAX_OUTBOX_ITEMS: u32 = 256;
+/// Max size of one persisted message (enforced at enqueue).
+pub const MAX_OUTBOX_ITEM_BYTES: usize = 32 * 1024 * 1024;
+/// Max total legacy-import payload.
 const MAX_OUTBOX_TOTAL_BYTES: usize = 100 * 1024 * 1024;
 
 fn outbox_dir(dir: &Path) -> PathBuf {
@@ -199,59 +257,45 @@ fn outbox_body_path(dir: &Path, queue_id: &str) -> PathBuf {
     outbox_dir(dir).join(format!("{queue_id}.eml"))
 }
 
-/// Persist one queued send (meta + MIME bytes), atomically per file.
-/// Called by the send path at enqueue time. `queue_id` is generated by us
-/// (`send-<hex>`) — the charset check is a backstop for filename safety.
-pub fn persist_outbox_item(
-    dir: &Path,
+/// Build the store row for a queued send (meta sidecar + MIME bytes).
+pub fn outbox_row_of(
     queue_id: &str,
     meta: &OutboxMeta,
-    mime: &[u8],
-) -> CmdResult<()> {
-    if !meta_filesafe(queue_id) {
-        return Err(IpcError::invalid("queue_id is not filename-safe"));
+    mime: Vec<u8>,
+    created_unix: i64,
+) -> kiwi_mail::store::OutboxRow {
+    kiwi_mail::store::OutboxRow {
+        queue_id: queue_id.to_string(),
+        account_id: meta.account_id.clone(),
+        from_addr: meta.from.clone(),
+        to_addrs: meta.to.clone(),
+        subject: meta.subject.clone(),
+        message_id: meta.message_id.clone(),
+        mime,
+        not_before_unix: meta.not_before_unix,
+        undo_window_until_unix: meta.undo_window_until_unix,
+        attempts: meta.attempts,
+        created_unix,
     }
-    if mime.len() > MAX_OUTBOX_ITEM_BYTES {
-        return Err(IpcError::invalid("queued message exceeds 32 MiB"));
-    }
-    std::fs::create_dir_all(outbox_dir(dir))?;
-    let bytes = serde_json::to_vec_pretty(meta)
-        .map_err(|e| IpcError::new("internal", format!("outbox meta: {e}")))?;
-    write_atomic(&outbox_meta_path(dir, queue_id), &bytes)?;
-    write_atomic(&outbox_body_path(dir, queue_id), mime)?;
-    Ok(())
 }
 
-/// Rewrite just the metadata file (retry/backoff updates — body unchanged).
-/// No-op when the item was never persisted (e.g., dropped concurrently).
-pub fn update_outbox_meta(dir: &Path, queue_id: &str, meta: &OutboxMeta) -> CmdResult<()> {
-    let path = outbox_meta_path(dir, queue_id);
-    if !path.exists() {
-        return Ok(());
-    }
-    let bytes = serde_json::to_vec_pretty(meta)
-        .map_err(|e| IpcError::new("internal", format!("outbox meta: {e}")))?;
-    write_atomic(&path, &bytes)
-}
-
-/// Drop a queued send's persisted files. Idempotent — called on every
-/// terminal outcome (sent, failed, cancelled).
-pub fn remove_outbox_item(dir: &Path, queue_id: &str) {
+/// Drop a queued send's legacy persisted files. Idempotent.
+fn remove_outbox_item(dir: &Path, queue_id: &str) {
     let _ = std::fs::remove_file(outbox_meta_path(dir, queue_id));
     let _ = std::fs::remove_file(outbox_body_path(dir, queue_id));
 }
 
-/// Reload persisted outbox items (meta + MIME) at boot. Bounded and
+/// Read the pre-SQLite file outbox for one-time import. Bounded and
 /// fault-tolerant: malformed or oversized files are skipped (warn-logged),
 /// never fatal — a torn write must not brick startup.
-pub fn load_outbox(dir: &Path) -> Vec<(String, OutboxMeta, Vec<u8>)> {
+fn load_legacy_outbox(dir: &Path) -> Vec<(String, OutboxMeta, Vec<u8>)> {
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir(outbox_dir(dir)) else {
         return out;
     };
     let mut total = 0usize;
     for entry in entries.flatten() {
-        if out.len() >= MAX_OUTBOX_ITEMS || total >= MAX_OUTBOX_TOTAL_BYTES {
+        if out.len() >= MAX_OUTBOX_ITEMS as usize || total >= MAX_OUTBOX_TOTAL_BYTES {
             break;
         }
         let path = entry.path();
@@ -281,15 +325,8 @@ pub fn load_outbox(dir: &Path) -> Vec<(String, OutboxMeta, Vec<u8>)> {
     out
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> CmdResult<()> {
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, bytes)?;
-    std::fs::rename(&tmp, path)?;
-    Ok(())
-}
-
 /// queue_id is `send-<hex>` (new_id) — the charset check is a backstop for
-/// path-component safety on the filename.
+/// path-component safety on the legacy filename.
 fn meta_filesafe(id: &str) -> bool {
     !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
@@ -345,6 +382,12 @@ pub struct AppState {
     /// Mailflow events awaiting a reachable admin service (§11 —
     /// queue-and-retry, bounded, drop-oldest).
     pub mailflow_pending: Mutex<VecDeque<crate::bridge::MailflowEvent>>,
+    /// Live-sync worker status per account (T-157).
+    pub sync_status: Mutex<BTreeMap<String, AccountSyncStatus>>,
+    /// Wake signal for the sync supervisor — account add/remove (and any
+    /// future "sync now" surface) pokes this so the reconcile doesn't
+    /// wait out the 2 s tick (T-157-adjacent).
+    pub sync_wakeup: tokio::sync::Notify,
     /// One-shot warn flag: "no admin endpoint configured" (dev degrade).
     pub policy_warned: std::sync::atomic::AtomicBool,
     /// One-shot warn flag: "admin endpoint set but no org id".
@@ -376,13 +419,12 @@ impl AppState {
         Ok(s)
     }
 
-    /// Test open: in-memory mail store + in-memory credentials under `dir`
-    /// (index + audit + outbox persistence still real files so their
-    /// behavior is exercised).
+    /// Test open: file-backed mail store under `dir` (restart-resume is
+    /// exercised) + in-memory credentials; index + audit real files.
     #[cfg(test)]
     pub fn open_test(data_dir: PathBuf) -> CmdResult<Self> {
         std::fs::create_dir_all(&data_dir)?;
-        let store = MailStore::open_memory()?;
+        let store = MailStore::open(&data_dir)?;
         let index = AppIndex::load(&data_dir)?;
         let audit = AuditLog::open(&data_dir)?;
         let mut s = Self::assemble(
@@ -396,25 +438,53 @@ impl AppState {
         Ok(s)
     }
 
-    /// Rebuild the in-memory queue + meta map from `data_dir/outbox/*`.
+    /// Rebuild the in-memory queue + meta map from mail.db's `outbox`
+    /// table, after folding in any legacy `outbox/*.json|.eml` files.
     /// Persisted undo windows may already be expired — that's fine: the
     /// item simply isn't cancelable and is due immediately.
     fn reload_outbox(&mut self) {
-        for (queue_id, meta, mime) in load_outbox(&self.data_dir) {
+        for (queue_id, meta, mime) in load_legacy_outbox(&self.data_dir) {
+            let row = outbox_row_of(&queue_id, &meta, mime, now_unix());
+            if let Err(e) = self.store.get_mut().outbox_put(&row) {
+                // e.g. orphaned send for a deleted account (FK) — drop it.
+                eprintln!("[kiwi-app] legacy outbox import {queue_id} failed: {e}");
+            }
+            remove_outbox_item(&self.data_dir, &queue_id);
+        }
+        let rows = match self.store.get_mut().outbox_list(MAX_OUTBOX_ITEMS) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("[kiwi-app] outbox reload failed: {e}");
+                Vec::new()
+            }
+        };
+        for row in rows {
             self.send_queue
                 .get_mut()
                 .enqueue(kiwi_mail::smtp::QueuedSend {
-                    queue_id: queue_id.clone(),
+                    queue_id: row.queue_id.clone(),
                     request: kiwi_mail::smtp::SendRequest {
-                        from: meta.from.clone(),
-                        to: meta.to.clone(),
-                        message: mime,
+                        from: row.from_addr.clone(),
+                        to: row.to_addrs.clone(),
+                        message: row.mime.clone(),
                     },
-                    not_before_unix: meta.not_before_unix,
-                    undo_window_until_unix: meta.undo_window_until_unix,
-                    attempts: meta.attempts,
+                    not_before_unix: row.not_before_unix,
+                    undo_window_until_unix: row.undo_window_until_unix,
+                    attempts: row.attempts,
                 });
-            self.outbox_meta.get_mut().insert(queue_id, meta);
+            self.outbox_meta.get_mut().insert(
+                row.queue_id.clone(),
+                OutboxMeta {
+                    account_id: row.account_id,
+                    from: row.from_addr,
+                    to: row.to_addrs,
+                    subject: row.subject,
+                    message_id: row.message_id,
+                    not_before_unix: row.not_before_unix,
+                    undo_window_until_unix: row.undo_window_until_unix,
+                    attempts: row.attempts,
+                },
+            );
         }
     }
 
@@ -439,6 +509,8 @@ impl AppState {
             findings: Mutex::new(BTreeMap::new()),
             endpoint_signals: Mutex::new(Vec::new()),
             mailflow_pending: Mutex::new(VecDeque::new()),
+            sync_status: Mutex::new(BTreeMap::new()),
+            sync_wakeup: tokio::sync::Notify::new(),
             policy_warned: std::sync::atomic::AtomicBool::new(false),
             no_org_warned: std::sync::atomic::AtomicBool::new(false),
             index: Mutex::new(index),
@@ -446,6 +518,12 @@ impl AppState {
             boot_session_id: new_id("boot"),
             session_counter: AtomicU64::new(0),
         }
+    }
+
+    /// Poke the sync supervisor so an added/removed account reconciles
+    /// immediately instead of on the next tick.
+    pub fn kick_sync(&self) {
+        self.sync_wakeup.notify_one();
     }
 
     /// Unique session id for one observed connection.

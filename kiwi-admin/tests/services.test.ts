@@ -11,27 +11,31 @@ let orgId: string;
 
 const admin: Actor = { subject: "admin@acme.test", roles: ["org_admin"], orgId: null };
 const viewer: Actor = { subject: "view@acme.test", roles: ["viewer"], orgId: null };
+/** Reads the audit log. `audit.read` is a permission now, so reads need an actor. */
+const auditor: Actor = { subject: "auditor@acme.test", roles: ["viewer"], orgId: null };
 
-beforeAll(() => {
-  container = createServiceContainer(makeTempDbPath());
+beforeAll(async () => {
+  // The string form pins the SQLite dialect regardless of the ambient
+  // DATABASE_URL, which keeps the unit suite hermetic.
+  container = await createServiceContainer(makeTempDbPath());
   // Platform-level admin (orgId null) bootstraps the org; later actors bind
   // to the real generated org id.
-  orgId = container.orgs.createOrg(admin, "acme.test", 900).id;
+  orgId = (await container.orgs.createOrg(admin, "acme.test", 900)).id;
 });
 
-afterAll(() => {
-  container.close();
+afterAll(async () => {
+  await container.close();
 });
 
 describe("OrgService — audit + RBAC wiring", () => {
-  it("creates users, roles, devices with audit trail", () => {
+  it("creates users, roles, devices with audit trail", async () => {
     const actor: Actor = { ...admin, orgId };
-    const user = container.orgs.createUser(actor, orgId, "bob@acme.test", 1010);
-    container.orgs.grantRole(actor, user.id, orgId, "security_admin", 1020);
-    const dev = container.orgs.createDevice(actor, orgId, "laptop-1", 1030);
-    container.orgs.revokeDevice(actor, dev.id, 1040);
+    const user = await container.orgs.createUser(actor, orgId, "bob@acme.test", 1010);
+    await container.orgs.grantRole(actor, user.id, orgId, "security_admin", 1020);
+    const dev = await container.orgs.createDevice(actor, orgId, "laptop-1", 1030);
+    await container.orgs.revokeDevice(actor, dev.id, 1040);
 
-    const records = container.audit.query({ limit: 50 });
+    const records = await container.audit.query(auditor, { limit: 50 });
     const actions = records.map((r) => r.action);
     for (const a of ["org.create", "user.create", "user.role.grant", "device.create", "device.revoke"]) {
       expect(actions).toContain(a);
@@ -40,29 +44,29 @@ describe("OrgService — audit + RBAC wiring", () => {
     expect(records.every((r) => r.outcome === "allowed")).toBe(true);
   });
 
-  it("denies + audits a policy write by a viewer", () => {
+  it("denies + audits a policy write by a viewer", async () => {
     const actor: Actor = { ...viewer, orgId };
-    const denyFn = () =>
+    await expect(
       container.policies.createPolicy(actor, orgId, "p1", {
         name: "block-evil",
         enabled: true,
         minTls: "tls1.2",
         externalRecipients: "warn",
         domainRules: [{ domain: "evil.example", action: "block" }],
-      });
-    expect(denyFn).toThrow(AuthorizationDeniedError);
+      }),
+    ).rejects.toThrow(AuthorizationDeniedError);
 
-    const denied = container.audit.query({ limit: 50 }).filter((r) => r.outcome === "denied");
+    const denied = (await container.audit.query(auditor, { limit: 50 })).filter((r) => r.outcome === "denied");
     expect(denied).toHaveLength(1);
     expect(denied[0]?.details).toContain("policy.write");
-    expect(container.audit.verify({ limit: 100 }).valid).toBe(true);
+    expect((await container.audit.verify(auditor, { limit: 100 })).valid).toBe(true);
   });
 });
 
 describe("PolicyService — evaluation determinism", () => {
-  it("evaluates deterministically through the service facade", () => {
+  it("evaluates deterministically through the service facade", async () => {
     const writer: Actor = { ...admin, orgId };
-    const p = container.policies.createPolicy(writer, orgId, "p2", {
+    const p = await container.policies.createPolicy(writer, orgId, "p2", {
       name: "default-outbound",
       enabled: true,
       minTls: "tls1.2",
@@ -78,15 +82,16 @@ describe("PolicyService — evaluation determinism", () => {
       recipient: "stranger@unknown.test",
       tlsVersion: "tls1.3",
     };
-    expect(container.policies.evaluate(p.id, input)).toEqual(container.policies.evaluate(p.id, input));
-    expect(container.policies.evaluate(p.id, input).verdict).toBe("warn");
+    const first = await container.policies.evaluate(p.id, input);
+    expect(first).toEqual(await container.policies.evaluate(p.id, input));
+    expect(first.verdict).toBe("warn");
   });
 });
 
 describe("MailflowService — metadata-only ingest + queries", () => {
-  it("ingests and queries mailflow events with RBAC enforcement", () => {
+  it("ingests and queries mailflow events with RBAC enforcement", async () => {
     const actor: Actor = { ...admin, orgId: "orgId" };
-    container.mailflow.ingest(actor, {
+    await container.mailflow.ingest(actor, {
       direction: "outbound",
       sender: "alice@acme.test",
       recipient: "bob@partner.example",
@@ -98,14 +103,14 @@ describe("MailflowService — metadata-only ingest + queries", () => {
       org_id: "orgId",
     });
 
-    const page = container.mailflow.query(actor, { orgId: "orgId", limit: 10 });
+    const page = await container.mailflow.query(actor, { orgId: "orgId", limit: 10 });
     expect(page.items.length).toBeGreaterThanOrEqual(1);
     const ev = page.items[0]!;
     expect(ev.recipient).toBe("bob@partner.example");
     expect(Object.keys(ev)).not.toContain("body");
 
     const readOnly: Actor = { ...viewer, orgId: "orgId" };
-    const denyFn = () =>
+    await expect(
       container.mailflow.ingest(readOnly, {
         direction: "inbound",
         sender: "x@other.test",
@@ -116,21 +121,21 @@ describe("MailflowService — metadata-only ingest + queries", () => {
         security_status: "clean",
         policy_verdict: "allow",
         org_id: "orgId",
-      });
-    expect(denyFn).toThrow(AuthorizationDeniedError);
-    const lastDenied = container.audit.query({ limit: 10 }).filter((r) => r.outcome === "denied").at(-1);
+      }),
+    ).rejects.toThrow(AuthorizationDeniedError);
+    const lastDenied = (await container.audit.query(auditor, { limit: 10 })).filter((r) => r.outcome === "denied").at(-1);
     expect(lastDenied?.action).toBe("mailflow.ingest");
   });
 });
 
 describe("List methods (T-134 admin UI reads)", () => {
-  it("lists org users with roles and org policies with rules", () => {
+  it("lists org users with roles and org policies with rules", async () => {
     const actor: Actor = { ...admin, orgId };
-    const u1 = container.orgs.createUser(actor, orgId, "carol@acme.test", 4000);
-    const u2 = container.orgs.createUser(actor, orgId, "dave@acme.test", 4010);
-    container.orgs.grantRole(actor, u1.id, orgId, "viewer", 4020);
+    const u1 = await container.orgs.createUser(actor, orgId, "carol@acme.test", 4000);
+    const u2 = await container.orgs.createUser(actor, orgId, "dave@acme.test", 4010);
+    await container.orgs.grantRole(actor, u1.id, orgId, "viewer", 4020);
 
-    const users = container.orgs.listUsers(actor, orgId);
+    const users = await container.orgs.listUsers(actor, orgId);
     const emails = users.map((u) => u.email);
     expect(emails).toContain("carol@acme.test");
     expect(emails).toContain("dave@acme.test");
@@ -138,22 +143,22 @@ describe("List methods (T-134 admin UI reads)", () => {
     expect(users.find((u) => u.email === "dave@acme.test")?.roles).toEqual([]);
     expect(users).toEqual([...users].sort((a, b) => a.email.localeCompare(b.email)));
 
-    const policies = container.policies.listPolicies(actor, orgId);
+    const policies = await container.policies.listPolicies(actor, orgId);
     expect(policies.length).toBeGreaterThanOrEqual(1);
     expect(policies[0]).toHaveProperty("domainRules");
   });
 
-  it("denies cross-org listing", () => {
-    const other = container.orgs.createOrg(admin, "list-other.test", 4100).id;
+  it("denies cross-org listing", async () => {
+    const other = (await container.orgs.createOrg(admin, "list-other.test", 4100)).id;
     const cross: Actor = { ...viewer, orgId };
-    expect(() => container.orgs.listUsers(cross, other)).toThrow(AuthorizationDeniedError);
-    expect(() => container.policies.listPolicies(cross, other)).toThrow(AuthorizationDeniedError);
+    await expect(container.orgs.listUsers(cross, other)).rejects.toThrow(AuthorizationDeniedError);
+    await expect(container.policies.listPolicies(cross, other)).rejects.toThrow(AuthorizationDeniedError);
   });
 });
 
 describe("AuditService", () => {
-  it("verifies the whole chain", () => {
-    const v = container.audit.verify({ limit: 200 });
+  it("verifies the whole chain", async () => {
+    const v = await container.audit.verify(auditor, { limit: 200 });
     expect(v.valid).toBe(true);
     expect(v.checked).toBeGreaterThan(0);
   });
@@ -162,9 +167,9 @@ describe("AuditService", () => {
     expect(() => parseAuditEventInput({ action: "" })).toThrow();
   });
 
-  it("manual append keeps chain valid", () => {
+  it("manual append keeps chain valid", async () => {
     const actor: Actor = { ...admin, orgId: "orgId" };
-    const rec = container.auditAppend(
+    const rec = await container.auditAppend(
       actor,
       "orgId",
       "test.manual",
@@ -175,7 +180,13 @@ describe("AuditService", () => {
       3000,
     );
     expect(rec.seq).toBeGreaterThan(0);
-    expect(container.audit.verify({ limit: 500 }).valid).toBe(true);
+    expect((await container.audit.verify(auditor, { limit: 500 })).valid).toBe(true);
+  });
+
+  it("requires audit.read to read or verify the log", async () => {
+    // No roles at all — the fail-closed actor shape — must be refused.
+    const anonymous: Actor = { subject: "nobody", roles: [], orgId: null };
+    await expect(container.audit.query(anonymous, { limit: 10 })).rejects.toThrow(AuthorizationDeniedError);
+    await expect(container.audit.verify(anonymous, { limit: 10 })).rejects.toThrow(AuthorizationDeniedError);
   });
 });
-

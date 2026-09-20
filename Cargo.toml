@@ -2,10 +2,12 @@
 resolver = "2"
 members = [
     "kiwi-autoconfig",
+    "kiwi-contacts",
     "kiwi-core",
     "kiwi-forensics",
     "kiwi-mail",
     "kiwi-mailauth",
+    "kiwi-sandbox",
     "kiwi-app/src-tauri",
 ]
 

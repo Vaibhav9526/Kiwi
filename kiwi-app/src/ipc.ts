@@ -13,15 +13,28 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AccountView,
   AppInfoView,
+  AttachmentSavedView,
+  AutoconfigSuggestion,
   ChallengeView,
+  ContactInput,
+  ContactView,
+  DeleteResultView,
   DeviceView,
+  FindingDetailView,
   FolderView,
   MessageBodyView,
+  MessagePatch,
+  MessageUpdateView,
   MessageView,
+  MoveResultView,
   OutboxItem,
+  RemoteContentView,
+  RenderedBodyView,
+  SearchHit,
   SecurityStatusView,
   VerifyResult,
 } from "./kiwi";
+import { parseAutoconfigSuggestion, parseContact, parseSearchHit } from "./kiwi";
 
 export class BackendUnavailableError extends Error {
   constructor(command: string, cause?: unknown) {
@@ -120,6 +133,100 @@ export const api = {
     return call<VerifyResult>("kiwi_verify_server", { input });
   },
 
+  /* ---------------- autoconfig (gated, T-156) ---------------- */
+
+  /**
+   * Discovery chain for an email address (ISPDB → autoconfig XML →
+   * MX heuristics → manual). `kiwi_lookup_autoconfig` does not exist in the
+   * backend yet (T-135 IPC pending) — until it lands this throws
+   * BackendUnavailableError and the wizard falls back to its labeled local
+   * stub. Same wrapper either way, so no view changes on land.
+   */
+  async lookupAutoconfig(email: string): Promise<AutoconfigSuggestion | null> {
+    const raw = await call<unknown>("kiwi_lookup_autoconfig", { email });
+    return parseAutoconfigSuggestion(raw);
+  },
+
+  /* ---------------- search (gated, T-160) ---------------- */
+
+  /**
+   * Full-mailbox search (Agent 8's pending command). Until the backend
+   * lands it this throws BackendUnavailableError and callers fall back to
+   * labeled client-side filtering of already-loaded messages. Same wrapper
+   * either way, so no view changes on land.
+   */
+  async searchMessages(query: string, limit?: number): Promise<SearchHit[]> {
+    const raw = await call<unknown>("kiwi_search_messages", { query, limit });
+    if (!Array.isArray(raw)) return [];
+    const out: SearchHit[] = [];
+    raw.forEach((item, i) => {
+      const hit = parseSearchHit(item, i);
+      if (hit) out.push(hit);
+    });
+    return out;
+  },
+
+  /* ---------------- backend prefs (T-167, pending) ---------------- */
+
+  /**
+   * Backend preference bag. Neither command exists yet — until they land
+   * both throw BackendUnavailableError and the UI runs on localStorage
+   * (source of truth offline; backend wins on load-merge once present).
+   * Same wrappers either way, so no view changes on land.
+   */
+  getPrefs(): Promise<Record<string, unknown>> {
+    return call<Record<string, unknown>>("kiwi_get_prefs");
+  },
+  setPrefs(prefs: Record<string, unknown>): Promise<{ saved: number }> {
+    return call<{ saved: number }>("kiwi_set_prefs", { prefs });
+  },
+
+  /* ---------------- contacts (gated, T-173, pending backend) ---------------- */
+
+  /**
+   * Address book per docs/contracts/contacts.md §3 (`kiwi.contacts/1`).
+   * No backend command exists yet (Agent 7) — until they land every call
+   * throws BackendUnavailableError and views use the labeled localStorage
+   * book instead. Same wrappers either way, so no view changes on land.
+   */
+  async listContacts(limit?: number, offset?: number): Promise<ContactView[]> {
+    const raw = await call<unknown>("kiwi_list_contacts", { limit, offset });
+    if (!Array.isArray(raw)) return [];
+    const out: ContactView[] = [];
+    for (const item of raw) {
+      const c = parseContact(item);
+      if (c) out.push(c);
+    }
+    return out;
+  },
+  async searchContacts(query: string, limit?: number): Promise<ContactView[]> {
+    const raw = await call<unknown>("kiwi_search_contacts", { query, limit });
+    if (!Array.isArray(raw)) return [];
+    const out: ContactView[] = [];
+    for (const item of raw) {
+      const c = parseContact(item);
+      if (c) out.push(c);
+    }
+    return out;
+  },
+  getContact(contactId: string): Promise<ContactView | null> {
+    return call<ContactView | null>("kiwi_get_contact", { contactId });
+  },
+  createContact(contact: ContactInput): Promise<ContactView> {
+    return call<ContactView>("kiwi_create_contact", { contact });
+  },
+  updateContact(contactId: string, contact: ContactInput): Promise<ContactView> {
+    return call<ContactView>("kiwi_update_contact", { contactId, contact });
+  },
+  deleteContact(contactId: string): Promise<{ removed: boolean }> {
+    return call<{ removed: boolean }>("kiwi_delete_contact", { contactId });
+  },
+  async contactsByEmail(address: string): Promise<ContactView | null> {
+    const raw = await call<unknown>("kiwi_contacts_by_email", { address });
+    if (raw === null) return null;
+    return parseContact(raw);
+  },
+
   /* ---------------- mail read (gated) ---------------- */
 
   async listFolders(accountId: string): Promise<FolderView[]> {
@@ -133,6 +240,52 @@ export const api = {
   },
   syncAccount(accountId: string, folders?: string[]): Promise<Record<string, unknown>[]> {
     return call<Record<string, unknown>[]>("kiwi_sync_account", { accountId, folders });
+  },
+
+  /* ---------------- message actions (gated, T-146) ---------------- */
+
+  updateMessage(accountId: string, folderId: number, uid: number, patch: MessagePatch): Promise<MessageUpdateView> {
+    return call<MessageUpdateView>("kiwi_update_message", { accountId, folderId, uid, patch });
+  },
+  downloadAttachment(
+    accountId: string,
+    folderId: number,
+    uid: number,
+    attachmentIndex: number,
+    destPath: string,
+  ): Promise<AttachmentSavedView> {
+    return call<AttachmentSavedView>("kiwi_download_attachment", {
+      accountId,
+      folderId,
+      uid,
+      attachmentIndex,
+      destPath,
+    });
+  },
+  renderBody(accountId: string, folderId: number, uid: number): Promise<RenderedBodyView> {
+    return call<RenderedBodyView>("kiwi_render_body", { accountId, folderId, uid });
+  },
+  setRemoteContent(accountId: string, allowed: boolean): Promise<RemoteContentView> {
+    return call<RemoteContentView>("kiwi_set_remote_content", { accountId, allowed });
+  },
+
+  /* ---------------- delete / move (gated, T-163) ---------------- */
+
+  deleteMessages(
+    accountId: string,
+    folderId: number,
+    uids: number[],
+    permanent?: boolean,
+  ): Promise<DeleteResultView> {
+    return call<DeleteResultView>("kiwi_delete_messages", { accountId, folderId, uids, permanent });
+  },
+  moveMessages(
+    accountId: string,
+    srcFolderId: number,
+    dstFolderId: number,
+    uids: number[],
+  ): Promise<MoveResultView> {
+    return call<MoveResultView>("kiwi_move_messages", { accountId, srcFolderId, dstFolderId, uids });
   },
 
   /* ---------------- send / outbox (gated) ---------------- */
@@ -164,6 +317,9 @@ export const api = {
   },
   sessionDetail(sessionId: string): Promise<Record<string, unknown>> {
     return call<Record<string, unknown>>("kiwi_session_detail", { sessionId });
+  },
+  findingDetail(findingId: string): Promise<FindingDetailView> {
+    return call<FindingDetailView>("kiwi_finding_detail", { findingId });
   },
   securityReport(accountId?: string): Promise<Record<string, unknown>> {
     return call<Record<string, unknown>>("kiwi_security_report", { accountId });
