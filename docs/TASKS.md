@@ -108,11 +108,14 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-179 | kiwi-admin audit export endpoint (NDJSON, org_admin) + e2e | Agent 9 | open | `kiwi-admin/` | T-149 |
 | T-180 | Phase C1: kiwi-mail file splits — freeze window required | Agent 10 | in-progress | `kiwi-mail/src/` | — |
 | T-181 | Phase C2: src-tauri splits — freeze window | Agent 7 | in-progress | `kiwi-app/src-tauri/` | — |
-| T-182 | Phase C3: App.tsx hooks/state extraction | Agent 5 | in-progress | `kiwi-app/src/` | — |
+| T-182 | Phase C3: App.tsx split | Agent 5 | SUPERSEDED by T-191 rebuild | `kiwi-app/src/` | — |
 | T-183 | kiwi-mailauth hardening: DKIM canonicalization, SPF limits, DMARC alignment | Agent 8 (GLM-limited) → A10 queue | parked | `kiwi-mailauth/` | T-178 |
 | T-184 | Finish T-172 items (lint, transport decision, wording) | Agent 4 (GLM-limited) → A6 queue | parked | `mobile/`, `docs/contracts/authenticator.md` | T-172 |
 | T-185 | kiwi-admin defect-hunt review → admin-review-1.md | Agent 9 | done (findings pending Lead rulings) | `kiwi-admin/` (read-only) | T-149 |
 | T-186 | Mail filters UI | Agent 5 | done | `kiwi-app/src/` | — |
 | T-187 | Verify admin-review-1.md findings + apply safe (non-behavioral) fixes | Agent 6 | open | `kiwi-admin/` | T-185 |
 | T-188 | Contract work: pair/challenge IPC section in ipc.md + admin devices/export endpoint specs | Agent 9 | open | `docs/contracts/` | T-185 |
-| T-189 | Snooze UI: snooze picker, snoozed folder, until-chip (client-side + prefs) | Agent 5 | queued | `kiwi-app/src/` | T-182 |
+| T-189 | Snooze UI | Agent 5 | held — returns in TB idiom post-T-191 | `kiwi-app/src/` | T-182 |
+| T-190 | Thunderbird archaeology: docs/ui-thunderbird-map.md — layout/shortcuts/density/tokens from source/comm/mail | Agent 5 | open | `source/comm/` → `docs/` | — |
+| T-191 | Rebuild kiwi-app/src Thunderbird-faithful: menus, toolbar, folder pane, thread list, msg pane, status bar, density; preserve all IPC | Agent 5 | open | `kiwi-app/src/` | T-190 |
+| T-192 | Re-integrate KIWI security surfaces in TB idiom (header pill, composer banner, lock overlay, security tab) | Agent 5 | open | `kiwi-app/src/` | T-191 |
