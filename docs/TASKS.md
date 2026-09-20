@@ -79,5 +79,6 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-150 | `kiwi-contacts` crate: local address book (rusqlite store, search, vCard RFC 6350 import/export) | Agent 9 (Claude Code, new) | open | `kiwi-contacts/`, `docs/contracts/contacts.md` | — |
 | T-151 | Frontend continuation: compose polish (toolbar, draft autosave), settings completeness, wire T-146 commands when landed | Agent 5 | open | `kiwi-app/src/` | T-143 |
 | T-152 | kiwi-mail hardening stream (orphaned Agent-2 work): T-103..106 completion + live interop vs mailpit/greenmail + T-142 send queue | Agent 10 (Devin, new) | open | `kiwi-mail/src/` | — |
-| T-153 | Productivity layer: Ctrl+K command palette, keyboard shortcuts + help overlay, toast notifications | Agent 5 | open | `kiwi-app/src/` | T-143 |
+| T-153 | Productivity layer: palette + shortcuts + toasts | Agent 5 | done | `kiwi-app/src/` | T-143 |
 | T-154 | Dependency audit: cargo-audit + npm audit, findings into docs/SECURITY.md | Agent 6 | open | repo-wide | — |
+| T-155 | Wire T-146/T-142 backend into UI: outbox view, undo-send toast, send-later picker, real flag actions, attachment download, remote-content toggle | Agent 5 | open | `kiwi-app/src/` | T-146, T-142 |
