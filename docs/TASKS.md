@@ -83,9 +83,13 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-153 | Productivity layer: palette + shortcuts + toasts | Agent 5 | done | `kiwi-app/src/` | T-143 |
 | T-155 | Wire T-146/T-142 into UI | Agent 5 | done | `kiwi-app/src/` | T-146, T-142 |
 | T-156 | Account setup wizard: email → autoconfig discovery, server presets, credential entry (OS store), test-connection, account management | Agent 5 | open | `kiwi-app/src/views/setup.tsx` | T-135 |
-| T-157 | Live sync engine in src-tauri: per-account IMAP sync + IDLE loop, mail-changed events, lock-aware pause, backoff | Agent 7 | open | `kiwi-app/src-tauri/` | T-142 |
+| T-157 | Live sync engine (IDLE loop, mail-changed events, lock-aware) | Agent 7 | done (kiwi-app 34/34) | `kiwi-app/src-tauri/` | T-142 |
 | T-158 | Autoconfig contract completion + discovery-order/malformed/domain tests | Agent 8 | open | `kiwi-autoconfig/`, `docs/contracts/` | T-135 |
 | T-159 | kiwi-mail search module: FTS5 over store (subject/from/to/body), bounded query API | Agent 8 | open | `kiwi-mail/src/` | — |
-| T-160 | Search UI (query chips, results, IPC wrapper) + lock-screen view (unlock challenge, trust reason, QR hint) | Agent 5 | open | `kiwi-app/src/` | T-156, T-159 |
+| T-160 | Search UI + lock screen | Agent 5 | done | `kiwi-app/src/` | T-156, T-159 |
 | T-161 | `kiwi-sandbox` crate: Sandbox trait + Wsl2Provider (T-132 PoC lifecycle) + NullProvider; env-gated lifecycle test | Agent 10 | open | `kiwi-sandbox/` | T-132 |
-| T-162 | Mailbox bulk actions: multi-select, action bar, mark-all-read/empty-trash confirms | Agent 5 | open | `kiwi-app/src/` | T-160 |
+| T-162 | Bulk actions + multi-select | Agent 5 | done (needs kiwi_delete_messages IPC) | `kiwi-app/src/` | T-160 |
+| T-163 | IPC: kiwi_delete_messages (trash/expunge), kiwi_move_messages — unblocks T-162 UI | Agent 7 | open | `src-tauri/commands/` | — |
+| T-164 | Forensics IPC: list_findings/list_events/finding_detail → Security view real data | Agent 7 | open | `src-tauri/commands/`, `ipc.md` | T-163 |
+| T-165 | Conversation/threading view: subject+References grouping, collapsible threads | Agent 5 | open | `kiwi-app/src/` | T-162 |
+| T-166 | Forensics→app seam: contract query shapes + sync→observe→finding integration test | Agent 6 | open | `kiwi-forensics/`, `docs/contracts/` | T-148 |
