@@ -75,7 +75,7 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-146 | IPC gaps: flag mutation, attachment download, sanitized HTML render | Agent 7 | done (commands landed; Agent 5 wired UI) | `kiwi-app/src-tauri/`, `kiwi-mail/` | T-120 |
 | T-147 | IMAP fixture server in docker-compose (mailpit lacks IMAP — dovecot/greenmail) | Agent 6 | open | `docker-compose.yml`, `infra/` | — |
 | T-148 | kiwi-forensics remainder: analyzers/ + pcap/ (Agent 3 still quota-dead) | Agent 6 | done (subsumed by T-003 close-out: decode + reassembly + pipeline wired, green) | `kiwi-forensics/src/` | — |
-| T-149 | kiwi-admin e2e tests vs dockerized service | Agent 4 → Agent 9 (reassigned — GLM timeout loop) | open | `kiwi-admin/` or `infra/e2e/` | T-131 |
+| T-149 | kiwi-admin e2e (parametrized SQLite+PG) + defect fixes: DATABASE_URL wiring, audit.read enforcement + fail-closed actor, orgId filter | Agent 9 | in-progress | `kiwi-admin/` or `infra/e2e/` | T-131 |
 | T-154 | Dependency audit: cargo-audit + npm audit across repo, findings in SECURITY.md §7 | Agent 6 | done (baseline recorded 2026-09-20; fixes flagged to owners) | `docs/SECURITY.md` | — |
 | T-150 | `kiwi-contacts` crate: local address book (rusqlite store, search, vCard RFC 6350 import/export) | Agent 9 (Claude Code, new) | open | `kiwi-contacts/`, `docs/contracts/contacts.md` | — |
 | T-151 | Frontend continuation: compose polish (toolbar, draft autosave), settings completeness, wire T-146 commands when landed | Agent 5 | open | `kiwi-app/src/` | T-143 |
@@ -87,9 +87,12 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-158 | Autoconfig contract completion + discovery-order/malformed/domain tests | Agent 8 | open | `kiwi-autoconfig/`, `docs/contracts/` | T-135 |
 | T-159 | kiwi-mail search module: FTS5 over store (subject/from/to/body), bounded query API | Agent 8 | open | `kiwi-mail/src/` | — |
 | T-160 | Search UI + lock screen | Agent 5 | done | `kiwi-app/src/` | T-156, T-159 |
-| T-161 | `kiwi-sandbox` crate: Sandbox trait + Wsl2Provider (T-132 PoC lifecycle) + NullProvider; env-gated lifecycle test | Agent 10 | open | `kiwi-sandbox/` | T-132 |
+| T-161 | `kiwi-sandbox` crate: trait + Wsl2Provider + NullProvider | Agent 10 | done | `kiwi-sandbox/` | T-132 |
 | T-162 | Bulk actions + multi-select | Agent 5 | done (needs kiwi_delete_messages IPC) | `kiwi-app/src/` | T-160 |
 | T-163 | IPC: kiwi_delete_messages (trash/expunge), kiwi_move_messages — unblocks T-162 UI | Agent 7 | open | `src-tauri/commands/` | — |
 | T-164 | Forensics IPC: list_findings/list_events/finding_detail → Security view real data | Agent 7 | open | `src-tauri/commands/`, `ipc.md` | T-163 |
-| T-165 | Conversation/threading view: subject+References grouping, collapsible threads | Agent 5 | open | `kiwi-app/src/` | T-162 |
+| T-165 | Threading view | Agent 5 | done (needs inReplyTo/references fields — queued for A7) | `kiwi-app/src/` | T-162 |
 | T-166 | Forensics→app seam: contract query shapes + sync→observe→finding integration test | Agent 6 | open | `kiwi-forensics/`, `docs/contracts/` | T-148 |
+| T-167 | Settings depth: per-account pane, notifications, appearance (theme/density), privacy section | Agent 5 | open | `kiwi-app/src/views/settings.tsx` | T-156 |
+| T-168 | kiwi-sandbox guest agent: in-guest runner, report.json schema (process tree/file writes/egress), exchange-dir transport | Agent 10 | open | `kiwi-sandbox/` | T-161 |
+| T-169 | MessageView + thread fields: expose inReplyTo/references for header-chain threading | Agent 7 | queued | `src-tauri/`, `kiwi-mail/` | T-163/164 |
