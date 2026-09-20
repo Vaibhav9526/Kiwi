@@ -76,3 +76,5 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-147 | IMAP fixture server in docker-compose (mailpit lacks IMAP — dovecot/greenmail) | Agent 6 | open | `docker-compose.yml`, `infra/` | — |
 | T-148 | kiwi-forensics remainder: analyzers/ + pcap/ (Agent 3 still quota-dead) | Agent 6 | open | `kiwi-forensics/src/` | — |
 | T-149 | kiwi-admin e2e tests against dockerized service (RBAC/policy/audit chain over HTTP) | Agent 4 | open | `kiwi-admin/` or `infra/e2e/` | T-131 |
+| T-150 | `kiwi-contacts` crate: local address book (rusqlite store, search, vCard RFC 6350 import/export) | Agent 9 (Claude Code, new) | open | `kiwi-contacts/`, `docs/contracts/contacts.md` | — |
+| T-151 | Frontend continuation: compose polish (toolbar, draft autosave), settings completeness, wire T-146 commands when landed | Agent 5 | open | `kiwi-app/src/` | T-143 |
