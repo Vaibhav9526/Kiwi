@@ -577,3 +577,212 @@ above, plus `schema.{pg,sqlite}.ts`, `db.migrations.test.ts`, `tsconfig.json`).
 
 **Assumptions:** T-149 is not in `docs/TASKS.md`; that ledger is Lead-owned
 (prompt.md §8) and was not edited.
+
+## 2026-09-20 — T-179: audit export (`GET /api/v1/audit/export`) + e2e coverage
+
+**Status:** implemented across source, unit tests, contract, compose and the e2e
+suite. **STILL NOT EXECUTED — the classifier is still blocking every command.**
+
+### EXPLICIT: the classifier blocked execution, again
+
+The Lead asked for this stated plainly, so:
+
+> **Nothing in T-149 or T-179 has been run.** Every `Bash` and `PowerShell`
+> invocation this session — `npm run typecheck`, `npm test`, `npx tsc`,
+> `docker compose up -d db admin`, `python -m unittest` — was refused with
+> *"deepseek-v4-flash is temporarily unavailable, so auto mode cannot determine
+> the safety of Bash right now."* The outage that blocked the previous two
+> sessions is **not** resolved as of this entry. No `docker`, `npm`, `node`,
+> `cargo` or `python` command has been executed by this agent in any session.
+
+**The exact commands the Lead needs to run**, in order:
+
+```bash
+cd kiwi-admin
+npm run typecheck
+npm test
+```
+
+```bash
+cd ..                                    # repo root
+# An .env written before T-179 has no KIWI_AUDIT_EXPORT_KEY, so the live export
+# would come back unsigned and the signature e2e test would skip. Either add the
+# line from .env.example, or let compose fall back.
+docker compose up -d db admin
+docker compose logs --no-log-prefix admin | tail -20   # expect "(postgres)"
+python -m unittest discover -s infra/e2e -v
+```
+
+Expect: typecheck clean; vitest 55 + the ~25 new export assertions; e2e with
+`PostgresLeg` running, `SqliteLeg` skipping, and 4 new `TransportLeg` export
+tests (one of which skips if the key is absent). **If the typecheck reports
+anything, it is genuinely new** — the `exactOptionalPropertyTypes` class of error
+was fixed last session and `auditExportKey` was declared with the same
+`| undefined` treatment for exactly that reason.
+
+### What was built
+
+**(1) `kiwi-admin/src/audit/export.ts` (new).** `buildAuditExport(records, {now, key?})`
+returns `{ndjson, header, chainState, signature, rows}`. NDJSON line layout:
+line 1 `header`, lines 2..rows+1 one `record` each (`seq` ascending, chain fields
+included), line `rows+2` `chain_state`, line `rows+3` `signature`. Exports
+`AUDIT_EXPORT_VERSION = "kiwi.audit-export/1"`,
+`AUDIT_EXPORT_MAX_ROWS = 10000`, `AUDIT_EXPORT_CONTENT_TYPE =
+"application/x-ndjson"`, `auditExportKeyId(key)` (`sha256(key).slice(0,16)`).
+
+**(2) `verifyChain` factored out of `auditReplay` (`src/audit/chain.ts`).**
+`AuditService.verify` and the export now share ONE verifier, so a log cannot
+verify one way for a reader and another way inside an export. `auditReplay`
+delegates with `{requireContiguous: false}` — deliberately — because
+`tests/audit.chain.test.ts:48` pins its `"chain broken at seq 3"` message for a
+seq gap, and adding contiguity there would have rewritten a pinned expectation
+for no reason. `InMemoryAuditLog.verify()` was NOT touched: `rbac.test.ts:95`
+and `audit.chain.test.ts:26` assert `toEqual({valid: true, error: null})` on it.
+
+Also `verify` now caps its read at `AUDIT_EXPORT_MAX_ROWS` (`Math.min(opts.limit,
+AUDIT_EXPORT_MAX_ROWS)`) so an absurd `?limit=` cannot buffer unboundedly. **That
+cap does not remove the hazard described in "Open finding" below** — it only moves
+the boundary — and I am deliberately NOT changing `verify`'s semantics in this
+change set. See that finding.
+
+**(3) `audit.export` permission (`src/rbac/rbac.ts`).** Added to `PERMISSIONS`
+and granted to `org_admin` only. Deliberately NOT implied by `audit.read` — all
+three roles may read the log; taking a signed off-box copy of the whole chain is
+an owner-level act.
+
+**(4) `AuditService.export` (`src/mailflow/services.ts`).** `requirePermission(actor,
+"audit.export", null)`, fetch `MAX_ROWS + 1` (asking for one past the cap is the
+only way to know the chain is longer), refuse with `400 validation.failed` rather
+than truncate, build, then append an `audit.export` row recording
+`{rows, signed, key_id}` — the fingerprint, never the key.
+
+**(5) Route (`src/server.ts`).** `GET /api/v1/audit/export` -> `sendNdjson()`
+(raw body: `send()` would JSON-escape the newlines and destroy the line
+structure) with `cache-control: no-store`. Key from `KIWI_AUDIT_EXPORT_KEY`,
+read once at startup, overridable per server so tests pin it. `undefined` follows
+the environment, `null` forces unsigned.
+
+**(6) Tests.** `tests/audit.export.test.ts` (new, 4 describes: layout,
+signature, chain-state honesty, access control) and 2 additions to
+`tests/server.test.ts` — declared LAST in the describe, because `AuditService.export`
+appends a NULL-org row that would otherwise perturb the `?org=` scoping
+assertions above it.
+
+**(7) e2e (`infra/e2e/test_admin_e2e.py`).** `http_text()` raw-text helper,
+`SECURITY_ADMIN` headers, `export_key()` (mirrors compose's precedence: shell
+env over env file), and 4 `TransportLeg` tests. The one that matters is
+`test_audit_export_rows_rehash_independently`: it recomputes the hash chain **in
+Python**, from the exported rows alone, with no callback into the service. That
+is the property the export exists to provide — if a verifier outside Node cannot
+reproduce the hashes, the format is not independently verifiable and the test
+should fail.
+
+### Design decisions worth reviewing
+
+1. **No window, no `?org=`, on the export.** A prefix of a valid chain is itself
+   valid, so a paged or org-filtered export would report `chain_state.valid:
+   true` while being indistinguishable from a complete one. The only honest
+   options were "full chain" or "no integrity claim", so the export is full-chain
+   and the org-scoped read stays at `GET /api/v1/audit?org=`, which claims
+   nothing. A `?org=` on the export route is ignored, not honoured.
+2. **The signature covers the header and `chain_state`, not just the records.**
+   Otherwise `exported_at` and the "chain valid" claim would be editable in
+   transit without invalidating the signature.
+3. **Unsigned is honest, not a placeholder.** With no key the trailer is
+   `{alg:"none", signed:false, key_id:null, signature:null, covers_through:null}`.
+   A fake signature would be worse than none, because a reader might check for
+   its presence and stop.
+4. **The export self-audits; denials do not.** Recording a successful export is
+   required — otherwise the log could be exfiltrated with nothing to show for it.
+   Recording *denials* would make every refusal of a log read recurse into the
+   log it was refused, so `query`, `verify` and a refused `export` stay silent,
+   matching the existing behaviour. Stated in the `AuditService` class comment.
+5. **Cap refuses, never truncates** (`AUDIT_EXPORT_MAX_ROWS`, 10000), because a
+   truncated export claiming `valid: true` is a lie.
+6. **Key fingerprint, never the key.** `key_id = sha256(key).slice(0,16)` so a
+   verifier can tell *which* key signed without the key appearing anywhere; the
+   secret is never logged and never echoed.
+
+### Verification — NONE (see the explicit statement above)
+
+Read-only basis for this entry: `src/audit/{export,chain,model}.ts`,
+`src/mailflow/services.ts`, `src/rbac/rbac.ts`, `src/server.ts`,
+`src/services.ts::auditWrap`, `tests/server.test.ts`,
+`infra/e2e/test_admin_e2e.py`, `docker-compose.yml`, `.env.example`. Confirmed by
+reading: every `details` payload the live service writes is `{}` or
+`{permission}` — no floats and no types that JS and Python serialize differently
+— which is what makes the Python chain recomputation sound.
+
+Two things found by reading while doing this:
+
+- **Open finding, NOT fixed: `GET /api/v1/audit/verify?limit=N` can return a false
+  attestation.** `AuditService.verify` still passes `Math.min(opts.limit, 10000)`
+  to `range`, so on a log longer than `limit` it verifies a prefix and reports
+  `valid: true` for rows it never looked at. The route's *default* is
+  `numParam(url, "limit", 1000)`, so a bare `GET /api/v1/audit/verify` on a log
+  past 1000 rows is already in that state — and this compose stack accumulates
+  rows across e2e runs (risk 3 of the previous entry), so it will get there.
+  This is the same defect class as the `?org=` filter that was approved as
+  defect 4, and it contradicts §12.2's own stated principle for the org filter:
+  "a hash chain only validates over every row, so an org-scoped window would
+  report a false `valid`". `limit` is that same window.
+
+  **Proposed fix (needs Lead approval — it is not in T-179's scope and it changes
+  an approved endpoint):** drop the `limit` parameter from `AuditService.verify`
+  so verification is always full-chain, fetch `AUDIT_EXPORT_MAX_ROWS + 1`, and
+  refuse with `valid: false` when the chain exceeds the cap rather than
+  attesting a prefix. Mechanically that is 8 call sites
+  (`src/server.ts:369`, `tests/{services,audit.guard,audit.export}.test.ts`) —
+  all of which pass small limits on small logs and stay green either way, which
+  is why ignoring the limit would also work but would reintroduce the
+  accepted-and-ignored-parameter smell that made defect 4 a defect.
+- My own first draft of `audit.export.test.ts` read the log *after* the export in
+  two places, so `header.last_seq === all[last].seq` compared against a snapshot
+  that already contained the export's own row. Fixed by reading before exporting.
+
+### Risks
+
+1. **Everything here is unverified** — same class as T-149/T-150. The 25 new unit
+   assertions and 4 new e2e tests have never executed.
+2. **Open finding: `verify`'s `?limit=` can attest a prefix as valid** — see
+   "Open finding" above. Not fixed here (out of T-179's scope, and it changes an
+   approved endpoint), but it is a real false-attestation hazard on the one route
+   whose whole job is to attest. Needs a Lead decision.
+3. **`audit.export` is a new permission, and a stale `.env` will not carry
+   `KIWI_AUDIT_EXPORT_KEY`.** Unsigned is a supported state, not a failure, so the
+   e2e signature test skips rather than fails when the key is absent — meaning a
+   wiring gap would show up as a skip. The `.env.example` line and the compose
+   passthrough are both new in this change; an operator upgrading an existing
+   checkout must add the key to exercise the signature.
+4. **The Python chain recomputation is strict and could false-fail** on a
+   JS/Python serialization divergence (exponential number formatting is the one
+   real hazard). It is a separate test method precisely so a divergence there
+   cannot take down the structural and signature assertions. If it fails, that is
+   a genuine finding about the format's portability, not a flake to loosen.
+5. **The export is capped at 10000 rows with no archive path.** A long-lived
+   deployment will eventually hit the `400` and have nothing to run in its place.
+   Pruning/archival is unbuilt and out of T-179's scope; flagging so it is a
+   decision rather than a surprise.
+6. Carried over and unchanged: T-150 still un-green (41 tests expected, commands
+   in its entry); `kiwi-autoconfig` still fails `cargo check` (`mod tests` inside
+   an `impl`, `autoconfig_xml.rs:547`) so `cargo test --workspace` stays red.
+
+**Files changed:** `kiwi-admin/src/audit/export.ts` (new),
+`kiwi-admin/src/audit/chain.ts` (`verifyChain` factored out),
+`kiwi-admin/src/rbac/rbac.ts` (`audit.export`),
+`kiwi-admin/src/mailflow/services.ts` (`verify` full-range + `export`),
+`kiwi-admin/src/server.ts` (route, `sendNdjson`, key plumbing),
+`kiwi-admin/tests/audit.export.test.ts` (new),
+`kiwi-admin/tests/server.test.ts` (2 route tests),
+`docs/contracts/admin-api.md` (§2, §3, §13),
+`docker-compose.yml` + `.env.example` (`KIWI_AUDIT_EXPORT_KEY`),
+`infra/e2e/test_admin_e2e.py` (+4 tests, `http_text`, `export_key`),
+`infra/e2e/README.md`, this log.
+
+**Commands run:** none (see the explicit statement above).
+
+**Assumptions:** T-179 is not in `docs/TASKS.md`; that ledger is Lead-owned
+(prompt.md §8) and was not edited. `docs/contracts/admin-api.md` is Agent 4's
+file and is marked read-mostly per its own header (changes require Lead review) —
+§13 is additive and marked "pending Lead review" in the document header rather
+than folded into the approved 1.3 text.

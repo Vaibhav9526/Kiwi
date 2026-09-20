@@ -18,7 +18,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -40,8 +40,8 @@ services:
     volumes:
       - ./infra/mailpit-pop3-auth:/auth/pop3.htpasswd:ro
     ports:
-      - "${MAILPIT_SMTP_PORT:-1025}:1025"
-      - "${MAILPIT_POP3_PORT:-1100}:1100"
+      - "127.0.0.1:${MAILPIT_SMTP_PORT:-1025}:1025"
+      - "127.0.0.1:${MAILPIT_POP3_PORT:-1100}:1100"
       - "${MAILPIT_UI_PORT:-8025}:8025"
     healthcheck:
       # Mailpit serves its API/UI over HTTP on 8025.
@@ -59,7 +59,7 @@ services:
     image: greenmail/standalone:2.1.14
     restart: unless-stopped
     ports:
-      - "${GREENMAIL_IMAP_PORT:-1143}:3143"
+      - "127.0.0.1:${GREENMAIL_IMAP_PORT:-1143}:3143"
     environment:
       GREENMAIL_OPTS: "-Dgreenmail.setup.test.imap -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.auth.disabled"
     # No in-image healthcheck: the Zulu base ships no nc/wget/curl.
@@ -81,8 +81,13 @@ services:
       # the published port, the healthcheck below and the image's HEALTHCHECK
       # all probed 3001. A bare `PORT` is silently ignored by the service.
       KIWI_ADMIN_PORT: "3001"
+      # Audit-export signing key (T-179). Not a secret: it only makes the
+      # export's HMAC verifiable, and it is never logged or echoed — the
+      # artifact publishes only its SHA-256 fingerprint. Absent/blank means
+      # exports are unsigned, which the export states honestly.
+      KIWI_AUDIT_EXPORT_KEY: ${KIWI_AUDIT_EXPORT_KEY}
     ports:
-      - "${KIWI_ADMIN_PORT:-3001}:3001"
+      - "127.0.0.1:${KIWI_ADMIN_PORT:-3001}:3001"
     depends_on:
       db:
         condition: service_healthy

@@ -1057,4 +1057,114 @@ re-run after T-149 settles.
 claimed items (contacts clippy/fmt, mail-search ×2, admin tsc ×3) —
 recommend Lead serialize before any release cut.
 
+## 2026-09-20 — T-177 done: e2e wired into CI + mobile lint gate + hygiene
+
+**Status:** done. `.github/workflows/ci.yml` goes 4→5 jobs; new
+permanent encoding gate; artifacts triaged. All edits inside Agent 6
+boundaries (CI file mine since T-140, `tests/tools/`, `artifacts/`
+scratch, this log).
+
+### CI changes (`.github/workflows/ci.yml`, YAML-verified: 5 jobs)
+
+- **New `node-mobile` job** (checkout, node 22, `npm ci`, `npm run
+  lint` in `mobile/`). Pre-verified locally first: exit 0 (474
+  quote-style warnings, 0 errors — warning cleanup is Agent 4's).
+  Lockfile present, so `npm ci` is sound.
+- **`infra-live` extended:** `docker compose build admin` first, then
+  `up -d db mailpit greenmail admin` (admin was built-but-never-
+  started before — A9's suite needs it running), existing
+  `tests/infra` discover kept, then **`infra/e2e` discover** (A9's
+  admin suite + T-171 mail-flow suite; both skip-never-fail without
+  services, so no new flake surface), `down -v` still always. Added
+  the Rust toolchain step: the mail-flow leg shells out to
+  `cargo test -p kiwi-forensics --test vertical_mail_flow`, and that
+  job previously had no cargo. Only pure-Rust crates build there —
+  no Tauri system deps needed.
+- **`static-checks` +1:** `tests/tools/check_encoding.py` (new, my
+  `tests/` territory) — see below.
+
+### Hygiene sweep
+
+- **Mojibake gate (T-154 lesson made permanent):**
+  `check_encoding.py` fails on UTF-8→cp1252→UTF-8 double-encoding
+  signatures (the exact byte patterns from the TASKS.md incident)
+  and on non-UTF-8 text files; pruned walk (skips `.git`,
+  `source/`, `node_modules`, `target`, …). One real hit on first
+  run: `tools/watcher/watcher-cycle-log.md` (live console capture
+  in system encoding) — generated log, explicitly excluded by name
+  with rationale; the scripts beside it scan clean. Final:
+  **OK (326 files)**.
+- **fmt --check:** unchanged — 40 hunks, 100% `kiwi-contacts`
+  (contact/store/vcard/tests). Everything else clean. Flagged for
+  Agent 9 (their first-ever clippy/fmt pass is still pending).
+- **artifacts/:** triaged, not torched. Deleted the 3 stale logs
+  (`bootstrap`, `tauri-dev`, `vite-dev` — regenerable dev output).
+  Kept `kill-watcher.ps1` (live ops tooling, used today) and all
+  screenshots (today's cited T-145/UI evidence in Agent 5's log —
+  not dead). All untracked/gitignored either way.
+
+**Files changed:** `.github/workflows/ci.yml`,
+`tests/tools/check_encoding.py` (new), `artifacts/` (3 logs
+removed), `docs/TASKS.md` (T-177 done), this log.
+
+**Assumptions:** first CI run on push proves the two e2e suites in
+the runner environment (unrun-on-runners until then, same as T-140
+noted); admin service healthy enough for A9's legs or they skip
+honestly; mobile team owns the 474 lint warnings.
+
+**Risks:** `infra-live` now builds the full workspace-adjacent
+toolchain (cargo + admin image) — slowest job by a margin; if
+runner minutes matter, split the Rust leg out (flagged, Lead call).
+
+## 2026-09-20 — T-171 done: sync-to-finding vertical e2e (live GreenMail)
+
+**Status:** done. `infra/e2e/test_mail_flow.py` (A9 house style:
+stdlib unittest, self-starting services, skip-never-fail) + Rust leg
+`kiwi-forensics/tests/vertical_mail_flow.rs` (env-gated `KIWI_E2E=1`,
+hermetic default). Both green live on first run; Rust leg re-ran
+green (cleanup works). No foreign code touched — the Rust leg lives
+in my crate's tests dir (kiwi-mail dev-dep already present from
+T-166), Python harness + README section only.
+
+### Design decisions
+
+- **Probed before assuming:** GreenMail CAPABILITY has no STARTTLS
+  (verified live against :1143), so a TLS-observation leg is
+  impossible on this fixture server. The suite asserts that absence
+  (`test_capability_documents_plaintext_scope`) and the vertical
+  honestly expects `KIWI-TRANSPORT-001` + `KIWI-AUTH-001` from the
+  real plaintext observation — documented in code, harness, and
+  `infra/e2e/README.md` rather than faked.
+- **Real sync path, not a reenactment:** seed via `APPEND`, then
+  `sync_folder` (the actual engine: SELECT → UIDVALIDITY → UID SEARCH
+  → chunked FETCH → upserts) into a memory-backed `MailStore`, then
+  row assertions on `list_messages`. Auth facts follow the §11
+  threading rule; findings double-evaluated for byte-identical JSON.
+- **Skip-gate verified both ways:** without `KIWI_E2E` the leg prints
+  the skip note and passes in 0.00s (workspace stays hermetic); with
+  it, the live run takes ~0.3s. Rerun green → flag+expunge cleanup
+  holds, per-run subject markers avoid cross-run collision.
+- The harness leaves services up (dev-friendly, documented); ports
+  resolve from env with `.env.example` fallback, mirroring A9's
+  helpers.
+
+**Evidence:** `python -m unittest discover -s infra/e2e -p
+"test_mail_flow.py"` → 2 OK; forensics crate 115 green (incl. the
+skip-gated leg), clippy `-D warnings` clean, fmt clean; secret_scan
+327/0, fixtures OK.
+
+**Files changed:** `kiwi-forensics/tests/vertical_mail_flow.rs`
+(new), `infra/e2e/test_mail_flow.py` (new),
+`infra/e2e/README.md` (§T-171), `docs/TASKS.md` (T-171 done),
+this log.
+
+**Assumptions:** compose mailpit/greenmail healthy (both were up);
+per-run markers make parallel runs safe; a future TLS-capable
+fixture server gets its own vertical — this harness must not be
+stretched to cover it.
+
+**Risks:** none new. E2E depends on daemon state by nature; CI
+coverage needs the infra-live job to run this module (Lead/CI
+decision, flagged).
+
 

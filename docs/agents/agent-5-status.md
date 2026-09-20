@@ -768,3 +768,100 @@
   `sendAtUnix`).
 - **Next:** idle until review feedback.
 
+## 2026-09-20 — T-173 contacts integration (branch release/v0.1.0)
+
+- **Status:** All three items delivered. No contacts IPC exists in the
+  backend (verified: zero `contact` hits in `src-tauri/`; Agent 9's
+  `kiwi.contacts/1` crate + `docs/contracts/contacts.md` are the spec), so
+  everything runs behind permanent wrappers with a labeled localStorage
+  book fallback (zero view changes on land). `npm run build` green first
+  try (tsc strict + vite, 47→49 modules). `src-tauri/` untouched.
+  `docs/contracts/ipc.md` untouched (Agent 7/Lead-owned — flag below
+  instead). No commits made.
+- **Files changed — kiwi-app/src (new):**
+  - `contacts.ts` — local book (`kiwi.contacts.local`, seeded once with
+    two labeled demo cards), `upsertLocal`/`deleteLocal`,
+    `filterContacts` (substring over name/org/notes/tags/emails, mirroring
+    contacts.md §3.2), `validateContactInput` (crate-cap mirrors).
+  - `views/contacts.tsx` — `#/contacts`: list (search + New), detail
+    (emails/phones/tags/notes), edit/create form, delete with confirm;
+    every mutation tries IPC then the local book with an honest note;
+    source labeled server/local/demo throughout.
+- **Files changed — kiwi-app/src (edited):**
+  - `kiwi.ts` — `ContactView`/`ContactInput`/email/phone views, tolerant
+    `parseContact`, `contactLabel`/`contactPrimaryEmail` (crate semantics).
+  - `ipc.ts` — `list/search/get/create/update/deleteContact(s)` +
+    `contactsByEmail` per contacts.md §3 (not the brief's
+    `list/search/upsert/delete` names — contract is authoritative).
+  - `router.ts` — `contacts` route; `chrome.tsx` sidebar button; App
+    palette action + render.
+  - `views/compose.tsx` — To/Cc `RecipientInput` with autocomplete
+    (book loads once: server list, else local; ↑↓/Enter/Esc/mouse,
+    combobox ARIA); Cc now sends for real (`cc: ccRecipients`, demo
+    policy + banners + drafts cover both lists, de-dupe across To/Cc).
+  - `views/mailbox.tsx` — reader "Add to contacts" (parses
+    `Name <addr>`, validates shape, server-then-local with note).
+- **Commands run:** `npm run build` in kiwi-app (green first try, 49
+  modules, no new deps).
+- **Assumptions/limits:** vCard import/export + tags/by-email UI panels
+  are contract surface without a view yet (import wizard per contacts.md
+  §5.2 is its own task). Local ids are `local-<ts>-<n>`, not the
+  `local-N` counter (counter lives server-side on land).
+- **Needs (Agent 7 — contacts IPC, proposed block for ipc.md §N):**
+  `kiwi_list_contacts(limit?, offset?)`, `kiwi_search_contacts(query,
+  limit?)`, `kiwi_get_contact(contactId)`,
+  `kiwi_create_contact(contact)`, `kiwi_update_contact(contactId,
+  contact)`, `kiwi_delete_contact(contactId)`,
+  `kiwi_contacts_by_email(address)` — all gated, camelCase `ContactView`
+  per contacts.md §2, error map per §7. Wrappers above already speak
+  exactly this; views need zero changes on land.
+- **Next:** import/export wizard if tasked; otherwise idle until review
+  feedback.
+
+## 2026-09-20 — T-176 search grammar + vCard wizard (branch release/v0.1.0)
+
+- **Status:** Both pieces delivered. Backend reality: Agent 8's
+  `MailStore::search` (FTS5, T-159) is in `kiwi-mail`, but NO Tauri search
+  IPC exists (verified: zero `search` hits in `src-tauri/`) — the T-160
+  `kiwi_search_messages` wrapper still throws, so the view runs the real
+  grammar locally with verbatim server strings ready. No contacts import/
+  export IPC either — the wizard is fully client-side. `npm run build`
+  green (tsc strict + vite, 49→50 modules; one interim red was a `*/`
+  inside my own block comment — fixed). `src-tauri/`, `ipc.md` untouched
+  (Lead-owned — flags below). No commits made.
+- **Files changed — kiwi-app/src (new):**
+  - `vcard.ts` — `parseVCard` (1 MiB cap, 1000 cards, unfolding, FN/N/
+    ORG/TITLE/NOTE/UID/EMAIL/TEL/CATEGORIES + PREF-first, PHOTO etc.
+    ignored, per-card issues, stray-content abort per §5.2) +
+    `exportVCard` (4.0, §3.4 escaping, 75-char folding).
+- **Files changed — kiwi-app/src (edited):**
+  - `kiwi.ts` — `parseSearchHit` tolerates absent `accountId` (folder→
+    account resolution is server-side until the IPC contract lands).
+  - `views/search.tsx` — grammar rewrite mirroring `search.rs`: plain +
+    `subject:/from:/to:/body:` + `"phrases"` + `-negation` (unknown
+    prefixes stay literal); `has:attachment`/`folder:` stripped before the
+    server call and applied as post-filters to both sources; clickable
+    syntax chips (`from: to: subject: body: - "phrase"`) inserting into
+    the query; quote-aware token utils; local mirror notes `to:` as
+    server-only; from-chip preserves quoted phrases.
+  - `views/contacts.tsx` — Import/Export panel: `.vcf` picker (typed
+    input, size-checked), preview table (name/emails/org) + per-card
+    issue list (contract §5.2: reasons, never bare counts), import with
+    primary-email dedupe (server-first, local fallback), export-all to
+    `kiwi-contacts.vcf`.
+- **Commands run:** `npm run build` in kiwi-app (green, 50 modules, no
+  new deps).
+- **Assumptions/limits:** server strings go verbatim (quotes/negation
+  intact) so land-time behavior matches local. Export covers the loaded
+  list (server mode) or the whole local book. Import matches on primary
+  email only (no field merge — per §5.4 the card wins wholesale).
+- **Needs (Agent 7/8 — search + contacts IPC, for ipc.md):**
+  `kiwi_search_messages(query, limit?, folderId?)` returning MessageMeta
+  rows incl. `accountId` (FTS grammar per kiwi-mail `search.rs`);
+  `kiwi_import_vcards(vcard)` → `VCardImportView`,
+  `kiwi_export_vcards(contactIds?)` per contacts.md §3/§5. Wrappers for
+  search already speak the shape; import/export views go fully client-side
+  until then.
+- **Next:** drop fallbacks as each IPC lands; otherwise idle until review
+  feedback.
+

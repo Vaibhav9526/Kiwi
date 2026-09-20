@@ -2,6 +2,75 @@
 
 > Append dated entries: status, files changed, commands run, tests, assumptions, risks.
 
+## 2026-09-20 — T-175: contacts + prefs IPC
+
+**Status:** implemented + verified. `cargo test -p kiwi-app` → 51/51
+green (4 new); clippy `-p kiwi-app --all-targets --no-deps` + fmt clean.
+
+### Contacts (implements kiwi.contacts/1 §3 — all 11 commands)
+
+`kiwi-contacts` is now a src-tauri dependency; `AppState.contacts` is a
+`Mutex<ContactStore>` opened as `contacts.db` under `data_dir` in both
+`open()` and `open_test()`. New `commands/contacts.rs`: list / search /
+get / create / update / delete / by_email / by_tag / tags /
+import_vcards / export_vcards — every command gated, IPC inputs bounded,
+`ContactsError` mapped per §7 (`Invalid|VCard`→invalid-input,
+`NotFound`→not-found, `Store|Io`→internal), writes audited
+(`contact-created|updated|deleted`, `contacts-imported`).
+
+Wire layer is a mechanical camelCase projection (`ContactView`,
+`ContactInput` minus store-owned fields) — all bounds stay crate-owned
+(`Contact::prepare` inside insert/update). Import runs `parse_vcards`
+with default `VCardLimits` then §5.4 dedup: `source_uid` match →
+wholesale update preserving id+createdUnix; per-card store failures land
+in `issues` rather than aborting. Export pages the whole book at
+`MAX_PAGE` when ids are omitted; an unknown explicit id is `not-found`.
+
+### Prefs (settings-UI store)
+
+New `commands/prefs.rs`: `kiwi_prefs_get/set/list` over
+`index.prefs` — scoped keys `global:<k>` / `acct:<id>:<k>`, `:` refused
+in caller keys, per-account scope requires a known account (`not-found`),
+values arbitrary JSON ≤64 KiB serialized, 1024-entry cap, persisted in
+`index.json`. Not a credential store — documented as such in the
+contract.
+
+### Naming note for Lead
+
+The user request said `kiwi_contacts_list/...`; contacts.md §3 names
+the commands `kiwi_list_contacts/...`. The contract is authoritative —
+implemented to the contract names (superset of the ask anyway:
+create+update covers "upsert").
+
+### Files changed
+
+`Cargo.toml` (+kiwi-contacts dep), `state.rs` (contacts store, prefs map,
+`pref_key`, `MAX_PREFS`, `AppIndex::load` → `pub(crate)`),
+`types.rs` (ContactView/ContactInput/VCardImportView/ImportIssueView/
+TagCountView/PrefEntryView), `commands/contacts.rs` + `commands/prefs.rs`
+(new), `commands/mod.rs`, `lib.rs` (14 new registrations → 50 total),
+`ipc.md` (new §9b/§9c).
+
+## 2026-09-20 — account-add → live-sync kick (T-157-adjacent)
+
+**Status:** implemented + verified. `cargo test -p kiwi-app` → 47/47
+green (1 new); clippy + fmt clean.
+
+The plumbing already existed — `add_account_impl` writes
+`index.account_ids` and the supervisor reconciles it every 2 s — but the
+wizard's account-create path would wait up to a full tick. Now
+`AppState::sync_wakeup` (`tokio::sync::Notify`) + `kick_sync()` let
+`kiwi_add_account`/`kiwi_remove_account` reconcile immediately:
+`tokio::select!` on `{tick, notified}` in `sync_supervisor`. Removal
+kicks too — the dead worker's handle is reaped and `sync_status` pruned
+in the same pass. `kiwi_sync_status` already reports the new account as
+`pending` via the `account_ids` join, so the wizard sees it instantly.
+
+### Files changed
+
+`state.rs` (`sync_wakeup` + `kick_sync`), `syncer.rs` (select on wake),
+`commands/accounts.rs` (kick on add/remove + 1 test), `ipc.md` §6c.
+
 ## 2026-09-20 — T-164 completion: §11 query params + live auth threading
 
 **Status:** implemented + verified. `cargo test -p kiwi-app` → 46/46
