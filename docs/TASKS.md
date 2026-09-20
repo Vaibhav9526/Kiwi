@@ -100,12 +100,15 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-172 | Mobile authenticator follow-ups: ESLint gate, pairing transport decision (WS vs mDNS/TCP), deny-vs-timeout wording alignment | Agent 4 | open | `mobile/`, `docs/contracts/authenticator.md` | T-136 |
 | T-173 | Contacts UI + IPC wrappers | Agent 5 | done | `kiwi-app/src/` | T-150 |
 | T-171 | Vertical e2e: compose → seed mailbox → kiwi-mail sync → store rows + observe→observe,finding emitted | Agent 6 | done (infra/e2e/test_mail_flow.py + Rust leg green live; plaintext scope asserted) | `infra/e2e/` | T-157 |
-| T-174 | `kiwi-pair` crate: Ed25519 challenge/verify, pairing store, replay protection, revoke | Agent 10 | open | `kiwi-pair/` | — |
+| T-174 | `kiwi-pair` crate: Ed25519 challenge/verify, pairing store, replay protection, revoke | Agent 10 | done | `kiwi-pair/` | — |
 | T-175 | Contacts IPC (list/search/upsert/delete/vCard) + prefs get/set commands | Agent 7 | open | `src-tauri/commands/` | T-150, T-167 |
 | T-176 | Wire search to real IPC (-term/scope: hints) + contacts import/export wizard | Agent 5 | open | `kiwi-app/src/` | T-159, T-173 |
 | T-177 | CI: infra-live e2e job (compose + both suites) + mobile lint gate + hygiene sweep | Agent 6 | done (infra-live runs infra/e2e both suites; mobile lint gated; encoding gate live; artifacts triaged) | `.github/`, `infra/` | T-171 |
-| T-178 | Autoconfig IPC contract request + ISPDB fixture expansion + discovery-chain test | Agent 8 | open | `kiwi-autoconfig/`, `ipc.md` | T-158 |
+| T-178 | Autoconfig IPC contract + ISPDB expansion + chain test | Agent 8 | done | `kiwi-autoconfig/`, `ipc.md` | T-158 |
 | T-179 | kiwi-admin audit export endpoint (NDJSON, org_admin) + e2e | Agent 9 | open | `kiwi-admin/` | T-149 |
-| T-180 | Phase C1: kiwi-mail file splits (imap/smtp/store/testutil → per-responsibility modules, git mv, zero functional diff) — freeze window required | Agent 10 | queued (after T-174) | `kiwi-mail/src/` | — |
-| T-181 | Phase C2: src-tauri splits (types.rs → types/ per-domain, commands/message.rs+send.rs) — freeze window | Agent 7 | queued (after T-175) | `kiwi-app/src-tauri/` | — |
+| T-180 | Phase C1: kiwi-mail file splits — freeze window required | Agent 10 | in-progress | `kiwi-mail/src/` | — |
+| T-181 | Phase C2: src-tauri splits — freeze window | Agent 7 | in-progress | `kiwi-app/src-tauri/` | — |
 | T-182 | Phase C3: App.tsx hooks/state extraction (1155 lines) — freeze window | Agent 5 | queued (after T-176) | `kiwi-app/src/` | — |
+| T-183 | kiwi-mailauth hardening: DKIM canonicalization edge cases, SPF 10-lookup limit, DMARC alignment modes | Agent 8 | open | `kiwi-mailauth/` | T-178 |
+| T-184 | Finish T-172 items: run mobile lint, transport decision, deny-vs-timeout wording | Agent 4 | open | `mobile/`, `docs/contracts/authenticator.md` | T-172 |
+| T-185 | kiwi-admin systematic defect-hunt review → docs/audits/admin-review-1.md | Agent 9 | open | `kiwi-admin/` (read-only) | T-149 |
