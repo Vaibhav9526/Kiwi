@@ -7,16 +7,16 @@ description = "KIWI domain-authentication checks: deterministic SPF/DKIM/DMARC e
 publish = false
 
 [dependencies]
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-thiserror = "2"
-base64 = "0.22"
-sha2 = "0.10"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+base64.workspace = true
+sha2.workspace = true
 rsa = { version = "0.9", features = ["sha2"] }
 ed25519-dalek = "3"
 rand_core = "0.6"
 hickory-resolver = { version = "0.26", features = ["tokio"] }
-tokio = { version = "1", features = ["rt", "time", "net"] }
+tokio = { workspace = true, features = ["rt", "time", "net"] }
 
 [lints]
 workspace = true

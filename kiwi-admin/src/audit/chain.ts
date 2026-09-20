@@ -93,25 +93,83 @@ export class InMemoryAuditLog {
   }
 }
 
-export function auditReplay(records: readonly AuditRecord[]): { valid: boolean; error: string | null } {
+export function auditReplay(records: readonly AuditRecord[]): ChainState {
+  // Hash-only (no contiguity requirement): the in-memory callers pin this
+  // message shape — see the deletion case in tests/audit.chain.test.ts, which
+  // expects "chain broken at seq 3" for a gap, not a contiguity complaint.
+  // DB-backed logs use verifyChain() with the default (strict) setting.
+  return verifyChain(records, { requireContiguous: false });
+}
+
+/** Outcome of verifying a window of the audit chain. */
+export interface ChainState {
+  valid: boolean;
+  error: string | null;
+  /** Rows actually verified. On failure this is the count BEFORE the bad row. */
+  checked: number;
+  /** entry_hash of the last verified row, or `genesis` for an empty window. */
+  headHash: string;
+  firstSeq: number | null;
+  lastSeq: number | null;
+}
+
+export interface VerifyChainOptions {
+  /**
+   * Require `seq` to run contiguously from the first row (default true).
+   *
+   * This is the second layer behind the hash chain, and it is why DB-backed
+   * verification is strict: a deleted row breaks the chain only if its
+   * neighbours' hashes were not recomputed to match. Contiguity catches the
+   * gap even when the hashes agree. A hash chain alone cannot see a row that
+   * was removed from the END of the log, which is the case this covers too.
+   */
+  requireContiguous?: boolean;
+}
+
+/**
+ * Verify a window of audit records: every hash recomputes, every `prev_hash`
+ * links to its predecessor, and (by default) `seq` is contiguous.
+ *
+ * The single implementation behind `AuditService.verify` and the signed export
+ * (T-179), so a log cannot verify one way for a reader and another way in an
+ * export. Pure — no I/O, no clock.
+ */
+export function verifyChain(records: readonly AuditRecord[], opts: VerifyChainOptions = {}): ChainState {
+  const requireContiguous = opts.requireContiguous ?? true;
+  const firstSeq = records.length > 0 ? records[0]!.seq : null;
+  const lastSeq = records.length > 0 ? records[records.length - 1]!.seq : null;
   let expectedPrev = "genesis";
-  for (const e of records) {
+  let expectedSeq: number | null = null;
+  let checked = 0;
+  for (const r of records) {
+    if (requireContiguous && expectedSeq !== null && r.seq !== expectedSeq) {
+      return {
+        valid: false,
+        error: `chain non-contiguous: expected seq ${expectedSeq}`,
+        checked,
+        headHash: expectedPrev,
+        firstSeq,
+        lastSeq,
+      };
+    }
+    expectedSeq = r.seq + 1;
     const eventJson = JSON.stringify({
-      actor: { subject: e.actor_subject, roles: JSON.parse(e.actor_roles ?? "[]") as string[] },
-      org_id: e.org_id,
-      action: e.action,
-      resource: e.resource,
-      outcome: e.outcome,
-      request_id: e.request_id,
-      details: JSON.parse(e.details ?? "{}") as Record<string, unknown>,
+      actor: { subject: r.actor_subject, roles: JSON.parse(r.actor_roles ?? "[]") as string[] },
+      org_id: r.org_id,
+      action: r.action,
+      resource: r.resource,
+      outcome: r.outcome,
+      request_id: r.request_id,
+      details: JSON.parse(r.details ?? "{}") as Record<string, unknown>,
     });
     const recomputed = computeEntryHash(eventJson, expectedPrev);
-    if (e.prev_hash !== expectedPrev || e.entry_hash !== recomputed) {
-      return { valid: false, error: `chain broken at seq ${e.seq}` };
+    if (r.prev_hash !== expectedPrev || r.entry_hash !== recomputed) {
+      return { valid: false, error: `chain broken at seq ${r.seq}`, checked, headHash: expectedPrev, firstSeq, lastSeq };
     }
-    expectedPrev = e.entry_hash;
+    expectedPrev = r.entry_hash;
+    checked += 1;
   }
-  return { valid: true, error: null };
+  return { valid: true, error: null, checked, headHash: expectedPrev, firstSeq, lastSeq };
 }
 
 /** Facade with outcome helpers; concrete stores implement the repository. */

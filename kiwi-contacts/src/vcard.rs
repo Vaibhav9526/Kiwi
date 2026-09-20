@@ -143,9 +143,10 @@ impl RawCard {
     /// Convert to a [`Contact`]. Properties this crate does not model (`ADR`,
     /// `URL`, `BDAY`, `PHOTO`, `X-*`, …) are ignored, not errors.
     pub fn to_contact(&self, now_unix: i64) -> Result<Contact, VCardError> {
-        let version = self.version.as_deref().ok_or(VCardError::MissingVersion {
-            index: self.index,
-        })?;
+        let version = self
+            .version
+            .as_deref()
+            .ok_or(VCardError::MissingVersion { index: self.index })?;
         if !matches!(version, "4.0" | "3.0" | "2.1") {
             return Err(VCardError::UnsupportedVersion {
                 index: self.index,
@@ -334,12 +335,11 @@ pub fn parse_vcards(input: &str, limits: &VCardLimits) -> Result<Vec<RawCard>, V
         if text.trim().is_empty() {
             continue;
         }
-        let (left, value) = split_once_unquoted(&text, ':').ok_or_else(|| {
-            VCardError::MalformedLine {
+        let (left, value) =
+            split_once_unquoted(&text, ':').ok_or_else(|| VCardError::MalformedLine {
                 line: line_no,
                 detail: "no ':' separating property name from value".to_string(),
-            }
-        })?;
+            })?;
         let property = parse_property(&left, value, line_no, limits)?;
         // Cloned so the default arm below can move the property into the card.
         let name = property.name.clone();
@@ -451,7 +451,10 @@ pub fn export_vcard(contact: &Contact) -> Result<String, VCardError> {
     if !uid.is_empty() {
         fold_into(&mut out, &format!("UID:{}", escape_text(uid)));
     }
-    fold_into(&mut out, &format!("FN:{}", escape_text(&contact.display_name)));
+    fold_into(
+        &mut out,
+        &format!("FN:{}", escape_text(&contact.display_name)),
+    );
     let n = format!(
         "{};{};{};{};{}",
         escape_text(contact.family_name.as_deref().unwrap_or("")),
@@ -468,7 +471,10 @@ pub fn export_vcard(contact: &Contact) -> Result<String, VCardError> {
         fold_into(&mut out, &format!("TITLE:{}", escape_text(title)));
     }
     for e in &contact.emails {
-        fold_into(&mut out, &with_type("EMAIL", e.label.as_deref(), &e.address));
+        fold_into(
+            &mut out,
+            &with_type("EMAIL", e.label.as_deref(), &e.address),
+        );
     }
     for p in &contact.phones {
         fold_into(&mut out, &with_type("TEL", p.label.as_deref(), &p.number));
@@ -861,7 +867,11 @@ fn split_offset(s: &str) -> (&str, i64) {
         return (s, 0);
     }
     let digits: String = tail.chars().filter(char::is_ascii_digit).collect();
-    if digits.len() != 4 || !tail.chars().all(|c| c.is_ascii_digit() || c == ':' || c == '+' || c == '-') {
+    if digits.len() != 4
+        || !tail
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == ':' || c == '+' || c == '-')
+    {
         return (s, 0);
     }
     let (Some(hh), Some(mm)) = (
@@ -1018,7 +1028,10 @@ END:VCARD\r\n";
         let cards = parse_vcards(src, &limits()).unwrap();
         assert_eq!(cards[0].properties.len(), 5);
         assert_eq!(cards[0].properties[1].group.as_deref(), Some("item1"));
-        assert_eq!(cards[0].to_contact(0).unwrap().primary_email(), Some("zoe@x.invalid"));
+        assert_eq!(
+            cards[0].to_contact(0).unwrap().primary_email(),
+            Some("zoe@x.invalid")
+        );
     }
 
     #[test]
@@ -1032,7 +1045,10 @@ END:VCARD\r\n";
             .iter()
             .find(|p| p.name == "NOTE")
             .map(|p| p.value.clone());
-        assert_eq!(note.as_deref(), Some("first part continued hereand a tab fold"));
+        assert_eq!(
+            note.as_deref(),
+            Some("first part continued hereand a tab fold")
+        );
     }
 
     #[test]
@@ -1046,7 +1062,10 @@ END:VCARD\r\n";
             .find(|p| p.name == "EMAIL")
             .unwrap();
         assert_eq!(email.value, "q@x.invalid");
-        assert_eq!(email.param("TYPE"), &["work".to_string(), "home".to_string()]);
+        assert_eq!(
+            email.param("TYPE"),
+            &["work".to_string(), "home".to_string()]
+        );
         assert_eq!(email.param("X-NOTE"), &["a:b;c".to_string()]);
         assert_eq!(
             cards[0].to_contact(0).unwrap().emails[0].label.as_deref(),
@@ -1062,7 +1081,10 @@ END:VCARD\r\n";
              EMAIL:zoe@x.invalid\r\nEND:VCARD\r\n"
         );
         let import = import_vcards(&src, &limits(), 0).unwrap();
-        assert!(import.is_complete(), "bulk properties are skipped, not fatal");
+        assert!(
+            import.is_complete(),
+            "bulk properties are skipped, not fatal"
+        );
         assert_eq!(import.contacts.len(), 1);
         assert_eq!(import.contacts[0].display_name, "Zoe");
     }
@@ -1181,7 +1203,10 @@ END:VCARD\r\n";
         let big = "x".repeat(65);
         assert!(matches!(
             parse_vcards(&big, &tight),
-            Err(VCardError::InputTooLarge { limit: 64, actual: 65 })
+            Err(VCardError::InputTooLarge {
+                limit: 64,
+                actual: 65
+            })
         ));
     }
 
@@ -1252,7 +1277,8 @@ END:VCARD\r\n";
             .map(|i| format!("t{i}"))
             .collect::<Vec<_>>()
             .join(",");
-        let src = format!("BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Many\r\nCATEGORIES:{tags}\r\nEND:VCARD\r\n");
+        let src =
+            format!("BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Many\r\nCATEGORIES:{tags}\r\nEND:VCARD\r\n");
         let import = import_vcards(&src, &limits(), 0).unwrap();
         assert!(import.issues[0].detail.contains("CATEGORIES"));
     }
@@ -1266,11 +1292,18 @@ END:VCARD\r\n";
         let src = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Evil\\nEND:VCARD\\nBEGIN:VCARD\\nSneaky\r\n\
                    END:VCARD\r\n";
         let cards = parse_vcards(src, &limits()).unwrap();
-        assert_eq!(cards.len(), 1, "the escaped newline is data, not a card break");
+        assert_eq!(
+            cards.len(),
+            1,
+            "the escaped newline is data, not a card break"
+        );
         assert_eq!(cards[0].properties.len(), 1, "and not a stray property");
 
         let import = import_vcards(src, &limits(), 0).unwrap();
-        assert!(import.contacts.is_empty(), "a name with a newline is not storable");
+        assert!(
+            import.contacts.is_empty(),
+            "a name with a newline is not storable"
+        );
         assert_eq!(import.issues.len(), 1);
         assert!(
             import.issues[0].detail.contains("display_name"),
@@ -1281,7 +1314,8 @@ END:VCARD\r\n";
 
     #[test]
     fn notes_is_the_only_multi_line_field() {
-        let src = "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Ok\r\nNOTE:line one\\nline two\r\nEND:VCARD\r\n";
+        let src =
+            "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:Ok\r\nNOTE:line one\\nline two\r\nEND:VCARD\r\n";
         let c = parse_vcards(src, &limits()).unwrap()[0]
             .to_contact(0)
             .unwrap();
@@ -1393,7 +1427,10 @@ END:VCARD\r\n";
             label: Some("we;ird=type".into()),
         }];
         let text = export_vcard(&c).unwrap();
-        assert!(text.contains("EMAIL;TYPE=weirdtype:a@b.invalid\r\n"), "{text}");
+        assert!(
+            text.contains("EMAIL;TYPE=weirdtype:a@b.invalid\r\n"),
+            "{text}"
+        );
         assert_eq!(text.matches("TYPE=").count(), 1);
 
         let mut c = Contact::new("A", 0);

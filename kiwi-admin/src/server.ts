@@ -19,15 +19,40 @@ import { createServiceContainer, type ServiceContainer } from "./services.js";
 import { AuthorizationDeniedError, type Actor } from "./rbac/rbac.js";
 import { RequestValidationError, isRecord } from "./util/validate.js";
 import { ALL_ORG_ROLES, TLS_VERSION_ALIASES, type ExternalRecipientBehavior, type OrgRole } from "./types.js";
+import { AUDIT_EXPORT_CONTENT_TYPE } from "./audit/export.js";
 
 const HOST = "127.0.0.1";
 const DEFAULT_PORT = 8471;
 const MAX_BODY_BYTES = 1024 * 1024;
 
+/**
+ * Audit-export signing key (T-179). Read once at startup from the environment.
+ * Callers may override it per server (tests pin it; compose supplies it), which
+ * keeps this out of the request path and makes the export deterministic under
+ * test. The key is NEVER logged and never echoed — the export carries only its
+ * SHA-256 fingerprint (audit/export.ts). Absent means exports are unsigned, and
+ * the export says so rather than emitting a placeholder signature.
+ */
+const EXPORT_KEY_FROM_ENV = (process.env["KIWI_AUDIT_EXPORT_KEY"] ?? "").trim() || null;
+
 function send(res: ServerResponse, status: number, body: unknown): void {
   const payload = JSON.stringify(body);
   res.writeHead(status, { "content-type": "application/json; charset=utf-8", "content-length": Buffer.byteLength(payload) });
   res.end(payload);
+}
+
+/**
+ * NDJSON is written as a raw body — `send()` would JSON-encode the newlines and
+ * destroy the line structure. `no-store` because the audit log is evidence:
+ * a cached or intermediary-transformed copy is worse than no copy.
+ */
+function sendNdjson(res: ServerResponse, status: number, body: string): void {
+  res.writeHead(status, {
+    "content-type": `${AUDIT_EXPORT_CONTENT_TYPE}; charset=utf-8`,
+    "content-length": Buffer.byteLength(body),
+    "cache-control": "no-store",
+  });
+  res.end(body);
 }
 
 function errBody(code: string, message: string, details?: Record<string, unknown>): unknown {
@@ -143,10 +168,21 @@ function numParam(url: URL, name: string, fallback: number): number {
   return n;
 }
 
-export function createHttpServer(container: ServiceContainer): Server {
+export interface HttpServerOptions {
+  /**
+   * Overrides the export signing key. `undefined` follows the environment;
+   * `null` forces unsigned. `| undefined` is explicit because callers forward
+   * their own optional parameter (see ServiceContainerOptions).
+   */
+  auditExportKey?: string | null | undefined;
+}
+
+export function createHttpServer(container: ServiceContainer, opts: HttpServerOptions = {}): Server {
+  const exportKey =
+    opts.auditExportKey === undefined ? EXPORT_KEY_FROM_ENV : (opts.auditExportKey ?? "").trim() || null;
   return createServer(async (req, res) => {
     try {
-      await route(container, req, res);
+      await route(container, req, res, exportKey);
     } catch (err) {
       if (err instanceof AuthorizationDeniedError) {
         send(res, 403, errBody("auth.denied", err.message, { permission: err.permission }));
@@ -161,7 +197,12 @@ export function createHttpServer(container: ServiceContainer): Server {
   });
 }
 
-async function route(container: ServiceContainer, req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function route(
+  container: ServiceContainer,
+  req: IncomingMessage,
+  res: ServerResponse,
+  exportKey: string | null,
+): Promise<void> {
   const url = new URL(req.url ?? "/", `http://${HOST}`);
   const method = (req.method ?? "GET").toUpperCase();
   const seg = url.pathname.split("/").filter((s) => s.length > 0);
@@ -319,13 +360,21 @@ async function route(container: ServiceContainer, req: IncomingMessage, res: Ser
     }
   }
 
-  // GET /api/v1/audit | GET /api/v1/audit/verify
-  // Both require `audit.read` (enforced in AuditService, where a denial is also
-  // attributed to the actor). The audit log is a security control: reading it,
-  // and reading whether its chain is intact, are permissions — not givens.
+  // GET /api/v1/audit | GET /api/v1/audit/verify | GET /api/v1/audit/export
+  // The audit log is a security control: reading it, and reading whether its
+  // chain is intact, are permissions — not givens. All three are enforced in
+  // AuditService, where a denial is also attributed to the actor.
   if (rest[0] === "audit" && rest.length <= 2 && method === "GET") {
     if (rest[1] === "verify") {
       send(res, 200, await container.audit.verify(actor, { limit: numParam(url, "limit", 1000) }));
+      return;
+    }
+    // T-179: signed NDJSON of the whole chain. `audit.export` — org_admin only.
+    // No `?org=`: an export is only worth signing if it covers every row, so a
+    // filtered one is refused by omission rather than silently weakened.
+    if (rest[1] === "export") {
+      const exported = await container.audit.export(actor, { now, key: exportKey });
+      sendNdjson(res, 200, exported.ndjson);
       return;
     }
     if (rest.length === 1) {
@@ -353,19 +402,21 @@ export interface ServerHandle {
 /** Starts the localhost-only server. Never binds anything but 127.0.0.1. */
 export async function startServer(
   opts: {
-    // `| undefined` is required on the two forwarded options, not decorative:
-    // this function passes them straight through to `createServiceContainer`
-    // and `exactOptionalPropertyTypes` distinguishes absent from explicitly
-    // undefined. See `ServiceContainerOptions`.
+    // `| undefined` is required on the forwarded options, not decorative: this
+    // function passes them straight through to `createServiceContainer` /
+    // `createHttpServer` and `exactOptionalPropertyTypes` distinguishes absent
+    // from explicitly undefined. See `ServiceContainerOptions`.
     dbPath?: string | undefined;
     databaseUrl?: string | null | undefined;
+    /** Export signing key override; `undefined` follows the environment. */
+    auditExportKey?: string | null | undefined;
     port?: number;
     container?: ServiceContainer;
   } = {},
 ): Promise<ServerHandle> {
   const container =
     opts.container ?? (await createServiceContainer({ dbPath: opts.dbPath, databaseUrl: opts.databaseUrl }));
-  const server = createHttpServer(container);
+  const server = createHttpServer(container, { auditExportKey: opts.auditExportKey });
   const port = opts.port ?? Number(process.env["KIWI_ADMIN_PORT"] ?? DEFAULT_PORT);
   await new Promise<void>((resolve) => server.listen(port, HOST, resolve));
   const address = server.address();

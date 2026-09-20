@@ -89,9 +89,15 @@ async fn set_status(state: &AppState, account_id: &str, f: impl FnOnce(&mut Acco
 pub async fn sync_supervisor(app: AppHandle) {
     let mut workers: BTreeMap<String, JoinHandle<()>> = BTreeMap::new();
     let mut tick = tokio::time::interval(SUPERVISOR_TICK);
+    let state0 = app.state::<Arc<AppState>>().inner().clone();
     loop {
-        tick.tick().await;
-        let state = app.state::<Arc<AppState>>().inner().clone();
+        // Reconcile on the tick OR immediately when a command pokes the
+        // wake signal (account add/remove — the wizard shouldn't wait).
+        tokio::select! {
+            _ = tick.tick() => {}
+            _ = state0.sync_wakeup.notified() => {}
+        }
+        let state = state0.clone();
         let ids = state.index.lock().await.account_ids.clone();
 
         workers.retain(|_, h| !h.is_finished());

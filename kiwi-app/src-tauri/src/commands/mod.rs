@@ -11,10 +11,12 @@
 //! - Errors are `IpcError { code, message }` — codes are the contract.
 
 pub mod accounts;
+pub mod contacts;
 pub mod devices;
 pub mod endpoint;
 pub mod mail;
 pub mod message;
+pub mod prefs;
 pub mod security;
 pub mod send;
 pub mod system;

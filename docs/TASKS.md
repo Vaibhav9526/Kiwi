@@ -103,6 +103,6 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-174 | `kiwi-pair` crate: Ed25519 challenge/verify, pairing store, replay protection, revoke | Agent 10 | open | `kiwi-pair/` | — |
 | T-175 | Contacts IPC (list/search/upsert/delete/vCard) + prefs get/set commands | Agent 7 | open | `src-tauri/commands/` | T-150, T-167 |
 | T-176 | Wire search to real IPC (-term/scope: hints) + contacts import/export wizard | Agent 5 | open | `kiwi-app/src/` | T-159, T-173 |
-| T-177 | CI: infra-live e2e job (compose + both suites) + mobile lint gate + hygiene sweep | Agent 6 | open | `.github/`, `infra/` | T-171 |
+| T-177 | CI: infra-live e2e job (compose + both suites) + mobile lint gate + hygiene sweep | Agent 6 | done (infra-live runs infra/e2e both suites; mobile lint gated; encoding gate live; artifacts triaged) | `.github/`, `infra/` | T-171 |
 | T-178 | Autoconfig IPC contract request + ISPDB fixture expansion + discovery-chain test | Agent 8 | open | `kiwi-autoconfig/`, `ipc.md` | T-158 |
 | T-179 | kiwi-admin audit export endpoint (NDJSON, org_admin) + e2e | Agent 9 | open | `kiwi-admin/` | T-149 |

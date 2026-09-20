@@ -190,6 +190,9 @@ pub(crate) async fn add_account_impl(
         );
         index.save(&state.data_dir)?;
     }
+    // Kick the sync supervisor — the new account's live worker starts
+    // now, not on the next 2 s reconcile tick (T-157-adjacent).
+    state.kick_sync();
     state.audit.lock().await.record(
         "account-added",
         &format!("{} <{}>", acct.display_name, acct.email),
@@ -271,6 +274,7 @@ pub async fn kiwi_remove_account(
     index.folders.remove(&account_id);
     index.save(&state.data_dir)?;
     drop(index);
+    state.kick_sync(); // supervisor reaps the worker now, not next tick
     // MailStore::delete_account (schema v2) cascades folders/messages/
     // pop3_seen/outbox rows and sweeps on-disk payload dirs.
     state.store.lock().await.delete_account(&account_id)?;
@@ -748,5 +752,63 @@ fn pop3_mech(auth: Option<&AuthInput>) -> AuthMechanism {
     match auth.map(|a| a.kind.as_str()) {
         Some("password") | Some("apop") => AuthMechanism::Plain,
         _ => AuthMechanism::None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::{AuthInput, ServerInput};
+    use std::time::Duration;
+
+    fn acct_input() -> AddAccountInput {
+        AddAccountInput {
+            display_name: "A".into(),
+            email: "a@x.test".into(),
+            incoming_protocol: "imap".into(),
+            incoming: ServerInput {
+                host: "127.0.0.1".into(),
+                port: 1,
+                security: "tls".into(),
+            },
+            outgoing: ServerInput {
+                host: "127.0.0.1".into(),
+                port: 1,
+                security: "tls".into(),
+            },
+            username: None,
+            outgoing_username: None,
+            incoming_auth: Some(AuthInput {
+                kind: "password".into(),
+                secret: Some("s".into()),
+            }),
+            outgoing_auth: Some(AuthInput {
+                kind: "password".into(),
+                secret: Some("s".into()),
+            }),
+            accept_invalid_certs: false,
+        }
+    }
+
+    /// Account add registers the id AND pokes the supervisor's wake
+    /// signal — the live worker starts without waiting for the tick.
+    #[tokio::test(flavor = "current_thread")]
+    async fn add_account_registers_and_kicks_supervisor() {
+        let dir = std::env::temp_dir().join(format!(
+            "kiwi-acct-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let state = AppState::open_test(dir.clone()).unwrap();
+        let view = add_account_impl(&state, acct_input()).await.unwrap();
+        assert!(state.index.lock().await.account_ids.contains(&view.id));
+        // The notify permit is stored — a waiter would return instantly.
+        tokio::time::timeout(Duration::from_millis(50), state.sync_wakeup.notified())
+            .await
+            .expect("add_account_impl must kick the sync supervisor");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

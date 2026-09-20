@@ -1,7 +1,7 @@
 # Contract — Tauri IPC Command Catalog (`kiwi.ipc/1`)
 
 > Owner: Agent 7 · **Contract version: `kiwi.ipc/1`** · Status: implemented
-> (T-120, T-121, T-142, T-144, T-146, T-157, T-163, T-164, T-169)
+> (T-120, T-121, T-142, T-144, T-146, T-157, T-163, T-164, T-169, T-175)
 > Implemented by `kiwi-app/src-tauri` (Rust, Tauri 2). This document is
 > authoritative for the frontend ↔ backend boundary; the registered handler
 > list in `kiwi-app/src-tauri/src/lib.rs` is the reference implementation.
@@ -179,6 +179,54 @@ observation (session + findings) it produces.
 A failed probe returns `ok: false` with the failing step — it is *not* an
 IPC error. IPC errors are reserved for invalid input / locked.
 
+### `kiwi_discover_account(email) → DiscoveryOutcomeView` **[gated]** — REQUESTED (T-178, not yet implemented)
+
+> Request by Agent 8 (authoritative shape source: autoconfig.md,
+> `kiwi.autoconfig/1`). To be implemented by Agent 7 in
+> `kiwi-app/src-tauri` (command + `types.rs` structs). Field names below
+> follow ipc.md camelCase conventions; the Rust source
+> (`kiwi_autoconfig::discover`) is snake_case — rename per field as shown.
+
+Setup-wizard autoconfiguration: runs the full discovery pipeline
+(ISPDB fixtures → `autoconfig.<domain>` → `/.well-known/autoconfig` →
+MX heuristics; stage order is binding, autoconfig.md §3) and returns the
+winning suggestion plus the stage-attempt audit trail. Nothing is
+persisted — the caller decides what to do via `kiwi_add_account`.
+
+```jsonc
+// input:  { "email": "user@example.test" }
+// output:
+{ "email": "user@example.test",        // normalized
+  "domain": "example.test",
+  "source": "ispdb | autoconfig_host | well_known | mx_heuristic | manual",
+  "needsManualReview": false,          // true ⇒ UI must ask before saving
+  "suggestion": {
+    "source": "…", "email": "user@example.test", "displayName": "…",
+    "incoming": { "kind": "imap | pop3", "host": "…", "port": 993,
+                  "security": "tls | starttls | plaintext",
+                  "auth": "password | xoauth2", "username": "…" },
+    "outgoing":  { "host": "…", "port": 587,
+                   "security": "tls | starttls | plaintext",
+                   "auth": "password | xoauth2", "username": "…" } },
+  "attempts": [ { "source": "…",
+                  "outcome": "hit | miss | unreachable | malformed | unsupported",
+                  "detail": "…" } ] }
+```
+
+Mapping rules (binding): security `implicit_tls → "tls"`,
+`start_tls → "starttls"`, `plaintext → "plaintext"` (same vocabulary as
+the §5 inputs); auth `password → "password"`, `xoauth2 → "xoauth2"`
+(matches `AddAccountInput.auth.kind`, so a suggestion feeds straight
+into `kiwi_add_account` without re-interpretation). `suggestion` is
+always present for a valid email; `attempts` is the audit trail —
+render or log it, and treat `needsManualReview == true` as a hard gate
+(pattern guesses must not persist without explicit user consent).
+Errors: only `invalid-input` (autoconfig `Error::InvalidEmail`) and
+`locked`. Discovery performs network calls (MX + HTTPS document fetch);
+it stays offline-first — every network miss is a recorded attempt, and
+an empty result set still yields a flagged suggestion, never an error.
+
+
 ## 6. Commands — mail read **[gated]**
 
 ### `kiwi_list_folders(accountId) → FolderView[]`
@@ -291,8 +339,11 @@ Audited.
 
 ## 6c. Live sync engine **[background]** (T-157)
 
-A supervisor (spawned at startup, 2 s reconcile tick) runs one sync worker
-per configured account. Workers are dedicated threads with their own
+A supervisor (spawned at startup) runs one sync worker per configured
+account. Reconcile happens on a 2 s tick **or immediately** when
+`kiwi_add_account`/`kiwi_remove_account` poke the wake signal — the
+wizard's account-create path starts its live worker without waiting.
+Workers are dedicated threads with their own
 current-thread runtime — kiwi-mail clients are `!Send` inside futures, so
 they cannot live on the command runtime (same constraint as
 `run_mail_io`).
@@ -495,6 +546,70 @@ Both args required to set; both omitted (`null`) clears. `baseUrl` must be
 `policy-unavailable` at config time. Audited. Equivalent env fallback when
 no binding exists: `KIWI_ADMIN_URL` (+ optional `KIWI_ADMIN_ORG`) — same
 loopback rule applies.
+
+## 9b. Commands — contacts **[gated]** (T-175, implements kiwi.contacts/1 §3)
+
+The address book lives in `contacts.db` under the profile dir (owned by
+`kiwi-contacts`; never shares mail.db's tables). All field bounds and the
+`local-` id reservation are crate-enforced (`Contact::prepare` runs on
+every write); this layer adds the lock gate, IPC input bounds, §7 error
+mapping, and audit records on writes.
+
+```jsonc
+// ContactView (camelCase projection of Contact — contacts.md §2)
+{ "id": "local-7", "displayName": "…", "givenName": null, "familyName": null,
+  "middleName": null, "namePrefix": null, "nameSuffix": null,
+  "org": null, "title": null, "notes": null, "tags": ["…"],
+  "emails": [ { "address": "a@b", "label": "work" | null } ],
+  "phones": [ { "number": "…", "label": null } ],
+  "sourceUid": null, "revUnix": null,
+  "createdUnix": 0, "updatedUnix": 0 }
+
+// ContactInput = Contact minus {id, createdUnix, updatedUnix}
+// (store-owned — values sent are ignored on create, preserved on update)
+```
+
+| command | returns | notes |
+|---------|---------|-------|
+| `kiwi_list_contacts(limit?, offset?)` | `ContactView[]` | `displayName`,`id` order; `limit` clamps to 500 |
+| `kiwi_search_contacts(query, limit?)` | `ContactView[]` | substring over name/org/notes/tags/emails; `%`/`_`/`\` literal; empty → list |
+| `kiwi_get_contact(contactId)` | `ContactView` | `not-found` when absent |
+| `kiwi_create_contact(contact)` | `ContactView` | assigns `local-N` |
+| `kiwi_update_contact(contactId, contact)` | `ContactView` | full replace; `not-found` on unknown id |
+| `kiwi_delete_contact(contactId)` | `{removed}` | `false` when already absent |
+| `kiwi_contacts_by_email(address)` | `ContactView \| null` | recipient→name (composer/reader) |
+| `kiwi_contacts_by_tag(tag, limit?)` | `ContactView[]` | case-insensitive tag |
+| `kiwi_contact_tags()` | `{tag, count}[]` | most-used first |
+| `kiwi_import_vcards(vcard)` | `VCardImportView` | below |
+| `kiwi_export_vcards(contactIds?)` | `{vcard}` | all contacts when omitted; unknown explicit id → `not-found` |
+
+`kiwi_import_vcards` — hard stream errors abort as `invalid-input`;
+per-card issues never discard the rest. Re-import dedupes on the card's
+`UID` → `sourceUid`: a known `UID` updates in place (id + `createdUnix`
+preserved, card wins wholesale — §5.4); a store-level failure on one
+card lands in `issues` instead of aborting the batch.
+
+```jsonc
+{ "contacts": [ ContactView ],
+  "issues": [ { "cardIndex": 3, "detail": "email exceeds 320 bytes" } ] }
+```
+
+## 9c. Commands — preferences **[gated]** (T-175)
+
+Small key/value store in the sidecar index for the settings UI. Two
+scopes: global (`accountId` absent) and per-account (`accountId` present
+— must name a known account, else `not-found`; a typo'd id must not
+silently write into the void). Not a credential store — secrets go to
+the OS keystore via account auth only.
+
+| command | returns | notes |
+|---------|---------|-------|
+| `kiwi_prefs_get(key, accountId?)` | `value \| null` | `null` = unset |
+| `kiwi_prefs_set(key, accountId?, value)` | `{key, value}` | overwrites in-scope |
+| `kiwi_prefs_list(accountId?)` | `{key, value}[]` | scope enumeration, key-ordered |
+
+Bounds: `key` 1–128 chars, `:` refused (scope separator); `value` any
+JSON ≤ 64 KiB serialized; 1024 entries total.
 
 ## 10. Commands — endpoint signals **[exempt]** (T-121)
 

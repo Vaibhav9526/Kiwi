@@ -22,6 +22,8 @@ Usage (from repo root):
     python -m unittest discover -s infra/e2e -v
     # or:  python infra/e2e/test_admin_e2e.py
 """
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -74,7 +76,19 @@ BASE = f"http://127.0.0.1:{ADMIN_PORT}"
 # Every call carries a role: the service's header actors are FAIL-CLOSED, so a
 # request without `x-kiwi-roles` is refused rather than defaulted to admin.
 ORG_ADMIN = {"x-kiwi-subject": "e2e-admin", "x-kiwi-roles": "org_admin"}
+SECURITY_ADMIN = {"x-kiwi-subject": "e2e-security", "x-kiwi-roles": "security_admin"}
 VIEWER = {"x-kiwi-subject": "e2e-viewer", "x-kiwi-roles": "viewer"}
+
+
+def export_key():
+    """The signing key the *service* is using for the audit export (T-179).
+
+    Compose interpolates `${KIWI_AUDIT_EXPORT_KEY}` with shell environment
+    taking precedence over the env file, so mirror that order here rather than
+    reading only the file — otherwise a caller who exports the variable inline
+    would see the test recompute against the wrong key.
+    """
+    return (os.environ.get("KIWI_AUDIT_EXPORT_KEY") or ENV.get("KIWI_AUDIT_EXPORT_KEY") or "").strip()
 
 
 def daemon_up():
@@ -104,6 +118,25 @@ def http(method, path, body=None, headers=None, timeout=20):
             return exc.code, None
     except (URLError, OSError):
         return 0, None
+
+
+def http_text(method, path, headers=None, timeout=30):
+    """Return (status, content_type, raw_body) — for responses that are not JSON.
+
+    The audit export (T-179) is NDJSON, so `http()` would fail to parse it and
+    the line structure is the thing under test anyway.
+    """
+    req = Request(BASE + path, method=method)
+    for key, value in (headers or {}).items():
+        req.add_header(key, value)
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.headers.get("content-type", ""), resp.read().decode("utf-8")
+    except HTTPError as exc:
+        ctype = exc.headers.get("content-type", "") if exc.headers else ""
+        return exc.code, ctype, exc.read().decode("utf-8", "replace")
+    except (URLError, OSError):
+        return 0, "", ""
 
 
 def wait_for_health(timeout=HEALTH_TIMEOUT):
@@ -436,6 +469,125 @@ class TransportLeg(AdminE2E):
         # A viewer holds audit.read, so the read is allowed.
         status, _ = http("GET", "/api/v1/audit?limit=5", None, VIEWER)
         self.assertEqual(status, 200)
+
+    def test_audit_export_is_ndjson_of_the_whole_chain(self):
+        """T-179: the export is NDJSON, covers every row, and carries the
+        chain-state verdict for exactly those rows."""
+        self.exercise_full_flow()
+        status, ctype, text = http_text("GET", "/api/v1/audit/export", ORG_ADMIN)
+        self.assertEqual(status, 200, f"export failed: {status} {text[:200]}")
+        # NDJSON: a JSON response would have escaped the newlines and destroyed
+        # the line structure the format is defined by.
+        self.assertIn("application/x-ndjson", ctype)
+
+        lines = [line for line in text.split("\n") if line]
+        self.assertGreaterEqual(len(lines), 3, "header + chain_state + signature at minimum")
+        self.assertFalse(text.endswith("\n\n"), "no trailing blank line")
+
+        header = json.loads(lines[0])
+        self.assertEqual(header["type"], "header")
+        self.assertEqual(header["version"], "kiwi.audit-export/1")
+        self.assertEqual(header["first_seq"], 1, "the export always starts at genesis")
+        self.assertEqual(header["rows"], len(lines) - 3)
+        self.assertGreater(header["rows"], 0, "activity above must have produced audit rows")
+        # The header's window must describe the rows actually shipped.
+        self.assertEqual(json.loads(lines[1])["seq"], header["first_seq"])
+        self.assertEqual(json.loads(lines[header["rows"]])["seq"], header["last_seq"])
+
+        state = json.loads(lines[-2])
+        self.assertEqual(state["type"], "chain_state")
+        self.assertTrue(state["valid"], f"live chain must verify: {state.get('error')}")
+        self.assertIsNone(state["error"])
+        self.assertEqual(state["checked"], header["rows"], "every exported row must have been verified")
+        self.assertEqual(state["last_seq"], header["last_seq"])
+        self.assertEqual(state["head_hash"], json.loads(lines[header["rows"]])["entry_hash"])
+
+        signature = json.loads(lines[-1])
+        self.assertEqual(signature["type"], "signature")
+        self.assertEqual(signature["covers_through"], len(lines) - 1)
+
+    def test_audit_export_signature_is_recomputable(self):
+        """T-179: an outside verifier holding only the key and the artifact can
+        check it — that is the whole point of exporting instead of printing."""
+        key = export_key()
+        if not key:
+            self.skipTest(
+                "KIWI_AUDIT_EXPORT_KEY is unset in .env and .env.example, so the service "
+                "exports unsigned (honest, but there is nothing to recompute). Add it to "
+                ".env — an existing .env predating T-179 will not have it."
+            )
+        self.exercise_full_flow()
+        status, _, text = http_text("GET", "/api/v1/audit/export", ORG_ADMIN)
+        self.assertEqual(status, 200)
+        lines = [line for line in text.split("\n") if line]
+        signature = json.loads(lines[-1])
+
+        self.assertTrue(signature["signed"], "compose supplies the key, so the live export must be signed")
+        self.assertEqual(signature["alg"], "hmac-sha256")
+        self.assertEqual(signature["key_id"], hashlib.sha256(key.encode("utf-8")).hexdigest()[:16])
+        # Everything before the signature line, joined by newline, exactly as sent.
+        expected = hmac.new(
+            key.encode("utf-8"), "\n".join(lines[:-1]).encode("utf-8"), hashlib.sha256
+        ).hexdigest()
+        self.assertEqual(signature["signature"], expected, "the export does not match its own signature")
+        # The key is a secret input, never an artifact field.
+        self.assertNotIn(key, text, "the signing key must never appear in the export")
+
+    def test_audit_export_rows_rehash_independently(self):
+        """T-179: the rows carry enough to recompute the hash chain without
+        calling back into the service, so a reader does not have to trust the
+        `chain_state` line it was handed."""
+        self.exercise_full_flow()
+        status, _, text = http_text("GET", "/api/v1/audit/export", ORG_ADMIN)
+        self.assertEqual(status, 200)
+        lines = [line for line in text.split("\n") if line]
+        header = json.loads(lines[0])
+
+        prev = "genesis"
+        for line in lines[1 : header["rows"] + 1]:
+            record = json.loads(line)
+            # Rebuild the canonical hash input in the documented field order
+            # (admin-api.md §7) from the exported row alone.
+            canonical = json.dumps(
+                {
+                    "actor": {
+                        "subject": record["actor_subject"],
+                        "roles": json.loads(record["actor_roles"] or "[]"),
+                    },
+                    "org_id": record["org_id"],
+                    "action": record["action"],
+                    "resource": record["resource"],
+                    "outcome": record["outcome"],
+                    "request_id": record["request_id"],
+                    "details": json.loads(record["details"] or "{}"),
+                },
+                separators=(",", ":"),
+                ensure_ascii=False,
+            )
+            digest = hashlib.sha256((canonical + prev).encode("utf-8")).hexdigest()
+            self.assertEqual(
+                record["prev_hash"], prev, f"row {record['seq']} does not link to its predecessor"
+            )
+            self.assertEqual(
+                record["entry_hash"],
+                digest,
+                f"row {record['seq']} does not hash to its recorded entry_hash",
+            )
+            prev = record["entry_hash"]
+
+        self.assertEqual(prev, json.loads(lines[-2])["head_hash"], "recomputed head must match chain_state")
+
+    def test_audit_export_needs_more_than_audit_read(self):
+        """T-179: `audit.export` is org_admin only — reading the log is not
+        enough, and neither is being a security_admin."""
+        for headers in (
+            VIEWER,
+            SECURITY_ADMIN,
+            {"x-kiwi-subject": "e2e-anonymous"},
+            {"x-kiwi-subject": "typo", "x-kiwi-roles": "org-admin,admin"},
+        ):
+            status, _, body = http_text("GET", "/api/v1/audit/export", headers)
+            self.assertEqual(status, 403, f"export must refuse {headers}: {status} {body[:120]}")
 
 
 class DialectLeg(AdminE2E):

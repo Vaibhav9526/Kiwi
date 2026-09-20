@@ -1,17 +1,21 @@
 /**
- * Composer (T-143, T-151): live send via kiwi_send_message with real
+ * Composer (T-143, T-151, T-173): live send via kiwi_send_message with real
  * undo-grace receipts, send-later scheduling, attachment upload (≤25 MiB),
  * and server-side policy outcomes (policy-blocked / policy-unavailable)
- * rendered as the S-07 banner. Formatting toolbar inserts plaintext
+ * rendered as the S-07 banner. To/Cc fields share a contact autocomplete
+ * (server book, else the local book). Formatting toolbar inserts plaintext
  * markers (the send path is text-only; no HTML is generated). Drafts
  * autosave to this device's localStorage (no draft command in kiwi.ipc/1 —
  * attachments are never part of the autosave). Demo mode keeps the labeled
  * local simulation from T-112.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { PolicyBannerVerdict } from "../kiwi";
+import type { ContactView } from "../kiwi";
+import { contactLabel, contactPrimaryEmail } from "../kiwi";
 import { accountPref, loadPref } from "../prefs";
 import { api, IpcError } from "../ipc";
+import { filterContacts, loadLocalBook } from "../contacts";
 import { PolicyBanner } from "../components/security";
 
 const TEMPLATES = ["Status update", "Meeting request", "Out of office"];
@@ -48,6 +52,115 @@ function fileToB64(file: File): Promise<string> {
   });
 }
 
+/**
+ * Recipient field with contact autocomplete (T-173): filters the address
+ * book (server list, else the local book) by substring; ↑↓/Enter/Esc,
+ * mouse pick, Enter with no match adds the typed address. Book loads once —
+ * server `search_contacts` semantics are substring too, so local filtering
+ * matches on land.
+ */
+function RecipientInput({
+  id,
+  label,
+  value,
+  onChange,
+  onPick,
+  book,
+}: {
+  id: string;
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  onPick: (email: string) => void;
+  book: ContactView[];
+}) {
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const sugg = useMemo(() => (value.trim() ? filterContacts(book, value).slice(0, 6) : []), [book, value]);
+  useEffect(() => setActive(0), [value]);
+  const shown = open && sugg.length > 0;
+  return (
+    <span style={{ position: "relative", display: "inline-block" }}>
+      <label htmlFor={id}>{label}: </label>
+      <input
+        id={id}
+        type="text"
+        value={value}
+        onChange={(e) => {
+          onChange(e.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowDown" && sugg.length > 0) {
+            e.preventDefault();
+            setOpen(true);
+            setActive((a) => (a + 1) % sugg.length);
+          } else if (e.key === "ArrowUp" && sugg.length > 0) {
+            e.preventDefault();
+            setActive((a) => (a - 1 + sugg.length) % sugg.length);
+          } else if (e.key === "Enter") {
+            e.preventDefault();
+            if (shown && sugg[active]) {
+              const hit = sugg[active];
+              onPick(contactPrimaryEmail(hit) || contactLabel(hit));
+            } else {
+              onPick(value.trim());
+            }
+            onChange("");
+            setOpen(false);
+          } else if (e.key === "Escape") {
+            setOpen(false);
+          }
+        }}
+        placeholder="type a name or address"
+        role="combobox"
+        aria-expanded={shown}
+        aria-controls={`${id}-sugg`}
+        aria-activedescendant={shown ? `${id}-sugg-${active}` : undefined}
+        autoComplete="off"
+      />
+      {shown && (
+        <ul
+          id={`${id}-sugg`}
+          role="listbox"
+          aria-label={`${label} suggestions`}
+          style={{
+            position: "absolute", zIndex: 20, left: 0, right: 0, margin: 0, padding: 0, listStyle: "none",
+            background: "var(--kiwi-surface)", border: "1px solid var(--kiwi-border)", borderRadius: "8px",
+            boxShadow: "var(--kiwi-shadow)", maxHeight: "12rem", overflowY: "auto",
+          }}
+        >
+          {sugg.map((c, i) => (
+            <li
+              key={c.id || contactPrimaryEmail(c)}
+              id={`${id}-sugg-${i}`}
+              role="option"
+              aria-selected={i === active}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                onPick(contactPrimaryEmail(c) || contactLabel(c));
+                onChange("");
+                setOpen(false);
+              }}
+              onMouseEnter={() => setActive(i)}
+              style={{
+                padding: "0.35rem 0.55rem", cursor: "pointer",
+                background: i === active ? "var(--kiwi-hover-bg)" : "transparent",
+                borderLeft: i === active ? "2px solid var(--kiwi-brand)" : "2px solid transparent",
+              }}
+            >
+              <strong>{contactLabel(c)}</strong>{" "}
+              <small style={{ color: "var(--kiwi-text-secondary)" }}>{contactPrimaryEmail(c)}</small>
+            </li>
+          ))}
+        </ul>
+      )}
+    </span>
+  );
+}
+
 export function ComposeView({
   mode,
   accounts,
@@ -76,9 +189,13 @@ export function ComposeView({
     return accounts[0]?.id ?? "";
   });
   const [to, setTo] = useState("");
+  const [cc, setCc] = useState("");
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
   const [recipients, setRecipients] = useState<string[]>([]);
+  const [ccRecipients, setCcRecipients] = useState<string[]>([]);
+  const [book, setBook] = useState<ContactView[]>([]);
+  const [bookSource, setBookSource] = useState<"server" | "local">("local");
   const [scheduled, setScheduled] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
   const [graceLeft, setGraceLeft] = useState<number | null>(null);
@@ -99,6 +216,29 @@ export function ComposeView({
   });
   const timer = useRef<number | null>(null);
 
+  // Address book for autocomplete (T-173): server list once, else the
+  // local book. Filtered client-side per keystroke either way.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const list = await api.searchContacts("", 500);
+        if (!cancelled) {
+          setBook(list);
+          setBookSource("server");
+        }
+      } catch {
+        if (!cancelled) {
+          setBook(loadLocalBook());
+          setBookSource("local");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Per-account signature (T-167): stored in prefs (Settings → Accounts),
   // appended at send time only — drafts and the outbox never gain it silently.
   const signature = accountId ? loadPref(accountPref("kiwi.signature", accountId), "") : "";
@@ -113,8 +253,9 @@ export function ComposeView({
     try {
       const raw = window.localStorage.getItem(draftKey);
       if (!raw) return;
-      const d = JSON.parse(raw) as { recipients?: unknown; subject?: unknown; body?: unknown; scheduled?: unknown };
+      const d = JSON.parse(raw) as { recipients?: unknown; cc?: unknown; subject?: unknown; body?: unknown; scheduled?: unknown };
       if (Array.isArray(d.recipients)) setRecipients(d.recipients.filter((r): r is string => typeof r === "string"));
+      if (Array.isArray(d.cc)) setCcRecipients(d.cc.filter((r): r is string => typeof r === "string"));
       if (typeof d.subject === "string") setSubject(d.subject);
       if (typeof d.body === "string") setBody(d.body);
       if (typeof d.scheduled === "string" || d.scheduled === null) setScheduled(d.scheduled as string | null);
@@ -127,16 +268,16 @@ export function ComposeView({
 
   useEffect(() => {
     const t = window.setTimeout(() => {
-      if (recipients.length === 0 && !subject && !body) return;
+      if (recipients.length === 0 && ccRecipients.length === 0 && !subject && !body) return;
       try {
-        window.localStorage.setItem(draftKey, JSON.stringify({ recipients, subject, body, scheduled, at: Date.now() }));
+        window.localStorage.setItem(draftKey, JSON.stringify({ recipients, cc: ccRecipients, subject, body, scheduled, at: Date.now() }));
         setDraftNote(`Draft autosaved ${new Date().toLocaleTimeString()} (this device only, no attachments).`);
       } catch {
         setDraftNote("Draft autosave failed (storage full?) — copy your text before leaving.");
       }
     }, 1000);
     return () => window.clearTimeout(t);
-  }, [draftKey, recipients, subject, body, scheduled]);
+  }, [draftKey, recipients, ccRecipients, subject, body, scheduled]);
 
   const clearDraft = () => {
     try {
@@ -145,13 +286,15 @@ export function ComposeView({
       // Already gone — nothing to do.
     }
     setRecipients([]);
+    setCcRecipients([]);
     setSubject("");
     setBody("");
     setScheduled(null);
     setDraftNote("Draft discarded.");
   };
 
-  const demoResult = mode === "demo" ? demoEvaluate(recipients) : null;
+  const allRecipients = useMemo(() => [...recipients, ...ccRecipients], [recipients, ccRecipients]);
+  const demoResult = mode === "demo" ? demoEvaluate(allRecipients) : null;
   const blocked = mode === "demo" && demoResult?.verdict === "block";
 
   useEffect(() => {
@@ -201,12 +344,24 @@ export function ComposeView({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, accountId, recipients, subject, body, scheduled, attachments, sending]);
+  }, [mode, accountId, recipients, ccRecipients, subject, body, scheduled, attachments, sending]);
 
-  const addRecipient = () => {
-    const v = to.trim();
-    if (v && !recipients.includes(v)) setRecipients((r) => [...r, v]);
-    setTo("");
+  /** Add a picked/typed address to To (false) or Cc (true), de-duplicated. */
+  const addAddress = (email: string, toCc: boolean) => {
+    const v = email.trim();
+    if (!v) return;
+    if (toCc) {
+      if (!ccRecipients.includes(v) && !recipients.includes(v)) setCcRecipients((r) => [...r, v]);
+      setCc("");
+    } else {
+      if (!recipients.includes(v) && !ccRecipients.includes(v)) setRecipients((r) => [...r, v]);
+      setTo("");
+    }
+  };
+
+  const removeAddress = (email: string) => {
+    setRecipients((x) => x.filter((y) => y !== email));
+    setCcRecipients((x) => x.filter((y) => y !== email));
   };
 
   // Plaintext formatting toolbar: wraps the textarea selection with markers
@@ -253,8 +408,8 @@ export function ComposeView({
       setSendError("Choose a sending account first.");
       return;
     }
-    if (recipients.length === 0) {
-      setSendError("Add at least one recipient.");
+    if (recipients.length === 0 && ccRecipients.length === 0) {
+      setSendError("Add at least one recipient (To or Cc).");
       return;
     }
     // Send-later validation: the backend treats sendAtUnix as not-before.
@@ -277,7 +432,7 @@ export function ComposeView({
         accountId,
         {
           to: recipients,
-          cc: [],
+          cc: ccRecipients,
           bcc: [],
           subject,
           text: sendText,
@@ -376,10 +531,10 @@ export function ComposeView({
     <section aria-label="Compose message" style={{ maxWidth: "46rem" }}>
       <h1>Compose {mode === "demo" && <small style={{ color: "var(--kiwi-text-secondary)" }}>(demo)</small>}</h1>
       {mode === "demo" && demoResult && demoResult.verdict !== "none" && (
-        <PolicyBanner verdict={demoResult.verdict} offenders={demoResult.offenders} onRemove={(a) => setRecipients((r) => r.filter((x) => x !== a))} />
+        <PolicyBanner verdict={demoResult.verdict} offenders={demoResult.offenders} onRemove={removeAddress} />
       )}
       {banner && (
-        <PolicyBanner verdict={banner.verdict} offenders={banner.offenders} onRemove={(a) => setRecipients((r) => r.filter((x) => x !== a))} />
+        <PolicyBanner verdict={banner.verdict} offenders={banner.offenders} onRemove={removeAddress} />
       )}
       {mode === "live" && accounts.length > 0 && (
         <p>
@@ -396,35 +551,54 @@ export function ComposeView({
         </p>
       )}
       <p>
-        <label>
-          To:{" "}
-          <input
-            type="email"
-            value={to}
-            onChange={(e) => setTo(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                addRecipient();
-              }
-            }}
-            placeholder="name@example.test, Enter to add"
-          />{" "}
-          <button type="button" onClick={addRecipient}>
-            Add
-          </button>
-        </label>
+        <RecipientInput
+          id="compose-to"
+          label="To"
+          value={to}
+          onChange={setTo}
+          onPick={(email) => addAddress(email, false)}
+          book={book}
+        />{" "}
+        <button type="button" onClick={() => addAddress(to, false)}>
+          Add
+        </button>
+      </p>
+      <p>
+        <RecipientInput
+          id="compose-cc"
+          label="Cc"
+          value={cc}
+          onChange={setCc}
+          onPick={(email) => addAddress(email, true)}
+          book={book}
+        />{" "}
+        <button type="button" onClick={() => addAddress(cc, true)}>
+          Add
+        </button>{" "}
+        <small style={{ color: "var(--kiwi-text-secondary)" }}>
+          Contacts: {bookSource === "server" ? "address book" : "local book (contacts IPC pending)"}.
+        </small>
       </p>
       <p aria-label="Recipients">
         {recipients.map((r) => (
-          <span key={r} className="kiwi-pill unknown" style={{ marginRight: "0.3rem" }}>
-            {r}{" "}
-            <button type="button" onClick={() => setRecipients((x) => x.filter((y) => y !== r))} aria-label={`Remove ${r}`}>
+          <span key={`to-${r}`} className="kiwi-pill unknown" style={{ marginRight: "0.3rem" }}>
+            To: {r}{" "}
+            <button type="button" onClick={() => removeAddress(r)} aria-label={`Remove ${r}`}>
               ✕
             </button>
           </span>
         ))}
-        {recipients.length === 0 && <small style={{ color: "var(--kiwi-text-secondary)" }}>No recipients yet.</small>}
+        {ccRecipients.map((r) => (
+          <span key={`cc-${r}`} className="kiwi-pill unknown" style={{ marginRight: "0.3rem" }}>
+            Cc: {r}{" "}
+            <button type="button" onClick={() => removeAddress(r)} aria-label={`Remove ${r}`}>
+              ✕
+            </button>
+          </span>
+        ))}
+        {recipients.length === 0 && ccRecipients.length === 0 && (
+          <small style={{ color: "var(--kiwi-text-secondary)" }}>No recipients yet.</small>
+        )}
       </p>
       <p>
         <label>

@@ -274,4 +274,32 @@ mod tests {
         // Bundled table must NOT contain example.test (no overlap).
         assert!(lookup_in(ISPDB_FIXTURES, &d).is_none());
     }
+
+    #[test]
+    fn named_provider_fixtures_present_and_deterministic() {
+        // T-178: the six named providers must be present with their
+        // published facts, and lookups must be stable across runs.
+        let expected = [
+            ("gmail.com", "Google", "imap.gmail.com", AuthKind::XOAuth2),
+            ("outlook.com", "Microsoft 365", "outlook.office365.com", AuthKind::XOAuth2),
+            ("yahoo.com", "Yahoo", "imap.mail.yahoo.com", AuthKind::XOAuth2),
+            ("icloud.com", "iCloud", "imap.mail.me.com", AuthKind::Password),
+            ("zoho.com", "Zoho", "imap.zoho.com", AuthKind::Password),
+            ("fastmail.com", "Fastmail", "imap.fastmail.com", AuthKind::Password),
+        ];
+        for (domain, provider, imap_host, auth) in expected {
+            let d = DomainName::parse(domain).unwrap();
+            let e = lookup_in(ISPDB_FIXTURES, &d)
+                .unwrap_or_else(|| panic!("{provider} fixture missing"));
+            assert_eq!(e.provider, provider, "{provider}: wrong entry");
+            assert_eq!(e.imap.0, imap_host, "{provider}: wrong imap host");
+            assert_eq!(e.imap.1, 993, "{provider}: wrong imap port");
+            assert_eq!(e.imap.2, SocketSecurity::ImplicitTls, "{provider}: wrong security");
+            assert_eq!(e.auth, auth, "{provider}: wrong auth kind");
+            // Deterministic: repeated suggestion builds agree exactly.
+            let s1 = lookup_email(&format!("u@{domain}"));
+            let s2 = lookup_email(&format!("u@{domain}"));
+            assert_eq!(s1, s2, "{provider} lookup not deterministic");
+        }
+    }
 }

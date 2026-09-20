@@ -320,4 +320,52 @@ mod tests {
         // Bundled table has no such suffix.
         assert!(from_mx("u@corp.test", &records).is_none());
     }
+
+    #[test]
+    fn mx_heuristic_google_workspace_private_domain() {
+        // T-178: private (custom) domain served by Google Workspace —
+        // MX points at Google, provider endpoints come back.
+        let records = mx(&[("aspmx.l.google.com", 1)]);
+        let a = from_mx("ops@acme-corp.test", &records).expect("google workspace hit");
+        assert_eq!(a.display_name, "Google");
+        assert_eq!(a.incoming.host, "imap.gmail.com");
+        assert_eq!(a.incoming.port, 993);
+        assert_eq!(a.incoming.security, SocketSecurity::ImplicitTls);
+        assert_eq!(a.incoming.auth, AuthKind::XOAuth2);
+        assert_eq!(a.outgoing.host, "smtp.gmail.com");
+        assert_eq!(a.outgoing.auth, AuthKind::XOAuth2);
+        assert_eq!(a.incoming.username, "ops@acme-corp.test");
+        // Deterministic across runs.
+        assert_eq!(from_mx("ops@acme-corp.test", &records), Some(a));
+    }
+
+    #[test]
+    fn mx_heuristic_m365_private_domain() {
+        // T-178: private domain on Microsoft 365 —
+        // <domain>.mail.protection.outlook.com.
+        let records = mx(&[("acme-corp.test.mail.protection.outlook.com", 0)]);
+        let a = from_mx("ops@acme-corp.test", &records).expect("m365 hit");
+        assert_eq!(a.display_name, "Microsoft 365");
+        assert_eq!(a.incoming.host, "outlook.office365.com");
+        assert_eq!(a.incoming.port, 993);
+        assert_eq!(a.incoming.security, SocketSecurity::ImplicitTls);
+        assert_eq!(a.incoming.auth, AuthKind::XOAuth2);
+        assert_eq!(a.outgoing.host, "smtp.office365.com");
+        assert_eq!(a.outgoing.port, 587);
+        assert_eq!(a.outgoing.security, SocketSecurity::StartTls);
+    }
+
+    #[test]
+    fn mx_heuristic_zoho_private_domain() {
+        // T-178: private domain on Zoho (password-auth provider); lowest
+        // preference record wins the match.
+        let records = mx(&[("mx.zoho.com", 10), ("mx2.zoho.com", 20)]);
+        let a = from_mx("ops@acme-corp.test", &records).expect("zoho hit");
+        assert_eq!(a.display_name, "Zoho");
+        assert_eq!(a.incoming.host, "imap.zoho.com");
+        assert_eq!(a.incoming.security, SocketSecurity::ImplicitTls);
+        assert_eq!(a.incoming.auth, AuthKind::Password);
+        assert_eq!(a.outgoing.host, "smtp.zoho.com");
+        assert_eq!(a.outgoing.port, 465);
+    }
 }

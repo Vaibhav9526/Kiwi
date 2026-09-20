@@ -142,6 +142,18 @@ pub fn thread_key(folder_id: i64, uid: u64) -> String {
 /// bounded; the cache is rebuildable from bodies/sync at any time).
 pub const MAX_THREAD_HEADERS: usize = 50_000;
 
+/// Bound on stored preference entries (global + per-account combined).
+pub const MAX_PREFS: usize = 1_024;
+
+/// Preference key forms — `:` is reserved as the scope separator and
+/// never allowed inside a caller-supplied key.
+pub fn pref_key(account_id: Option<&str>, key: &str) -> String {
+    match account_id {
+        Some(id) => format!("acct:{id}:{key}"),
+        None => format!("global:{key}"),
+    }
+}
+
 /// Sidecar index — app-layer bookkeeping that is NOT mail data.
 /// (`thread_headers` is a derived cache of header fields, not a copy of
 /// mail data — it can be dropped and repopulated losslessly.)
@@ -167,6 +179,10 @@ pub struct AppIndex {
     /// `In-Reply-To`/`References`. Bounded at [`MAX_THREAD_HEADERS`].
     #[serde(default)]
     pub thread_headers: BTreeMap<String, ThreadHeaders>,
+    /// User preferences (T-175): `"global:<key>"` or `"acct:<id>:<key>"`
+    /// → JSON value. Bounded at [`MAX_PREFS`].
+    #[serde(default)]
+    pub prefs: BTreeMap<String, serde_json::Value>,
 }
 
 impl Default for AppIndex {
@@ -180,12 +196,13 @@ impl Default for AppIndex {
             device_ids: Vec::new(),
             org: None,
             thread_headers: BTreeMap::new(),
+            prefs: BTreeMap::new(),
         }
     }
 }
 
 impl AppIndex {
-    fn load(dir: &Path) -> CmdResult<Self> {
+    pub(crate) fn load(dir: &Path) -> CmdResult<Self> {
         let path = dir.join("index.json");
         if !path.exists() {
             let idx = Self::default();
@@ -392,6 +409,9 @@ pub struct AppState {
     pub policy_warned: std::sync::atomic::AtomicBool,
     /// One-shot warn flag: "admin endpoint set but no org id".
     pub no_org_warned: std::sync::atomic::AtomicBool,
+    /// Local address book (T-175) — `contacts.db` under `data_dir`,
+    /// owned by `kiwi-contacts` (never shares mail.db's tables).
+    pub contacts: Mutex<kiwi_contacts::ContactStore>,
     pub index: Mutex<AppIndex>,
     pub audit: Mutex<AuditLog>,
     /// Per-boot session id — challenges bind to it, so issued challenges die
@@ -414,7 +434,7 @@ impl AppState {
             index,
             audit,
             Arc::new(OsCredentialStore::new()),
-        );
+        )?;
         s.reload_outbox();
         Ok(s)
     }
@@ -433,7 +453,7 @@ impl AppState {
             index,
             audit,
             Arc::new(kiwi_mail::account::MemoryCredentialStore::new()),
-        );
+        )?;
         s.reload_outbox();
         Ok(s)
     }
@@ -494,8 +514,12 @@ impl AppState {
         index: AppIndex,
         audit: AuditLog,
         credentials: Arc<dyn CredentialStore>,
-    ) -> Self {
-        Self {
+    ) -> CmdResult<Self> {
+        Ok(Self {
+            contacts: Mutex::new(
+                kiwi_contacts::ContactStore::open(&data_dir, now_unix())
+                    .map_err(|e| IpcError::new("contacts", format!("open contacts.db: {e}")))?,
+            ),
             data_dir,
             store: Mutex::new(store),
             credentials,
@@ -517,7 +541,7 @@ impl AppState {
             audit: Mutex::new(audit),
             boot_session_id: new_id("boot"),
             session_counter: AtomicU64::new(0),
-        }
+        })
     }
 
     /// Poke the sync supervisor so an added/removed account reconciles

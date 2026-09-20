@@ -20,8 +20,9 @@ import type { CSSProperties } from "react";
 import type { FindingInfo, MessageBodyView, MessageEnvelope, MessagePatch, OutboxItem, RenderedBodyView } from "../kiwi";
 import { severityGlyph, severityLabel } from "../kiwi";
 import { listen } from "@tauri-apps/api/event";
-import { isTauri } from "../ipc";
+import { api, isTauri } from "../ipc";
 import { loadPref, savePref } from "../prefs";
+import { loadLocalBook, saveLocalBook, upsertLocal } from "../contacts";
 import { navigate } from "../router";
 import { SecurityPill } from "../components/security";
 import { buildThreads } from "../threading";
@@ -114,9 +115,41 @@ export function MailboxView(props: MailboxProps) {
   const unreadIds = messages.filter((m) => m.unread).map((m) => m.id);
   const isTrash = folder !== "outbox" && /trash|deleted|bin/i.test(folderLabel);
   const [confirmEmpty, setConfirmEmpty] = useState(false);
+  const [contactNote, setContactNote] = useState<string | null>(null);
   useEffect(() => {
     setConfirmEmpty(false);
   }, [folder]);
+  useEffect(() => {
+    setContactNote(null);
+  }, [selectedId]);
+
+  /** Add the sender to contacts (T-173): server first, labeled local book
+    * fallback. Display name guessed from `Name <addr>` shape; editable in
+    * the Contacts view. */
+  const addSenderToContacts = async () => {
+    if (!selected) return;
+    const raw = props.body?.from?.[0] ?? selected.from;
+    const m = raw.match(/^(.*)<([^>]+)>\s*$/);
+    const address = (m ? m[2] : raw).trim();
+    const name = (m ? m[1] : "").trim().replace(/^["']|["']$/g, "");
+    if (!address || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(address)) {
+      setContactNote(`Cannot add — "${raw}" is not a usable address.`);
+      return;
+    }
+    const input = {
+      displayName: name || address,
+      tags: [] as string[],
+      emails: [{ address }],
+      phones: [] as { number: string; label: string | null }[],
+    };
+    try {
+      await api.createContact(input);
+      setContactNote(`Saved ${address} to contacts.`);
+    } catch {
+      saveLocalBook(upsertLocal(loadLocalBook(), input));
+      setContactNote(`Saved ${address} locally — contacts IPC not in the backend yet.`);
+    }
+  };
 
   // Conversation threads (T-165): grouped from the visible list, newest
   // activity first. Single-message threads render as plain rows.
@@ -392,8 +425,16 @@ export function MailboxView(props: MailboxProps) {
               />
             </div>
             <p style={{ color: "var(--kiwi-text-secondary)" }}>
-              From {selected.from} · To {selected.accountEmail} · {formatDate(selected.date)}
+              From {selected.from} · To {selected.accountEmail} · {formatDate(selected.date)}{" "}
+              <button type="button" onClick={() => void addSenderToContacts()} title="Save the sender to contacts">
+                <small>Add to contacts</small>
+              </button>
             </p>
+            {contactNote && (
+              <p role="status">
+                <small>{contactNote}</small>
+              </p>
+            )}
             {locked ? (
               <p role="note">Message body unavailable — mailbox is locked.</p>
             ) : props.bodyLoading ? (

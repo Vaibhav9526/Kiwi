@@ -1,7 +1,12 @@
 /** Localhost HTTP transport tests (T-134): contract wire mapping over services. */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { createHmac } from "node:crypto";
 import { startServer, type ServerHandle } from "../src/server.js";
+import { AUDIT_EXPORT_VERSION } from "../src/audit/export.js";
 import { makeTempDbPath } from "./helpers/db.js";
+
+/** Pinned so the export tests can recompute the HMAC hermetically. */
+const EXPORT_KEY = "unit-test-export-key";
 
 let handle: ServerHandle;
 let base: string;
@@ -22,6 +27,12 @@ async function api(path: string, opts: { method?: string; body?: unknown; header
   return { status: res.status, json: (await res.json()) as unknown };
 }
 
+/** Raw-text fetch, for responses that are not JSON (the NDJSON export). */
+async function apiRaw(path: string, headers: Record<string, string>): Promise<{ status: number; contentType: string; text: string }> {
+  const res = await fetch(`${base}${path}`, { headers });
+  return { status: res.status, contentType: res.headers.get("content-type") ?? "", text: await res.text() };
+}
+
 const adminHeaders = { "x-kiwi-subject": "tester", "x-kiwi-roles": "org_admin" };
 const viewerHeaders = { "x-kiwi-subject": "viewer", "x-kiwi-roles": "viewer", "x-kiwi-org": "__ORG__" };
 
@@ -29,8 +40,9 @@ let orgId = "";
 
 beforeAll(async () => {
   // `databaseUrl: null` pins the SQLite dialect so the suite never follows an
-  // ambient DATABASE_URL into a real Postgres instance.
-  handle = await startServer({ dbPath: makeTempDbPath(), databaseUrl: null, port: 0 });
+  // ambient DATABASE_URL into a real Postgres instance; `auditExportKey` is
+  // pinned for the same reason so the export signature is reproducible.
+  handle = await startServer({ dbPath: makeTempDbPath(), databaseUrl: null, auditExportKey: EXPORT_KEY, port: 0 });
   base = `http://127.0.0.1:${handle.port}`;
   const created = await api("/api/v1/orgs", { method: "POST", body: { name: "http.test" }, headers: adminHeaders });
   expect(created.status).toBe(201);
@@ -210,5 +222,52 @@ describe("server transport", () => {
     expect(scopedItems.some((r) => r.action === "org.create")).toBe(false);
     // Rows that ARE in the org come through.
     expect(scopedItems.some((r) => r.action === "policy.create")).toBe(true);
+  });
+
+  it("exports the audit log as signed NDJSON", async () => {
+    const r = await apiRaw("/api/v1/audit/export", adminHeaders);
+    expect(r.status).toBe(200);
+    // NDJSON, not JSON — a JSON response would mean the newlines survived as
+    // escapes and the line structure was destroyed.
+    expect(r.contentType).toContain("application/x-ndjson");
+
+    const lines = r.text.split("\n").filter((l) => l.length > 0);
+    const header = JSON.parse(lines[0] ?? "") as { type: string; version: string; rows: number; first_seq: number };
+    expect(header.type).toBe("header");
+    expect(header.version).toBe(AUDIT_EXPORT_VERSION);
+    expect(header.first_seq).toBe(1);
+    // header + one line per record + chain_state + signature
+    expect(header.rows).toBe(lines.length - 3);
+
+    const state = JSON.parse(lines[lines.length - 2] ?? "") as { type: string; valid: boolean; error: string | null };
+    expect(state.type).toBe("chain_state");
+    expect(state.valid).toBe(true);
+    expect(state.error).toBeNull();
+
+    const sig = JSON.parse(lines[lines.length - 1] ?? "") as {
+      type: string;
+      alg: string;
+      signed: boolean;
+      signature: string;
+      covers_through: number;
+    };
+    expect(sig.type).toBe("signature");
+    expect(sig.alg).toBe("hmac-sha256");
+    expect(sig.signed).toBe(true);
+    expect(sig.covers_through).toBe(lines.length - 1);
+    // Recompute the HMAC exactly as an outside verifier would.
+    expect(sig.signature).toBe(createHmac("sha256", EXPORT_KEY).update(lines.slice(0, -1).join("\n")).digest("hex"));
+    // The key itself never appears in the artifact.
+    expect(r.text).not.toContain(EXPORT_KEY);
+  });
+
+  it("refuses audit export for everyone but org_admin", async () => {
+    // `audit.read` is broad (all three roles hold it) and `audit.export` is not:
+    // this is the test that keeps the two from being conflated.
+    const securityAdmin = { "x-kiwi-subject": "sec", "x-kiwi-roles": "security_admin" };
+    for (const headers of [viewerHeaders, securityAdmin, { "x-kiwi-subject": "anonymous" }]) {
+      const r = await apiRaw("/api/v1/audit/export", headers);
+      expect(r.status).toBe(403);
+    }
   });
 });

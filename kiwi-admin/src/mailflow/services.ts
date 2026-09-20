@@ -6,7 +6,9 @@ import { parseMailflowIngest } from "./model.js";
 import type { MailflowEvent, MailDirection, PolicyVerdict } from "./model.js";
 import type { AuditRepository, MailflowRepository } from "../db/interfaces.js";
 import type { AuditEventInput, AuditOutcome } from "../audit/model.js";
-import { canonicalEventJson, computeEntryHash } from "../audit/chain.js";
+import { canonicalEventJson, computeEntryHash, verifyChain } from "../audit/chain.js";
+import { buildAuditExport, AUDIT_EXPORT_MAX_ROWS, type AuditExport } from "../audit/export.js";
+import { RequestValidationError } from "../util/validate.js";
 import type { ServiceContainerLike } from "../policy/services.js";
 
 export interface ExternalMailflowInput {
@@ -67,6 +69,16 @@ export interface AuditQueryRow {
   details: string | null;
 }
 
+/**
+ * The audit log and its access paths.
+ *
+ * Note on self-auditing: `query` and `verify` gate on `audit.read` but do NOT
+ * record their own denials, and `export` records only its successes. The audit
+ * service is the thing that writes the chain, so having it audit its refusals
+ * would make every denial of a log read recurse into the log it was refused.
+ * Mutations made through the other services are audited normally by
+ * `ServiceContainer.auditWrap`.
+ */
 export class AuditService {
   constructor(private readonly repos: { audit: AuditRepository }) {}
 
@@ -111,35 +123,59 @@ export class AuditService {
    * Always reads EVERY row, never an org-scoped slice — a hash chain only
    * validates over the full sequence, and a filtered window would report a
    * false "valid" for a log whose other rows were tampered with.
+   *
+   * Shares `verifyChain` with the T-179 export so the two cannot disagree.
    */
   async verify(actor: Actor, opts: { limit: number }): Promise<{ valid: boolean; checked: number; error: string | null }> {
     requirePermission(actor, "audit.read", null);
-    const rows = await this.repos.audit.range(0, Number.MAX_SAFE_INTEGER, Math.min(opts.limit, 10000));
-    let expectedPrev = "genesis";
-    let expectedSeq: number | null = null;
-    for (const r of rows) {
-      // Defense in depth alongside the DB append-only guard (admin-api.md §7):
-      // seq values must be contiguous within the verified window, so a gap
-      // left by row removal is flagged even if hashes were recomputed.
-      if (expectedSeq !== null && r.seq !== expectedSeq) {
-        return { valid: false, checked: rows.length, error: `chain non-contiguous: expected seq ${expectedSeq}` };
-      }
-      expectedSeq = r.seq + 1;
-      const eventJson = JSON.stringify({
-        actor: { subject: r.actor_subject, roles: JSON.parse(r.actor_roles ?? "[]") as string[] },
-        org_id: r.org_id,
-        action: r.action,
-        resource: r.resource,
-        outcome: r.outcome,
-        request_id: r.request_id,
-        details: JSON.parse(r.details ?? "{}") as Record<string, unknown>,
-      });
-      const recomputed = computeEntryHash(eventJson, expectedPrev);
-      if (r.prev_hash !== expectedPrev || r.entry_hash !== recomputed) {
-        return { valid: false, checked: rows.length, error: `chain broken at seq ${r.seq}` };
-      }
-      expectedPrev = r.entry_hash;
+    const rows = await this.repos.audit.range(0, Number.MAX_SAFE_INTEGER, Math.min(opts.limit, AUDIT_EXPORT_MAX_ROWS));
+    const state = verifyChain(rows);
+    return { valid: state.valid, checked: state.checked, error: state.error };
+  }
+
+  /**
+   * T-179: signed NDJSON export of the audit chain. Requires `audit.export`,
+   * which only org_admin holds — every role may READ the log, but taking a
+   * signed copy of the whole chain off-box is an owner-level act.
+   *
+   * There is deliberately no caller-supplied window. A truncated export would
+   * still report `chain_state.valid: true` (a prefix of a valid chain is
+   * itself valid), so a paged export would be indistinguishable from a
+   * complete one. The export is all-or-nothing; the cap below is a memory
+   * safety valve that REFUSES rather than truncating.
+   */
+  async export(actor: Actor, opts: { now: number; key: string | null }): Promise<AuditExport> {
+    requirePermission(actor, "audit.export", null);
+    // Fetch one past the cap: a full batch means the chain is longer than we
+    // are willing to buffer, which is knowable only by asking for the extra row.
+    const rows = await this.repos.audit.range(0, Number.MAX_SAFE_INTEGER, AUDIT_EXPORT_MAX_ROWS + 1);
+    if (rows.length > AUDIT_EXPORT_MAX_ROWS) {
+      throw new RequestValidationError(
+        "audit",
+        `export is capped at ${AUDIT_EXPORT_MAX_ROWS} rows and the chain is longer; ` +
+          "archive and prune the log before exporting",
+      );
     }
-    return { valid: true, checked: rows.length, error: null };
+    const result = buildAuditExport(rows, { now: opts.now, key: opts.key });
+    // Take a signed copy of the whole log off-box is exactly the kind of act
+    // that must leave a trace, so unlike a plain read this one is recorded —
+    // otherwise the log could be exfiltrated with nothing to show for it. The
+    // row is appended AFTER the snapshot, so the export covers the chain as it
+    // was just before its own record. Denials are not self-audited, matching
+    // query/verify (see the note on AuditService).
+    await this.append(
+      {
+        actor: { subject: actor.subject, roles: actor.roles },
+        orgId: null,
+        action: "audit.export",
+        resource: null,
+        outcome: "allowed",
+        requestId: null,
+        // The key FINGERPRINT only — never the key (see audit/export.ts).
+        details: { rows: result.rows, signed: result.signature.signed, key_id: result.signature.key_id },
+      },
+      opts.now,
+    );
+    return result;
   }
 }

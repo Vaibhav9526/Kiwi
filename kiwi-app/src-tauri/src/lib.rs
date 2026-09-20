@@ -24,10 +24,12 @@ mod verifier;
 use tauri::Manager;
 
 use commands::accounts::*;
+use commands::contacts::*;
 use commands::devices::*;
 use commands::endpoint::*;
 use commands::mail::*;
 use commands::message::*;
+use commands::prefs::*;
 use commands::security::*;
 use commands::send::*;
 use commands::system::*;
@@ -100,6 +102,22 @@ pub fn run() {
             kiwi_list_devices,
             kiwi_revoke_device,
             kiwi_set_org_binding,
+            // contacts (gated)
+            kiwi_list_contacts,
+            kiwi_search_contacts,
+            kiwi_get_contact,
+            kiwi_create_contact,
+            kiwi_update_contact,
+            kiwi_delete_contact,
+            kiwi_contacts_by_email,
+            kiwi_contacts_by_tag,
+            kiwi_contact_tags,
+            kiwi_import_vcards,
+            kiwi_export_vcards,
+            // prefs (gated)
+            kiwi_prefs_get,
+            kiwi_prefs_set,
+            kiwi_prefs_list,
             // endpoint signals (exempt — feeds trust)
             kiwi_collect_endpoint_signals,
         ])

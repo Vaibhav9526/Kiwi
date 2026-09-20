@@ -12,16 +12,16 @@ publish = false
 #     untrusted PCAP bytes can never drive unbounded allocation.
 
 [dependencies]
-serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
+serde.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 # Integration seam tests only (T-166): the published crate stays
 # serde-only. kiwi-mail drives a real client through a fixture-shaped
 # local server; tokio + zeroize serve the test harness alone.
 kiwi-mail = { path = "../kiwi-mail" }
-tokio = { version = "1", features = ["full"] }
-zeroize = "1"
+tokio.workspace = true
+zeroize.workspace = true
 
 [lints.rust]
 # Security-sensitive parsing of untrusted input: no unsafe code anywhere.

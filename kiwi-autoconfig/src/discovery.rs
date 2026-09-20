@@ -492,4 +492,74 @@ mod tests {
         assert_eq!(StageOutcome::Malformed.as_str(), "malformed");
         assert_eq!(StageOutcome::Unsupported.as_str(), "unsupported");
     }
+
+    #[test]
+    fn chain_walks_ispdb_then_mx_per_named_fixture() {
+        // T-178 integration: discover() end-to-end per bundled fixture —
+        // stage 1 hits, stage 4 never runs, no network, deterministic.
+        let net = MockNet::new();
+        for (domain, provider, imap_host) in [
+            ("gmail.com", "Google", "imap.gmail.com"),
+            ("outlook.com", "Microsoft 365", "outlook.office365.com"),
+            ("yahoo.com", "Yahoo", "imap.mail.yahoo.com"),
+            ("icloud.com", "iCloud", "imap.mail.me.com"),
+            ("zoho.com", "Zoho", "imap.zoho.com"),
+            ("fastmail.com", "Fastmail", "imap.fastmail.com"),
+        ] {
+            let out = discover(&format!("u@{domain}"), &net).unwrap_or_else(|| {
+                panic!("{provider} chain failed")
+            });
+            assert_eq!(out.source, SuggestionSource::Ispdb, "{provider} source");
+            assert_eq!(out.suggestion.display_name, provider, "{provider} name");
+            assert_eq!(out.suggestion.incoming.host, imap_host, "{provider} host");
+            assert!(!out.needs_manual_review, "{provider} must not be flagged");
+            assert_eq!(out.attempts.len(), 1, "{provider}: later stages must not run");
+            assert_eq!(out.attempts[0].source, SuggestionSource::Ispdb);
+            assert_eq!(out.attempts[0].outcome, StageOutcome::Hit);
+        }
+    }
+
+    #[test]
+    fn chain_falls_through_to_mx_hint_for_private_domain() {
+        // T-178 integration: no fixture, no documents, but MX points at a
+        // known provider → discovery walks ispdb → autoconfig → well_known
+        // → mx and lands on the provider hint (not a bare guess).
+        let net = MockNet::new().with_mx("acme.test", &[("mx.zoho.com", 10)]);
+        let out = discover("ops@acme.test", &net).unwrap();
+        assert_eq!(out.source, SuggestionSource::MxHeuristic);
+        assert!(!out.needs_manual_review);
+        assert_eq!(out.suggestion.display_name, "Zoho");
+        assert_eq!(out.suggestion.incoming.host, "imap.zoho.com");
+        let sources: Vec<SuggestionSource> = out.attempts.iter().map(|a| a.source).collect();
+        assert_eq!(
+            sources,
+            vec![
+                SuggestionSource::Ispdb,
+                SuggestionSource::AutoconfigHost,
+                SuggestionSource::WellKnown,
+                SuggestionSource::MxHeuristic,
+            ]
+        );
+        assert_eq!(out.attempts[0].outcome, StageOutcome::Miss);
+        assert_eq!(out.attempts[1].outcome, StageOutcome::Unreachable);
+        assert_eq!(out.attempts[2].outcome, StageOutcome::Unreachable);
+        assert_eq!(out.attempts[3].outcome, StageOutcome::Hit);
+        assert_eq!(out.attempts[3].detail, "MX host matched known provider");
+        // Deterministic end-to-end.
+        assert_eq!(discover("ops@acme.test", &net).unwrap(), out);
+    }
+
+    #[test]
+    fn chain_fixture_beats_published_document() {
+        // T-178 integration: when both a fixture and a published document
+        // exist, stage order wins (fixture first, network never touched).
+        let net = MockNet::new().with_https(
+            "https://autoconfig.gmail.com/mail/config-v1.1.xml",
+            XML_PUB,
+        );
+        let out = discover("u@gmail.com", &net).unwrap();
+        assert_eq!(out.source, SuggestionSource::Ispdb);
+        assert_eq!(out.suggestion.display_name, "Google");
+        assert_eq!(out.attempts.len(), 1, "no fetch after fixture hit");
+    }
 }

@@ -175,8 +175,12 @@ impl Contact {
         let mut emails = Vec::with_capacity(self.emails.len());
         for mut e in self.emails.drain(..) {
             e.address = e.address.trim().to_string();
-            e.label = e.label.map(|l| l.trim().to_ascii_lowercase()).filter(|l| !l.is_empty());
-            if e.address.is_empty() || seen_mail.iter().any(|s| s.eq_ignore_ascii_case(&e.address)) {
+            e.label = e
+                .label
+                .map(|l| l.trim().to_ascii_lowercase())
+                .filter(|l| !l.is_empty());
+            if e.address.is_empty() || seen_mail.iter().any(|s| s.eq_ignore_ascii_case(&e.address))
+            {
                 continue;
             }
             seen_mail.push(e.address.clone());
@@ -188,7 +192,10 @@ impl Contact {
         let mut phones = Vec::with_capacity(self.phones.len());
         for mut p in self.phones.drain(..) {
             p.number = p.number.trim().to_string();
-            p.label = p.label.map(|l| l.trim().to_ascii_lowercase()).filter(|l| !l.is_empty());
+            p.label = p
+                .label
+                .map(|l| l.trim().to_ascii_lowercase())
+                .filter(|l| !l.is_empty());
             if p.number.is_empty() || seen_phones.contains(&p.number) {
                 continue;
             }
@@ -348,20 +355,30 @@ mod tests {
     fn normalize_trims_dedups_and_is_idempotent() {
         let mut c = Contact::new("  Ada Lovelace  ", 100);
         c.org = Some("  ".into());
-        c.tags = vec![
-            " Friend ".into(),
-            "friend".into(),
-            "".into(),
-            "Work".into(),
-        ];
+        c.tags = vec![" Friend ".into(), "friend".into(), "".into(), "Work".into()];
         c.emails = vec![
-            ContactEmail { address: " ada@x.test ".into(), label: Some(" WORK ".into()) },
-            ContactEmail { address: "ADA@X.TEST".into(), label: Some("home".into()) },
-            ContactEmail { address: "  ".into(), label: None },
+            ContactEmail {
+                address: " ada@x.test ".into(),
+                label: Some(" WORK ".into()),
+            },
+            ContactEmail {
+                address: "ADA@X.TEST".into(),
+                label: Some("home".into()),
+            },
+            ContactEmail {
+                address: "  ".into(),
+                label: None,
+            },
         ];
         c.phones = vec![
-            ContactPhone { number: " 555 ".into(), label: None },
-            ContactPhone { number: "555".into(), label: None },
+            ContactPhone {
+                number: " 555 ".into(),
+                label: None,
+            },
+            ContactPhone {
+                number: "555".into(),
+                label: None,
+            },
         ];
         c.normalize();
         let once = c.clone();
@@ -381,14 +398,26 @@ mod tests {
     #[test]
     fn validate_rejects_bad_emails_and_oversized_fields() {
         let mut c = Contact::new("A", 0);
-        c.emails = vec![ContactEmail { address: "no-at-sign".into(), label: None }];
+        c.emails = vec![ContactEmail {
+            address: "no-at-sign".into(),
+            label: None,
+        }];
         assert!(matches!(c.validate(), Err(ContactsError::Invalid(_))));
 
-        c.emails = vec![ContactEmail { address: "a@b@c".into(), label: None }];
+        c.emails = vec![ContactEmail {
+            address: "a@b@c".into(),
+            label: None,
+        }];
         assert!(c.validate().is_err());
 
-        c.emails = vec![ContactEmail { address: "a@b".into(), label: None }];
-        assert!(c.validate().is_ok(), "single-label domain is still accepted");
+        c.emails = vec![ContactEmail {
+            address: "a@b".into(),
+            label: None,
+        }];
+        assert!(
+            c.validate().is_ok(),
+            "single-label domain is still accepted"
+        );
 
         let mut c = Contact::new("A", 0);
         c.notes = Some("x".repeat(MAX_NOTE_LEN + 1));
@@ -403,14 +432,23 @@ mod tests {
     fn validate_rejects_control_characters() {
         let mut c = Contact::new("A", 0);
         c.display_name = "A\r\nB".into();
-        assert!(c.validate().is_err(), "CR/LF in a name must never reach export");
+        assert!(
+            c.validate().is_err(),
+            "CR/LF in a name must never reach export"
+        );
 
         let mut c = Contact::new("A", 0);
         c.notes = Some("line one\nline two".into());
-        assert!(c.validate().is_ok(), "newlines in notes are legitimate text");
+        assert!(
+            c.validate().is_ok(),
+            "newlines in notes are legitimate text"
+        );
 
         let mut c = Contact::new("A", 0);
-        c.phones = vec![ContactPhone { number: "1\r\n2".into(), label: None }];
+        c.phones = vec![ContactPhone {
+            number: "1\r\n2".into(),
+            label: None,
+        }];
         assert!(c.validate().is_err());
     }
 

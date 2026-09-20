@@ -3,7 +3,7 @@
 
 use kiwi_contacts::contact::{Contact, ContactPhone};
 use kiwi_contacts::vcard::{self, VCardLimits};
-use kiwi_contacts::{ContactsError, ContactStore};
+use kiwi_contacts::{ContactStore, ContactsError};
 
 const BOOK: &str = "BEGIN:VCARD\r\n\
 VERSION:4.0\r\n\
@@ -51,7 +51,10 @@ fn imports_a_book_exports_it_and_reimports_identically() {
     assert_eq!(store.count().unwrap(), 3);
 
     let stored = store.list(100, 0).unwrap();
-    assert_eq!(stored[0].display_name, "Ada Lovelace", "ordered by display name");
+    assert_eq!(
+        stored[0].display_name, "Ada Lovelace",
+        "ordered by display name"
+    );
     assert_eq!(stored[2].display_name, "Grace Hopper");
     // The v3 card's bare PREF still promotes its only address.
     let alan = store.by_email("alan@bletchley.invalid").unwrap().unwrap();
@@ -114,7 +117,10 @@ fn reimporting_the_same_book_updates_rather_than_duplicates() {
     assert_eq!(store.count().unwrap(), 3, "re-import must not duplicate");
     let ada = store.by_source_uid("urn:uuid:ada").unwrap().unwrap();
     assert_eq!(ada.org.as_deref(), Some("Analytical Engines Ltd"));
-    assert_eq!(ada.created_unix, 1_700_000_000, "creation time is preserved");
+    assert_eq!(
+        ada.created_unix, 1_700_000_000,
+        "creation time is preserved"
+    );
     assert_eq!(ada.updated_unix, 1_700_100_000);
 
     let _ = std::fs::remove_dir_all(&root);
@@ -138,7 +144,8 @@ fn hostile_streams_are_refused_or_bounded_but_never_panic() {
         // Escapes that terminate the value string.
         "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:trailing\\\\\\\\\r\nEND:VCARD\r\n".into(),
         // Email that is not an address at all.
-        "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:x\r\nEMAIL;TYPE=work:not an address\r\nEND:VCARD\r\n".into(),
+        "BEGIN:VCARD\r\nVERSION:4.0\r\nFN:x\r\nEMAIL;TYPE=work:not an address\r\nEND:VCARD\r\n"
+            .into(),
     ];
 
     for (i, case) in cases.iter().enumerate() {
@@ -148,7 +155,8 @@ fn hostile_streams_are_refused_or_bounded_but_never_panic() {
                     // Anything that survives the parser must also survive a
                     // store write and a re-export — the layering agrees.
                     assert!(c.validate().is_ok(), "case {i} produced an invalid contact");
-                    vcard::export_vcard(c).unwrap_or_else(|e| panic!("case {i} cannot export: {e}"));
+                    vcard::export_vcard(c)
+                        .unwrap_or_else(|e| panic!("case {i} cannot export: {e}"));
                 }
             }
             Err(_) => { /* refuse loudly, never silently mangle */ }

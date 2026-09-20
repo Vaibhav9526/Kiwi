@@ -1,7 +1,8 @@
 # Contract — kiwi-admin API (org / policy / mailflow / audit)
 
 > Owner: Agent 4 · **Contract version: 1.3** (T-134 list endpoints + dev HTTP
-> transport by Agent 5; **Lead-reviewed 2026-09-20 — approved**) · Status: active
+> transport by Agent 5; **Lead-reviewed 2026-09-20 — approved**) · §13 (T-179
+> audit export, Agent 9) is an **addition pending Lead review** · Status: active
 > Implemented by `kiwi-admin/` (Node + TypeScript). Reference implementation:
 > `src/services.ts` (service layer) + `src/policy/evaluator.ts` (deterministic
 > evaluator). The REST transport is layered over these services; the endpoint
@@ -36,9 +37,14 @@ metadata ingest); kiwi-admin ↔ kiwi-core (device/session identity, Phase 3+).
 
 | role | permissions |
 |------|-------------|
-| `org_admin` | all: org.read, org.create, org.update, user.read, user.invite, user.role.grant, device.read, device.revoke, policy.read, policy.write, mailflow.read, mailflow.ingest, audit.read |
+| `org_admin` | all: org.read, org.create, org.update, user.read, user.invite, user.role.grant, device.read, device.revoke, policy.read, policy.write, mailflow.read, mailflow.ingest, audit.read, audit.export |
 | `security_admin` | org.read, user.read, device.read, device.revoke, policy.read, policy.write, mailflow.read, audit.read |
 | `viewer` | org.read, user.read, device.read, policy.read, mailflow.read, audit.read |
+
+`audit.export` (T-179) is held ONLY by `org_admin` and is deliberately not
+implied by `audit.read`: every role may read the log, but taking a signed
+off-box copy of the whole chain — the evidence artifact — is an owner-level
+act. See §13.
 
 - Org scoping: an actor whose session is bound to org X cannot exercise
   org-scoped permissions against org Y (`hasPermission()` in
@@ -64,6 +70,7 @@ metadata ingest); kiwi-admin ↔ kiwi-core (device/session identity, Phase 3+).
 | `GET  /api/v1/mailflow/events` | `MailflowService.query` | `mailflow.read` | filters: org, recipient domain, ts range, limit ≤ 1000 |
 | `GET  /api/v1/audit` | `AuditService.query` | `audit.read` | filters: org, ts range, limit ≤ 1000 |
 | `GET  /api/v1/audit/verify` | `AuditService.verify` | `audit.read` | replays hash chain; see §7 |
+| `GET  /api/v1/audit/export` | `AuditService.export` | `audit.export` | T-179 signed NDJSON of the FULL chain; see §13 |
 
 Error shape (uniform): `{ "error": { "code": string, "message": string, "details"?: object } }`
 with codes `auth.required`, `auth.denied`, `validation.failed`, `not.found`,
@@ -377,6 +384,83 @@ than a rewrite:
   `seq` ascending, which is the order `verify` requires.
 - An org-scoped caller (session `org_id` bound) cannot read another org's
   slice: `hasPermission` refuses the cross-org target with `403`.
+
+## 13. Audit export — T-179 (`GET /api/v1/audit/export`)
+
+Signed NDJSON snapshot of the audit chain. Permission **`audit.export`**,
+held only by `org_admin` (§2). `security_admin` and `viewer` hold
+`audit.read` and are still refused with `403 auth.denied` — the two
+permissions are deliberately independent.
+
+Response: `200` with `content-type: application/x-ndjson; charset=utf-8`
+and `cache-control: no-store`. The log is evidence; a cached or
+intermediary-transformed copy is worse than none.
+
+### 13.1 Line layout
+
+`\n`-terminated JSON objects, one per line, no trailing blank line:
+
+| line | object | contents |
+|------|--------|----------|
+| 1 | `header` | `version` (`kiwi.audit-export/1`), `exported_at`, `rows`, `first_seq`, `last_seq` |
+| 2 … rows+1 | `record` | one AuditRecord per line, `seq` ascending, chain fields included |
+| rows+2 | `chain_state` | `verifyChain()` verdict for exactly those rows: `valid`, `error`, `checked`, `head_hash`, `first_seq`, `last_seq` |
+| rows+3 | `signature` | `alg`, `signed`, `key_id`, `signature`, `covers_through` |
+
+Record lines carry `seq`, `prev_hash`, and `entry_hash`, so a reader can
+recompute the chain from the export alone without calling back into the
+service. `chain_state` sits at index `rows + 1`.
+
+### 13.2 Signature
+
+`signature = HMAC-SHA256(key, lines 1..rows+2 joined by "\n")`, lowercase
+hex, `alg: "hmac-sha256"`, `covers_through: rows + 2`.
+
+- The signature covers the **header and the `chain_state` line**, not only
+  the records. Otherwise "chain valid" and `exported_at` would be editable
+  in transit without invalidating the signature.
+- `key_id` is `SHA-256(key)` truncated to 16 hex chars — a stable
+  fingerprint so a verifier can tell *which* key signed. The key itself
+  never appears in the artifact and is never logged.
+- **Unsigned exports are reported honestly**: with no key configured the
+  trailer is `{ alg: "none", signed: false, key_id: null, signature: null,
+  covers_through: null }` — a complete, well-formed export that does not
+  claim to be signed. There is no placeholder signature.
+
+Key source: `KIWI_AUDIT_EXPORT_KEY` (env, read once at startup; also
+settable per server for tests). Unset/blank → unsigned.
+
+### 13.3 Whole chain only — no window, no `?org=`
+
+The export is always the FULL chain. There is no caller-supplied `org`,
+`since`, `until`, or `limit`; those filters are ignored, and a filtered
+export is refused by omission rather than silently weakened.
+
+The reason is that a truncated export cannot honestly carry a chain-state
+claim: a prefix of a valid chain is itself valid, so a paged or org-filtered
+export would be indistinguishable from a complete one while reporting
+`valid: true`. Org-scoped reads belong at `GET /api/v1/audit?org=` (§12.3),
+which makes no integrity claim.
+
+If the chain exceeds `AUDIT_EXPORT_MAX_ROWS` (10000) the request fails with
+`400 validation.failed` ("export is capped at 10000 rows…") rather than
+truncating. Archive and prune the log before exporting.
+
+### 13.4 The export audits itself
+
+A successful export appends an `audit.export` row (`org_id` null,
+`outcome: "allowed"`) with `details: { rows, signed, key_id }` — the
+fingerprint, never the key. Taking a signed copy of the whole log off-box
+must leave a trace, or the log could be exfiltrated with nothing to show
+for it. The row is appended **after** the snapshot, so the artifact covers
+the chain exactly as it stood immediately before its own record.
+
+Denials are NOT self-audited, matching `query`/`verify`: the audit service
+is what writes the chain, so having it record its own refusals would make
+every refusal of a log read recurse into the log it was refused.
+
+<!-- CONTINUED-3 -->
+
 
 
 

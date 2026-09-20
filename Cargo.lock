@@ -2249,6 +2249,7 @@ dependencies = [
  "ed25519-dalek 2.2.0",
  "getrandom 0.3.4",
  "keyring",
+ "kiwi-contacts",
  "kiwi-core",
  "kiwi-forensics",
  "kiwi-mail",
@@ -2338,6 +2339,21 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.20",
  "tokio",
+]
+
+[[package]]
+name = "kiwi-pair"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "ed25519-dalek 2.2.0",
+ "getrandom 0.3.4",
+ "kiwi-core",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.20",
 ]
 
 [[package]]

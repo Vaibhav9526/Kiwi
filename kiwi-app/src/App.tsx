@@ -61,6 +61,7 @@ import { SettingsView } from "./views/settings";
 import { SecurityCenterView } from "./views/security-center";
 import { SearchView } from "./views/search";
 import type { SearchResultRow } from "./views/search";
+import { ContactsView } from "./views/contacts";
 
 const DEMO_TRUST: TrustState = { trust: "unknown", locked: false, state: "unknown", score: null, requiredAction: "none" };
 
@@ -978,6 +979,7 @@ export default function App() {
       },
       { id: "theme", label: `Toggle theme (now ${theme})`, hint: "light/dark/system", run: cycleTheme },
       { id: "security", label: "Open Security Center", run: () => navigate({ name: "security" }) },
+      { id: "contacts", label: "Open Contacts", run: () => navigate({ name: "contacts" }) },
       { id: "settings", label: "Open Settings", run: () => navigate({ name: "settings" }) },
       { id: "shortcuts", label: "Show keyboard shortcuts", hint: "?", run: () => setHelpOpen(true) },
     ];
@@ -1219,6 +1221,7 @@ export default function App() {
         {route.name === "security" && (
           <SecurityCenterView events={events} findings={findings} demo={demo} onOpenFinding={openFinding} />
         )}
+        {route.name === "contacts" && <ContactsView demo={demo} onNotify={notify} />}
         {route.name === "search" && (
           <SearchView
             query={query}

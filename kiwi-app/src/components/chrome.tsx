@@ -174,6 +174,9 @@ export function Sidebar({ folders, accounts, activeFolder, unreadByFolder }: Sid
         <button type="button" className="kiwi-nav-btn kiwi-btn-primary" onClick={() => navigate({ name: "compose" })}>
           ✎ Compose
         </button>
+        <button type="button" className="kiwi-nav-btn" onClick={() => navigate({ name: "contacts" })}>
+          👥 Contacts
+        </button>
         <button type="button" className="kiwi-nav-btn" onClick={() => navigate({ name: "security" })}>
           🛡 Security
         </button>

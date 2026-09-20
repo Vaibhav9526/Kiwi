@@ -139,11 +139,11 @@ impl ContactStore {
 
     /// Highest applied migration version.
     pub fn schema_version(&self) -> Result<u32> {
-        Ok(self
-            .conn
-            .query_row("SELECT COALESCE(MAX(version), 0) FROM schema_migrations", [], |r| {
-                r.get(0)
-            })?)
+        Ok(self.conn.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            [],
+            |r| r.get(0),
+        )?)
     }
 
     /// Number of stored contacts.
@@ -241,7 +241,10 @@ impl ContactStore {
             return Err(ContactsError::NotFound(c.id));
         }
         for table in ["contact_emails", "contact_phones", "contact_tags"] {
-            tx.execute(&format!("DELETE FROM {table} WHERE contact_id = ?1"), params![c.id])?;
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE contact_id = ?1"),
+                params![c.id],
+            )?;
         }
         write_children(&tx, &c)?;
         tx.commit()?;
@@ -268,7 +271,11 @@ impl ContactStore {
              FROM contacts WHERE id = ?1",
             params![id],
         )?;
-        Ok(rows.drain(..).next().map(|c| self.hydrate_one(c)).transpose()?)
+        Ok(rows
+            .drain(..)
+            .next()
+            .map(|c| self.hydrate_one(c))
+            .transpose()?)
     }
 
     /// Page of contacts, ordered by display name then id (deterministic).
@@ -342,7 +349,11 @@ impl ContactStore {
              LIMIT 1",
             params![address],
         )?;
-        Ok(rows.drain(..).next().map(|c| self.hydrate_one(c)).transpose()?)
+        Ok(rows
+            .drain(..)
+            .next()
+            .map(|c| self.hydrate_one(c))
+            .transpose()?)
     }
 
     /// Contact imported from this vCard `UID`, if any (re-import dedup).
@@ -354,7 +365,11 @@ impl ContactStore {
              FROM contacts WHERE source_uid = ?1 ORDER BY id LIMIT 1",
             params![uid],
         )?;
-        Ok(rows.drain(..).next().map(|c| self.hydrate_one(c)).transpose()?)
+        Ok(rows
+            .drain(..)
+            .next()
+            .map(|c| self.hydrate_one(c))
+            .transpose()?)
     }
 
     /// Distinct tags with usage counts, most-used first then alphabetical.
@@ -395,11 +410,7 @@ impl ContactStore {
         Ok(format!("{LOCAL_ID_PREFIX}{n}"))
     }
 
-    fn query_contacts(
-        &self,
-        sql: &str,
-        params: impl rusqlite::Params,
-    ) -> Result<Vec<Contact>> {
+    fn query_contacts(&self, sql: &str, params: impl rusqlite::Params) -> Result<Vec<Contact>> {
         let mut stmt = self.conn.prepare(sql)?;
         let rows = stmt.query_map(params, read_contact)?;
         let mut out = Vec::new();
@@ -578,9 +589,11 @@ mod tests {
         assert_eq!(s.schema_version().unwrap(), SCHEMA_VERSION);
         let applied_at: i64 = s
             .conn
-            .query_row("SELECT applied_at FROM schema_migrations WHERE version = 1", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT applied_at FROM schema_migrations WHERE version = 1",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(applied_at, 1000, "first open stamps the migration");
     }
@@ -618,7 +631,10 @@ mod tests {
         assert_eq!(got, stored, "read-back must equal the write result");
 
         let second = s.insert(&ada(), 501).unwrap();
-        assert_eq!(second.id, "local-2", "ids are monotonic, not content-derived");
+        assert_eq!(
+            second.id, "local-2",
+            "ids are monotonic, not content-derived"
+        );
         assert_eq!(s.count().unwrap(), 2);
     }
 
@@ -628,10 +644,7 @@ mod tests {
         let mut c = ada();
         c.id = "imported-1".into();
         s.insert(&c, 1).unwrap();
-        assert!(matches!(
-            s.insert(&c, 1),
-            Err(ContactsError::Invalid(_))
-        ));
+        assert!(matches!(s.insert(&c, 1), Err(ContactsError::Invalid(_))));
 
         let mut reserved = ada();
         reserved.id = "local-99".into();
@@ -674,7 +687,10 @@ mod tests {
         ));
         let mut ghost = Contact::new("ghost", 0);
         ghost.id = "nope".into();
-        assert!(matches!(s.update(&ghost, 901), Err(ContactsError::NotFound(_))));
+        assert!(matches!(
+            s.update(&ghost, 901),
+            Err(ContactsError::NotFound(_))
+        ));
     }
 
     #[test]
@@ -720,7 +736,10 @@ mod tests {
         assert_eq!(by_name.len(), 1);
         assert_eq!(by_name[0].display_name, "Ada Lovelace");
 
-        assert_eq!(s.search("navy", 10).unwrap()[0].display_name, "Grace Hopper");
+        assert_eq!(
+            s.search("navy", 10).unwrap()[0].display_name,
+            "Grace Hopper"
+        );
         assert_eq!(s.search("compiler", 10).unwrap().len(), 1);
         assert_eq!(s.search("difference engine", 10).unwrap().len(), 1);
         assert_eq!(s.search("grace@kiwi-test", 10).unwrap().len(), 1);
@@ -736,7 +755,10 @@ mod tests {
     fn search_wildcards_are_literal() {
         let s = store();
         s.insert(&Contact::new("Ada Lovelace", 0), 1).unwrap();
-        assert!(s.search("%", 10).unwrap().is_empty(), "`%` must not match everything");
+        assert!(
+            s.search("%", 10).unwrap().is_empty(),
+            "`%` must not match everything"
+        );
         assert!(s.search("_", 10).unwrap().is_empty());
         assert!(s.search("\\", 10).unwrap().is_empty());
         assert_eq!(s.search("ada", 10).unwrap().len(), 1);
@@ -750,7 +772,10 @@ mod tests {
         s.insert(&c, 1).unwrap();
 
         assert_eq!(
-            s.by_email("ADA@KIWI-TEST.INVALID").unwrap().unwrap().display_name,
+            s.by_email("ADA@KIWI-TEST.INVALID")
+                .unwrap()
+                .unwrap()
+                .display_name,
             "Ada Lovelace",
             "email lookup is case-insensitive"
         );
@@ -774,7 +799,8 @@ mod tests {
     fn list_pages_and_clamps() {
         let s = store();
         for i in 0..5 {
-            s.insert(&Contact::new(format!("Person {i}"), 0), i as i64).unwrap();
+            s.insert(&Contact::new(format!("Person {i}"), 0), i as i64)
+                .unwrap();
         }
         let page = s.list(2, 0).unwrap();
         assert_eq!(page.len(), 2);

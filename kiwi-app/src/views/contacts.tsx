@@ -20,6 +20,8 @@ import {
   upsertLocal,
   validateContactInput,
 } from "../contacts";
+import { exportVCard, MAX_VCARD_BYTES, parseVCard } from "../vcard";
+import type { VCardParse } from "../vcard";
 
 const grid: CSSProperties = { display: "grid", gridTemplateColumns: "minmax(240px, 320px) 1fr", gap: "0.8rem", height: "100%" };
 
@@ -87,6 +89,10 @@ export function ContactsView({
   const [error, setError] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [showIO, setShowIO] = useState(false);
+  const [preview, setPreview] = useState<VCardParse | null>(null);
+  const [previewName, setPreviewName] = useState("");
+  const [ioNote, setIoNote] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -213,6 +219,97 @@ export function ContactsView({
   const set = (k: keyof FormState) => (e: { target: { value: string } }) =>
     setForm((f) => ({ ...f, [k]: e.target.value }));
 
+  /** .vcf picker (T-176): typed path via the platform file input, 1 MiB cap,
+    * parsed client-side (no import IPC exists yet) into a preview table. */
+  const pickFile = (files: FileList | null) => {
+    setIoNote(null);
+    setPreview(null);
+    const file = files?.[0];
+    if (!file) return;
+    if (file.size > MAX_VCARD_BYTES) {
+      setIoNote(`"${file.name}" exceeds the 1 MiB import cap — split the file and retry.`);
+      return;
+    }
+    setPreviewName(file.name);
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        setPreview(parseVCard(typeof reader.result === "string" ? reader.result : ""));
+      } catch {
+        setIoNote(`Could not read "${file.name}" as text.`);
+      }
+    };
+    reader.onerror = () => setIoNote(`Could not read "${file.name}".`);
+    reader.readAsText(file);
+  };
+
+  /** Import previewed cards: server first, local book fallback. Re-imports
+    * match on primary email (case-insensitive) so the same file twice does
+    * not duplicate — imports update the matched card wholesale. */
+  const importPreview = async () => {
+    if (!preview || preview.contacts.length === 0) return;
+    setBusy(true);
+    setIoNote(null);
+    let added = 0;
+    let updated = 0;
+    let local = 0;
+    try {
+      const book = loadLocalBook();
+      let next = book;
+      for (const input of preview.contacts) {
+        const primary = (input.emails[0]?.address ?? "").toLowerCase();
+        try {
+          await api.createContact(input);
+          added++;
+          continue;
+        } catch {
+          // Local path below.
+        }
+        const match = next.find((c) => c.emails.some((e) => e.address.toLowerCase() === primary) && primary);
+        if (match) {
+          next = upsertLocal(next, input, match.id);
+          updated++;
+        } else {
+          next = upsertLocal(next, input);
+          local++;
+        }
+      }
+      saveLocalBook(next);
+      // Prefer the server list when it answers; the local book otherwise
+      // (it already contains every locally-saved card).
+      let shown = next;
+      try {
+        shown = await api.listContacts(500);
+        setSource("server");
+      } catch {
+        setSource("local");
+      }
+      setContacts(shown);
+      const msg = `Import done: ${added} server, ${local} new + ${updated} updated locally.`;
+      setIoNote(msg);
+      onNotify("ok", msg);
+      setPreview(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const exportAll = () => {
+    const text = exportVCard(contacts);
+    if (!text) {
+      setIoNote("Nothing to export — the book is empty.");
+      return;
+    }
+    const blob = new Blob([text], { type: "text/vcard;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "kiwi-contacts.vcf";
+    a.click();
+    URL.revokeObjectURL(url);
+    setIoNote(`Exported ${contacts.length} contact(s) to kiwi-contacts.vcf (vCard 4.0).`);
+  };
+
   return (
     <div style={grid}>
       <section aria-label="Contact list">
@@ -290,6 +387,92 @@ export function ContactsView({
               : "Local address book — contacts IPC not in the backend yet; cards sync when it lands."}
           </small>
         </p>
+        <p>
+          <button type="button" onClick={() => setShowIO((s) => !s)} aria-expanded={showIO}>
+            {showIO ? "Hide import / export" : "Import / export (.vcf)"}
+          </button>
+        </p>
+        {showIO && (
+          <div className="kiwi-card" aria-label="vCard import and export">
+            <h2 style={{ marginTop: 0 }}>Import / export</h2>
+            <p>
+              <label>
+                .vcf file (typed path, 1 MiB cap):{" "}
+                <input
+                  type="file"
+                  accept=".vcf,.vcard,text/vcard,text/x-vcard"
+                  onChange={(e) => pickFile(e.target.files)}
+                  aria-label="Choose a vCard file to import"
+                />
+              </label>
+            </p>
+            {ioNote && (
+              <p role="status"><small>{ioNote}</small></p>
+            )}
+            {preview && (
+              <>
+                <h3>
+                  Preview: {previewName} ({preview.contacts.length} valid, {preview.issues.length} issue(s))
+                </h3>
+                {preview.contacts.length > 0 && (
+                  <table style={{ borderCollapse: "collapse", width: "100%", marginBottom: "0.5rem" }}>
+                    <caption className="kiwi-sr-only">Parsed contacts preview</caption>
+                    <thead>
+                      <tr>
+                        {["Name", "Emails", "Org"].map((h) => (
+                          <th key={h} scope="col" style={{ textAlign: "left", borderBottom: "1px solid var(--kiwi-border)", padding: "0.3rem" }}>
+                            {h}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {preview.contacts.map((c, i) => (
+                        <tr key={i}>
+                          <td style={{ padding: "0.3rem" }}>{c.displayName || "(unnamed)"}</td>
+                          <td style={{ padding: "0.3rem" }}>{c.emails.map((e) => e.address).join(", ")}</td>
+                          <td style={{ padding: "0.3rem" }}>{c.org ?? "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+                {preview.issues.length > 0 && (
+                  <ul>
+                    {preview.issues.map((issue, i) => (
+                      <li key={i}>
+                        <small>
+                          Card {issue.cardIndex >= 0 ? issue.cardIndex + 1 : "—"}: {issue.detail}
+                        </small>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <div style={{ display: "flex", gap: "0.4rem" }}>
+                  <button
+                    type="button"
+                    className="kiwi-btn-primary"
+                    onClick={() => void importPreview()}
+                    disabled={busy || preview.contacts.length === 0}
+                  >
+                    {busy ? "Importing…" : `Import ${preview.contacts.length} contact(s)`}
+                  </button>
+                  <button type="button" onClick={() => setPreview(null)}>
+                    Discard preview
+                  </button>
+                </div>
+              </>
+            )}
+            <p>
+              <button type="button" onClick={exportAll} disabled={contacts.length === 0}>
+                Export all ({contacts.length}) as .vcf
+              </button>{" "}
+              <small style={{ color: "var(--kiwi-text-secondary)" }}>
+                vCard 4.0 download — photos never stored, per the contract.
+              </small>
+            </p>
+          </div>
+        )}
       </section>
       <section className="kiwi-reader" aria-label="Contact detail" tabIndex={0}>
         {note && (

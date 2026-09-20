@@ -328,7 +328,9 @@ export function parseSearchHit(raw: unknown, index: number): SearchHit | null {
   const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
   const folderId = num(r["folderId"]);
   const uid = num(r["uid"]);
-  if (!str(r["accountId"]) || folderId === null || uid === null) return null;
+  // accountId may be absent until the IPC contract lands (folder→account
+  // resolution is server-side) — the row still lists; opening resolves then.
+  if (folderId === null || uid === null) return null;
   void index;
   return {
     accountId: str(r["accountId"]),

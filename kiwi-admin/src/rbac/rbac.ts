@@ -20,6 +20,13 @@ export const PERMISSIONS = [
   "mailflow.read",
   "mailflow.ingest",
   "audit.read",
+  /**
+   * T-179: exporting the audit log. Deliberately held ONLY by org_admin, and
+   * separate from `audit.read` — every role may read the log, but producing a
+   * signed, off-box copy of the whole chain (the evidence artifact) is an
+   * owner-level act. See docs/contracts/admin-api.md §13.
+   */
+  "audit.export",
 ] as const;
 
 export type Permission = (typeof PERMISSIONS)[number];
@@ -39,6 +46,7 @@ const ROLE_PERMISSIONS: Record<OrgRole, ReadonlySet<Permission>> = {
     "mailflow.read",
     "mailflow.ingest",
     "audit.read",
+    "audit.export",
   ]),
   security_admin: new Set<Permission>([
     "org.read",
