@@ -106,3 +106,6 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-177 | CI: infra-live e2e job (compose + both suites) + mobile lint gate + hygiene sweep | Agent 6 | done (infra-live runs infra/e2e both suites; mobile lint gated; encoding gate live; artifacts triaged) | `.github/`, `infra/` | T-171 |
 | T-178 | Autoconfig IPC contract request + ISPDB fixture expansion + discovery-chain test | Agent 8 | open | `kiwi-autoconfig/`, `ipc.md` | T-158 |
 | T-179 | kiwi-admin audit export endpoint (NDJSON, org_admin) + e2e | Agent 9 | open | `kiwi-admin/` | T-149 |
+| T-180 | Phase C1: kiwi-mail file splits (imap/smtp/store/testutil → per-responsibility modules, git mv, zero functional diff) — freeze window required | Agent 10 | queued (after T-174) | `kiwi-mail/src/` | — |
+| T-181 | Phase C2: src-tauri splits (types.rs → types/ per-domain, commands/message.rs+send.rs) — freeze window | Agent 7 | queued (after T-175) | `kiwi-app/src-tauri/` | — |
+| T-182 | Phase C3: App.tsx hooks/state extraction (1155 lines) — freeze window | Agent 5 | queued (after T-176) | `kiwi-app/src/` | — |
