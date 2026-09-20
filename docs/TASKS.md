@@ -98,7 +98,11 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-169 | MessageView thread fields + account→sync wiring | Agent 7 | done (ipc §6c) | `src-tauri/`, `kiwi-mail/` | T-163/164 |
 | T-170 | Integration review: contract-vs-code consistency audit across all contracts + full contract + full gate matrix | Agent 6 | done (5 pairs reviewed, mismatches filed file:line; gate matrix reported) | repo-wide (read-only review) | T-166 |
 | T-172 | Mobile authenticator follow-ups: ESLint gate, pairing transport decision (WS vs mDNS/TCP), deny-vs-timeout wording alignment | Agent 4 | open | `mobile/`, `docs/contracts/authenticator.md` | T-136 |
-| T-173 | Contacts UI: contacts view + compose autocomplete + add-from-message; IPC wrappers (demo fallback) | Agent 5 | open | `kiwi-app/src/` | T-150 |
+| T-173 | Contacts UI + IPC wrappers | Agent 5 | done | `kiwi-app/src/` | T-150 |
 | T-171 | Vertical e2e: compose → seed mailbox → kiwi-mail sync → store rows + observe→observe,finding emitted | Agent 6 | done (infra/e2e/test_mail_flow.py + Rust leg green live; plaintext scope asserted) | `infra/e2e/` | T-157 |
 | T-174 | `kiwi-pair` crate: Ed25519 challenge/verify, pairing store, replay protection, revoke | Agent 10 | open | `kiwi-pair/` | — |
 | T-175 | Contacts IPC (list/search/upsert/delete/vCard) + prefs get/set commands | Agent 7 | open | `src-tauri/commands/` | T-150, T-167 |
+| T-176 | Wire search to real IPC (-term/scope: hints) + contacts import/export wizard | Agent 5 | open | `kiwi-app/src/` | T-159, T-173 |
+| T-177 | CI: infra-live e2e job (compose + both suites) + mobile lint gate + hygiene sweep | Agent 6 | open | `.github/`, `infra/` | T-171 |
+| T-178 | Autoconfig IPC contract request + ISPDB fixture expansion + discovery-chain test | Agent 8 | open | `kiwi-autoconfig/`, `ipc.md` | T-158 |
+| T-179 | kiwi-admin audit export endpoint (NDJSON, org_admin) + e2e | Agent 9 | open | `kiwi-admin/` | T-149 |
