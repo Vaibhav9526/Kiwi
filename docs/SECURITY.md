@@ -45,6 +45,17 @@
 13. Attachments are untrusted files: spoofed extensions flagged, dangerous
     types confirmed before open, saved files get safe names (no path
     traversal), open-handlers never run with elevated privilege.
+14. Active analysis of hostile content runs inside the disposable-VM sandbox
+    only (`docs/sandbox.md`, ADR-008) — never on the host, never in a
+    container. No sandbox provider → analysis reports `Unavailable`; there
+    is no fallback to host execution, ever.
+15. Local infrastructure secrets live in `.env` (gitignored) with dev-only
+    defaults; `.env.example` stays tracked. Compose files pin image versions;
+    the Tauri app is never containerized. Containers are services, not a
+    hostile-code boundary.
+16. Databases hold no secrets in any form: no passwords, keys, tokens, or
+    private material in PG/SQLite rows, migrations, or seeds. Device-local
+    secrets stay in OS credential storage (rule 8).
 
 ## 2. Trust boundaries (standalone)
 
@@ -53,6 +64,8 @@
 | B1 | Network ↔ kiwi-mail transport | mail servers, MITM | rustls explicit config; full `TlsObservation` capture; deterministic TLS/cert/cipher analysis; never silently downgrade |
 | B2 | Webview (frontend) ↔ Rust core (Tauri IPC) | compromised/malicious renderer, XSS via mail content | typed commands, service-side validation + authz on every command; CSP mandatory (`csp: null` is a G5 finding); bodies/creds never cross to admin paths |
 | B3 | kiwi services ↔ SQLite / mail store | tampered DB/file, other local users | per-service DB files (ADR-003); parameterized access only; sensitive fields encrypted at rest where practical; store corruption → rebuild, never silent loss |
+| B3b | kiwi-admin ↔ PostgreSQL (compose) | tampered rows, leaked DSN, malicious migration | Drizzle ORM only (no raw SQL except reviewed migrations); migrations reviewed like code; least-privilege DB role; DSN from `.env`, never committed; audit append-only enforced at DB level (trigger) + hash-chain on read |
+| B9 | Host ↔ sandbox guest (all tiers) | hostile attachment/document/link executing in guest; guest-escape attempt | disposable per-run instances (qcow2 overlay / unregister); base image versioned + hash-pinned, never booted mutable; no host FS/creds/keys/mailbox mapped in; no NIC by default; watchdog kill; provider capability reporting (`Available\|Degraded\|Unavailable`); WSL2 tier carries the documented shared-kernel caveat |
 | B4 | kiwi-core ↔ mobile authenticator | network attacker, cloned device | asymmetric challenge-response; QR/local-net pairing; keypair in platform keystore; revocation honored before trust |
 | B5 | kiwi-admin ↔ admin UI | unauthorized local user / CSRF | localhost-only bind; RBAC on every operation; session expiry; audited elevated actions |
 | B6 | Anything ↔ AI provider | provider, prompt injection via mail content | optional; structured-findings payload only — never credentials/message bodies; AI output never a finding without deterministic re-validation |
@@ -76,7 +89,16 @@
 - A5. QR pairing happens over a physically proximate, human-verified
   channel; a photographed QR is equivalent to consent (documented UX risk).
 - A6. Tauri auto-update (if enabled later) pins signing keys and verifies
-  bundles; until then, releases are verified out-of-band.
+   bundles; until then, releases are verified out-of-band.
+- A7. Compose `.env` holds dev-only defaults; any shared/staging deployment
+   replaces the PG password and treats `pgdata` as disposable unless
+   explicitly backed up. Migrations are trusted dev input (reviewed like
+   code) — the threat is tampering/failure, not malicious SQL from outside.
+- A8. Sandbox availability is host-dependent (QEMU/WHPX target, WSL2
+   interim, Firecracker on Linux). Absent provider = unavailable feature,
+   never degraded-to-host-execution. WSL2 tier: hypervisor boundary vs host
+   holds; shared-kernel escape could reach sibling distros (documented
+   caveat, not a host compromise claim).
 
 ## 4. Secure-coding checklist (all agents, enforced in review)
 
@@ -104,6 +126,15 @@
       wired into the auth paths, not merely depended on).
 - [ ] Webview: non-null CSP; no `http://` remote code in production;
       external links open in the system browser after user action.
+- [ ] Infra: `.env` gitignored + `.env.example` covers every compose var
+      (test-enforced); image versions pinned; no mailbox/credential mounts
+      in compose; no secrets in migrations/seeds (rule 16); migrations
+      reviewed like code; audit-guard trigger preserved on schema changes.
+- [ ] Sandbox: new providers behind the `SandboxProvider` interface with
+      capability reporting; base images versioned + hash-pinned, never
+      mutated; per-run instances never reused; guest output bounded before
+      host parsing; QEMU binary provisioning is an explicit install
+      decision, never bundled silently.
 
 ## 5. AI security rules (prompt.md §12, binding — unchanged by pivot)
 
@@ -141,3 +172,55 @@ Hard requirements:
   crypto/key/token handling, new admin privileged op, scoring-rule changes,
   transport/TLS-config changes, CSP changes, any `unsafe`.
 - Residual risk tracked in THREAT-MODEL.md, reviewed each phase.
+
+## 7. Dependency audit (T-154, Agent 6-operated, 2026-09-20)
+
+Method: `cargo audit` (cargo-audit 0.22.2, RustSec DB 1251 advisories)
+over the workspace lockfile; full `npm audit` (incl. dev) per JS
+package. Production-only `npm audit --omit=dev` is clean everywhere it
+runs. Re-run on every dependency change and monthly; findings below are
+the baseline — closing them belongs to the owning agent (flagged, not
+fixed here).
+
+### Rust (`cargo audit`: 1 vulnerability + 7 warnings)
+
+- **rsa 0.9.10 — RUSTSEC-2023-0071 (Marvin timing sidechannel, medium
+  5.9). No fixed upgrade available.** Direct dep of `kiwi-mailauth`
+  (Agent 8, T-122) for DKIM verification. Assessment: Marvin recovers
+  plaintext through RSA *decryption* (private-key op); this crate uses
+  RSA for public-key *verification* only (`verify_rsa_sha256`), and the
+  sole private-key use is 1024-bit test keygen (`dkim.rs` round-trip
+  tests). **Not exploitable in this usage.** Action for Agent 8: track
+  upstream; prefer removal (verify-only crates such as `rsa` verify path
+  stay affected on paper) or migration when a fixed release exists.
+- **Unmaintained warnings (transitive, inherited):** `unic-char-*`
+  (×5, via `tauri-utils → urlpattern`), `proc-macro-error` (Linux-only
+  target, not compiled on this host). Action: ride Tauri upgrades; no
+  direct action.
+- **Unsound warning:** `glib 0.18.5` RUSTSEC-2024-0429
+  (`VariantStrIter`, Linux-only GTK path via Tauri). Not compiled on
+  this target; Linux CI/packaging owners note. No direct action.
+
+### npm (full audit, dev included)
+
+- **kiwi-admin (Agent 5): 6 vulns (1 critical + 5 moderate), all
+  dev-only, fixes available.** Critical: `vitest`
+  GHSA-5xrq-8626-4rwp (9.8 — UI-server file read/RCE, range <3.2.6;
+  installed 3.2.4 → non-breaking upgrade ≥3.2.6 also clears the
+  moderate `@vitest/mocker` path-traversal GHSA-82fw-gwwq-j7x9:
+  `npm audit fix`). Moderate: `esbuild` dev-server request forgery
+  (GHSA-67mh-4wv8-2f99) via `drizzle-kit` chain — `fix --force`
+  (breaking: drizzle-kit 0.18.1) — accept or isolate dev-server
+  binding instead. None ship in the runner image beyond devDeps pruned
+  at build; still: run `npm audit fix` (Agent 5).
+- **kiwi-admin-ui, kiwi-app: 0 vulnerabilities** (full audit clean).
+- **mobile (Agent 4): NOT AUDITABLE — no `package-lock.json`.**
+  `npm audit` refuses without a lockfile. Action for Agent 4/Lead:
+  generate (`npm i --package-lock-only`) and commit so CI can gate it.
+
+### Rules going forward
+
+- New dependencies (any ecosystem) need owner + justification in the
+  owning agent's status log; `cargo audit` / `npm audit` re-run before
+  merge. Any **critical** or **exploitable-in-our-usage** finding blocks
+  `done` until fixed, mitigated, or Lead-accepted in writing here.

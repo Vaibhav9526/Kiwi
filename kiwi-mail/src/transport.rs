@@ -17,10 +17,8 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use rustls::client::danger::{
-    HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
-};
 use rustls::client::WebPkiServerVerifier;
+use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{
     ClientConfig, DigitallySignedStruct, Error as RustlsError, RootCertStore, SignatureScheme,
@@ -146,7 +144,8 @@ impl Transport {
 
     async fn tls_wrap(&mut self, via_starttls: bool) -> Result<()> {
         let stream = std::mem::replace(&mut self.stream, Box::new(tokio::io::empty()));
-        let (stream, obs) = tls_handshake(stream, &self.host, &self.tls_settings, via_starttls).await?;
+        let (stream, obs) =
+            tls_handshake(stream, &self.host, &self.tls_settings, via_starttls).await?;
         self.stream = stream;
         self.observation = Some(obs);
         Ok(())
@@ -252,37 +251,37 @@ async fn tls_handshake(
         accept_invalid: settings.accept_invalid_certs,
     };
 
-    let mut config =
-        ClientConfig::builder()
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(verifier))
-            .with_no_client_auth();
+    let mut config = ClientConfig::builder()
+        .dangerous()
+        .with_custom_certificate_verifier(Arc::new(verifier))
+        .with_no_client_auth();
     // Deterministic, inspectable defaults; no ALPN for mail protocols.
     config.alpn_protocols = Vec::new();
 
     let server_name = server_name_for(host)?;
     let connector = TlsConnector::from(Arc::new(config));
-    let tls_stream = tokio::time::timeout(
-        HANDSHAKE_TIMEOUT,
-        connector.connect(server_name, stream),
-    )
-    .await
-    .map_err(|_| MailError::Io(io::Error::new(io::ErrorKind::TimedOut, "TLS handshake timeout")))?
-    .map_err(|e| {
-        let verdict = *verdict_slot.lock().unwrap();
-        match verdict {
-            Some(v) => MailError::Tls(RustlsError::General(format!(
-                "certificate rejected ({v:?}): {e}"
-            ))),
-            None => MailError::Tls(RustlsError::General(format!("handshake failed: {e}"))),
-        }
-    })?;
+    let tls_stream =
+        tokio::time::timeout(HANDSHAKE_TIMEOUT, connector.connect(server_name, stream))
+            .await
+            .map_err(|_| {
+                MailError::Io(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "TLS handshake timeout",
+                ))
+            })?
+            .map_err(|e| {
+                let verdict = *verdict_slot.lock().unwrap();
+                match verdict {
+                    Some(v) => MailError::Tls(RustlsError::General(format!(
+                        "certificate rejected ({v:?}): {e}"
+                    ))),
+                    None => MailError::Tls(RustlsError::General(format!("handshake failed: {e}"))),
+                }
+            })?;
 
     let (_, conn) = tls_stream.get_ref();
     let obs = TlsObservation {
-        protocol_version: conn
-            .protocol_version()
-            .map(|v| format!("{v:?}")),
+        protocol_version: conn.protocol_version().map(|v| format!("{v:?}")),
         cipher_suite: conn
             .negotiated_cipher_suite()
             .map(|s| format!("{:?}", s.suite())),
@@ -307,11 +306,10 @@ fn server_name_for(host: &str) -> Result<ServerName<'static>> {
     if let Ok(ip) = host.parse::<IpAddr>() {
         return Ok(ServerName::IpAddress(ip.into()));
     }
-    ServerName::try_from(host.to_string())
-        .map_err(|_| MailError::Protocol {
-            protocol: "transport",
-            detail: format!("invalid TLS server name: {host:?}"),
-        })
+    ServerName::try_from(host.to_string()).map_err(|_| MailError::Protocol {
+        protocol: "transport",
+        detail: format!("invalid TLS server name: {host:?}"),
+    })
 }
 
 /// IANA code points for the suites rustls can negotiate. Unknown suites
@@ -401,7 +399,9 @@ fn map_cert_error(e: &RustlsError) -> CertVerdict {
     match e {
         RustlsError::InvalidCertificate(ce) => match ce {
             Ce::Expired | Ce::NotValidYet => CertVerdict::Expired,
-            Ce::NotValidForName | Ce::NotValidForNameContext { .. } => CertVerdict::HostnameMismatch,
+            Ce::NotValidForName | Ce::NotValidForNameContext { .. } => {
+                CertVerdict::HostnameMismatch
+            }
             Ce::UnknownIssuer => CertVerdict::Untrusted,
             _ => CertVerdict::Invalid,
         },

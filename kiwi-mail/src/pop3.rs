@@ -41,10 +41,16 @@ impl Default for Pop3Config {
 
 pub enum Pop3Auth {
     /// USER + PASS (two commands).
-    UserPass { user: String, password: Zeroizing<String> },
+    UserPass {
+        user: String,
+        password: Zeroizing<String>,
+    },
     /// APOP (RFC 1939 §7): MD5(banner_timestamp + password). Requires the
     /// greeting to have carried a `<…>` timestamp.
-    Apop { user: String, password: Zeroizing<String> },
+    Apop {
+        user: String,
+        password: Zeroizing<String>,
+    },
 }
 
 pub struct Pop3Client {
@@ -119,7 +125,10 @@ impl Pop3Client {
         )
         .await
         .map_err(|_| {
-            MailError::Io(std::io::Error::new(std::io::ErrorKind::TimedOut, "pop3 timeout"))
+            MailError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "pop3 timeout",
+            ))
         })??;
         Ok(String::from_utf8_lossy(&raw).into_owned())
     }
@@ -203,15 +212,17 @@ impl Pop3Client {
             }
             Pop3Auth::Apop { user, password } => {
                 check_param(PROTO, "APOP", user)?;
-                let banner = self.apop_banner.clone().ok_or_else(|| {
-                    MailError::Protocol {
+                let banner = self
+                    .apop_banner
+                    .clone()
+                    .ok_or_else(|| MailError::Protocol {
                         protocol: PROTO,
                         detail: "server greeting carried no APOP timestamp".into(),
-                    }
-                })?;
+                    })?;
                 // Legacy interop only — RFC 1939 §7 mandates MD5 here.
                 let digest = md5::compute(format!("{banner}{}", password.as_str()));
-                self.ok_command(&format!("APOP {user} {:x}", digest)).await?;
+                self.ok_command(&format!("APOP {user} {:x}", digest))
+                    .await?;
             }
         }
         Ok(())
@@ -305,7 +316,10 @@ impl Pop3Client {
 
 /// Reject CRLF injection in command parameters.
 fn check_param(protocol: &'static str, name: &str, value: &str) -> Result<()> {
-    if value.bytes().any(|b| b == b'\r' || b == b'\n' || b < 0x20 && b != b'\t') {
+    if value
+        .bytes()
+        .any(|b| b == b'\r' || b == b'\n' || b == 0x7f || b < 0x20 && b != b'\t')
+    {
         return Err(MailError::Protocol {
             protocol,
             detail: format!("invalid character in {name} parameter"),
@@ -325,8 +339,8 @@ fn extract_banner(greeting: &str) -> Option<String> {
 mod tests {
     use super::*;
     use crate::transport::TlsSettings;
-    use tokio::io::duplex;
     use tokio::io::AsyncWriteExt;
+    use tokio::io::duplex;
 
     #[test]
     fn banner_extract() {
@@ -341,7 +355,10 @@ mod tests {
     async fn userpass_list_retr_flow() {
         let (client_end, mut server_end) = duplex(1 << 16);
         tokio::spawn(async move {
-            server_end.write_all(b"+OK POP3 ready <t@x>\r\n").await.unwrap();
+            server_end
+                .write_all(b"+OK POP3 ready <t@x>\r\n")
+                .await
+                .unwrap();
             let mut buf = Vec::new();
             // CAPA (client sends it right after the greeting)
             let _ = read_line(&mut server_end, &mut buf, PROTO).await.unwrap();
@@ -354,7 +371,10 @@ mod tests {
             server_end.write_all(b"+OK locked\r\n").await.unwrap();
             // LIST
             let _ = read_line(&mut server_end, &mut buf, PROTO).await.unwrap();
-            server_end.write_all(b"+OK\r\n1 500\r\n2 900\r\n.\r\n").await.unwrap();
+            server_end
+                .write_all(b"+OK\r\n1 500\r\n2 900\r\n.\r\n")
+                .await
+                .unwrap();
             // RETR 2
             let _ = read_line(&mut server_end, &mut buf, PROTO).await.unwrap();
             server_end
@@ -420,7 +440,10 @@ mod tests {
                 md5::compute("<1896.6971@mail.test>secret")
             );
             assert_eq!(line, expect.as_bytes());
-            server_end.write_all(b"+OK maildrop has 1 message\r\n").await.unwrap();
+            server_end
+                .write_all(b"+OK maildrop has 1 message\r\n")
+                .await
+                .unwrap();
         });
         let mut c = Pop3Client::connect(
             client_end.into_client_transport(),

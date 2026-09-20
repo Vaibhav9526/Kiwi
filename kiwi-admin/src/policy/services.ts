@@ -11,6 +11,7 @@ import { evaluatePolicy } from "./evaluator.js";
 import type { PolicyDefinition, PolicyInput, PolicyDecision, PolicyReason } from "./model.js";
 import { REASON_CODES } from "./model.js";
 import { assertNonEmptyString, assertIdentifier, RequestValidationError } from "../util/validate.js";
+import type { MaybePromise } from "../db/interfaces.js";
 import type { RecipientDomainAction, ExternalRecipientBehavior } from "../types.js";
 
 export interface ExternalPolicyInput {
@@ -22,7 +23,14 @@ export interface ExternalPolicyInput {
 }
 
 export interface ServiceContainerLike {
-  auditWrap<T>(actor: Actor, orgId: string | null, action: string, resource: string | null, work: () => T, permission?: Permission): T;
+  auditWrap<T>(
+    actor: Actor,
+    orgId: string | null,
+    action: string,
+    resource: string | null,
+    work: () => MaybePromise<T>,
+    permission?: Permission,
+  ): Promise<T>;
 }
 
 export class OrgService {
@@ -31,14 +39,19 @@ export class OrgService {
     private readonly ctx: ServiceContainerLike,
   ) {}
 
-  createOrg(actor: Actor, name: string, now: number): { id: string; name: string; created_at: number } {
+  async createOrg(actor: Actor, name: string, now: number): Promise<{ id: string; name: string; created_at: number }> {
     const id = `org-${randomUUID()}`;
     return this.ctx.auditWrap(actor, null, "org.create", id, () =>
       this.repos.orgs.createOrg(id, assertNonEmptyString(name, "name", 200), now),
     );
   }
 
-  createUser(actor: Actor, orgId: string, email: string, now: number): { id: string; org_id: string; email: string; created_at: number } {
+  async createUser(
+    actor: Actor,
+    orgId: string,
+    email: string,
+    now: number,
+  ): Promise<{ id: string; org_id: string; email: string; created_at: number }> {
     const id = `user-${randomUUID()}`;
     return this.ctx.auditWrap(
       actor,
@@ -50,8 +63,8 @@ export class OrgService {
     );
   }
 
-  grantRole(actor: Actor, userId: string, orgId: string, role: OrgRole, now: number): void {
-    this.ctx.auditWrap(
+  async grantRole(actor: Actor, userId: string, orgId: string, role: OrgRole, now: number): Promise<void> {
+    await this.ctx.auditWrap(
       actor,
       orgId,
       "user.role.grant",
@@ -61,12 +74,12 @@ export class OrgService {
     );
   }
 
-  createDevice(
+  async createDevice(
     actor: Actor,
     orgId: string,
     label: string,
     now: number,
-  ): { id: string; org_id: string; label: string; revoked: number; created_at: number } {
+  ): Promise<{ id: string; org_id: string; label: string; revoked: number; created_at: number }> {
     const id = `dev-${randomUUID()}`;
     return this.ctx.auditWrap(
       actor,
@@ -78,8 +91,8 @@ export class OrgService {
     );
   }
 
-  revokeDevice(actor: Actor, deviceId: string, now: number): void {
-    this.ctx.auditWrap(
+  async revokeDevice(actor: Actor, deviceId: string, now: number): Promise<void> {
+    await this.ctx.auditWrap(
       actor,
       null,
       "device.revoke",
@@ -89,9 +102,21 @@ export class OrgService {
     );
   }
 
-  listDomains(actor: Actor, orgId: string): { domain: string; verified: number }[] {
+  async listDomains(actor: Actor, orgId: string): Promise<{ domain: string; verified: number }[]> {
     requirePermission(actor, "org.read", orgId);
     return this.repos.orgs.listDomains(orgId);
+  }
+
+  /** T-134: org user listing with roles (read-only, RBAC-gated, unaudited like other reads). */
+  async listUsers(actor: Actor, orgId: string): Promise<{ id: string; email: string; roles: OrgRole[]; created_at: number }[]> {
+    requirePermission(actor, "user.read", orgId);
+    const oid = assertIdentifier(orgId, "orgId");
+    const users = await this.repos.orgs.listUsers(oid);
+    const out: { id: string; email: string; roles: OrgRole[]; created_at: number }[] = [];
+    for (const u of users) {
+      out.push({ id: u.id, email: u.email, roles: await this.repos.orgs.listRoles(u.id), created_at: u.created_at });
+    }
+    return out;
   }
 }
 
@@ -101,15 +126,15 @@ export class PolicyService {
     private readonly ctx: ServiceContainerLike,
   ) {}
 
-  createPolicy(actor: Actor, orgId: string, name: string, input: ExternalPolicyInput): { id: string } {
+  async createPolicy(actor: Actor, orgId: string, name: string, input: ExternalPolicyInput): Promise<{ id: string }> {
     const id = `pol-${randomUUID()}`;
     return this.ctx.auditWrap(
       actor,
       orgId,
       "policy.create",
       id,
-      () => {
-        this.repos.policies.createPolicy(
+      async () => {
+        await this.repos.policies.createPolicy(
           id,
           orgId,
           assertNonEmptyString(name, "name", 200),
@@ -119,7 +144,7 @@ export class PolicyService {
           Date.now(),
         );
         for (const rule of input.domainRules) {
-          this.repos.policies.addDomainRule(id, assertNonEmptyString(rule.domain, "domain", 253), rule.action);
+          await this.repos.policies.addDomainRule(id, assertNonEmptyString(rule.domain, "domain", 253), rule.action);
         }
         return { id };
       },
@@ -127,22 +152,40 @@ export class PolicyService {
     );
   }
 
-  getPolicyDefinition(id: string): PolicyDefinition | undefined {
-    const row = this.repos.policies.getPolicy(id);
+  async getPolicyDefinition(id: string): Promise<PolicyDefinition | undefined> {
+    const row = await this.repos.policies.getPolicy(id);
     if (!row) return undefined;
     return {
       id: row.id,
       enabled: row.enabled === 1,
       minTls: row.min_tls,
       externalRecipients: row.external_recipients,
-      domainRules: this.repos.policies.listDomainRules(id),
+      domainRules: await this.repos.policies.listDomainRules(id),
     };
   }
 
-  evaluate(id: string, input: PolicyInput): PolicyDecision {
-    const definition = this.getPolicyDefinition(id);
+  async evaluate(id: string, input: PolicyInput): Promise<PolicyDecision> {
+    const definition = await this.getPolicyDefinition(id);
     if (!definition) throw new Error(`policy '${id}' not found`);
     return evaluatePolicy(definition, input);
+  }
+
+  /** T-134: full policy definitions of an org (read-only, RBAC-gated). */
+  async listPolicies(actor: Actor, orgId: string): Promise<PolicyDefinition[]> {
+    requirePermission(actor, "policy.read", orgId);
+    const oid = assertIdentifier(orgId, "orgId");
+    const rows = await this.repos.policies.listPoliciesForOrg(oid);
+    const out: PolicyDefinition[] = [];
+    for (const row of rows) {
+      out.push({
+        id: row.id,
+        enabled: row.enabled === 1,
+        minTls: row.min_tls,
+        externalRecipients: row.external_recipients,
+        domainRules: await this.repos.policies.listDomainRules(row.id),
+      });
+    }
+    return out;
   }
 
   /**
@@ -150,17 +193,17 @@ export class PolicyService {
    * org's policies, and delegates to the pure evaluateOutboundForOrg core.
    * Requires `policy.read` on the org; allowed AND denied checks are audited.
    */
-  evaluateOutbound(
+  async evaluateOutbound(
     actor: Actor,
     orgId: string,
     raw: { sender: unknown; recipients: unknown; tlsVersion: unknown },
-  ): OutboundEvaluation {
+  ): Promise<OutboundEvaluation> {
     return this.ctx.auditWrap(
       actor,
       orgId,
       "policy.evaluate_outbound",
       orgId,
-      () => {
+      async () => {
         const oid = assertIdentifier(orgId, "orgId");
         const sender = assertNonEmptyString(raw.sender, "sender", 254);
         if (!Array.isArray(raw.recipients) || raw.recipients.length === 0) {
@@ -177,13 +220,17 @@ export class PolicyService {
           if (!normalized) throw new RequestValidationError("tlsVersion", "unrecognized TLS version");
           tlsVersion = normalized;
         }
-        const definitions: PolicyDefinition[] = this.repos.policies.listPoliciesForOrg(oid).map((row) => ({
-          id: row.id,
-          enabled: row.enabled === 1,
-          minTls: row.min_tls,
-          externalRecipients: row.external_recipients,
-          domainRules: this.repos.policies.listDomainRules(row.id),
-        }));
+        const rows = await this.repos.policies.listPoliciesForOrg(oid);
+        const definitions: PolicyDefinition[] = [];
+        for (const row of rows) {
+          definitions.push({
+            id: row.id,
+            enabled: row.enabled === 1,
+            minTls: row.min_tls,
+            externalRecipients: row.external_recipients,
+            domainRules: await this.repos.policies.listDomainRules(row.id),
+          });
+        }
         return evaluateOutboundForOrg(oid, definitions, sender, recipients, tlsVersion);
       },
       "policy.read",

@@ -102,3 +102,71 @@
 **New dev-dependency:** `rcgen 0.13` (dev-only; generates fixture certs — chosen over 0.14 as the older stable line).
 
 **Notes for Agent 6 (T-114):** the `serve()` helper pattern (expect-prefix → reply steps) and the rcgen `TlsAcceptor`-over-duplex recipe can be lifted directly into the shared transcript harness.
+
+## 2026-09-20 — T-132 sandbox evaluation + design (owner priority, infra before features)
+
+**Status:** DONE (design + contract + lifecycle PoC verified on this host). Branch release/v0.1.0. Note: ADR-008's open question was tagged "Agent 7" but the owner directive assigned T-132 to Agent 2 — flagging for Lead's ledger consistency.
+
+**Deliverables:**
+- `docs/sandbox.md` — design: measured host evaluation, option matrix, tier decision, prebuilt-base-image + snapshot/revert strategy, isolation table, monitoring outputs (proc/fs/net→PCAP for kiwi-forensics), degradation model, ADR-009 justification, build order.
+- `docs/contracts/sandbox.md` — v1 contract: `SandboxProvider`/`Sandbox` trait shapes, `Availability::{Available,Degraded,Unavailable}`, `SandboxCapabilities`, `SandboxSpec`, bounded `AnalysisReport`, error taxonomy, 7 provider invariants, caller obligations (never host-execute on Unavailable).
+- `tests/infra/check-sandbox-host.ps1` — read-only capability probe.
+- `tests/infra/sandbox-wsl-poc.ps1` — lifecycle PoC, **PASS** on this host.
+
+**Host evaluation (measured, honest):**
+- Windows 11 **Home**; hypervisor running; `vmcompute` up, `vmms` absent (no Hyper-V role on Home — Hyper-V Manager path dead).
+- `WinHvPlatform.dll` + `hvix64.exe` present → **QEMU/WHPX viable** (dedicated kernel, qcow2 overlay revert, `-object filter-dump` PCAP). QEMU binary absent — one-off provision needed; chose not to install system software without a provisioning decision.
+- **Firecracker impossible**: KVM is Linux-only; `/dev/kvm` absent inside WSL2 (nested virt off). Documented as Linux-host tier only.
+- **WSL2 tier works today** — real hypervisor boundary vs host; documented shared-kernel caveat (all distros share the utility-VM kernel → kernel escape lands in utility VM, can reach other WSL2 distros' FS — flagged `dedicated_kernel: false` in capabilities).
+
+**PoC evidence (WSL2 lifecycle):** docker-export busybox → bake `/etc/wsl.conf` (automount+interop off) into rootfs → `wsl --import` → analyze (verified `/mnt` shows only `wsl`,`wslg` internals — **no host drives**) → revert (marker file gone after re-import) → teardown (`--unregister`, VHDX destroyed). Key design note proven: policy must be baked into the base image, not mutated at runtime (in-guest wsl.conf write + restart did NOT take reliably).
+
+**Degradation:** interface reports `Unavailable(reason)`; no host fallback path exists by design (invariant, not just a default).
+
+**Risks/open:**
+- QEMU/WHPX provider needs QEMU binaries provisioned (portable build suffices; decision deferred to Lead/owner).
+- WSL2 egress control is weakest link (no per-distro net toggle; `unshare -rn` or host firewall — provider reports `egress_control: None` honestly).
+- `kiwi-sandbox` crate (trait + Wsl2Provider + NullProvider) is the natural next implementation step; T-114 transcripts can capture the qemu-img/qemu-system command lines once QEMU lands.
+- Resuming kiwi-mail T-103..T-106 follow-up hardening after this.
+
+## 2026-09-20 (2) — recovery + T-114 transcript harness wired (T-103..106 hardening)
+
+**Recovery note:** previous turn was interrupted by Lead mid-session (likely a stalled `get_output` wait on a backgrounded shell). Verified on resume: `cargo test -p kiwi-mail -p kiwi-core` **81 passed, 0 failed** (49 mail + 32 core); clippy `-D warnings` clean; all prior deliverables (sandbox docs + PoC, kiwi-mail engine) intact in tree. Nothing was mid-flight when interrupted — the last completed action was the status append.
+
+**New this round — fixture-driven transcript replay (consumes Agent 6's T-114 corpus):**
+- `kiwi-mail/src/testutil.rs` (cfg(test)) — shared harness: parses `S:`/`C:`/`#` transcript steps, drives a scripted server over duplex, supports a **mid-stream TLS boundary** (comment marker `# TLS handshake happens here` → `TlsAcceptor::accept` over the same stream), protocol-aware client-line matching (IMAP tag normalization, verb-match for cred/EHLO lines carrying fixture dummies, SIZE-param tolerance), off-script probe answers (POP3 CAPA→-ERR, IMAP CAPABILITY→generic reply), and **IMAP tag rewriting** on tagged `S:` lines so replies echo the client's real tag.
+- All 8 shipped transcripts replayed as tests:
+  - `smtp_send_ok` (happy path incl. AUTH PLAIN + DATA block)
+  - `smtp_auth_fail` → `MailError::Auth`
+  - `smtp_auth-mixed-results` (spoofed-envelope send, outcome recorded)
+  - `smtp_stripped` → **fail-closed** `Protocol` error on a StartTls socket
+  - `pop3_retr` (LIST/UIDL/RETR content asserted)
+  - `pop3_stls` → **real rustls STLS upgrade mid-transcript** (rcgen cert via `extra_roots`, `TlsObservation` + `CertVerdict::Valid` asserted, post-TLS CAPA)
+  - `imap_select_fetch` (SELECT state + ENVELOPE parse asserted)
+  - `imap_hostile_fetch` → `{999999999}` literal rejected by bound **before** any allocation/read (verified fast-fail, no 1GB stall)
+
+**Fixes surfaced by fixture replay:**
+- `ImapConfig` added — plaintext auth now refuses-by-default with explicit opt-in (was unconditional refuse; matches SMTP/POP3 posture). `connect()` unchanged default; `connect_with()` for the opt-in.
+- `parse_envelope` now tolerant of servers emitting <10 RFC-3501 slots (fixture has 8 — positional reads, absent fields `None`).
+- Literal bound already correct (pre-allocation check confirmed by hostile fixture).
+
+**Fixture notes for Agent 6:** harness at `kiwi-mail/src/testutil.rs`; new transcripts just drop into `tests/fixtures/transcripts/` + one test fn. IMAP fixtures don't need to script `CAPABILITY` (harness answers it); `LOGIN`/`AUTH`/`PASS`/`EHLO` lines are verb-matched (dummy creds OK). The 8-field ENVELOPE in `imap_select_fetch.txt` is technically malformed per RFC 3501 (10 slots) — left as-is since it exercised a real leniency path.
+
+## 2026-09-20 (3) — T-103..106 hardening cont.: live mailpit interop + engine e2e tests
+
+**Recovery:** re-verified after interrupt — all prior state intact.
+
+**Real-server interop (mailpit compose stack):**
+- `testutil::tests::mailpit_smtp_pop3_roundtrip` — gated on `KIWI_MAILPIT=1` (hermetic default). Verified live: SMTP `127.0.0.1:1025` plaintext + AUTH PLAIN (mailpit accepts), MAIL/RCPT/DATA accepted; POP3 `127.0.0.1:1100` USER/PASS demo/demo, UIDL poll + RETR — message body round-tripped intact. Run: `KIWI_MAILPIT=1 cargo test -p kiwi-mail mailpit`.
+
+**Engine end-to-end tests (scripted servers via `testutil::spawn_script`):**
+- `sync_folder_end_to_end` — 3-pass IMAP sync: initial import (2 new), flag-refresh + remote-expunge detection, UIDVALIDITY-reset wipe+repopulate. Asserts report counters and final store UID set `{9}`.
+- `sync_pop3_end_to_end` — UIDL diff → RETR unseen → second pass dedups via `pop3_seen` (no re-RETR).
+- `imap_append_literal_plus` — APPEND `{n+}` non-sync literal path.
+- `imap_idle_collects_events` — IDLE `+` continuation → untagged EXISTS/RECENT collected → DONE → tagged OK.
+
+**Harness fix:** `last_tag` tracking now only accepts tag-shaped tokens (alpha+digits) — APPEND payload lines / DONE no longer corrupt tag rewriting.
+
+**Added:** `MailStore::conn_for_test()` — `#[cfg(test)]` accessor for FK fixtures (no production API surface).
+
+**Verify:** `cargo test -p kiwi-mail -p kiwi-core` = **86 passed, 0 failed** (54 mail + 32 core); clippy `-D warnings` clean.

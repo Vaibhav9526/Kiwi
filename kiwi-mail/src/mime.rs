@@ -127,7 +127,11 @@ pub fn parse_message(raw: &[u8]) -> Result<ParsedMessage> {
             size: att.contents().len(),
         });
     }
-    let body_src = out.text_body.clone().or_else(|| out.html_body.clone()).unwrap_or_default();
+    let body_src = out
+        .text_body
+        .clone()
+        .or_else(|| out.html_body.clone())
+        .unwrap_or_default();
     out.snippet = body_src
         .split_whitespace()
         .take(24)
@@ -157,7 +161,11 @@ pub fn build_message(msg: &OutboundMessage) -> Result<Vec<u8>> {
     // Bcc is deliberately never emitted on the wire.
     header(&mut h, "Subject", &encode_words(&msg.subject));
     header(&mut h, "Date", &rfc2822_date(msg.date_unix));
-    header(&mut h, "Message-ID", &format!("<{}>", sanitize_id(&msg.message_id)));
+    header(
+        &mut h,
+        "Message-ID",
+        &format!("<{}>", sanitize_id(&msg.message_id)),
+    );
     if let Some(irt) = &msg.in_reply_to {
         header(&mut h, "In-Reply-To", &format!("<{}>", sanitize_id(irt)));
     }
@@ -188,9 +196,19 @@ pub fn build_message(msg: &OutboundMessage) -> Result<Vec<u8>> {
                 &format!("multipart/alternative; boundary=\"{boundary}\""),
             );
             body.extend_from_slice(b"\r\n");
-            push_text_part(&mut body, &boundary, "text/plain; charset=utf-8", msg.text.as_bytes());
+            push_text_part(
+                &mut body,
+                &boundary,
+                "text/plain; charset=utf-8",
+                msg.text.as_bytes(),
+            );
             if let Some(html) = html {
-                push_text_part(&mut body, &boundary, "text/html; charset=utf-8", html.as_bytes());
+                push_text_part(
+                    &mut body,
+                    &boundary,
+                    "text/html; charset=utf-8",
+                    html.as_bytes(),
+                );
             }
             body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
         }
@@ -210,11 +228,26 @@ pub fn build_message(msg: &OutboundMessage) -> Result<Vec<u8>> {
                     format!("Content-Type: multipart/alternative; boundary=\"{inner}\"\r\n\r\n")
                         .as_bytes(),
                 );
-                push_text_part(&mut body, &inner, "text/plain; charset=utf-8", msg.text.as_bytes());
-                push_text_part(&mut body, &inner, "text/html; charset=utf-8", html.as_bytes());
+                push_text_part(
+                    &mut body,
+                    &inner,
+                    "text/plain; charset=utf-8",
+                    msg.text.as_bytes(),
+                );
+                push_text_part(
+                    &mut body,
+                    &inner,
+                    "text/html; charset=utf-8",
+                    html.as_bytes(),
+                );
                 body.extend_from_slice(format!("--{inner}--\r\n").as_bytes());
             } else {
-                push_text_part(&mut body, &boundary, "text/plain; charset=utf-8", msg.text.as_bytes());
+                push_text_part(
+                    &mut body,
+                    &boundary,
+                    "text/plain; charset=utf-8",
+                    msg.text.as_bytes(),
+                );
             }
             for (i, att) in msg.attachments.iter().enumerate() {
                 let fname = att.filename.replace(['"', '\\', '\r', '\n'], "_");
@@ -263,7 +296,13 @@ fn sanitize_header_value(v: &str) -> String {
 fn sanitize_id(id: &str) -> String {
     id.trim_matches(|c| c == '<' || c == '>')
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || ".-_@".contains(c) { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || ".-_@".contains(c) {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect()
 }
 
@@ -299,7 +338,9 @@ fn qp_encode(input: &[u8]) -> Vec<u8> {
                 format!("={b:02X}").into_bytes()
             }
             // trailing space/tab before EOL must be escaped
-            b' ' | b'\t' if input.get(i + 1) == Some(&b'\r') || input.get(i + 1) == Some(&b'\n') => {
+            b' ' | b'\t'
+                if input.get(i + 1) == Some(&b'\r') || input.get(i + 1) == Some(&b'\n') =>
+            {
                 format!("={b:02X}").into_bytes()
             }
             _ => vec![b],
@@ -333,7 +374,10 @@ fn b64_wrapped(data: &[u8]) -> Vec<u8> {
 fn rfc2822_date(unix: i64) -> String {
     use time::format_description::well_known::Rfc2822;
     time::OffsetDateTime::from_unix_timestamp(unix)
-        .map(|t| t.format(&Rfc2822).unwrap_or_else(|_| "Thu, 01 Jan 1970 00:00:00 +0000".into()))
+        .map(|t| {
+            t.format(&Rfc2822)
+                .unwrap_or_else(|_| "Thu, 01 Jan 1970 00:00:00 +0000".into())
+        })
         .unwrap_or_else(|_| "Thu, 01 Jan 1970 00:00:00 +0000".into())
 }
 
@@ -374,8 +418,14 @@ mod tests {
     #[test]
     fn build_roundtrips_through_parser() {
         let msg = OutboundMessage {
-            from: Addr { name: Some("Zoë".into()), email: "z@x.test".into() },
-            to: vec![Addr { name: None, email: "b@y.test".into() }],
+            from: Addr {
+                name: Some("Zoë".into()),
+                email: "z@x.test".into(),
+            },
+            to: vec![Addr {
+                name: None,
+                email: "b@y.test".into(),
+            }],
             cc: vec![],
             bcc: vec![],
             subject: "Résumé ✓".into(),
@@ -406,7 +456,10 @@ mod tests {
     #[test]
     fn header_injection_blocked() {
         let msg = OutboundMessage {
-            from: Addr { name: None, email: "a@x".into() },
+            from: Addr {
+                name: None,
+                email: "a@x".into(),
+            },
             to: vec![],
             cc: vec![],
             bcc: vec![],

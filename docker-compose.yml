@@ -1,0 +1,106 @@
+# KIWI local infrastructure (ADR-007). Services only — the Tauri desktop app
+# ALWAYS runs natively on the host and must never be containerized here
+# (enforced by tests/infra/test_compose.py::test_tauri_not_in_compose).
+#
+# Usage: `cp .env.example .env` then `docker compose up -d` (see infra/README.md).
+
+name: kiwi
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: true
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  mailpit:
+    # Dev/test mail server (T-114 interop profile): SMTP+POP3+API/UI.
+    # NOTE: mailpit serves NO IMAP (verified: TCP accept, zero bytes) —
+    # live IMAP comes from the `greenmail` service below (T-147).
+    image: axllent/mailpit:v1.31.2
+    restart: unless-stopped
+    # POP3 is off by default in mailpit — bind on the mapped port + auth file
+    # (infra/mailpit-pop3-auth: htpasswd bcrypt, demo/demo for tests only).
+    command: ["--pop3", "0.0.0.0:1100", "--pop3-auth-file", "/auth/pop3.htpasswd", "--verbose"]
+    volumes:
+      - ./infra/mailpit-pop3-auth:/auth/pop3.htpasswd:ro
+    ports:
+      - "127.0.0.1:${MAILPIT_SMTP_PORT:-1025}:1025"
+      - "127.0.0.1:${MAILPIT_POP3_PORT:-1100}:1100"
+      - "${MAILPIT_UI_PORT:-8025}:8025"
+    healthcheck:
+      # Mailpit serves its API/UI over HTTP on 8025.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8025/api/v1/info || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  greenmail:
+    # Containerized IMAP server for live sync tests (T-147; ADR-009 in
+    # infra/README.md): GreenMail standalone, IMAP-only surface (SMTP/POP3
+    # stay on mailpit). Default opts seed test users with auth disabled —
+    # synthetic mail only, localhost-bound, never real data.
+    image: greenmail/standalone:2.1.14
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${GREENMAIL_IMAP_PORT:-1143}:3143"
+    environment:
+      GREENMAIL_OPTS: "-Dgreenmail.setup.test.imap -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.auth.disabled"
+    # No in-image healthcheck: the Zulu base ships no nc/wget/curl.
+    # Health is asserted externally by tests/infra/test_compose.py
+    # (IMAP greeting + CAPABILITY round-trip).
+
+  admin:
+    build:
+      context: ./kiwi-admin
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: true
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      # The service reads KIWI_ADMIN_PORT (src/server.ts), NOT PORT — compose
+      # previously set PORT, so the container listened on the 8471 default while
+      # the published port, the healthcheck below and the image's HEALTHCHECK
+      # all probed 3001. A bare `PORT` is silently ignored by the service.
+      KIWI_ADMIN_PORT: "3001"
+      # Audit-export signing key (T-179). Not a secret: it only makes the
+      # export's HMAC verifiable, and it is never logged or echoed — the
+      # artifact publishes only its SHA-256 fingerprint. Absent/blank means
+      # exports are unsigned, which the export states honestly.
+      KIWI_AUDIT_EXPORT_KEY: ${KIWI_AUDIT_EXPORT_KEY}
+    ports:
+      - "127.0.0.1:${KIWI_ADMIN_PORT:-3001}:3001"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      # Node 22 has global fetch: no curl dependency inside the image.
+      # NOTE: GET /healthz lands with T-130 (service entrypoint). Until then
+      # this service is expected-unhealthy — see infra/README.md.
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3001/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+
+volumes:
+  pgdata:
+    name: kiwi-pgdata

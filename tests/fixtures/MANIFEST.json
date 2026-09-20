@@ -321,6 +321,78 @@
    "status": "present",
    "generation": "hand-written synthetic transcript (T-114)",
    "expected_findings": []
+  },
+  {
+   "path": "messages/auth-spf-pass.eml",
+   "suite": "message",
+   "status": "present",
+   "generation": "synthetic (T-141)",
+   "expected_findings": [
+    "SPF-PASS"
+   ]
+  },
+  {
+   "path": "messages/auth-spf-fail.eml",
+   "suite": "message",
+   "status": "present",
+   "generation": "synthetic (T-141)",
+   "expected_findings": [
+    "SPF-FAIL"
+   ]
+  },
+  {
+   "path": "messages/auth-dkim-valid.eml",
+   "suite": "message",
+   "status": "present",
+   "generation": "RSA-2048 signed, round-trip verified (T-141)",
+   "expected_findings": [
+    "DKIM-VALID"
+   ]
+  },
+  {
+   "path": "messages/auth-dkim-tampered.eml",
+   "suite": "message",
+   "status": "present",
+   "generation": "one-line body tamper of auth-dkim-valid (T-141)",
+   "expected_findings": [
+    "DKIM-TAMPERED"
+   ]
+  },
+  {
+   "path": "messages/auth-dmarc-reject-aligned.eml",
+   "suite": "message",
+   "status": "present",
+   "generation": "synthetic (T-141)",
+   "expected_findings": [
+    "DMARC-PASS"
+   ]
+  },
+  {
+   "path": "messages/auth-dmarc-reject-spoof.eml",
+   "suite": "message",
+   "status": "present",
+   "generation": "synthetic (T-141)",
+   "expected_findings": [
+    "DMARC-FAIL-REJECT"
+   ]
+  },
+  {
+   "path": "transcripts/smtp_auth-mixed-results.txt",
+   "suite": "transcript",
+   "status": "present",
+   "generation": "hand-written spoof delivery (T-141)",
+   "expected_findings": [
+    "SPF-PASS",
+    "DKIM-NONE",
+    "DMARC-FAIL-REJECT"
+   ]
+  },
+  {
+   "path": "dns/mailauth.txt",
+   "suite": "dns",
+   "status": "present",
+   "generation": "zone fragments for T-141 corpus (T-141)",
+   "expected_findings": []
   }
  ],
  "version": 1

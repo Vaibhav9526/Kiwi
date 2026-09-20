@@ -145,3 +145,77 @@ sequential and append-only; tests green (`tsc --noEmit` + `vitest run`).
 
 No further entries until I resume or review.
 
+
+---
+
+## 2026-09-19 — T-136 (brief: T-137) — mobile/ authenticator scaffold + contracts/authenticator.md — COMPLETE, ready for review
+
+**Status:** `in-review` (Agent 6/Lead hold `done` authority per TASKS.md
+rules). Brief said "code only, no build run needed" — the toolchain was
+available, so verification was actually run; results below.
+
+### Scope note
+
+kiwi-admin freeze honored: `kiwi-admin/` and `docs/contracts/admin-api.md`
+untouched (git status below). Write surface: `mobile/` (new),
+`docs/contracts/authenticator.md` (new), this status file.
+
+### Files created
+
+- `docs/contracts/authenticator.md` — contract v1: invariants; QR payload v1
+  (`kiwi-pairing` JSON; single-use 8..128-char ticket; ≤5 min TTL);
+  pairing-channel handshake (TLS + pinned desktop key); canonical challenge
+  bytes with byte-parity to kiwi-core `Challenge::canonical_bytes`
+  (u32be length prefixes, event tags 0x01–0x04, 32B nonce, i64be times);
+  nonce/expiry/replay rules; keystore-only key lifecycle (Ed25519 required;
+  ecdsa-p256/rsa3072 reserved + fail-closed); approve/deny semantics
+  (§6.3: deny unsigned, audited, non-consuming); offline queue (§7);
+  scaffold map; audit/test map; versioning (tag/canonical change ⇒ v2 +
+  coordinated release); limitations; 4 open items flagged for Lead + Agent 6.
+- `mobile/` (30 files): package.json (pinned deps incl. react-native
+  0.76.5), tsconfig.json (strict + noUncheckedIndexedAccess +
+  exactOptionalPropertyTypes), tsconfig.core.json (RN-free subset),
+  vitest.config.ts, .eslintrc.js, babel/metro config, app.json, index.js,
+  .gitignore, README.md; src/protocol/{event,types,validate,qr,canonical,
+  replay,queue}.ts; src/keystore/{keystore,soft-hsm}.ts (fail-closed,
+  test-only HSM); src/screens/{Pairing,PendingApprovals}Screen.tsx;
+  src/App.tsx; tests/ 5 suites + helpers/protocol.ts.
+
+### Commands run + results
+
+- `npm install` (pinned set) → 791 packages; package-lock.json complete.
+- `npx tsc --noEmit -p tsconfig.core.json` → **0 errors**.
+- `npx tsc --noEmit` (full app incl. RN screens) → **0 errors**.
+- `npx vitest run` → **5 files / 32 tests passed** (canonical 10, qr 8,
+  queue 5, replay 5, soft-hsm 4).
+- Not run (per brief): `npm run android/ios`, metro bundling, eslint
+  (config present; lint deferred — noted in README).
+
+### Session incident (disclosed)
+
+One mangled edit created a stray directory `D:\Hack header\session.ts`
+outside the repo; deleted immediately, verified `D:\` contains only the
+real tree, and re-read confirmed the intended `canonical.ts` content was
+intact (the corrupt variant never landed). No repo file corrupted; final
+gates pass on clean content.
+
+### Assumptions
+
+- `session_id` on unlock challenges carries the desktop transaction id
+  (`x-tx:<txn>`); exact source = open item §10.3 (Agent 7 / T-120 IPC).
+- QR ingest is paste-based in scaffold; camera scan is Phase 4 — contract
+  §3.2 unchanged by ingest mode.
+- React Native 0.76.5 + RN CLI config style as current stable; final RN
+  pin is Lead's call at Phase 4 kickoff.
+
+### Risks / open items for Lead + Agent 6
+
+1. **Crypto sign-off gate** (SECURITY.md §6): the keystore-wrapped-seed
+   fallback (§5) needs explicit approval; nothing in this scaffold touches
+   raw key material (soft-hsm is test-only, refuses empty-seed signing).
+2. Pairing transport choice (websocket vs mDNS TCP) — §10.2.
+3. Deny-vs-timeout audit wording — §10.4, align with Agent 6 when the
+   challenge flow lands in kiwi-app.
+4. ESLint not yet executed (config in place); Agent 6's gate should add
+   `npm run lint` for mobile on first review.
+

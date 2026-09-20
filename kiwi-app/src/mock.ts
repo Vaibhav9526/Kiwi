@@ -13,27 +13,38 @@ export const DEMO_ACCOUNTS: AccountInfo[] = [
 export const DEMO_MESSAGES: MessageEnvelope[] = [
   {
     id: "msg-1", accountId: "acc-demo-1", accountEmail: "ava@example.test", folder: "inbox",
+    folderId: 1, uid: 101,
     from: "billing@provider.test", subject: "Your invoice is ready", date: "2026-09-19T08:12:00Z",
     unread: true, starred: false, hasAttachments: true, trust: "secure",
     snippet: "Invoice #1042 for September is attached…",
   },
   {
     id: "msg-2", accountId: "acc-demo-1", accountEmail: "ava@example.test", folder: "inbox",
+    folderId: 1, uid: 102,
     from: "team@project.test", subject: "Re: launch checklist", date: "2026-09-18T17:40:00Z",
     unread: true, starred: true, hasAttachments: false, trust: "secure",
     snippet: "All blockers cleared except the installer signing…",
   },
   {
     id: "msg-3", accountId: "acc-demo-2", accountEmail: "ava.oldmail.test", folder: "inbox",
+    folderId: 1, uid: 103,
     from: "newsletter@retro.test", subject: "Weekly digest", date: "2026-09-15T09:00:00Z",
     unread: true, starred: false, hasAttachments: false, trust: "warning",
     snippet: "This server negotiated TLS 1.0 — consider migrating…",
   },
   {
     id: "msg-4", accountId: "acc-demo-1", accountEmail: "ava@example.test", folder: "sent",
+    folderId: 2, uid: 104,
     from: "ava@example.test", subject: "Re: launch checklist", date: "2026-09-18T18:02:00Z",
     unread: false, starred: false, hasAttachments: false, trust: "secure",
     snippet: "Sounds good — shipping Friday…",
+  },
+  {
+    id: "msg-5", accountId: "acc-demo-1", accountEmail: "ava@example.test", folder: "inbox",
+    folderId: 1, uid: 105,
+    from: "ops@project.test", subject: "Fwd: launch checklist", date: "2026-09-19T07:55:00Z",
+    unread: true, starred: false, hasAttachments: false, trust: "secure",
+    snippet: "Forwarding the checklist for the on-call rotation…",
   },
 ];
 
@@ -51,8 +62,8 @@ export const DEMO_FINDINGS: FindingInfo[] = [
 ];
 
 export const DEMO_EVENTS: SecurityEventRow[] = [
-  { id: "ev-1", ts: "2026-09-19T08:12:00Z", accountEmail: "ava.oldmail.test", category: "tls", severity: "warning", summary: "TLS 1.0 negotiated with retro.test" },
-  { id: "ev-2", ts: "2026-09-19T07:58:00Z", accountEmail: "ava@example.test", category: "sync", severity: "secure", summary: "Inbox sync completed, 0 findings" },
+  { id: "ev-1", ts: "2026-09-19T08:12:00Z", accountEmail: "ava.oldmail.test", category: "tls", severity: "warning", summary: "TLS 1.0 negotiated with retro.test", detailRef: "" },
+  { id: "ev-2", ts: "2026-09-19T07:58:00Z", accountEmail: "ava@example.test", category: "sync", severity: "secure", summary: "Inbox sync completed, 0 findings", detailRef: "" },
 ];
 
 export const DEMO_FOLDERS = [

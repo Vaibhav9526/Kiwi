@@ -1,15 +1,38 @@
 [workspace]
 resolver = "2"
 members = [
+    "kiwi-autoconfig",
+    "kiwi-contacts",
     "kiwi-core",
     "kiwi-forensics",
     "kiwi-mail",
+    "kiwi-mailauth",
+    "kiwi-pair",
+    "kiwi-sandbox",
     "kiwi-app/src-tauri",
 ]
 
 [workspace.package]
 edition = "2024"
 license = "MPL-2.0"
+
+[workspace.dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+base64 = "0.22"
+sha2 = "0.10"
+zeroize = "1"
+async-trait = "0.1"
+tracing = "0.1"
+bytes = "1"
+time = { version = "0.3", features = ["formatting", "macros", "parsing"] }
+mail-parser = "0.11"
+getrandom = "0.3"
+# ed25519-dalek stays member-pinned: mailauth uses v3, kiwi-pair uses v2 —
+# unifying is a code change, not a manifest move. Tracked in DECISIONS.
 
 # Security-sensitive parsing of untrusted input across the workspace.
 [workspace.lints.rust]

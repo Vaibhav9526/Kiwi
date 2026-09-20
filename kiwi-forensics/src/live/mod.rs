@@ -17,8 +17,8 @@
 //!   explicit completeness limitation instead of silent partial analysis.
 
 use crate::model::{
-    CertificatePresentation, ConnectionSecurityEvent, Endpoint, Protocol, SessionId,
-    TlsObservation, TlsVersion, TransportSecurity, TrustState,
+    AuthMechanism, AuthObservation, CertificatePresentation, ConnectionSecurityEvent, Endpoint,
+    Protocol, SessionId, TlsObservation, TlsVersion, TransportSecurity, TrustState,
 };
 
 /// Socket-security mode of the live connection (mirrors
@@ -70,6 +70,48 @@ pub struct LiveTlsObservation {
     pub upgraded_via_starttls: bool,
     /// Verdict recorded by the live chain verifier, when a handshake ran.
     pub cert_verdict: Option<LiveCertVerdict>,
+}
+
+/// Owned live-auth observation for one connection.
+///
+/// Authentication facts the transport layer saw but TLS observations cannot
+/// carry: without these, the AUTH rules are blind on the live path (they
+/// only fire from capture traces). All counters are caller-observed;
+/// absence stays `None`/zero, never guessed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveAuthObservation {
+    /// Mechanism attempted, when one was seen.
+    pub mechanism: Option<AuthMechanism>,
+    /// `Some(true)` = accepted, `Some(false)` = rejected, `None` = outcome
+    /// not observed.
+    pub succeeded: Option<bool>,
+    /// Authentication attempts observed.
+    pub attempts: u32,
+    /// Failed attempts observed.
+    pub failures: u32,
+}
+
+impl LiveAuthObservation {
+    /// Successful single attempt with a known mechanism (the common case).
+    pub fn success(mechanism: AuthMechanism) -> Self {
+        LiveAuthObservation {
+            mechanism: Some(mechanism),
+            succeeded: Some(true),
+            attempts: 1,
+            failures: 0,
+        }
+    }
+}
+
+impl From<&LiveAuthObservation> for AuthObservation {
+    fn from(observed: &LiveAuthObservation) -> Self {
+        AuthObservation {
+            mechanism: observed.mechanism,
+            succeeded: observed.succeeded,
+            attempts: observed.attempts,
+            failures: observed.failures,
+        }
+    }
 }
 
 /// Parse a rustls version debug name (`"TLSv1_3"`, …).
@@ -130,6 +172,7 @@ pub fn event_from_live(input: &LiveSessionInput<'_>) -> ConnectionSecurityEvent 
             SocketMode::Plaintext => TransportSecurity::Plaintext,
             SocketMode::ImplicitTls | SocketMode::StartTls => TransportSecurity::Unknown,
         };
+        attach_auth(&mut event, input.auth);
         return event;
     };
 
@@ -173,7 +216,21 @@ pub fn event_from_live(input: &LiveSessionInput<'_>) -> ConnectionSecurityEvent 
         event.starttls = Some(crate::model::StartTlsObservation::upgraded());
     }
 
+    attach_auth(&mut event, input.auth);
+
     event
+}
+
+/// Attach the auth observation, if any, under the analyzers' assertion
+/// rule: a section exists only when something was actually observed
+/// (mechanism, outcome, or a counted attempt) — never an empty claim.
+fn attach_auth(event: &mut ConnectionSecurityEvent, auth: Option<&LiveAuthObservation>) {
+    if let Some(auth) = auth {
+        let observed = AuthObservation::from(auth);
+        if observed.mechanism.is_some() || observed.succeeded.is_some() || observed.attempts > 0 {
+            event.auth = Some(observed);
+        }
+    }
 }
 
 /// Inputs for [`event_from_live`], bundled so the adapter entry point stays
@@ -196,6 +253,11 @@ pub struct LiveSessionInput<'a> {
     pub mode: SocketMode,
     /// Handshake observation, when one ran.
     pub observation: Option<&'a LiveTlsObservation>,
+    /// Authentication observation, when the client saw auth happen.
+    ///
+    /// `None` means no auth facts reached the adapter (AUTH rules stay
+    /// silent for the session — absence is not evidence either way).
+    pub auth: Option<&'a LiveAuthObservation>,
     /// Session start, Unix epoch milliseconds (caller-supplied).
     pub started_at_unix_ms: i64,
 }
@@ -237,6 +299,7 @@ mod tests {
             index,
             mode,
             observation: obs,
+            auth: None,
             started_at_unix_ms: 1_700_000_000_000,
         }
     }
@@ -335,5 +398,38 @@ mod tests {
         assert_eq!(parse_version_name("TLSv1_2"), TlsVersion::Tls12);
         assert_eq!(parse_version_name("TLSv1"), TlsVersion::Tls10);
         assert_eq!(parse_version_name("SSLv3"), TlsVersion::Ssl3);
+    }
+
+    #[test]
+    fn observed_plaintext_auth_fires_exposure_on_the_live_path() {
+        let auth = LiveAuthObservation::success(crate::model::AuthMechanism::Plain);
+        let mut live = input(Protocol::Smtp, 25, 51004, 4, SocketMode::Plaintext, None);
+        live.auth = Some(&auth);
+        let event = event_from_live(&live);
+        let auth = event.auth.as_ref().expect("auth section present");
+        assert_eq!(auth.attempts, 1);
+        let findings = engine().evaluate_session(&event);
+        let ids: Vec<&str> = findings.iter().map(|f| f.rule_id.as_str()).collect();
+        assert!(ids.contains(&"KIWI-TRANSPORT-001"), "got {ids:?}");
+        assert!(ids.contains(&"KIWI-AUTH-001"), "got {ids:?}");
+    }
+
+    #[test]
+    fn absent_auth_leaves_auth_rules_silent() {
+        let event = event_from_live(&input(
+            Protocol::Smtp,
+            25,
+            51005,
+            5,
+            SocketMode::Plaintext,
+            None,
+        ));
+        assert!(event.auth.is_none());
+        let findings = engine().evaluate_session(&event);
+        let ids: Vec<&str> = findings.iter().map(|f| f.rule_id.as_str()).collect();
+        assert!(
+            !ids.iter().any(|id| id.starts_with("KIWI-AUTH-")),
+            "no auth facts, no auth verdicts: {ids:?}"
+        );
     }
 }

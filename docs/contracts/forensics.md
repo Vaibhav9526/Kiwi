@@ -1,16 +1,21 @@
 # Contract — Forensics Findings, Evidence, Reports
 
-> Owner: Agent 6 (transferred from Agent 3 per AGENT_HANDOFF.md T-003/T-107,
-> 2026-09-19; Agent 3 resumes as reviewer) · **Contract version:
-> `kiwi.forensics/1`** · Status: draft (T-003)
+> Owner: Agent 6 (full ownership from 2026-09-20; transferred from Agent 3
+> per AGENT_HANDOFF.md T-003/T-107, 2026-09-19; Agent 3 did not return) ·
+> **Contract version: `kiwi.forensics/1`** · Status: done (T-003)
 > Implemented by `kiwi-forensics/` (Rust). Reference impl is authoritative
 > for field semantics; this document is authoritative for the JSON shape.
 > Changes require Lead review (API_CONTRACTS.md rule) → record in DECISIONS.md.
 
 Parties: `kiwi-forensics` (producer) → reports/UI/admin ingest (consumers);
 adapters (PCAP ingest, live `kiwi-mail` transport, test fixtures) feed
-`ConnectionSecurityEvent` in. `kiwi-forensics` owns *findings*; the
-live-session trust decision stays with `kiwi-core` (`security-session.md`).
+`ConnectionSecurityEvent` in. Concrete entry points: `pcap::PcapReader`
+(frames) → `pcap::decode_tcp` (segments) → `StreamReassembler`
+(`Reassembler`: flows) → `pipeline::analyze_capture` (flows → traces →
+events, with client/server resolution + protocol sniffing) →
+`analyzers::analyze` → `RuleEngine` → `report::ReportBuilder`.
+`kiwi-forensics` owns *findings*; the live-session trust decision stays
+with `kiwi-core` (`security-session.md`).
 
 ## 1. Invariants (binding on all parties)
 
@@ -175,5 +180,174 @@ views over the same aggregate.
 
 ## 9. `ConnectionSecurityEvent` ↔ `SecuritySession` mapping
 
-Forensics → kiwi-core (live adapter, T-107): transport/v
-...[truncated 1583 chars]
+Both directions are contract; the trust decision stays with `kiwi-core`
+in both. Field vocabularies below are the `as_str()` spellings in code.
+`evidence_ref` on every derived signal is the finding stable key
+(`rule_id|subject_key`, §3).
+
+### 9a. Forensics → core (event/findings → `SecuritySession` + `TrustSignal`)
+
+Implemented by consumers (kiwi-app bridge maps findings→status today);
+`source` is always `"forensic-pcap"`, `account_id`/`device_id` are always
+`null` (a capture knows neither — documented loss, never a finding).
+
+| session field | from event field | notes |
+|---------------|------------------|-------|
+| `session_id` | `id` string | verbatim |
+| `protocol` | `protocol` | `smtp`/`imap`/`pop3` map 1:1; `Unknown` events are findings-only (session has no unknown) |
+| `server_host` / `server_port` | `server.address` / `server.port` | sanitized text |
+| `transport` | `transport` | `plaintext`→`plaintext`, `starttls`→`starttls`, `implicit_tls`→`tls`; `unknown` → findings-only |
+| `tls_version` | `tls.version.as_str()` | `ssl3.0`→`ssl3`, `tls1.0/1.1/1.2/1.3` verbatim; `ssl2.0`/`Unknown`→`unknown`; absent→`null` |
+| `cipher_suite` | `tls.cipher_suite` | `{iana_id, name or "unrecognized", forward_secrecy from kex}` |
+| `key_exchange_group` | `kex.as_str()` | `rsa`/`dh_static`/`ecdh_static`→`static`; `dhe`/`ecdhe`/`psk_dhe`/`psk_ecdhe`→`other:<name>`; `psk`→`other:psk`; `anonymous`→`other:anonymous`; `null`/`unknown`→`unknown` |
+| `cert_chain` | `certificates` | `{leaf summary, presented_len, validation}`; validation is `unknown` unless a CERT finding fired (`CERT-001`→`expired`, `CERT-005`→`hostname-mismatch`, `CERT-012`→`untrusted`) — **never `valid` from capture** (§1) |
+| `starttls_offered` / `starttls_used` | `starttls` | offered ← `advertised_by_server`; used ← `handshake_completed` |
+| `auth_mechanism` | `auth.mechanism.as_str()` | `plain`/`login`/`cram-md5`/`ntlm`/`xoauth2`/`oauthbearer`/`gssapi`/`scram-sha-1`/`scram-sha-256` verbatim; `digest-md5`/`scram-sha-256-plus`/`scram-sha-512-plus`/`anonymous`/`external`→`other:<name>`; none observed→`none`; `unknown`→`unknown` |
+| `auth_succeeded` | `auth.succeeded` | verbatim (`null` when unobserved) |
+| `established_unix` | `started_at_unix_ms / 1000` | integer division (truncates toward zero; deterministic for all inputs) |
+
+Findings → `TrustSignal` (severity vocabulary is identical; **penalties
+are set by the consumer's `TrustPolicy`, never here**):
+
+| finding(s) | signal kind |
+|------------|-------------|
+| KIWI-TRANSPORT-001 | `plaintext-transport` |
+| KIWI-STARTTLS-001 | `starttls-downgrade-suspected` |
+| KIWI-TLS-002 | `deprecated-tls-version` |
+| KIWI-CIPHER-002 | `weak-cipher-suite` |
+| KIWI-KEX-001 | `no-forward-secrecy` |
+| KIWI-CERT-001 | `certificate-expired` |
+| KIWI-CERT-004 / CERT-011 | `certificate-invalid` |
+| KIWI-CERT-012 | `certificate-untrusted` |
+| KIWI-CERT-005 | `certificate-hostname-mismatch` (a default hard-lock kind — handle with care) |
+| KIWI-AUTH-002 | `weak-auth-mechanism` |
+| KIWI-AUTH-004 | `repeated-auth-failure` |
+
+KIWI-AUTH-003 (single failure, Low) carries no signal by default. Every
+other rule is either Info-grade context or already covered above; new
+rules must extend this table when they introduce a new trust-relevant
+verdict (Lead review per API_CONTRACTS.md).
+
+### 9b. Core → forensics (session → event, for rule-engine evaluation)
+
+Inverse of the tables above, with two documented losses: account/device
+bindings have no forensics counterpart (dropped), and `established_unix`
+seconds become `started_at_unix_ms` milliseconds (×1000 — precision the
+session never had is not invented). `Unknown` enum values on the event
+side absorb anything the session cannot express. Implementation status:
+`live::event_from_live` (T-107) covers kiwi-mail transport observations;
+`SecuritySession`→event bridging is specified here for future consumers
+and has no in-crate implementation yet.
+
+## 10. Capture pipeline (`src/pipeline.rs`, `pipeline::analyze_capture`)
+
+Composed entry point: raw capture bytes → `Report`. Stages:
+`PcapReader` (frames, bounds-first) → `decode_tcp` (Ethernet/IPv4/TCP
+only; everything else is a counted `DecodeSkip`, never fatal) →
+`Reassembler` (per-direction ordered bytes, first-seen-wins overlap,
+gaps flagged, all bounds counted) → per-flow `ProtocolTrace` →
+`analyzers::analyze` → `RuleEngine` → `ReportBuilder`.
+
+- **Client/server resolution** (`resolve_roles`, all observations):
+  well-known mail port first (exactly one endpoint on
+  25/465/587/143/993/110/995 → that peer is the server), then greeting
+  content (sender of the earliest line is the server when the line is
+  `220`/`+OK`/`-ERR`/`* OK`/`* PREAUTH`/`* BYE`/`IMAP4REV` — covers
+  dev servers on odd ports), then initiator default. The reassembler
+  itself stays role-agnostic (`initiator`/`responder` naming).
+- **Cross-direction ordering**: lines sort by earliest covering frame
+  (frame order is time order), initiator's line first on ties; each line
+  carries only its covering frames (bounded 64).
+- **Limitations the pipeline can add**: `stream-gap` (gapped flows),
+  `capture-over-limit` (dropped segments/flows),
+  `rule-dropped-without-evidence` (must be 0; a rule needs review if it
+  fires), `chain-unverified` (every capture-sourced report with ≥1
+  session — captures never validate chains), `protocol-unknown`
+  (unidentified sessions). Skip counts (non-TCP, truncated, malformed)
+  live in `PipelineDiagnostics`, not the report.
+- **Determinism**: flows drain first-seen order; skip reasons sort
+  (`BTreeMap`); frames sort + dedup; no clock/RNG/floats anywhere.
+- **Non-goals**: no X.509 validation, no TLS decryption — a
+  TLS-encrypted stream yields no protocol lines, so encrypted captures
+  are findings-light by design (use the live adapter for TLS sessions);
+  IPv6/VLAN/tunnels are counted skips, not parsed.
+
+## 11. Query API — Security view seam (app layer implements, T-164)
+
+Payload types are owned here (`Finding` §3, severities §3); retention
+and serving live in the app layer (src-tauri journals over
+`finding_id()` keys). All three commands are lock-gated like their
+siblings. Error codes are `invalid-input` / `not_found` (ipc.md §11).
+Frontend vocabulary mapping (`eventSeverityToSeverity`,
+`findingToInfo` in `kiwi-app/src/kiwi.ts`) is downstream of these
+shapes and must not leak upstream: the backend emits forensics
+spellings only.
+
+### `list_findings({account_id?, severity?, limit?})` → `Finding[]`
+
+Full `Finding` objects (§3 shape, verbatim — evidence included, never
+projected). Filters: `account_id` (string ≤256, matches
+`subject.account_id`) and `severity` (`info` | `low` | `medium` |
+`high` | `critical`, the `Severity::as_str()` spellings) are ANDed;
+either absent means unfiltered. An unrecognized `severity` string is
+an `invalid-input` error — never silently ignored (a typo must not
+look like a clean bill of health). Sort is binding and total:
+severity rank desc (critical first), then `observed_at_unix_ms` desc,
+then `rule_id` asc, then `subject_key` asc — identical input yields
+identical order. `limit` defaults to 100 and clamps at 1000 (same
+clamp as `list_events`); empty result is `[]`.
+T-164 changes to the existing `kiwi_security_findings` (accountId
+only, observed_at-desc sort): add `severity` + `limit`, adopt this
+sort.
+
+### `list_events({limit?, account_id?})` → `EventRow[]`
+
+One row per observed session, newest first. JSON (camelCase, as
+emitted today): `{id (session id), tsUnix (established seconds),
+accountId (string|null), category (observation label, e.g. "smtp
+send"), severity (forensics spelling of the worst session signal),
+summary ("<PROTO> host:port <transport> <tlsversion>", e.g. "SMTP
+mail.example.test:587 starttls tls1.2"), detailRef
+("session:<id>")}`. `severity` is the exact input domain of the
+view's `eventSeverityToSeverity` (`critical`/`high`→danger,
+`medium`/`low`→warning, `info`→unknown) — backend UI tokens are a
+contract violation. `limit` clamps like findings (default 100, max
+1000). T-164 addition: optional `account_id` filter (sessions already
+carry it; the view filters client-side until then).
+
+### `finding_detail({findingId})` → `FindingDetailView` (T-164, implemented)
+
+Implemented as `kiwi_finding_detail(findingId)`: `findingId` (string,
+1–512 chars) is the `finding_id()` form (`rule_id|subject_key`, §3).
+Returns `{finding (full Finding, verbatim), session (SessionView|null —
+null once the bounded session ring evicts the source; findings deliberately
+outlive sessions), signals (that session's trust signals), siblingFindingIds
+(other findings from the same session)}`. Empty/overlong id →
+`invalid-input`; no match → `not_found` ("unknown finding id").
+`kiwi_session_detail(sessionId)` keeps serving session context for the
+cert viewer.
+
+### UI derivation rules (for `findingToInfo`, Agent 5-owned)
+
+`id` ← `finding_id()` computed as `rule_id + "|" + subject_key`
+(it is deliberately NOT a serialized field — either side derives it
+with this rule; the current `finding-${index}` fallback retires once
+keys flow through). `remediation` is an object `{summary,
+steps[≤16], references[≤16]}`, not an array — the mapper's
+array-assumption currently yields `[]`; upgrading it is Agent 5's
+call. Severity buckets stay mapper-side (`critical`/`high`→danger,
+else warning).
+
+### Live auth threading (Agent 7, T-164-adjacent)
+
+`observe.rs` already collects `auth_mechanism`/`auth_succeeded` but
+drops them before the adapter (`auth: None` compat today). Threading
+spec: `mechanism` ← core `AuthMechanism` mapped to
+`kiwi_forensics::model::AuthMechanism` via `from_token` over the core
+spelling (`none` → no `LiveAuthObservation` at all; `client-cert` →
+`External`; `other:<name>` → `from_token(<name>)`, `Unknown` on
+mismatch — conservatism, not guessing); `succeeded` verbatim;
+`attempts` ← 1 when a mechanism was observed else 0; `failures` ← 1
+when `succeeded == Some(false)` else 0. Until then the AUTH rules
+stay silent on the live path by design (proven by
+`absent_auth_leaves_auth_rules_silent`).

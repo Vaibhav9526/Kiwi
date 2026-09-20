@@ -58,6 +58,8 @@ extraction from a healthy device. Documented as accepted risks.
 | B6 AI boundary | prompt injection, authority confusion | findings-only payload; labeled AI text; offline-capable core | AI-disabled runs; payload assertions |
 | B7 PCAP ingest | crafted packets, parser DoS | memory-safe parsing; input caps; fuzz tests; errors-as-findings | malformed-stream fixtures; fuzz corpus |
 | B8 MIME/attachments | hostile MIME, spoofed names, tracking | bounded parse; nesting/size caps; filename sanitization; remote-content block default | message fixtures; spoofed-ext/oversize cases |
+| B9 sandbox guest (QEMU/WHPX, WSL2, Firecracker) | hostile payload executing in guest; escape attempt; tampered base image | per-run disposable instances; pinned immutable base; no host FS/creds/mailbox; no NIC default; watchdog; capability reporting; WSL2 shared-kernel caveat explicit | PoC lifecycle scripts; capability tests; QEMU/agent transcripts (pending provider crate) |
+| B3b compose PG | tampered rows, DSN leak, migration failure | Drizzle-only access; reviewed migrations; least-privilege role; `.env` gitignored; DB-level append-only trigger + hash-chain verification | migration-apply + guard tests (T-133); env-coverage test |
 
 ## 4. Attack scenarios (each needs a permanent regression test)
 
@@ -80,6 +82,12 @@ extraction from a healthy device. Documented as accepted risks.
     bounded, rejected, surfaced — no panic, no unbounded allocation.
 12. **Mail-to-webview XSS** (`<script>`/event-handler in HTML part) →
     sanitized before render; CSP backstop; no IPC access from mail content.
+13. **Sandbox unavailable** (no provider on host) → analysis reports
+    `Unavailable`, UI marks the feature disabled — nothing executes on the
+    host, ever.
+14. **Guest misbehavior in sandbox** (fork-bomb, FS spray, egress attempt) →
+    watchdog kills, overlay discarded / instance unregistered, report
+    flagged `incomplete: true`; base image untouched.
 
 ## 5. Residual risk (maintained by Agent 6)
 
@@ -92,6 +100,9 @@ extraction from a healthy device. Documented as accepted risks.
 | RR-5 | Audit log is hash-chain only (no remote notary) in local-first mode | Phase 0–1 posture | export + independent verification; org notary later |
 | RR-6 | Webview escape (renderer 0-day → IPC) | defense-in-depth limits | minimal capability surface; CSP; per-command authz; keep webview runtime updated |
 | RR-7 | OAuth-consent phishing (fake provider page in external browser flow) | user must verify URL | exact-match redirect URIs; provider allowlist; UX anti-phishing guidance |
+| RR-8 | WSL2-tier shared kernel (guest→guest escape reaches sibling distros) | interim tier; hypervisor-vs-host boundary holds | QEMU/WHPX dedicated-kernel target; caveat in UI copy; never claim full isolation on this tier |
+| RR-9 | Container escape (compose services share host kernel) | accepted: containers are infra, never the hostile-code boundary | hostile content restricted to VM sandbox (B9); no mailbox/credential mounts in compose |
+| RR-10 | PG data-volume tampering/disposal on dev hosts | dev posture; file-permission + user-separation only | explicit backup story before any shared deployment; secrets never in DB (rule 16) |
 
 (Retired: NSS-hook blind spots — owned rustls transport gives full
 observation; see SECURITY.md A2.)

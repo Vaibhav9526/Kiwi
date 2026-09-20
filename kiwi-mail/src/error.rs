@@ -9,7 +9,10 @@ pub enum MailError {
     #[error("tls error: {0}")]
     Tls(#[from] rustls::Error),
     #[error("protocol error in {protocol}: {detail}")]
-    Protocol { protocol: &'static str, detail: String },
+    Protocol {
+        protocol: &'static str,
+        detail: String,
+    },
     #[error("authentication failed: {0}")]
     Auth(String),
     #[error("server rejected command {command}: {reply}")]

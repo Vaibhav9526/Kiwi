@@ -23,6 +23,9 @@ __pycache__/
 # Scratch
 err.txt
 
+# Local env (real secrets) — .env.example stays tracked, .env never is
+.env
+
 # OS / editor
 Thumbs.db
 .DS_Store

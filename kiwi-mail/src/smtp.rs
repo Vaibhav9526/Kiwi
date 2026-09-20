@@ -85,7 +85,12 @@ impl EhloInfo {
     }
     /// SIZE parameter (max message bytes) when advertised.
     pub fn max_size(&self) -> Option<u64> {
-        self.extensions.get("SIZE")?.split_whitespace().next()?.parse().ok()
+        self.extensions
+            .get("SIZE")?
+            .split_whitespace()
+            .next()?
+            .parse()
+            .ok()
     }
 }
 
@@ -113,10 +118,19 @@ impl Default for SmtpConfig {
 /// Authentication credentials. Secrets are zeroizing and never `Debug`-printed.
 pub enum SmtpAuth {
     None,
-    Plain { user: String, password: Zeroizing<String> },
-    Login { user: String, password: Zeroizing<String> },
+    Plain {
+        user: String,
+        password: Zeroizing<String>,
+    },
+    Login {
+        user: String,
+        password: Zeroizing<String>,
+    },
     /// OAuth2 bearer token (XOAUTH2 SASL).
-    XOAuth2 { user: String, token: Zeroizing<String> },
+    XOAuth2 {
+        user: String,
+        token: Zeroizing<String>,
+    },
 }
 
 pub struct SmtpClient {
@@ -183,8 +197,12 @@ impl SmtpClient {
     async fn read_reply(&mut self) -> Result<SmtpReply> {
         tokio::time::timeout(CMD_TIMEOUT, self.read_reply_inner())
             .await
-            .map_err(|_| MailError::Io(std::io::Error::new(
-                std::io::ErrorKind::TimedOut, "smtp reply timeout")))?
+            .map_err(|_| {
+                MailError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "smtp reply timeout",
+                ))
+            })?
     }
 
     async fn read_reply_inner(&mut self) -> Result<SmtpReply> {
@@ -341,12 +359,19 @@ impl SmtpClient {
                     return auth_result(r);
                 }
                 let r = self
-                    .command(&enc.encode(Zeroizing::new(password.as_str().as_bytes().to_vec()).as_slice()))
+                    .command(
+                        &enc.encode(
+                            Zeroizing::new(password.as_str().as_bytes().to_vec()).as_slice(),
+                        ),
+                    )
                     .await?;
                 auth_result(r)
             }
             SmtpAuth::XOAuth2 { user, token } => {
-                let sasl = Zeroizing::new(format!("user={user}\x01auth=Bearer {}\x01\x01", token.as_str()));
+                let sasl = Zeroizing::new(format!(
+                    "user={user}\x01auth=Bearer {}\x01\x01",
+                    token.as_str()
+                ));
                 let b64 = base64::engine::general_purpose::STANDARD.encode(sasl.as_bytes());
                 let r = self.command(&format!("AUTH XOAUTH2 {b64}")).await?;
                 auth_result(r)
@@ -365,7 +390,10 @@ impl SmtpClient {
         {
             return Err(MailError::ServerReject {
                 command: "MAIL".into(),
-                reply: format!("message {} bytes exceeds server SIZE {max}", req.message.len()),
+                reply: format!(
+                    "message {} bytes exceeds server SIZE {max}",
+                    req.message.len()
+                ),
             });
         }
 
@@ -423,9 +451,12 @@ impl SmtpClient {
 
         let reply = tokio::time::timeout(DATA_TIMEOUT, self.read_reply_inner())
             .await
-            .map_err(|_| MailError::Io(std::io::Error::new(
-                std::io::ErrorKind::TimedOut, "smtp DATA timeout")))?
-            ?;
+            .map_err(|_| {
+                MailError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    "smtp DATA timeout",
+                ))
+            })??;
         if !reply.is_success() {
             return Err(MailError::ServerReject {
                 command: "DATA body".into(),
@@ -441,19 +472,23 @@ impl SmtpClient {
 
     pub async fn noop(&mut self) -> Result<()> {
         let r = self.command("NOOP").await?;
-        r.is_success().then_some(()).ok_or_else(|| MailError::ServerReject {
-            command: "NOOP".into(),
-            reply: r.message(),
-        })
+        r.is_success()
+            .then_some(())
+            .ok_or_else(|| MailError::ServerReject {
+                command: "NOOP".into(),
+                reply: r.message(),
+            })
     }
 
     /// Reset the current mail transaction (used by undo-send paths).
     pub async fn rset(&mut self) -> Result<()> {
         let r = self.command("RSET").await?;
-        r.is_success().then_some(()).ok_or_else(|| MailError::ServerReject {
-            command: "RSET".into(),
-            reply: r.message(),
-        })
+        r.is_success()
+            .then_some(())
+            .ok_or_else(|| MailError::ServerReject {
+                command: "RSET".into(),
+                reply: r.message(),
+            })
     }
 
     pub async fn quit(&mut self) -> Result<()> {
@@ -546,8 +581,9 @@ fn dot_stuff(body: &[u8]) -> Vec<u8> {
 }
 
 // ---------------------------------------------------------------------------
-// Send queue — hooks for undo-send and send-later (Mailspring-style).
-// In-memory for now; persistence behind the store layer (T-105) later.
+// Send queue — undo-send + send-later (Mailspring-style, T-142).
+// In-memory dispatch order lives here; durability lives in MailStore's
+// `outbox` table — callers persist at enqueue and rebuild on open.
 // ---------------------------------------------------------------------------
 
 #[derive(Debug)]
@@ -586,22 +622,52 @@ impl SendQueue {
         self.pending.push(item);
     }
 
-    /// Undo-send: remove a queued item. Only valid while its undo window
-    /// is still open and it hasn't been dispatched.
+    /// Undo-send / unschedule: remove a queued item. Succeeds while the
+    /// send is still recallable — inside its undo window, OR awaiting a
+    /// future send-later slot (`now < not_before`). Once committed AND due
+    /// it belongs to the dispatcher; once dispatched it isn't in `pending`
+    /// at all, so cancel naturally fails.
     pub fn cancel(&mut self, queue_id: &str, now: i64) -> bool {
         let before = self.pending.len();
-        self.pending
-            .retain(|q| !(q.queue_id == queue_id && now < q.undo_window_until_unix));
+        self.pending.retain(|q| {
+            !(q.queue_id == queue_id && (now < q.undo_window_until_unix || now < q.not_before_unix))
+        });
         self.pending.len() != before
+    }
+
+    /// Move a pending send's dispatch time (send-later reschedule).
+    /// Returns false when the item is gone — already due/dispatched or
+    /// cancelled. Does not touch the undo window.
+    pub fn reschedule(&mut self, queue_id: &str, not_before_unix: i64) -> bool {
+        match self.pending.iter_mut().find(|q| q.queue_id == queue_id) {
+            Some(q) => {
+                q.not_before_unix = not_before_unix;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Drain sends whose `not_before` has arrived. Callers run `send_mail`
     /// on each; a transient failure should re-enqueue with backoff.
     pub fn due(&mut self, now: i64) -> Vec<QueuedSend> {
-        let (due, pending): (Vec<_>, Vec<_>) =
-            self.pending.drain(..).partition(|q| q.not_before_unix <= now);
+        let (due, pending): (Vec<_>, Vec<_>) = self
+            .pending
+            .drain(..)
+            .partition(|q| q.not_before_unix <= now);
         self.pending = pending;
         due
+    }
+
+    /// Iterate pending items — lets callers build outbox views/reload
+    /// bookkeeping without a parallel index.
+    pub fn pending(&self) -> impl Iterator<Item = &QueuedSend> {
+        self.pending.iter()
+    }
+
+    /// Earliest `not_before` among pending sends (scheduler wake-up hint).
+    pub fn next_due_at(&self) -> Option<i64> {
+        self.pending.iter().map(|q| q.not_before_unix).min()
     }
 
     pub fn pending_count(&self) -> usize {
@@ -684,10 +750,7 @@ mod tests {
     async fn plaintext_auth_refused_by_default() {
         let (client_end, mut server_end) = duplex(8192);
         tokio::spawn(async move {
-            server_end
-                .write_all(b"220 mx\r\n250 mx\r\n")
-                .await
-                .unwrap();
+            server_end.write_all(b"220 mx\r\n250 mx\r\n").await.unwrap();
             let mut buf = Vec::new();
             let _ = read_line(&mut server_end, &mut buf, PROTO).await.unwrap();
         });
@@ -720,7 +783,10 @@ mod tests {
             let _ = read_line(&mut server_end, &mut buf, PROTO).await.unwrap();
             server_end.write_all(b"250 2.1.5 ok\r\n").await.unwrap();
             let _ = read_line(&mut server_end, &mut buf, PROTO).await.unwrap();
-            server_end.write_all(b"550 5.1.1 no such user\r\n").await.unwrap();
+            server_end
+                .write_all(b"550 5.1.1 no such user\r\n")
+                .await
+                .unwrap();
             // DATA
             let _ = read_line(&mut server_end, &mut buf, PROTO).await.unwrap();
             server_end.write_all(b"354 go\r\n").await.unwrap();
@@ -774,7 +840,11 @@ mod tests {
         let mut q = SendQueue::new();
         q.enqueue(QueuedSend {
             queue_id: "q1".into(),
-            request: SendRequest { from: "a".into(), to: vec!["b".into()], message: vec![] },
+            request: SendRequest {
+                from: "a".into(),
+                to: vec!["b".into()],
+                message: vec![],
+            },
             not_before_unix: 100,
             undo_window_until_unix: 50,
             attempts: 0,
@@ -782,14 +852,35 @@ mod tests {
         assert!(q.cancel("q1", 40)); // inside undo window
         q.enqueue(QueuedSend {
             queue_id: "q2".into(),
-            request: SendRequest { from: "a".into(), to: vec!["b".into()], message: vec![] },
+            request: SendRequest {
+                from: "a".into(),
+                to: vec!["b".into()],
+                message: vec![],
+            },
             not_before_unix: 100,
             undo_window_until_unix: 50,
             attempts: 0,
         });
-        assert!(!q.cancel("q2", 60)); // window closed
-        assert_eq!(q.due(99).len(), 0);
-        assert_eq!(q.due(100).len(), 1);
+        // Scheduled send: recallable until its dispatch time even though
+        // the undo window already closed.
+        assert!(q.cancel("q2", 60));
+        q.enqueue(QueuedSend {
+            queue_id: "q3".into(),
+            request: SendRequest {
+                from: "a".into(),
+                to: vec!["b".into()],
+                message: vec![],
+            },
+            not_before_unix: 100,
+            undo_window_until_unix: 50,
+            attempts: 0,
+        });
+        assert!(!q.cancel("q3", 150)); // committed AND past due — dispatcher's
+        // Reschedule moves the dispatch time of a pending item.
+        assert!(q.reschedule("q3", 500));
+        assert!(!q.reschedule("gone", 500));
+        assert_eq!(q.due(499).len(), 0);
+        assert_eq!(q.due(500).len(), 1);
         assert_eq!(q.pending_count(), 0);
     }
 
@@ -885,13 +976,15 @@ mod tests {
             s.write_all(b"220 mx\r\n").await.unwrap();
             let mut buf = Vec::new();
             let _ = read_line(&mut s, &mut buf, PROTO).await.unwrap(); // EHLO
-            s.write_all(b"250-mx\r\n250 AUTH LOGIN PLAIN\r\n").await.unwrap();
+            s.write_all(b"250-mx\r\n250 AUTH LOGIN PLAIN\r\n")
+                .await
+                .unwrap();
             let l = read_line(&mut s, &mut buf, PROTO).await.unwrap(); // AUTH LOGIN
             assert_eq!(l, b"AUTH LOGIN");
-            s.write_all(b"334 VXNlcm5hbWU6\r\n").await.unwrap();      // "Username:"
+            s.write_all(b"334 VXNlcm5hbWU6\r\n").await.unwrap(); // "Username:"
             let l = read_line(&mut s, &mut buf, PROTO).await.unwrap(); // base64(user)
             assert_eq!(l, enc.encode("alice").as_bytes());
-            s.write_all(b"334 UGFzc3dvcmQ6\r\n").await.unwrap();      // "Password:"
+            s.write_all(b"334 UGFzc3dvcmQ6\r\n").await.unwrap(); // "Password:"
             let l = read_line(&mut s, &mut buf, PROTO).await.unwrap(); // base64(pass)
             assert_eq!(l, enc.encode("s3cret").as_bytes());
             s.write_all(b"235 2.7.0 authenticated\r\n").await.unwrap();
@@ -1117,9 +1210,7 @@ mod tests {
         let leaf_params = rcgen::CertificateParams::new(vec!["other.test".to_string()]).unwrap();
         let leaf_cert = leaf_params.signed_by(&leaf_key, &ca_cert, &ca_key).unwrap();
         let leaf_der = leaf_cert.der().clone();
-        let leaf_key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(
-            leaf_key.serialize_der().into(),
-        );
+        let leaf_key_der = rustls::pki_types::PrivateKeyDer::Pkcs8(leaf_key.serialize_der().into());
         let server_cfg = rustls::ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(vec![leaf_der], leaf_key_der)
@@ -1137,7 +1228,9 @@ mod tests {
             let acceptor = tokio_rustls::TlsAcceptor::from(std::sync::Arc::new(server_cfg));
             let mut tls = acceptor.accept(s).await.unwrap();
             let _ = read_line(&mut tls, &mut buf, PROTO).await.unwrap();
-            tokio::io::AsyncWriteExt::write_all(&mut tls, b"250 mx\r\n").await.unwrap();
+            tokio::io::AsyncWriteExt::write_all(&mut tls, b"250 mx\r\n")
+                .await
+                .unwrap();
         });
 
         // Hostname mismatch: cert is for "other.test", we connect as
@@ -1162,8 +1255,7 @@ mod tests {
     /// Strict default: invalid cert without the test hatch must fail.
     #[tokio::test]
     async fn starttls_invalid_cert_rejected_by_default() {
-        let certified =
-            rcgen::generate_simple_self_signed(vec!["other.test".to_string()]).unwrap();
+        let certified = rcgen::generate_simple_self_signed(vec!["other.test".to_string()]).unwrap();
         let cert_der = certified.cert.der().clone();
         let key_der =
             rustls::pki_types::PrivateKeyDer::Pkcs8(certified.key_pair.serialize_der().into());

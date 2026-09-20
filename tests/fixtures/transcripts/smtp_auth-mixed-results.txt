@@ -1,0 +1,26 @@
+# Synthetic SMTP delivery of a spoofed message (MAIL FROM evil domain,
+# From: boss@kiwi-test.invalid). Wire is CRLF.
+S: 220 fake.kiwi-test.invalid ESMTP FakeKIWI
+C: EHLO client.kiwi-test.invalid
+S: 250-fake.kiwi-test.invalid
+S: 250-AUTH PLAIN LOGIN
+S: 250 SIZE 10485760
+C: MAIL FROM:<crook@evil-test.invalid>
+S: 250 2.1.0 Ok
+C: RCPT TO:<bob@kiwi-test.invalid>
+S: 250 2.1.5 Ok
+C: DATA
+S: 354 End data with <CR><LF>.<CR><LF>
+C: From: boss@kiwi-test.invalid
+C: To: bob@kiwi-test.invalid
+C: Subject: synthetic spoof
+C:
+C: Please ignore this synthetic phish.
+C: .
+S: 250 2.0.0 Ok: queued as FAKE0009
+C: QUIT
+S: 221 2.0.0 Bye
+# Expected mock-DNS verdicts (see tests/mailauth-mapping.md):
+#   SPF pass  (envelope crook@evil-test.invalid authorized by evil SPF)
+#   DKIM none (no signature on the message)
+#   DMARC fail, policy reject (From: boss@kiwi-test.invalid unaligned)

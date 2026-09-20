@@ -87,9 +87,12 @@ impl MemoryCredentialStore {
 
 impl CredentialStore for MemoryCredentialStore {
     fn get(&self, key: &str) -> Result<Option<Zeroizing<String>>> {
-        Ok(self.inner.lock().unwrap().get(key).map(|s| {
-            Zeroizing::new(s.as_str().to_string())
-        }))
+        Ok(self
+            .inner
+            .lock()
+            .unwrap()
+            .get(key)
+            .map(|s| Zeroizing::new(s.as_str().to_string())))
     }
     fn set(&self, key: &str, secret: &str) -> Result<()> {
         self.inner

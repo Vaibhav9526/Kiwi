@@ -12,7 +12,7 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 |----|-------|-------|--------|-------------------|------------|
 | T-001 | ~~Build unmodified Thunderbird~~ — abandoned by pivot (ADR-005); checkout kept as reference | Lead | done (n/a) | `source/` | — |
 | T-002 | Security session model + trust engine; kiwi-core crate | Agent 2 (Devin) | in-review (32 tests green) | `kiwi-core/`, `docs/contracts/security-session.md` | — |
-| T-003 | Forensics engine: model, findings/evidence, rules, live adapter, report, contract | ~~Agent 3~~ → Agent 6 | in-progress (70 tests green; analyzers/pcap remain — Agent 3 resumes on quota reset) | `kiwi-forensics/`, `docs/contracts/forensics.md` | — |
+| T-003 | Forensics engine: model, findings/evidence, rules, live adapter, report, contract | ~~Agent 3~~ → Agent 6 | done (111 tests green: 94 lib + 5 pipeline + 9 pcap + 3 pcapng; pipeline wired; contract §§9—10 complete) | `kiwi-forensics/`, `docs/contracts/forensics.md` | — |
 | T-004 | Org/policy model + kiwi-admin service scaffold | ~~Agent 4~~ → Agent 5 (handoff: repeated timeouts, see AGENT_HANDOFF.md) | in-progress | `kiwi-admin/`, `docs/contracts/admin-api.md` | — |
 | T-005 | UI spec + surface registry (rework for standalone app) | Agent 5 (OpenCode #1) | in-review → new task T-020 | `docs/ui-spec.md`, `docs/contracts/ui-surfaces.md` | — |
 | T-006 | Testing/Security/Threat-model docs; fixture catalog; gates; lint baseline | Agent 6 (OpenCode #2) | in-review | `docs/TESTING.md`, `docs/SECURITY.md`, `docs/THREAT-MODEL.md`, `tests/` | — |
@@ -23,24 +23,24 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | ID | Title | Owner | Status | Target files/dirs | Depends on |
 |----|-------|-------|--------|-------------------|------------|
 | T-100 | Cargo workspace + kiwi-mail skeleton + crate contracts | Lead | done | `Cargo.toml`, `kiwi-mail/` | — |
-| T-101 | kiwi-mail `transport`: TCP+rustls, TlsObservation capture, SocketSecurity modes, STARTTLS upgrade path | Agent 2 | open | `kiwi-mail/src/transport.rs` | T-100 |
+| T-101 | kiwi-mail `transport`: TCP+rustls, TlsObservation, SocketSecurity, STARTTLS | Agent 2 + A10 hardening | done (live rustls handshakes proven) | `kiwi-mail/src/transport.rs` | T-100 |
 | T-102 | kiwi-mail `smtp`: EHLO/STARTTLS/AUTH/MAIL/RCPT/DATA + send-queue hooks | Agent 2 | in-review (41 mail tests green incl. real STARTTLS e2e) | `kiwi-mail/src/smtp.rs` | T-101 |
-| T-103 | kiwi-mail `imap`: LOGIN/AUTHENTICATE, SELECT, FETCH envelope+bodystructure, UID sync primitives, IDLE | Agent 2 | open | `kiwi-mail/src/imap.rs` | T-101 |
-| T-104 | kiwi-mail `pop3`: USER/PASS/APOP, LIST/UIDL/RETR/DELE, STLS | Agent 2 | open | `kiwi-mail/src/pop3.rs` | T-101 |
-| T-105 | kiwi-mail `account` + `store`: account model, SQLite mail schema, body/attachment storage | Agent 2 | open | `kiwi-mail/src/{account,store}.rs` | — |
-| T-106 | kiwi-mail `sync` + `mime`: folder sync engine, MIME parse boundary | Agent 2 | open | `kiwi-mail/src/{sync,mime}.rs` | T-105 |
-| T-107 | kiwi-forensics `live` module: `TlsObservation` → `ConnectionSecurityEvent` adapter | Agent 6 (reassigned from Agent 3) | open | `kiwi-forensics/` | T-003, T-101 |
+| T-103 | kiwi-mail `imap`: full client + IDLE | Agent 2 + A10 | done (greenmail interop green) | `kiwi-mail/src/imap.rs` | T-101 |
+| T-104 | kiwi-mail `pop3` | Agent 2 + A10 | done (mailpit round-trip + UIDL dedup) | `kiwi-mail/src/pop3.rs` | T-101 |
+| T-105 | kiwi-mail `account` + `store` | Agent 2 + A10 | done | `kiwi-mail/src/{account,store}.rs` | — |
+| T-106 | kiwi-mail `sync` + `mime` | Agent 2 + A10 | done (3-pass sync, IDLE events) | `kiwi-mail/src/{sync,mime}.rs` | T-105 |
+| T-107 | kiwi-forensics `live` adapter | Agent 6 | done | `kiwi-forensics/` | T-003, T-101 |
 | T-108 | Policy enforcement bridge: evaluate-outbound endpoint + contract §10 | Agent 5 | done (46/46 npm; contract v1.1 Lead-approved) | `kiwi-admin/`, `docs/contracts/admin-api.md` | T-004 |
 | T-109 | Mail-flow emitter: builders + ingest re-validation + contract §11 | Agent 5 | done (contract v1.1 Lead-approved) | `docs/contracts/admin-api.md` | T-004 |
 | T-110 | kiwi-app scaffold: Tauri 2 + Vite + React + TS shell; typed IPC command layer stub | Lead | done | `kiwi-app/` | — |
-| T-111 | Standalone UI spec v2: mailbox/composer/accounts/settings + security surfaces + Mailspring features (unified inbox, snooze, send later, undo send, templates) | Agent 5 | open | `docs/ui-spec.md` (rewrite), `docs/contracts/ui-surfaces.md` | — |
+| T-111 | Standalone UI spec v2 + ui-surfaces contract | Agent 5 | done | `docs/ui-spec.md` (rewrite), `docs/contracts/ui-surfaces.md` | — |
 | T-112 | Frontend scaffold: React app structure in `kiwi-app/` — routes, layout shell, theme tokens from `images/` palette | Agent 5 | unblocked (T-110 done) | `kiwi-app/` (frontend dirs) | T-110, T-111 |
 | T-113 | Update TESTING/SECURITY/THREAT-MODEL for standalone architecture; add client-layer test matrix (send/receive/compose/folders/attachments/offline/lock) | Agent 6 | open | `docs/` | T-006 |
 | T-114 | Local test mail server strategy (in-process fake vs mailpit) + fixtures for SMTP/IMAP/POP3 transcripts | Agent 6 | open | `tests/fixtures/`, `tests/tools/` | — |
 | T-115 | Quality-gate review of kiwi-core + kiwi-forensics + kiwi-admin scaffolds (G1–G11) | Agent 6 | in-progress (verdicts recorded in status) | review only | T-002..T-004 |
-| T-120 | kiwi-app src-tauri real IPC command layer: accounts/send/sync/security-status + lock-state gate | Agent 7 (Devin Pro, new) | open | `kiwi-app/src-tauri/`, `docs/contracts/ipc.md` | T-110 |
-| T-121 | Endpoint signal collector → kiwi-core trust evaluation (bounded indicators, Windows) | Agent 7 | open | `kiwi-app/src-tauri/` | T-120 |
-| T-122 | `kiwi-mailauth` crate: SPF/DKIM/DMARC deterministic checks, offline-testable DNS | Agent 8 (Cline Muse, new) | open | `kiwi-mailauth/`, `docs/contracts/mailauth.md` | — |
+| T-120 | kiwi-app src-tauri real IPC command layer + lock gate | Agent 7 | done (commands/* + ipc.md contract) | `kiwi-app/src-tauri/`, `docs/contracts/ipc.md` | T-110 |
+| T-121 | Endpoint signal collector | Agent 7 | done (signals.rs, Windows-first) | `kiwi-app/src-tauri/` | T-120 |
+| T-122 | `kiwi-mailauth` crate: SPF/DKIM/DMARC | Agent 8 | in-review (modules landed, mock-DNS tests) | `kiwi-mailauth/`, `docs/contracts/mailauth.md` | — |
 
 ## Rules (from prompt.md §8, §14)
 
@@ -49,3 +49,63 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 - `done` requires: code + tests passing + docs updated + files-changed list +
   no secrets + security review. Missing evidence → `not-ready` (Agent 6 authority).
 - `blocked` requires a handoff note in AGENT_HANDOFF.md.
+
+## Infrastructure tasks (owner directive — before further feature work)
+
+| ID | Title | Owner | Status | Target files/dirs | Depends on |
+|----|-------|-------|--------|-------------------|------------|
+| T-130 | Drizzle ORM foundation for kiwi-admin | Agent 5 | done (55 npm tests, contract v1.2 approved) | `kiwi-admin/` (db layer), `drizzle.config.ts`, migrations | — |
+| T-131 | docker-compose infra: postgres+mailpit+kiwi-admin | Agent 6 | done (compose verified, 13 unittests OK) | `docker-compose.yml`, `.env.example`, `kiwi-admin/Dockerfile`, `infra/` | — |
+| T-132 | Sandbox eval + design | Agent 2 | done (docs/sandbox.md + contracts/sandbox.md; WSL2 PoC proven; QEMU/WHPX viable; Firecracker=N/A on Win) | `docs/sandbox.md`, `docs/contracts/sandbox.md`, `sandbox/` | — |
+| T-133 | Infra verification tests: DB connectivity + migrations run, compose health, sandbox create/revert/teardown (stubbed if T-132 pending) | Agent 6 | open | `tests/` | T-130, T-131 |
+
+## Rolling backlog — keep agents busy (owner directive: reassign on completion)
+
+| ID | Title | Owner | Status | Target files/dirs | Depends on |
+|----|-------|-------|--------|-------------------|------------|
+| T-134 | `kiwi-admin-ui` scaffold + list endpoints | Agent 5 | done (views + contract v1.3 approved) | `kiwi-admin-ui/` | — |
+| T-135 | `kiwi-autoconfig` crate: account autodiscovery — ISPDB-style lookup, autodiscover.xml, MX-derived guesses; offline fixtures | Agent 8 | done (53/53 tests, contract landed; Lead review pending) | `kiwi-autoconfig/`, `docs/contracts/autoconfig.md` | — |
+| T-136 | `mobile/` authenticator scaffold + protocol contract | Agent 4 | done (contract + RN scaffold; crypto fallback approved test-only) | `mobile/`, `docs/contracts/authenticator.md` | — |
+| T-140 | CI pipeline: .github/workflows — cargo test/clippy/fmt, kiwi-admin npm test, secret-scan, fixture checks | Agent 6 | open | `.github/workflows/` | — |
+| T-141 | mailauth fixtures: auth-*.eml corpus + mock-DNS→findings mapping tests (Agent 8's proposal list) | Agent 6 | open | `tests/fixtures/messages/` | T-122 |
+| T-142 | Send queue: outbox + undo-send + send-later | Agent 7 | done (67/67+29/29 tests) | `kiwi-mail/src/` | T-102 |
+| T-143 | Bind kiwi-app frontend to ipc.md | Agent 5 | done (views wired, honest demo fallbacks) | `kiwi-app/src/` | T-120, T-112 |
+| T-144 | Send-path wiring: fail-closed policy bridge + mailflow emit | Agent 7 | done | `kiwi-app/src-tauri/` | T-120, T-108, T-109 |
+| T-145 | kiwi-app UI elevation: KIWI-brand polish — typography, spacing, badges, states, transitions (Operate mode, keep all function) | Agent 5 | open | `kiwi-app/src/` | T-143 |
+| T-146 | IPC gaps: flag mutation, attachment download, sanitized HTML render | Agent 7 | done (commands landed; Agent 5 wired UI) | `kiwi-app/src-tauri/`, `kiwi-mail/` | T-120 |
+| T-147 | IMAP fixture server in docker-compose (mailpit lacks IMAP — dovecot/greenmail) | Agent 6 | open | `docker-compose.yml`, `infra/` | — |
+| T-148 | kiwi-forensics remainder: analyzers/ + pcap/ (Agent 3 still quota-dead) | Agent 6 | done (subsumed by T-003 close-out: decode + reassembly + pipeline wired, green) | `kiwi-forensics/src/` | — |
+| T-149 | kiwi-admin e2e (parametrized SQLite+PG) + defect fixes: DATABASE_URL wiring, audit.read enforcement + fail-closed actor, orgId filter | Agent 9 | in-progress | `kiwi-admin/` or `infra/e2e/` | T-131 |
+| T-154 | Dependency audit: cargo-audit + npm audit across repo, findings in SECURITY.md §7 | Agent 6 | done (baseline recorded 2026-09-20; fixes flagged to owners) | `docs/SECURITY.md` | — |
+| T-150 | `kiwi-contacts` crate: local address book (rusqlite store, search, vCard RFC 6350 import/export) | Agent 9 (Claude Code, new) | open | `kiwi-contacts/`, `docs/contracts/contacts.md` | — |
+| T-151 | Frontend continuation: compose polish (toolbar, draft autosave), settings completeness, wire T-146 commands when landed | Agent 5 | open | `kiwi-app/src/` | T-143 |
+| T-152 | kiwi-mail hardening + live interop + store queue | Agent 10 | done (mailpit+greenmail green, 67 tests) | `kiwi-mail/src/` | — |
+| T-153 | Productivity layer: palette + shortcuts + toasts | Agent 5 | done | `kiwi-app/src/` | T-143 |
+| T-155 | Wire T-146/T-142 into UI | Agent 5 | done | `kiwi-app/src/` | T-146, T-142 |
+| T-156 | Account setup wizard | Agent 5 | done | `kiwi-app/src/views/setup.tsx` | T-135 |
+| T-157 | Live sync engine (IDLE loop, mail-changed events, lock-aware) | Agent 7 | done (kiwi-app 34/34) | `kiwi-app/src-tauri/` | T-142 |
+| T-158 | Autoconfig contract completion + discovery-order/malformed/domain tests | Agent 8 | done | `kiwi-autoconfig/`, `docs/contracts/` | T-135 |
+| T-159 | kiwi-mail search module: FTS5 over store (subject/from/to/body), bounded query API | Agent 8 | done | `kiwi-mail/src/` | — |
+| T-160 | Search UI + lock screen | Agent 5 | done | `kiwi-app/src/` | T-156, T-159 |
+| T-161 | `kiwi-sandbox` crate: trait + Wsl2Provider + NullProvider | Agent 10 | done | `kiwi-sandbox/` | T-132 |
+| T-162 | Bulk actions + multi-select | Agent 5 | done (needs kiwi_delete_messages IPC) | `kiwi-app/src/` | T-160 |
+| T-163 | IPC: kiwi_delete_messages, kiwi_move_messages | Agent 7 | done | `src-tauri/commands/` | — |
+| T-164 | Forensics IPC | Agent 7 | done (41/41, 7 new tests) | `src-tauri/commands/`, `ipc.md` | T-163 |
+| T-165 | Threading view | Agent 5 | done (needs inReplyTo/references fields — queued for A7) | `kiwi-app/src/` | T-162 |
+| T-166 | Forensics→app seam: contract query shapes + sync→observe→finding integration test | Agent 6 | done (query shapes in forensics.md S11; live auth threading; fixture-send seam test green; audit guard verified) | `kiwi-forensics/`, `docs/contracts/` | T-148 |
+| T-167 | Settings depth + real command wiring (delete/spam/trash/findings) | Agent 5 | done | `kiwi-app/src/views/settings.tsx` | T-156 |
+| T-168 | kiwi-sandbox guest agent + report.json schema | Agent 10 | done | `kiwi-sandbox/` | T-161 |
+| T-169 | MessageView thread fields + account→sync wiring | Agent 7 | done (ipc §6c) | `src-tauri/`, `kiwi-mail/` | T-163/164 |
+| T-170 | Integration review: contract-vs-code consistency audit across all contracts + full contract + full gate matrix | Agent 6 | done (5 pairs reviewed, mismatches filed file:line; gate matrix reported) | repo-wide (read-only review) | T-166 |
+| T-172 | Mobile authenticator follow-ups: ESLint gate, pairing transport decision (WS vs mDNS/TCP), deny-vs-timeout wording alignment | Agent 4 | open | `mobile/`, `docs/contracts/authenticator.md` | T-136 |
+| T-173 | Contacts UI + IPC wrappers | Agent 5 | done | `kiwi-app/src/` | T-150 |
+| T-171 | Vertical e2e: compose → seed mailbox → kiwi-mail sync → store rows + observe→observe,finding emitted | Agent 6 | done (infra/e2e/test_mail_flow.py + Rust leg green live; plaintext scope asserted) | `infra/e2e/` | T-157 |
+| T-174 | `kiwi-pair` crate: Ed25519 challenge/verify, pairing store, replay protection, revoke | Agent 10 | open | `kiwi-pair/` | — |
+| T-175 | Contacts IPC (list/search/upsert/delete/vCard) + prefs get/set commands | Agent 7 | open | `src-tauri/commands/` | T-150, T-167 |
+| T-176 | Wire search to real IPC (-term/scope: hints) + contacts import/export wizard | Agent 5 | open | `kiwi-app/src/` | T-159, T-173 |
+| T-177 | CI: infra-live e2e job (compose + both suites) + mobile lint gate + hygiene sweep | Agent 6 | done (infra-live runs infra/e2e both suites; mobile lint gated; encoding gate live; artifacts triaged) | `.github/`, `infra/` | T-171 |
+| T-178 | Autoconfig IPC contract request + ISPDB fixture expansion + discovery-chain test | Agent 8 | open | `kiwi-autoconfig/`, `ipc.md` | T-158 |
+| T-179 | kiwi-admin audit export endpoint (NDJSON, org_admin) + e2e | Agent 9 | open | `kiwi-admin/` | T-149 |
+| T-180 | Phase C1: kiwi-mail file splits (imap/smtp/store/testutil → per-responsibility modules, git mv, zero functional diff) — freeze window required | Agent 10 | queued (after T-174) | `kiwi-mail/src/` | — |
+| T-181 | Phase C2: src-tauri splits (types.rs → types/ per-domain, commands/message.rs+send.rs) — freeze window | Agent 7 | queued (after T-175) | `kiwi-app/src-tauri/` | — |
+| T-182 | Phase C3: App.tsx hooks/state extraction (1155 lines) — freeze window | Agent 5 | queued (after T-176) | `kiwi-app/src/` | — |

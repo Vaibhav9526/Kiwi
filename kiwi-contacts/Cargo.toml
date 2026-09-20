@@ -1,0 +1,26 @@
+[package]
+name = "kiwi-contacts"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "KIWI local address book: contact model, SQLite-backed store, and bounded RFC 6350 (vCard) import/export. No AI, no ambient clocks, no network."
+publish = false
+
+# Dependency policy (prompt.md §15, docs/SECURITY.md):
+#   * minimal, pinned, security-relevant crates only
+#   * rusqlite (bundled SQLite) matches kiwi-mail's store; parameterized SQL only
+#   * serde/serde_json define the stable IPC JSON shape (docs/contracts/contacts.md)
+#   * no unsafe code
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+rusqlite.workspace = true
+
+[dev-dependencies]
+# The integration tests assert the IPC JSON shape documented in
+# docs/contracts/contacts.md, so they need the same serializer the app uses.
+serde_json.workspace = true
+
+[lints]
+workspace = true

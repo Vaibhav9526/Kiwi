@@ -1,0 +1,106 @@
+# KIWI CI (T-140 Agent 6; T-177: infra/e2e both suites + mobile lint).
+# Mirrors the local gates in docs/TESTING.md §2:
+# Rust workspace (test/clippy/fmt) + kiwi-admin (ci/typecheck/test) +
+# mobile (ci/lint) + static checks (secret scan, fixtures, CSP,
+# encoding, compose-static) + live infra (compose db+mailpit+greenmail+
+# admin, full unittest suites incl. infra/e2e admin + mail-flow).
+#
+# What CI does NOT do: build Tauri bundles, run the desktop app, touch the
+# sandbox (T-132), or require AI availability.
+#
+# What CI does NOT do: build Tauri bundles, run the desktop app, touch the
+# sandbox (T-132), or require AI availability.
+
+name: ci
+
+on:
+  push:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # System deps for compiling the Tauri workspace member (kiwi-app).
+      - name: Install Tauri build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libgtk-3-dev libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --all -- --check
+      - run: cargo test --workspace
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  node-admin:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: kiwi-admin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: kiwi-admin/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  node-mobile:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mobile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mobile/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+
+  static-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - run: python tests/tools/secret_scan.py
+      - run: python tests/tools/check_fixtures.py
+      - run: python tests/tools/check_csp.py
+      - run: python tests/tools/check_encoding.py
+      # Compose-static subset: no daemon needed (config validity, env
+      # coverage, Tauri-not-in-Docker guard, Dockerfile gate).
+      - run: python -m unittest tests.infra.test_compose.ComposeStaticTests -v
+
+  infra-live:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cp .env.example .env
+      - run: docker compose build admin
+      - run: docker compose up -d db mailpit greenmail admin
+      - run: python -m unittest discover -s tests/infra -v
+      # Live e2e (both suites skip — never fail — without services):
+      # A9 admin flow (db+admin) + T-171 mail-flow vertical (greenmail).
+      # The mail-flow leg shells out to its Rust test, hence cargo above.
+      - run: python -m unittest discover -s infra/e2e -v
+      - run: docker compose down -v
+        if: always()

@@ -1,64 +1,209 @@
 /**
- * KIWI root (T-112): theme, backend probe with demo fallback, hash routes,
- * lock overlay + authenticator + finding dialog orchestration, Ctrl+K.
- * Real data replaces DEMO_* as kiwi-mail/kiwi-core IPC lands (ui-surfaces §5).
+ * KIWI root (T-143, T-151): live backend orchestration over kiwi.ipc/1 with
+ * labeled demo fallback outside the Tauri webview. The renderer owns NO
+ * security verdicts — trust/lock/findings/policy outcomes all come from the
+ * backend; star/read/archive go through kiwi_update_message in live mode
+ * (T-146), attachments through kiwi_download_attachment, HTML through
+ * kiwi_render_body (sanitized server-side, remote content opt-in per
+ * account).
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { api } from "./ipc";
-import { DEMO_ACCOUNTS, DEMO_EVENTS, DEMO_FINDINGS, DEMO_FOLDERS, DEMO_MESSAGES } from "./mock";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { api, BackendUnavailableError, IpcError } from "./ipc";
+import { applyUiPrefs, loadMuted, loadPref, savePref } from "./prefs";
+import {
+  DEMO_ACCOUNTS,
+  DEMO_EVENTS,
+  DEMO_FINDINGS,
+  DEMO_FOLDERS,
+  DEMO_MESSAGES,
+} from "./mock";
 import { navigate, useRoute } from "./router";
-import type { AccountInfo, MessageEnvelope, TrustState } from "./kiwi";
+import type {
+  AccountInfo,
+  AccountView,
+  AppInfoView,
+  AttachmentSavedView,
+  ChallengeView,
+  DeviceView,
+  FindingDetailView,
+  FindingInfo,
+  FolderView,
+  MessageBodyView,
+  MessageEnvelope,
+  MessagePatch,
+  MessageView,
+  OutboxItem,
+  RemoteContentView,
+  RenderedBodyView,
+  SecurityEventRow,
+  Severity,
+  TrustState,
+} from "./kiwi";
+import {
+  eventToRow,
+  findingToInfo,
+  toTrustState,
+  trustTokenToSeverity,
+  unixToIso,
+} from "./kiwi";
 import { AppShell, Sidebar, TopBar } from "./components/chrome";
 import { AuthenticatorDialog, FindingDialog, LockOverlay } from "./components/security";
 import type { AuthStatus } from "./components/security";
+import { CommandPalette } from "./components/palette";
+import type { PaletteAction } from "./components/palette";
+import { ShortcutsHelp } from "./components/shortcuts";
+import { ToastStack } from "./components/toasts";
+import type { Toast, ToastKind } from "./components/toasts";
 import { MailboxView } from "./views/mailbox";
 import { ComposeView } from "./views/compose";
 import { SetupWizardView } from "./views/setup";
 import { SettingsView } from "./views/settings";
 import { SecurityCenterView } from "./views/security-center";
+import { SearchView } from "./views/search";
+import type { SearchResultRow } from "./views/search";
+import { ContactsView } from "./views/contacts";
 
-function applyTheme(theme: string) {
-  const root = document.documentElement;
-  if (theme === "system") {
-    const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-    root.setAttribute("data-theme", dark ? "dark" : "light");
-  } else {
-    root.setAttribute("data-theme", theme);
-  }
+const DEMO_TRUST: TrustState = { trust: "unknown", locked: false, state: "unknown", score: null, requiredAction: "none" };
+
+function toEnvelope(
+  accountId: string,
+  accountEmail: string,
+  folderKey: string,
+  folderId: number,
+  m: MessageView,
+  trust: Severity,
+  overrides: Record<string, { starred?: boolean; unread?: boolean }>,
+): MessageEnvelope {
+  const id = `${accountId}:${folderId}:${m.uid}`;
+  const ov = overrides[id];
+  const flags = Array.isArray(m.flags) ? m.flags : [];
+  return {
+    id,
+    accountId,
+    accountEmail,
+    folder: folderKey,
+    folderId,
+    uid: m.uid,
+    from: m.fromAddr || "(unknown)",
+    subject: m.subject || "(no subject)",
+    date: unixToIso(m.dateUnix),
+    unread: ov?.unread ?? !flags.includes("\\Seen"),
+    starred: ov?.starred ?? flags.includes("\\Flagged"),
+    hasAttachments: m.hasAttachments === true,
+    trust,
+    snippet: m.snippet || "",
+  };
 }
 
 export default function App() {
   const route = useRoute();
-  const [theme, setTheme] = useState("system");
-  const [accounts, setAccounts] = useState<AccountInfo[]>(DEMO_ACCOUNTS);
-  const [messages] = useState<MessageEnvelope[]>(DEMO_MESSAGES);
-  const [trust, setTrust] = useState<TrustState>({ trust: "unknown", locked: false });
-  const [demo, setDemo] = useState(true);
+  const [theme, setTheme] = useState(() => loadPref<string>("kiwi.theme", "dark"));
+  const [mode, setMode] = useState<"live" | "demo">("demo");
   const [backendNote, setBackendNote] = useState("probing backend…");
+  const [appInfo, setAppInfo] = useState<AppInfoView | null>(null);
+  const [accountsRaw, setAccountsRaw] = useState<AccountView[]>([]);
+  const [trust, setTrust] = useState<TrustState>(DEMO_TRUST);
+  const [devices, setDevices] = useState<DeviceView[]>([]);
+  const [folderLists, setFolderLists] = useState<Record<string, FolderView[]>>({});
+  const [foldersError, setFoldersError] = useState<string | null>(null);
+  const [messages, setMessages] = useState<MessageEnvelope[]>([]);
+  const [messagesLoading, setMessagesLoading] = useState(false);
+  const [messagesError, setMessagesError] = useState<string | null>(null);
+  const [body, setBody] = useState<MessageBodyView | null>(null);
+  const [bodyLoading, setBodyLoading] = useState(false);
+  const [bodyError, setBodyError] = useState<string | null>(null);
+  const [rendered, setRendered] = useState<RenderedBodyView | null>(null);
+  const [renderLoading, setRenderLoading] = useState(false);
+  const [renderError, setRenderError] = useState<string | null>(null);
+  const [remoteContent, setRemoteContent] = useState<Record<string, boolean>>({});
+  const [attachNote, setAttachNote] = useState<string | null>(null);
+  const [attachBusy, setAttachBusy] = useState(false);
+  const [mailboxRev, setMailboxRev] = useState(0);
+  const [findings, setFindings] = useState<FindingInfo[]>(DEMO_FINDINGS);
+  const [events, setEvents] = useState<SecurityEventRow[]>(DEMO_EVENTS);
+  const [outbox, setOutbox] = useState<OutboxItem[]>([]);
+  const [syncing, setSyncing] = useState(false);
+  const [syncNote, setSyncNote] = useState<string | null>(null);
+  const [flagOverrides, setFlagOverrides] = useState<Record<string, { starred?: boolean; unread?: boolean }>>({});
   const [query, setQuery] = useState("");
   const [findingIndex, setFindingIndex] = useState<number | null>(null);
+  const [findingDetail, setFindingDetail] = useState<FindingDetailView | null>(null);
+  const [findingDetailError, setFindingDetailError] = useState<string | null>(null);
   const [authOpen, setAuthOpen] = useState(false);
   const [authStatus, setAuthStatus] = useState<AuthStatus>("waiting");
+  const [authExpiry, setAuthExpiry] = useState<number | null>(null);
   const [authSeconds, setAuthSeconds] = useState(120);
+  const [challenge, setChallenge] = useState<ChallengeView | null>(null);
   const [verifying, setVerifying] = useState(false);
+  const [lockReason, setLockReason] = useState("Trust reduced — verify with your authenticator to unlock.");
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const toastId = useRef(0);
 
-  useEffect(() => applyTheme(theme), [theme]);
+  const demo = mode === "demo";
 
-  // Backend probe: ping + accounts + trust; any failure → demo mode.
+  // UI prefs (theme/accent/density) apply from storage; the theme state
+  // writes through first so applyUiPrefs reads the fresh value.
+  useEffect(() => applyUiPrefs(), []);
+  useEffect(() => {
+    savePref("kiwi.theme", theme);
+    applyUiPrefs();
+  }, [theme]);
+
+  // Settings → Appearance writes through the same pref; follow it live.
+  useEffect(() => {
+    const onTheme = (e: Event) => {
+      const v = (e as CustomEvent).detail;
+      if (typeof v === "string" && (v === "light" || v === "dark" || v === "system")) setTheme(v);
+    };
+    window.addEventListener("kiwi-theme", onTheme);
+    return () => window.removeEventListener("kiwi-theme", onTheme);
+  }, []);
+
+  /* ---------- probe ---------- */
+
+  const refreshStatus = useCallback(async () => {
+    try {
+      setTrust(toTrustState(await api.securityStatus()));
+    } catch (e) {
+      if (!(e instanceof BackendUnavailableError)) {
+        setBackendNote(e instanceof Error ? e.message : String(e));
+      }
+    }
+  }, []);
+
+  const refreshAccounts = useCallback(async () => {
+    const acc = await api.listAccounts();
+    setAccountsRaw(acc);
+    try {
+      setDevices(await api.listDevices());
+    } catch {
+      setDevices([]);
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const pong = await api.ping();
-        const [acc, status] = await Promise.all([api.listAccounts(), api.securityStatus()]);
+        const [info, status, acc] = await Promise.all([api.appInfo(), api.securityStatus(), api.listAccounts()]);
         if (cancelled) return;
-        setDemo(false);
-        setBackendNote(`backend: ${pong}`);
-        if (acc.length > 0) setAccounts(acc);
-        setTrust(status);
+        setMode("live");
+        setAppInfo(info);
+        setTrust(toTrustState(status));
+        setAccountsRaw(acc);
+        try {
+          setDevices(await api.listDevices());
+        } catch {
+          setDevices([]);
+        }
+        const contract = typeof info.contractVersion === "string" ? info.contractVersion : "kiwi.ipc/1";
+        setBackendNote(`${pong} · ${contract} · ${acc.length} account(s)`);
       } catch (e) {
         if (cancelled) return;
-        setDemo(true);
+        setMode("demo");
         setBackendNote(e instanceof Error ? e.message : String(e));
       }
     })();
@@ -67,19 +212,862 @@ export default function App() {
     };
   }, []);
 
-  // Ctrl+K focuses search.
+  // Recompute trust periodically so the lock overlay tracks the backend.
   useEffect(() => {
+    if (demo) return;
+    const t = window.setInterval(() => void refreshStatus(), 15000);
+    return () => window.clearInterval(t);
+  }, [demo, refreshStatus]);
+
+  // Ctrl+K opens the palette; `/` focuses search; `?` opens shortcuts.
+  // Single-letter keys never fire while typing in a text field.
+  useEffect(() => {
+    const isTyping = (t: EventTarget | null) => {
+      const el = t as HTMLElement | null;
+      return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable);
+    };
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
         e.preventDefault();
+        setPaletteOpen((o) => !o);
+        return;
+      }
+      if (isTyping(e.target) || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.key === "/") {
+        e.preventDefault();
         document.getElementById("kiwi-search")?.focus();
+      } else if (e.key === "?") {
+        e.preventDefault();
+        setHelpOpen(true);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // Authenticator countdown; demo mode auto-approves after 6s (labeled).
+  /* ---------- derived account/folder model ---------- */
+
+  // Muted accounts (T-167): re-read when accounts or routes change so the
+  // Settings toggle takes effect on return without a reload.
+  const muted = useMemo(() => loadMuted(), [accountsRaw, route.name]);
+
+  const emailById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const a of accountsRaw) m.set(a.id, a.email);
+    return m;
+  }, [accountsRaw]);
+
+  const accounts: AccountInfo[] = useMemo(() => {
+    if (demo) return DEMO_ACCOUNTS;
+    return accountsRaw.map((a, i) => ({
+      id: a.id,
+      email: a.email,
+      displayName: a.displayName || a.email,
+      trust: trustTokenToSeverity(a.trustToken),
+      unread: typeof a.unreadCount === "number" ? a.unreadCount : 0,
+      color: typeof a.color === "string" && a.color ? a.color : ["#2563eb", "#7a5b00", "#b23a22"][i % 3],
+      muted: muted.includes(a.id),
+    }));
+  }, [demo, accountsRaw, muted]);
+
+  const folders = useMemo(() => {
+    if (demo) return [...DEMO_FOLDERS, { id: "outbox", label: "Outbox" }];
+    const list = [
+      { id: "all-inboxes", label: "All Inboxes" },
+      { id: "outbox", label: "Outbox" },
+    ];
+    for (const a of accountsRaw) {
+      for (const f of folderLists[a.id] ?? []) {
+        list.push({ id: `${a.id}:${f.id}`, label: `${a.displayName || a.email} / ${f.name}` });
+      }
+    }
+    return list;
+  }, [demo, accountsRaw, folderLists]);
+
+  const folderLabel = useMemo(() => {
+    const id = route.name === "mail" ? (route.folder ?? "all-inboxes") : "all-inboxes";
+    return folders.find((f) => f.id === id)?.label ?? "All Inboxes";
+  }, [folders, route]);
+
+  const unreadByFolder = useMemo(() => {
+    if (demo) {
+      const counts: Record<string, number> = { "all-inboxes": 0 };
+      for (const m of DEMO_MESSAGES) {
+        if (!m.unread) continue;
+        counts["all-inboxes"] = (counts["all-inboxes"] ?? 0) + 1;
+        counts[m.folder] = (counts[m.folder] ?? 0) + 1;
+      }
+      return counts;
+    }
+    const counts: Record<string, number> = { "all-inboxes": 0 };
+    for (const a of accountsRaw) {
+      if (muted.includes(a.id)) continue;
+      for (const f of folderLists[a.id] ?? []) {
+        const key = `${a.id}:${f.id}`;
+        counts[key] = f.unseen ?? 0;
+        counts["all-inboxes"] = (counts["all-inboxes"] ?? 0) + (f.unseen ?? 0);
+      }
+    }
+    return counts;
+  }, [demo, accountsRaw, folderLists, muted]);
+
+  /* ---------- live loaders ---------- */
+
+  const loadFolders = useCallback(async () => {
+    if (demo) return;
+    setFoldersError(null);
+    try {
+      const entries = await Promise.all(
+        accountsRaw.map(async (a) => {
+          try {
+            return [a.id, await api.listFolders(a.id)] as const;
+          } catch (e) {
+            if (e instanceof IpcError && e.code === "locked") throw e;
+            return [a.id, [] as FolderView[]] as const;
+          }
+        }),
+      );
+      const next: Record<string, FolderView[]> = {};
+      for (const [id, list] of entries) next[id] = list;
+      setFolderLists(next);
+    } catch (e) {
+      setFoldersError(e instanceof Error ? e.message : String(e));
+    }
+  }, [demo, accountsRaw]);
+
+  useEffect(() => {
+    if (demo || accountsRaw.length === 0) return;
+    void loadFolders();
+  }, [demo, accountsRaw, loadFolders]);
+
+  const folderKey = route.name === "mail" ? (route.folder ?? "all-inboxes") : "all-inboxes";
+
+  useEffect(() => {
+    if (demo) return;
+    if (trust.locked) {
+      setMessages([]);
+      setMessagesError(null);
+      return;
+    }
+    let cancelled = false;
+    setMessagesLoading(true);
+    setMessagesError(null);
+    (async () => {
+      try {
+        const collected: MessageEnvelope[] = [];
+        const fetchOne = async (accountId: string, folderId: number, key: string) => {
+          const email = emailById.get(accountId) ?? accountId;
+          const acct = accountsRaw.find((a) => a.id === accountId);
+          const t = trustTokenToSeverity(acct?.trustToken);
+          const list = await api.listMessages(accountId, folderId, 50);
+          for (const m of list) collected.push(toEnvelope(accountId, email, key, folderId, m, t, flagOverrides));
+        };
+        if (folderKey === "all-inboxes") {
+          await Promise.all(
+            accountsRaw.map(async (a) => {
+              const fl = folderLists[a.id] ?? [];
+              const inbox = fl.find((f) => f.name.toUpperCase() === "INBOX") ?? fl[0];
+              if (inbox) await fetchOne(a.id, inbox.id, "all-inboxes");
+            }),
+          );
+          collected.sort((x, y) => (y.date < x.date ? -1 : y.date > x.date ? 1 : 0));
+        } else if (folderKey !== "outbox") {
+          const sep = folderKey.lastIndexOf(":");
+          if (sep > 0) {
+            await fetchOne(folderKey.slice(0, sep), Number(folderKey.slice(sep + 1)), folderKey);
+          }
+        }
+        if (!cancelled) setMessages(collected);
+      } catch (e) {
+        if (!cancelled) {
+          if (e instanceof IpcError && e.code === "locked") {
+            setMessages([]);
+          } else {
+            setMessagesError(e instanceof Error ? e.message : String(e));
+          }
+        }
+      } finally {
+        if (!cancelled) setMessagesLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [demo, trust.locked, folderKey, accountsRaw, folderLists, emailById, mailboxRev]);
+
+  const selectedId = route.name === "mail" ? route.messageId : undefined;
+
+  useEffect(() => {
+    if (demo || !selectedId || trust.locked) {
+      setBody(null);
+      setBodyError(null);
+      setRendered(null);
+      setRenderError(null);
+      setAttachNote(null);
+      return;
+    }
+    const parts = selectedId.split(":");
+    if (parts.length !== 3) return;
+    const [accountId, folderIdRaw, uidRaw] = parts as [string, string, string];
+    const folderId = Number(folderIdRaw);
+    const uid = Number(uidRaw);
+    let cancelled = false;
+    setBodyLoading(true);
+    setBodyError(null);
+    setRenderLoading(true);
+    setRenderError(null);
+    setRendered(null);
+    setAttachNote(null);
+    (async () => {
+      try {
+        const b = await api.getMessage(accountId, folderId, uid);
+        if (!cancelled) setBody(b);
+      } catch (e) {
+        if (!cancelled) setBodyError(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (!cancelled) setBodyLoading(false);
+      }
+      // Sanitized HTML render (T-146) — server-side ammonia allowlist.
+      // Failure here never hides the plaintext body above.
+      try {
+        const r = await api.renderBody(accountId, folderId, uid);
+        if (cancelled) return;
+        setRendered(r);
+        if (typeof r.remoteContentAllowed === "boolean") {
+          setRemoteContent((m) => ({ ...m, [accountId]: r.remoteContentAllowed }));
+        }
+      } catch (e) {
+        if (!cancelled) setRenderError(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (!cancelled) setRenderLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [demo, selectedId, trust.locked]);
+
+  const loadSecurity = useCallback(async () => {
+    if (demo) return;
+    try {
+      const [f, e] = await Promise.all([api.securityFindings(), api.securityEvents(100)]);
+      setFindings(f.map((x, i) => findingToInfo(x as never, i)));
+      setEvents(e.map((x) => eventToRow(x as never, (id) => (id ? (emailById.get(id) ?? id) : "—"))));
+    } catch {
+      // Security panels keep last-known values; errors surface in-view on demand.
+    }
+  }, [demo, emailById]);
+
+  useEffect(() => {
+    if (demo) return;
+    void loadSecurity();
+  }, [demo, loadSecurity, route.name]);
+
+  /**
+   * Finding dialog data (T-164): the list-mapped FindingInfo renders
+   * immediately; live mode then joins the full record (session + signals +
+   * siblings) via kiwi_finding_detail. Backend ids are stable `rule|…`
+   * keys — `finding-N` fallbacks have no backend key and skip the fetch.
+   * Demo keeps fixtures only.
+   */
+  const openFinding = useCallback(
+    (i: number) => {
+      setFindingIndex(i);
+      setFindingDetail(null);
+      setFindingDetailError(null);
+      if (demo) return;
+      const rawId = findings[i]?.id;
+      if (!rawId || rawId.startsWith("finding-")) return;
+      void (async () => {
+        try {
+          setFindingDetail(await api.findingDetail(rawId));
+        } catch (e) {
+          setFindingDetailError(e instanceof Error ? e.message : String(e));
+        }
+      })();
+    },
+    [demo, findings],
+  );
+
+  const closeFinding = useCallback(() => {
+    setFindingIndex(null);
+    setFindingDetail(null);
+    setFindingDetailError(null);
+  }, []);
+
+  const refreshOutbox = useCallback(async () => {
+    if (demo) return;
+    try {
+      setOutbox(await api.listOutbox());
+    } catch {
+      setOutbox([]);
+    }
+  }, [demo]);
+
+  useEffect(() => {
+    if (demo || folderKey !== "outbox") return;
+    void refreshOutbox();
+  }, [demo, folderKey, refreshOutbox]);
+
+  /* ---------- actions ---------- */
+
+  const setLocalOverride = useCallback((id: string, patch: { starred?: boolean; unread?: boolean }) => {
+    setFlagOverrides((m) => ({ ...m, [id]: { ...m[id], ...patch } }));
+  }, []);
+
+  /* ---------- toasts (T-153): ephemeral send/sync/policy notices ---------- */
+
+  const dismissToast = useCallback((id: number) => {
+    setToasts((ts) => ts.filter((t) => t.id !== id));
+  }, []);
+
+  const notify = useCallback(
+    (kind: ToastKind, text: string, opts?: { action?: { label: string; run: () => void }; ttlMs?: number }) => {
+      // Toast kill-switch (T-167): in-view status lines still update, so
+      // nothing is lost — the popup is just skipped.
+      try {
+        if (loadPref<string>("kiwi.toasts", "on") === "off") return;
+      } catch {
+        // Prefs unreadable — notify anyway.
+      }
+      toastId.current += 1;
+      const id = toastId.current;
+      setToasts((ts) => [...ts.slice(-4), { id, kind, text, action: opts?.action }]);
+      window.setTimeout(() => dismissToast(id), opts?.ttlMs ?? 6000);
+      // Optional UI sound (T-167): tiny WebAudio blip, best-effort only —
+      // never throws, never blocks, no assets.
+      try {
+        if (loadPref<string>("kiwi.sound", "off") === "on") {
+          const Ctx = (window as unknown as { AudioContext?: new () => AudioContext }).AudioContext;
+          if (Ctx) {
+            const ctx = new Ctx();
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.frequency.value = kind === "error" ? 220 : 660;
+            gain.gain.value = 0.04;
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start();
+            osc.stop(ctx.currentTime + 0.12);
+            window.setTimeout(() => void ctx.close().catch(() => undefined), 300);
+          }
+        }
+      } catch {
+        // Audio unavailable — the toast itself already rendered.
+      }
+    },
+    [dismissToast],
+  );
+
+  const applyPatch = useCallback(
+    async (id: string, patch: MessagePatch) => {
+      const base = (demo ? DEMO_MESSAGES : messages).find((x) => x.id === id);
+      if (!base) return;
+      if (demo) {
+        // Demo fixtures have no backend — local-only, labeled in-view.
+        if (patch.starred !== undefined) setLocalOverride(id, { starred: patch.starred });
+        if (patch.seen !== undefined) setLocalOverride(id, { unread: !patch.seen });
+        return;
+      }
+      try {
+        const v = await api.updateMessage(base.accountId, base.folderId, base.uid, patch);
+        const has = (name: string) => v.flags.some((f) => f.toLowerCase() === name.toLowerCase());
+        setLocalOverride(id, { starred: has("\\Flagged"), unread: !has("\\Seen") });
+        if (v.movedToFolderId !== null && v.movedToFolderId !== undefined) {
+          const msg = patch.archived
+            ? "Message archived — moved to the Archive folder."
+            : "Message unarchived — moved back to INBOX.";
+          setSyncNote(msg);
+          notify("ok", msg);
+          // Reload the list: the row now lives in another folder.
+          setMailboxRev((n) => n + 1);
+          await loadFolders();
+        }
+      } catch (e) {
+        // Offline / gated failure: keep a local override so the UI stays
+        // usable, and say so — the next sync reconciles with the server.
+        if (patch.starred !== undefined) setLocalOverride(id, { starred: patch.starred });
+        if (patch.seen !== undefined) setLocalOverride(id, { unread: !patch.seen });
+        const msg =
+          e instanceof Error
+            ? `Flag update failed (${e.message}) — kept locally, reconciles on next sync.`
+            : String(e);
+        setSyncNote(msg);
+        notify("warn", msg);
+      }
+    },
+    [demo, messages, setLocalOverride, loadFolders, notify],
+  );
+
+  const toggleStar = useCallback(
+    (id: string) => {
+      const base = (demo ? DEMO_MESSAGES : messages).find((x) => x.id === id);
+      const cur = flagOverrides[id]?.starred ?? base?.starred ?? false;
+      void applyPatch(id, { starred: !cur });
+    },
+    [demo, messages, flagOverrides],
+  );
+
+  const toggleRead = useCallback(
+    (id: string) => {
+      const base = (demo ? DEMO_MESSAGES : messages).find((x) => x.id === id);
+      const cur = flagOverrides[id]?.unread ?? base?.unread ?? false;
+      void applyPatch(id, { seen: cur });
+    },
+    [demo, messages, flagOverrides],
+  );
+
+  const archiveMessage = useCallback(
+    (id: string, archived: boolean) => {
+      void applyPatch(id, { archived });
+    },
+    [applyPatch],
+  );
+
+  /**
+   * Bulk flag/archive over N messages (T-162): one sequential pass, one
+   * summary toast. Per-message overrides update from each backend verdict;
+   * any move triggers a single list reload. Demo applies seen/starred
+   * locally (archive has no local meaning — stated, not faked).
+   */
+  const bulkPatch = useCallback(
+    async (ids: string[], patch: MessagePatch, actionLabel: string) => {
+      const pool = demo ? DEMO_MESSAGES : messages;
+      if (demo) {
+        if (patch.seen !== undefined || patch.starred !== undefined) {
+          setFlagOverrides((m) => {
+            const next = { ...m };
+            for (const id of ids) {
+              next[id] = {
+                ...next[id],
+                ...(patch.seen !== undefined ? { unread: !patch.seen } : {}),
+                ...(patch.starred !== undefined ? { starred: patch.starred } : {}),
+              };
+            }
+            return next;
+          });
+          notify("info", `Demo: ${actionLabel} — ${ids.length} message(s), local only.`);
+        } else {
+          notify("info", "Demo mode — archiving needs the Tauri backend.");
+        }
+        return;
+      }
+      let ok = 0;
+      let fail = 0;
+      let moved = false;
+      for (const id of ids) {
+        const base = pool.find((x) => x.id === id);
+        if (!base) {
+          fail++;
+          continue;
+        }
+        try {
+          const v = await api.updateMessage(base.accountId, base.folderId, base.uid, patch);
+          const has = (name: string) => v.flags.some((f) => f.toLowerCase() === name.toLowerCase());
+          setLocalOverride(id, { starred: has("\\Flagged"), unread: !has("\\Seen") });
+          if (v.movedToFolderId !== null && v.movedToFolderId !== undefined) moved = true;
+          ok++;
+        } catch {
+          fail++;
+        }
+      }
+      if (moved) {
+        setMailboxRev((n) => n + 1);
+        await loadFolders();
+      }
+      const summary =
+        fail === 0
+          ? `${actionLabel} — ${ok} message(s).`
+          : `${actionLabel} — ${ok} ok, ${fail} failed (kept locally, reconcile on sync).`;
+      setSyncNote(summary);
+      notify(fail === 0 ? "ok" : "warn", summary);
+    },
+    [demo, messages, setLocalOverride, loadFolders, notify],
+  );
+
+  /** Group envelope ids by (accountId, folderId) — delete/move are folder-scoped. */
+  const groupByFolder = useCallback(
+    (ids: string[]) => {
+      const pool = demo ? DEMO_MESSAGES : messages;
+      const groups = new Map<string, { accountId: string; folderId: number; uids: number[] }>();
+      let missing = 0;
+      for (const id of ids) {
+        const base = pool.find((x) => x.id === id);
+        if (!base) {
+          missing++;
+          continue;
+        }
+        const key = `${base.accountId}\n${base.folderId}`;
+        const g = groups.get(key);
+        if (g) g.uids.push(base.uid);
+        else groups.set(key, { accountId: base.accountId, folderId: base.folderId, uids: [base.uid] });
+      }
+      return { groups: [...groups.values()], missing };
+    },
+    [demo, messages],
+  );
+
+  const reloadMail = useCallback(async () => {
+    setMailboxRev((n) => n + 1);
+    await loadFolders();
+  }, [loadFolders]);
+
+  /**
+   * Bulk delete (T-163): soft→Trash by default, permanent from Trash or
+   * when asked (backend decides Trash-source too). Chunked at 400 uids
+   * (backend bound is 500). One summary toast; rows always reload.
+   */
+  const bulkDelete = useCallback(
+    async (ids: string[], permanent: boolean, actionLabel: string) => {
+      if (demo || ids.length === 0) {
+        if (ids.length === 0) return;
+        notify("info", "Demo mode — delete needs the Tauri backend.");
+        return;
+      }
+      const { groups, missing } = groupByFolder(ids);
+      let trashed = 0;
+      let destroyed = 0;
+      let fail = 0;
+      fail += missing;
+      for (const g of groups) {
+        for (let i = 0; i < g.uids.length; i += 400) {
+          try {
+            const r = await api.deleteMessages(g.accountId, g.folderId, g.uids.slice(i, i + 400), permanent);
+            trashed += r.movedToTrash;
+            destroyed += r.deleted;
+          } catch {
+            fail += g.uids.slice(i, i + 400).length;
+          }
+        }
+      }
+      await reloadMail();
+      const bits: string[] = [];
+      if (trashed > 0) bits.push(`${trashed} → Trash`);
+      if (destroyed > 0) bits.push(`${destroyed} permanently deleted`);
+      const summary =
+        fail === 0 ? `${actionLabel} — ${bits.join(", ") || "nothing deleted"}.` : `${actionLabel} — ${bits.join(", ") || "nothing deleted"}, ${fail} failed.`;
+      setSyncNote(summary);
+      notify(fail === 0 ? "ok" : "warn", summary);
+    },
+    [demo, groupByFolder, reloadMail, notify],
+  );
+
+  /**
+   * Bulk spam (T-163): move to the account's Spam/Junk folder via
+   * kiwi_move_messages (same-account only — enforced server-side too).
+   * Accounts without a known Spam folder are skipped and named.
+   */
+  const bulkSpam = useCallback(
+    async (ids: string[]) => {
+      if (demo || ids.length === 0) {
+        if (ids.length === 0) return;
+        notify("info", "Demo mode — spam needs the Tauri backend.");
+        return;
+      }
+      const { groups, missing } = groupByFolder(ids);
+      let moved = 0;
+      let fail = missing;
+      const noSpam: string[] = [];
+      for (const g of groups) {
+        const spam = (folderLists[g.accountId] ?? []).find((f) => /spam|junk/i.test(f.name));
+        if (!spam) {
+          fail += g.uids.length;
+          noSpam.push(g.accountId);
+          continue;
+        }
+        if (spam.id === g.folderId) {
+          moved += g.uids.length; // already there — counts as done
+          continue;
+        }
+        for (let i = 0; i < g.uids.length; i += 400) {
+          try {
+            const r = await api.moveMessages(g.accountId, g.folderId, spam.id, g.uids.slice(i, i + 400));
+            moved += r.moved;
+          } catch {
+            fail += g.uids.slice(i, i + 400).length;
+          }
+        }
+      }
+      await reloadMail();
+      let summary = fail === 0 ? `Marked spam — ${moved} message(s).` : `Marked spam — ${moved} moved, ${fail} failed.`;
+      if (noSpam.length > 0) summary += ` No Spam folder on: ${[...new Set(noSpam)].join(", ")} (sync first).`;
+      setSyncNote(summary);
+      notify(fail === 0 ? "ok" : "warn", summary);
+    },
+    [demo, groupByFolder, folderLists, reloadMail, notify],
+  );
+
+  const selectedEnvelope = useMemo(
+    () => (demo ? DEMO_MESSAGES : messages).find((m) => m.id === selectedId) ?? null,
+    [demo, messages, selectedId],
+  );
+  const setAllowRemote = useCallback(
+    async (allowed: boolean) => {
+      if (demo || !selectedEnvelope) return;
+      setRenderError(null);
+      try {
+        const v: RemoteContentView = await api.setRemoteContent(selectedEnvelope.accountId, allowed);
+        setRemoteContent((m) => ({ ...m, [v.accountId]: v.remoteContentAllowed }));
+        // Re-render so the stripped/allowed image set updates immediately.
+        const r: RenderedBodyView = await api.renderBody(
+          selectedEnvelope.accountId,
+          selectedEnvelope.folderId,
+          selectedEnvelope.uid,
+        );
+        setRendered(r);
+      } catch (e) {
+        setRenderError(e instanceof Error ? e.message : String(e));
+      }
+    },
+    [demo, selectedEnvelope],
+  );
+
+  const saveAttachment = useCallback(
+    async (attachmentIndex: number, destPath: string) => {
+      if (demo || !selectedEnvelope) return;
+      const dest = destPath.trim();
+      if (!dest) {
+        setAttachNote("Choose a destination path first.");
+        return;
+      }
+      setAttachBusy(true);
+      setAttachNote(null);
+      try {
+        const saved: AttachmentSavedView = await api.downloadAttachment(
+          selectedEnvelope.accountId,
+          selectedEnvelope.folderId,
+          selectedEnvelope.uid,
+          attachmentIndex,
+          dest,
+        );
+        setAttachNote(`Saved ${saved.filename} (${saved.size} B) → ${saved.path}.`);
+        notify("ok", `Attachment saved: ${saved.filename}.`);
+      } catch (e) {
+        const msg = e instanceof Error ? `Save failed: ${e.message}` : String(e);
+        setAttachNote(msg);
+        notify("error", msg);
+      } finally {
+        setAttachBusy(false);
+      }
+    },
+    [demo, selectedEnvelope, notify],
+  );
+
+  /** Flag/star overrides applied, query NOT applied — feeds mailbox + search. */
+  const baseMessages = useMemo(() => {
+    const base = demo
+      ? folderKey === "all-inboxes"
+        ? DEMO_MESSAGES
+        : DEMO_MESSAGES.filter((m) => m.folder === folderKey)
+      : messages;
+    const withOverrides = demo
+      ? base
+      : base.map((m) => {
+          const ov = flagOverrides[m.id];
+          return ov ? { ...m, starred: ov.starred ?? m.starred, unread: ov.unread ?? m.unread } : m;
+        });
+    if (demo) {
+      return withOverrides.map((m) => {
+        const ov = flagOverrides[m.id];
+        return ov ? { ...m, starred: ov.starred ?? m.starred, unread: ov.unread ?? m.unread } : m;
+      });
+    }
+    return withOverrides;
+  }, [demo, folderKey, messages, flagOverrides]);
+
+  const visibleMessages = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return baseMessages;
+    return baseMessages.filter(
+      (m) => m.from.toLowerCase().includes(q) || m.subject.toLowerCase().includes(q) || m.snippet.toLowerCase().includes(q),
+    );
+  }, [baseMessages, query]);
+
+  const doSync = useCallback(async () => {
+    if (demo) {
+      notify("info", "Demo mode — sync needs the Tauri backend.");
+      return;
+    }
+    setSyncing(true);
+    setSyncNote(null);
+    try {
+      let added = 0;
+      for (const a of accountsRaw) {
+        const reports = await api.syncAccount(a.id);
+        for (const r of reports) {
+          const n = r["newMessages"];
+          if (typeof n === "number") added += n;
+        }
+      }
+      const msg = `Sync complete — ${added} new message(s).`;
+      setSyncNote(msg);
+      notify("ok", msg);
+      await Promise.all([loadFolders(), loadSecurity(), refreshStatus()]);
+    } catch (e) {
+      const msg = e instanceof Error ? `Sync failed: ${e.message}` : String(e);
+      setSyncNote(msg);
+      notify("error", msg);
+    } finally {
+      setSyncing(false);
+    }
+  }, [demo, accountsRaw, loadFolders, loadSecurity, refreshStatus, notify]);
+
+  const doFlushOutbox = useCallback(async () => {
+    if (demo) {
+      notify("info", "Demo mode — the outbox needs the Tauri backend.");
+      return;
+    }
+    try {
+      const r = await api.flushOutbox();
+      const msg = `Send-all: ${r.sent} sent, ${r.failed} failed, ${r.held} held.`;
+      setSyncNote(msg);
+      notify(r.failed > 0 || r.held > 0 ? "warn" : "ok", msg);
+      await refreshOutbox();
+    } catch (e) {
+      const msg = e instanceof Error ? `Send-all failed: ${e.message}` : String(e);
+      setSyncNote(msg);
+      notify("error", msg);
+    }
+  }, [demo, refreshOutbox, notify]);
+
+  const doCancelSend = useCallback(
+    async (queueId: string) => {
+      try {
+        const r = await api.cancelSend(queueId);
+        notify("info", r.cancelled ? "Send undone — back to draft." : "Undo window already closed — message dispatching.");
+      } catch (e) {
+        const msg = e instanceof Error ? `Undo failed: ${e.message}` : String(e);
+        setSyncNote(msg);
+        notify("error", msg);
+      }
+      await refreshOutbox();
+    },
+    [refreshOutbox, notify],
+  );
+
+  const doLock = useCallback(async () => {
+    if (demo) return;
+    try {
+      setTrust(toTrustState(await api.lock()));
+      notify("info", "Mailbox locked.");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setBackendNote(msg);
+      notify("error", msg);
+    }
+  }, [demo, notify]);
+
+  /* ---------- command palette actions (T-153) ---------- */
+
+  const cycleTheme = useCallback(() => {
+    setTheme((t) => {
+      const next = t === "dark" ? "light" : t === "light" ? "system" : "dark";
+      notify("info", `Theme: ${next}.`);
+      return next;
+    });
+  }, [notify]);
+
+  const paletteActions: PaletteAction[] = useMemo(() => {
+    const list: PaletteAction[] = [
+      { id: "compose", label: "Compose new message", hint: "r", run: () => navigate({ name: "compose" }) },
+      {
+        id: "search",
+        label: "Focus message search",
+        hint: "/",
+        run: () => document.getElementById("kiwi-search")?.focus(),
+      },
+      { id: "theme", label: `Toggle theme (now ${theme})`, hint: "light/dark/system", run: cycleTheme },
+      { id: "security", label: "Open Security Center", run: () => navigate({ name: "security" }) },
+      { id: "contacts", label: "Open Contacts", run: () => navigate({ name: "contacts" }) },
+      { id: "settings", label: "Open Settings", run: () => navigate({ name: "settings" }) },
+      { id: "shortcuts", label: "Show keyboard shortcuts", hint: "?", run: () => setHelpOpen(true) },
+    ];
+    for (const f of folders) {
+      list.push({
+        id: `goto-${f.id}`,
+        label: `Go to ${f.label}`,
+        hint: "folder",
+        run: () => navigate({ name: "mail", folder: f.id }),
+      });
+    }
+    list.push(
+      demo
+        ? {
+            id: "sync",
+            label: "Sync now (demo — needs backend)",
+            hint: "live only",
+            run: () => notify("info", "Demo mode — sync needs the Tauri backend."),
+          }
+        : { id: "sync", label: "Sync now", run: () => void doSync() },
+      demo
+        ? {
+            id: "lock",
+            label: "Lock now (demo — needs backend)",
+            hint: "live only",
+            run: () => notify("info", "Demo mode — locking needs the Tauri backend."),
+          }
+        : { id: "lock", label: "Lock mailbox now", run: () => void doLock() },
+    );
+    return list;
+  }, [folders, theme, cycleTheme, demo, doSync, doLock, notify]);
+
+  /* ---------- challenge flow ---------- */
+
+  const startVerify = useCallback(async () => {
+    if (demo) {
+      setAuthStatus("waiting");
+      setAuthSeconds(120);
+      setAuthOpen(true);
+      return;
+    }
+    setVerifying(true);
+    try {
+      const active = devices.find((d) => d.status === "active") ?? devices[0];
+      if (!active) {
+        setLockReason("No authenticator device registered — pair one in Settings → KIWI Security.");
+        return;
+      }
+      const chal = await api.requestChallenge(active.deviceId, "unlock");
+      setChallenge(chal);
+      const secs = Math.max(1, chal.expiresUnix - Math.floor(Date.now() / 1000));
+      setAuthSeconds(secs);
+      setAuthExpiry(chal.expiresUnix);
+      setAuthStatus("waiting");
+      setAuthOpen(true);
+    } catch (e) {
+      setLockReason(e instanceof Error ? `Challenge failed: ${e.message}` : String(e));
+    } finally {
+      setVerifying(false);
+    }
+  }, [demo, devices]);
+
+  // Live: poll trust while the challenge dialog is open; approve on unlock.
+  useEffect(() => {
+    if (demo || !authOpen || !challenge || authStatus !== "waiting") return;
+    const t = window.setInterval(() => {
+      void (async () => {
+        try {
+          const s = toTrustState(await api.securityStatus());
+          setTrust(s);
+          if (!s.locked) {
+            setAuthStatus("approved");
+            window.setTimeout(() => {
+              setAuthOpen(false);
+              setChallenge(null);
+            }, 900);
+          } else if (Math.floor(Date.now() / 1000) >= (authExpiry ?? 0)) {
+            setAuthStatus("expired");
+          }
+        } catch {
+          // Keep waiting; transport blips must not kill the dialog.
+        }
+      })();
+    }, 3000);
+    return () => window.clearInterval(t);
+  }, [demo, authOpen, challenge, authStatus, authExpiry]);
+
+  // Countdown display.
   useEffect(() => {
     if (!authOpen || authStatus !== "waiting") return;
     if (authSeconds <= 0) {
@@ -90,6 +1078,7 @@ export default function App() {
     return () => window.clearTimeout(t);
   }, [authOpen, authStatus, authSeconds]);
 
+  // Demo: auto-approve after 6s (labeled).
   useEffect(() => {
     if (!authOpen || !demo || authStatus !== "waiting") return;
     const t = window.setTimeout(() => setAuthStatus("approved"), 6000);
@@ -97,51 +1086,34 @@ export default function App() {
   }, [authOpen, demo, authStatus]);
 
   useEffect(() => {
-    if (authStatus === "approved" && authOpen) {
+    if (authStatus === "approved" && authOpen && demo) {
       const t = window.setTimeout(() => {
         setAuthOpen(false);
-        setTrust((tr) => ({ ...tr, locked: false }));
-        setVerifying(false);
+        setTrust({ ...DEMO_TRUST });
       }, 900);
       return () => window.clearTimeout(t);
     }
-  }, [authStatus, authOpen]);
+  }, [authStatus, authOpen, demo]);
 
-  const startVerify = useCallback(() => {
-    setAuthStatus("waiting");
-    setAuthSeconds(120);
-    setAuthOpen(true);
-    setVerifying(true);
-  }, []);
-
-  const visibleMessages = useMemo(() => {
-    const folder = route.name === "mail" ? (route.folder ?? "all-inboxes") : "all-inboxes";
-    const inFolder = folder === "all-inboxes" ? messages : messages.filter((m) => m.folder === folder);
-    const q = query.trim().toLowerCase();
-    if (!q) return inFolder;
-    return inFolder.filter(
-      (m) => m.from.toLowerCase().includes(q) || m.subject.toLowerCase().includes(q) || m.snippet.toLowerCase().includes(q),
-    );
-  }, [messages, route, query]);
-
-  const unreadByFolder = useMemo(() => {
-    const counts: Record<string, number> = { "all-inboxes": 0 };
-    for (const m of messages) {
-      if (!m.unread) continue;
-      counts["all-inboxes"] = (counts["all-inboxes"] ?? 0) + 1;
-      counts[m.folder] = (counts[m.folder] ?? 0) + 1;
-    }
-    return counts;
-  }, [messages]);
-
-  const folderLabel = DEMO_FOLDERS.find((f) => f.id === (route.name === "mail" ? route.folder : undefined))?.label ?? "All Inboxes";
+  const activeDevice = devices.find((d) => d.status === "active") ?? devices[0];
 
   return (
     <>
-      <TopBar trust={trust} demo={demo} query={query} onQuery={setQuery} theme={theme} onTheme={setTheme} />
+      <TopBar
+        trust={trust}
+        demo={demo}
+        query={query}
+        onQuery={setQuery}
+        theme={theme}
+        onTheme={setTheme}
+        onOpenPalette={() => setPaletteOpen(true)}
+        onOpenShortcuts={() => setHelpOpen(true)}
+        onSubmitSearch={() => navigate({ name: "search" })}
+      />
       <AppShell
         sidebar={
           <Sidebar
+            folders={folders}
             accounts={accounts}
             activeFolder={route.name === "mail" ? (route.folder ?? "all-inboxes") : "all-inboxes"}
             unreadByFolder={unreadByFolder}
@@ -150,7 +1122,15 @@ export default function App() {
         status={
           <>
             <span>{backendNote}</span>
-            {demo && <span> · demo mode — connect the Tauri backend for live data</span>}
+            {appInfo && (
+              <span>
+                · v{appInfo.version} · {appInfo.sessionsObserved} session(s) observed
+                {trust.score !== null && <> · score {trust.score}</>}
+                {trust.requiredAction !== "none" && <> · action: {trust.requiredAction}</>}
+              </span>
+            )}
+            {foldersError && <span> · folders: {foldersError}</span>}
+            {demo && <span> · demo mode — run the Tauri backend for live data</span>}
             <button type="button" onClick={() => navigate({ name: "setup" })}>
               Add account
             </button>
@@ -159,54 +1139,171 @@ export default function App() {
       >
         {route.name === "mail" && (
           <MailboxView
-            folder={route.folder ?? "all-inboxes"}
+            folder={folderKey}
             folderLabel={folderLabel}
             messages={visibleMessages}
-            selectedId={route.messageId}
-            findings={DEMO_FINDINGS}
+            messagesLoading={messagesLoading}
+            messagesError={messagesError}
+            selectedId={selectedId}
+            body={body}
+            bodyLoading={bodyLoading}
+            bodyError={bodyError}
+            rendered={rendered}
+            renderLoading={renderLoading}
+            renderError={renderError}
+            remoteAllowed={
+              selectedEnvelope ? (remoteContent[selectedEnvelope.accountId] ?? rendered?.remoteContentAllowed ?? false) : false
+            }
+            attachNote={attachNote}
+            attachBusy={attachBusy}
+            findings={findings}
             locked={trust.locked}
-            onOpenFinding={(i) => setFindingIndex(i)}
+            demo={demo}
+            syncing={syncing}
+            syncNote={syncNote}
+            outbox={outbox}
+            onOpenFinding={openFinding}
+            onToggleStar={toggleStar}
+            onToggleRead={toggleRead}
+            onArchive={archiveMessage}
+            onBulkPatch={(ids, patch, label) => void bulkPatch(ids, patch, label)}
+            onBulkDelete={(ids, permanent, label) => void bulkDelete(ids, permanent, label)}
+            onBulkSpam={(ids) => void bulkSpam(ids)}
+            onEmptyTrash={() => void bulkDelete(visibleMessages.map((m) => m.id), false, "Emptied trash")}
+            onAllowRemote={(allowed) => void setAllowRemote(allowed)}
+            onSaveAttachment={(index, destPath) => void saveAttachment(index, destPath)}
+            onSync={() => void doSync()}
+            onFlushOutbox={() => void doFlushOutbox()}
+            onCancelSend={(q) => void doCancelSend(q)}
+            onOutboxRefresh={() => void refreshOutbox()}
           />
         )}
-        {route.name === "compose" && <ComposeView />}
-        {route.name === "setup" && <SetupWizardView />}
-        {route.name === "settings" && <SettingsView />}
-        {route.name === "security" && <SecurityCenterView events={DEMO_EVENTS} demo={demo} />}
+        {route.name === "compose" && (
+          <ComposeView
+            mode={mode}
+            accounts={accountsRaw.map((a) => ({ id: a.id, email: a.email, displayName: a.displayName || a.email }))}
+            onSent={() => {
+              void refreshOutbox();
+              void refreshStatus();
+            }}
+            onNotify={notify}
+          />
+        )}
+        {route.name === "setup" && (
+          <SetupWizardView
+            mode={mode}
+            onAdded={() => {
+              void (async () => {
+                await refreshAccounts();
+              })();
+            }}
+          />
+        )}
+        {route.name === "settings" && (
+          <SettingsView
+            mode={mode}
+            accounts={accountsRaw}
+            orgBinding={appInfo?.org ?? null}
+            onAccountsChanged={() => void refreshAccounts()}
+            onStatusChanged={() => void refreshStatus()}
+            onOrgChanged={() => {
+              void (async () => {
+                try {
+                  setAppInfo(await api.appInfo());
+                } catch {
+                  // keep last-known binding
+                }
+              })();
+            }}
+            onLock={() => void doLock()}
+          />
+        )}
+        {route.name === "security" && (
+          <SecurityCenterView events={events} findings={findings} demo={demo} onOpenFinding={openFinding} />
+        )}
+        {route.name === "contacts" && <ContactsView demo={demo} onNotify={notify} />}
+        {route.name === "search" && (
+          <SearchView
+            query={query}
+            onQuery={setQuery}
+            demo={demo}
+            messages={baseMessages}
+            emailOf={(accountId) => emailById.get(accountId) ?? accountId}
+            onOpenHit={(r: SearchResultRow) =>
+              navigate({
+                name: "mail",
+                folder: `${r.accountId}:${r.folderId}`,
+                messageId: `${r.accountId}:${r.folderId}:${r.uid}`,
+              })
+            }
+          />
+        )}
       </AppShell>
 
-      {findingIndex !== null && DEMO_FINDINGS[findingIndex] && (
+      {findingIndex !== null && findings[findingIndex] && (
         <FindingDialog
-          finding={DEMO_FINDINGS[findingIndex]}
+          finding={findings[findingIndex]}
           position={findingIndex + 1}
-          total={DEMO_FINDINGS.length}
-          onClose={() => setFindingIndex(null)}
-          onPrev={() => setFindingIndex((i) => (i === null ? i : Math.max(0, i - 1)))}
-          onNext={() => setFindingIndex((i) => (i === null ? i : Math.min(DEMO_FINDINGS.length - 1, i + 1)))}
+          total={findings.length}
+          detail={findingDetail}
+          detailError={findingDetailError}
+          onClose={closeFinding}
+          onPrev={() => openFinding(Math.max(0, (findingIndex ?? 0) - 1))}
+          onNext={() => openFinding(Math.min(findings.length - 1, (findingIndex ?? 0) + 1))}
         />
       )}
 
       {trust.locked && (
         <LockOverlay
-          reason="Trust reduced — verify with your authenticator to unlock. (Demo: auto-approves.)"
+          reason={demo ? `${lockReason} (Demo: auto-approves.)` : lockReason}
           busy={verifying}
-          onVerify={startVerify}
-          onRetry={() => setTrust({ trust: "unknown", locked: false })}
+          trustLines={[
+            `Trust state: ${trust.state}`,
+            `Score: ${trust.score === null ? "—" : trust.score}`,
+            `Required action: ${trust.requiredAction}`,
+          ]}
+          deviceLabel={demo ? "Demo authenticator" : (activeDevice?.label ?? null)}
+          challengeId={demo ? null : (challenge?.challengeId ?? null)}
+          onVerify={() => void startVerify()}
+          onRetry={() => {
+              if (demo) {
+                setTrust({ ...DEMO_TRUST });
+                setLockReason("Trust reduced — verify with your authenticator to unlock.");
+              } else {
+                void refreshStatus();
+              }
+            }}
         />
       )}
 
       {authOpen && (
         <AuthenticatorDialog
-          eventLabel="Unlock mailbox"
-          deviceName="Demo authenticator"
-          fpTail="9F3A"
+          eventLabel={challenge ? `Unlock mailbox (${challenge.event})` : "Unlock mailbox"}
+          deviceName={demo ? "Demo authenticator" : (activeDevice?.label ?? "authenticator")}
+          fpTail={demo ? "9F3A" : (activeDevice?.deviceId ?? "").slice(-4) || "—"}
           secondsLeft={authSeconds}
           status={authStatus}
+          detail={challenge && !demo ? challenge.challengeId : undefined}
           onCancel={() => {
             setAuthOpen(false);
+            setChallenge(null);
             setVerifying(false);
           }}
         />
       )}
+
+      <CommandPalette
+        open={paletteOpen}
+        query={query}
+        onQuery={(q) => {
+          setQuery(q);
+          navigate({ name: "search" });
+        }}
+        actions={paletteActions}
+        onClose={() => setPaletteOpen(false)}
+      />
+      <ShortcutsHelp open={helpOpen} onClose={() => setHelpOpen(false)} />
+      <ToastStack toasts={toasts} onDismiss={dismissToast} />
     </>
   );
 }

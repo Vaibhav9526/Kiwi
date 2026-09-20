@@ -55,9 +55,20 @@ MANIFEST `generation` field when created.
 (header injection attempts), `attachment-spoofed-ext.eml`,
 `oversize-headers.eml` (cap test). Bodies are lorem-style filler.
 
-## Transcript fixtures (T-114; PRESENT)
+### Mailauth corpus (T-141; PRESENT — Agent 8's proposal, realized)
 
-`transcripts/<proto>_<scenario>.txt` — hand-written synthetic protocol
+`auth-spf-pass.eml` / `auth-spf-fail.eml` (SPF authorize / not, peer
+`198.51.100.7` vs `203.0.113.9`); `auth-dkim-valid.eml` (real RSA-2048
+`simple/simple` signature, generator round-trip verified) /
+`auth-dkim-tampered.eml` (one body line altered); `auth-dmarc-reject-
+aligned.eml` (aligned auth under `p=reject` → pass, policy none-applied) /
+`auth-dmarc-reject-spoof.eml` (spoofed From, unaligned → fail + reject).
+`expected_findings` in MANIFEST uses verdict tags (`SPF-PASS`, `DKIM-VALID`,
+…) — verdict-to-finding mapping lands with the forensics auth-analysis
+work (contract `mailauth.md` §8). See `tests/mailauth-mapping.md` for the
+mock-DNS correspondence + generation method.
+
+## Transcript fixtures (T-114; PRESENT)`transcripts/<proto>_<scenario>.txt` — hand-written synthetic protocol
 sessions (`C:`/`S:` lines; wire is CRLF). Replayed by the `kiwi-mail`
 fake-server harness for deterministic state-machine tests. AUTH secrets are
 dummies (`REDACTED-DUMMY` or base64 of fake values). See

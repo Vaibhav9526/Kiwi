@@ -1,8 +1,9 @@
 # KIWI — Testing Strategy
 
 > Owner: Agent 6. Status: standalone pivot (ADR-005) — Thunderbird-build
-> gates removed; client-layer matrix added. Master contract: prompt.md §13–§14
-> (with §1–2 superseded by ADR-005).
+> gates removed; client-layer matrix added. Infra layer (ADR-006/007/008,
+> ARCHITECTURE.md §7): compose/PG/Drizzle/sandbox surfaces added.
+> Master contract: prompt.md §13–§14 (with §1–2 superseded by ADR-005).
 
 Every feature ships with verification. A task is DONE only when its tests
 exist, run, and pass — with evidence recorded in the owning agent's
@@ -20,6 +21,8 @@ exist, run, and pass — with evidence recorded in the owning agent's
 | Security regression | every fixed weakness → permanent test | same runners, `security_*` naming | per crate + `tests/` |
 | Fixture-driven | PCAP / TLS / cert / message / transcript fixtures | `tests/tools/check_fixtures.py` + crate runners | `tests/fixtures/` |
 | Secret-leak | no credentials/tokens/keys in repo | gitleaks + fallback grep script | `tests/tools/` |
+| Infra (compose/PG) | services healthy, migrations apply, guard holds | `docker compose` + `tests/infra/test_compose.py` | `tests/infra/`, `infra/` |
+| Sandbox lifecycle | provider availability, create/revert/teardown, capability reporting | PoC scripts + transcripts (T-132) | `tests/infra/`, `docs/sandbox.md` |
 
 ## 2. Per-crate / per-service commands (run from repo root)
 
@@ -82,6 +85,29 @@ python tests/tools/secret_scan.py        # fallback secret scan when gitleaks is
 python tests/tools/check_csp.py          # Tauri CSP assertion (non-null, no script inline/eval/remote)
 gitleaks detect --config tests/tools/gitleaks.toml --source . --verbose   # when installed
 ```
+
+### Infrastructure (compose + PG + Drizzle + sandbox)
+
+```powershell
+cp .env.example .env                     # once (gitignored; dev defaults only)
+docker compose up -d db mailpit          # postgres + mailpit (admin builds separately)
+docker compose build admin               # type gate runs inside the image
+python -m unittest discover -s tests/infra -v   # T-133: health, migrations, guard, stubs
+docker compose down                      # stop; -v also deletes the pgdata volume
+```
+
+- DB migrations (`kiwi-admin/drizzle/pg/*.sql`) are applied to the compose
+  DB by the T-133 test (psql path — `drizzle-kit migrate` has no
+  dbCredentials yet, T-130 follow-up); the test also asserts all 9 tables
+  and proves the audit append-only guard rejects DELETE.
+- CI mirror: `.github/workflows/ci.yml` (`infra-live` job runs the same
+  suite on runners with Docker; `static-checks` needs no daemon).
+- Sandbox surface (T-132, `docs/sandbox.md`): host probe
+  `tests/infra/check-sandbox-host.ps1`, WSL2 lifecycle PoC
+  `tests/infra/sandbox-wsl-poc.ps1`, capability reporting
+  (`Available|Degraded|Unavailable`); QEMU command-line + agent-protocol
+  transcripts land as fixtures when the provider crate exists. Sandbox
+  absent → tests assert `Unavailable`, never host execution.
 
 ## 3. Coverage expectations
 
@@ -160,10 +186,24 @@ theme compat; resize/overflow; **remote-content blocked by default**
 - **Default:** in-process fakes (tokio, in `kiwi-mail` dev-harness) — scripted
   SMTP/IMAP/POP3 peers incl. adversarial modes (strip STARTTLS, weak cipher
   only, hostile FETCH). Hermetic, no Docker, CI-friendly.
-- **Interop profile:** Mailpit via Docker (`docker compose` file in
-  `tests/` when added) — realistic E2E, attachment round-trips.
+- **Interop profile:** Mailpit via Docker (`docker-compose.yml` at root —
+  landed T-131) — realistic E2E, attachment round-trips.
+- **Live IMAP:** GreenMail standalone in compose (T-147 — mailpit serves no
+  IMAP) on 1143; IMAP greeting + CAPABILITY asserted by T-133.
 - Transcript fixtures (`tests/fixtures/transcripts/`) let state-machine
   tests run with zero infrastructure.
+
+### 5e. Infrastructure (compose / PG / Drizzle / sandbox)
+
+| Area | Cases |
+|------|-------|
+| Compose health | `db` pg_isready-healthy; mailpit SMTP banner + API 200; `admin` /healthz (pending T-130 entrypoint — skip, never fake) |
+| Migrations | `drizzle/pg/*.sql` apply clean to compose PG; all 9 tables present; rerun-safe |
+| Audit guard | probe INSERT then DELETE → guard raises append-only error (live DB proof) |
+| Env discipline | `.env.example` covers every compose var; `.env` gitignored (test-enforced) |
+| Sandbox availability | provider reports `Available\|Degraded\|Unavailable` per host; absent → analysis `Unavailable`, UI disabled |
+| Sandbox lifecycle | create → analyze → revert → teardown; base image never mutated; per-run instances never reused |
+| Sandbox monitoring | proc/FS/net events bounded; hostile-guest output cannot blow up host parser |
 
 ## 7. Tooling baseline (re-verified 2026-09-19/20 on this host)
 
@@ -174,7 +214,8 @@ theme compat; resize/overflow; **remote-content blocked by default**
 | python 3.14.3 | yes | `tests/tools/*`, stdlib only |
 | git 2.52.0 | yes | repo still largely untracked — commit early for gate baselines |
 | gitleaks | no | `choco install gitleaks`; fallback script is the gate meanwhile |
-| docker 29.5.2 | yes | enables Mailpit interop profile (T-114) |
+| docker 29.5.2 + compose v5.1.4 | yes | db+mailpit verified healthy; daemon must be running (Docker Desktop) |
+| CI (`.github/workflows/ci.yml`) | yes | rust / node-admin / static-checks / infra-live jobs mirror this file |
 
 Config: `tests/tools/gitleaks.toml`. Dependency policy: lockfiles committed
 (`Cargo.lock`, `package-lock.json`); `cargo audit` / `npm audit` at each

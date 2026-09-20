@@ -1,0 +1,14 @@
+# Synthetic DNS for T-141 mailauth fixtures (TEST-NET documentation
+# addresses only: 198.51.100.0/24, 203.0.113.0/24 — never real infrastructure).
+# Fold TXT strings at 255 chars for real zone files.
+
+# kiwi-test.invalid — authorizes only 198.51.100.7
+kiwi-test.invalid.              TXT "v=spf1 ip4:198.51.100.7 -all"
+# DKIM selector for auth-dkim-valid.eml (verified by generator round trip)
+test._domainkey.kiwi-test.invalid. TXT "v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAmXYNraRkDCODK76GxMl+D9S1IGkDVw/ElOgK3sbOQq2h0Hot0OZDcelXugkGRZcLtQmlUUnR1EmZSEsxuRtPd5ai2aI/xACgeFZTi7qGi3CAbfMTrMemP9C5pK11bMhhJP+vtNDCuD/fXB4Dam8NOkEkprzqDyN9+7IKarzPliVMAA6cavkvBb3cjel/71xLy76GM7Vyn+k0IAxCtwjMQadbOIrv4Zg+lTymMGaQgzafdiSUgyezkaK4ax9c/UgjaG/zK3+ccbiO5DCyRiTQ68l3+3LNbaHLFK/OzyL6pqSZSbheTo3q1sGlc/zbIHu70/RGTXwznY49oPhYeWVgPwIDAQAB"
+# DMARC: reject, relaxed alignment
+_dmarc.kiwi-test.invalid.       TXT "v=DMARC1; p=reject; aspf=r; adkim=r"
+
+# evil-test.invalid — spoofer infrastructure (passes its own SPF by design)
+evil-test.invalid.              TXT "v=spf1 ip4:203.0.113.9 -all"
+_dmarc.evil-test.invalid.       TXT "v=DMARC1; p=none"

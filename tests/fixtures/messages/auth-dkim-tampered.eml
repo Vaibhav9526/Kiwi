@@ -1,0 +1,9 @@
+From: alice@kiwi-test.invalid
+To: bob@kiwi-test.invalid
+Subject: synthetic dkim fixture
+Date: Mon, 01 Jan 2024 00:00:00 +0000
+Message-ID: <dkim1@kiwi-test.invalid>
+DKIM-Signature: v=1; a=rsa-sha256; c=simple/simple; d=kiwi-test.invalid; s=test; h=from:to:subject:date:message-id; bh=z8K7PrwxZeSjjGhJk7GMxisies24COA5pWpsXLON4x4=; b=fkcEscMoGVen2PuXzYWy3jxee2WbEd8Jo9QJffVScwWqxaJy2p9MSkm0/AKaAlJwK4jgrPM03w1nW2gJIuIc2Ui3zwVm7WguGj71TBMXopWYLMhxZviwsgOVYwQaWMq4V7fm94hiN2xsv+6GwFsgKNahfWbk2KDWgYyeZCzEwT1ZGTHuKx8sPjs3RciWcb/H+s3APZM8/+zFPTeYDmsbBfHwHeyBpjCtaUw7ktx6gmftwCIAuAtlTu1nXu9BZxHM2Nn2nisFCk8AAo7WhU5UD5+mP5Q4M5H3nmPPyGJPcjqnEXXTnp9gkV5qTAd35YXOQ98Rr2Iosm94OIdCvyaYjg==
+
+Hello from the fixture.
+Second line TAMPERED.

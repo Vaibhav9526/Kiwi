@@ -6,15 +6,16 @@
 ## Decision
 
 **Primary: in-process fakes** (tokio, owned by Agent 2 in the `kiwi-mail`
-dev-harness). **Secondary interop profile: Mailpit via Docker.**
-Transcript fixtures (`tests/fixtures/transcripts/`) cover state-machine
-tests with zero infrastructure.
+dev-harness). **Secondary interop profile: Mailpit (SMTP/POP3) + GreenMail
+(IMAP) via Docker.** Transcript fixtures (`tests/fixtures/transcripts/`)
+cover state-machine tests with zero infrastructure.
 
 | Option | Verdict | Rationale |
 |--------|---------|-----------|
-| In-process fakes (tokio `TcpListener`, scripted peers) | **PRIMARY** | hermetic (no Docker/ports/host services); deterministic adversarial modes a real server can't do (strip STARTTLS, hostile FETCH literals, truncated handshakes); fast; runs on CI and dev laptops identically |
-| Mailpit (Docker, API + SMTP/IMAP/POP3) | **INTEROP PROFILE** | realistic server behavior, attachment round-trips, manual exploratory testing. Docker 29.5.2 verified present on this host. Gated behind an env flag so default `cargo test` never needs Docker |
-| GreenMail / MailHog | rejected | JVM dependency (GreenMail) or unmaintained (MailHog); Mailpit covers the same ground maintained |
+| In-process fakes (tokio `TcpListener`, scripted peers) | **PRIMARY** | hermetic (no Docker/ports/host services); deterministic adversarial modes a real server can't do (strip STARTTLS, weak cipher only, hostile FETCH literals, truncated handshakes); fast; runs on CI and dev laptops identically |
+| Mailpit (Docker: SMTP + POP3 + API/UI) + GreenMail standalone (Docker: IMAP) | **INTEROP PROFILE** | realistic server behavior, attachment round-trips, manual exploratory testing. Mailpit provably serves no IMAP (T-147: TCP accept, zero bytes) — GreenMail `standalone:2.1.14` fills exactly that gap (IMAP-only surface, zero-config test users). Gated behind an env flag so default `cargo test` never needs Docker |
+| Dovecot (for IMAP) | rejected for now | real server, but needs baked Maildir + user config (custom image, ongoing maintenance); GreenMail covers the fixture need with less machinery. Revisit if authentic server quirks must be reproduced |
+| MailHog | rejected | unmaintained; Mailpit covers the same ground maintained |
 | Public test accounts (e.g. Ethereal) | rejected | network-dependent, credentials outside our control, violates local-first rule |
 
 ## Fake-server contract (Agent 2 implements; Agent 6 reviews)

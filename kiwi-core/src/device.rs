@@ -106,7 +106,10 @@ impl DeviceRegistry {
     }
 
     fn transition(&mut self, device_id: &str, next: DeviceStatus) -> Result<(), RegistryError> {
-        let d = self.devices.get_mut(device_id).ok_or(RegistryError::NotFound)?;
+        let d = self
+            .devices
+            .get_mut(device_id)
+            .ok_or(RegistryError::NotFound)?;
         if d.status == DeviceStatus::Revoked {
             return Err(RegistryError::RevokedIsTerminal);
         }
@@ -168,7 +171,10 @@ mod tests {
         let mut r = DeviceRegistry::new();
         r.register(dev("d1")).unwrap();
         assert_eq!(r.get("d1").unwrap().status, DeviceStatus::Pending);
-        assert_eq!(r.device_signals("d1"), vec![SignalKind::NewDeviceUnverified]);
+        assert_eq!(
+            r.device_signals("d1"),
+            vec![SignalKind::NewDeviceUnverified]
+        );
         r.activate("d1").unwrap();
         assert_eq!(r.get("d1").unwrap().status, DeviceStatus::Active);
         assert!(r.device_signals("d1").is_empty());
