@@ -94,9 +94,11 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-165 | Threading view | Agent 5 | done (needs inReplyTo/references fields — queued for A7) | `kiwi-app/src/` | T-162 |
 | T-166 | Forensics→app seam: contract query shapes + sync→observe→finding integration test | Agent 6 | done (query shapes in forensics.md S11; live auth threading; fixture-send seam test green; audit guard verified) | `kiwi-forensics/`, `docs/contracts/` | T-148 |
 | T-167 | Settings depth + real command wiring (delete/spam/trash/findings) | Agent 5 | done | `kiwi-app/src/views/settings.tsx` | T-156 |
-| T-168 | kiwi-sandbox guest agent: in-guest runner, report.json schema (process tree/file writes/egress), exchange-dir transport | Agent 10 | open | `kiwi-sandbox/` | T-161 |
-| T-169 | MessageView thread fields (inReplyTo/references) + account-add→sync-start wiring | Agent 7 | open | `src-tauri/`, `kiwi-mail/` | T-163/164 |
+| T-168 | kiwi-sandbox guest agent + report.json schema | Agent 10 | done | `kiwi-sandbox/` | T-161 |
+| T-169 | MessageView thread fields + account→sync wiring | Agent 7 | done (ipc §6c) | `src-tauri/`, `kiwi-mail/` | T-163/164 |
 | T-170 | Integration review: contract-vs-code consistency audit across all contracts + full contract + full gate matrix | Agent 6 | done (5 pairs reviewed, mismatches filed file:line; gate matrix reported) | repo-wide (read-only review) | T-166 |
 | T-172 | Mobile authenticator follow-ups: ESLint gate, pairing transport decision (WS vs mDNS/TCP), deny-vs-timeout wording alignment | Agent 4 | open | `mobile/`, `docs/contracts/authenticator.md` | T-136 |
 | T-173 | Contacts UI: contacts view + compose autocomplete + add-from-message; IPC wrappers (demo fallback) | Agent 5 | open | `kiwi-app/src/` | T-150 |
-| T-171 | Vertical e2e: compose → seed mailbox → kiwi-mail sync → store rows + observe→finding emitted | Agent 6 | open | `infra/e2e/` | T-157 |
+| T-171 | Vertical e2e: compose → seed mailbox → kiwi-mail sync → store rows + observe→observe,finding emitted | Agent 6 | done (infra/e2e/test_mail_flow.py + Rust leg green live; plaintext scope asserted) | `infra/e2e/` | T-157 |
+| T-174 | `kiwi-pair` crate: Ed25519 challenge/verify, pairing store, replay protection, revoke | Agent 10 | open | `kiwi-pair/` | — |
+| T-175 | Contacts IPC (list/search/upsert/delete/vCard) + prefs get/set commands | Agent 7 | open | `src-tauri/commands/` | T-150, T-167 |
