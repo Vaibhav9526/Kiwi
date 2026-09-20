@@ -292,3 +292,115 @@ this file. No commit — Lead integrates.
   (strace/net capture) is the QEMU-tier follow-up.
 - Debug distro `kiwi-dbg` and all temp state cleaned up.
 
+## 2026-02-15 — T-174: `kiwi-pair` crate (mobile-authenticator crypto)
+
+**Status:** implemented + verified. `cargo test -p kiwi-pair` → **11/11**
+pass, `cargo clippy -p kiwi-pair --all-targets -- -D warnings` clean,
+`cargo fmt --check` clean. `#[forbid(unsafe_code)]` via workspace lints.
+No commit — Lead integrates.
+
+### Design
+
+Desktop-side engine implementing `contracts/authenticator.md`. Reuses
+kiwi-core as the semantic authority — `Challenge`/`ChallengeBook`/
+`ChallengeEvent`/`ChallengeSpec`/`ChallengeError`/`SignatureVerifier`
+are re-exported, never re-defined; canonical bytes come from a
+rehydrated `ChallengeBook::issue`, so the §4.1 encoding can never drift
+from kiwi-core (a fixed-vector test locks the byte layout anyway).
+`contracts/pair.md` (new, v1 draft) documents the engine API + `pair.db`
+schema — the part that differs from authenticator.md's wire contract.
+
+### Layout
+
+- `src/lib.rs` — `PairError` (thiserror; `ChallengeError` wrapped via
+  manual `From` since kiwi-core's enum isn't `std::error::Error`) +
+  re-exports.
+- `src/crypto.rs` — `Ed25519Verifier` (byte-identical to kiwi-app's
+  verifier, dalek v2), `algorithm_supported` (Ed25519-only, fail closed),
+  `DeviceSigner` (deterministic test/mobile-parity helper — production
+  signing stays in the phone keystore), `device_fingerprint`
+  (SHA-256[..16] → `XXXX-XXXX`×8 uppercase hex), `os_nonce` (getrandom).
+- `src/store.rs` — `PairStore` SQLite (`pair.db`, kiwi-mail pattern):
+  devices / pairing_tickets / challenges / nonces tables. Atomic
+  single-use consume via `UPDATE … WHERE consumed=0 [RETURNING]` —
+  double-use impossible even racing. Nonce ledger: 1h retention + 4096
+  cap; challenges capped 4096.
+- `src/engine.rs` — `PairEngine`: tickets (issue/consume/QR JSON),
+  device register/suspend/revoke/list/fingerprint, challenge
+  issue/verify with the contract's exact verify ordering
+  (exists → not-revoked → unexpired → unconsumed → binding → Ed25519 →
+  consume), device-pairing success auto-activates.
+
+### Deterministic evidence (fixed vectors, no OS entropy)
+
+- RFC 8032 §7.1 Test 1 vector — keypair gen + sign + verify + tamper/malformed rejection
+- `device_fingerprint([0;32])` = `6668-7AAD-F862-BD77-6C8F-C18B-8E9F-8E20`
+- canonical-bytes locked layout (94-byte fixed challenge)
+- QR payload exact-match JSON string
+- ticket lifecycle: single-use, expiry, charset, PK-collision on re-issue
+- verify ordering: every `ChallengeError` name exercised; failed verify never consumes; replay → `AlreadyConsumed`; nonce reuse at issue → `ReplayDetected`
+- status gates: pending→pairing-only, active→all events, revoked→nothing; revoke terminal + idempotent + `revoked_unix` recorded
+
+### Files changed
+
+`kiwi-pair/{Cargo.toml,src/{lib,crypto,engine,store}.rs,tests/pair_tests.rs}`
+(new), `Cargo.toml` (member), `docs/contracts/pair.md` (new), this file.
+
+### Assumptions / gaps
+
+- ed25519-dalek v2 pinned (matches kiwi-app verifier; mailauth uses v3 —
+  noted in workspace manifest comment, unifying is a Lead decision).
+- Re-revoke returns `Ok` (idempotent) — documented in pair.md; kiwi-core's
+  `RevokedIsTerminal` still guards transitions *out* of revoked.
+- Pairing transport + kiwi-app IPC wiring are Phase 4 / T-120 — out of
+  scope; the engine is the deterministic core those wire into.
+
+## 2026-02-15 — T-180: Phase C1 split of kiwi-mail (dir-per-domain)
+
+**FREEZE NOTICE for Lead:** kiwi-mail/src is being split — please route
+kiwi-mail edits through Agent 10 or hold until this lands. (Announced per
+task instructions; no other agent was editing kiwi-mail when this ran.)
+
+**Status:** done — pure moves, zero functional changes.
+`cargo test -p kiwi-mail` → **77/77** after every move,
+`cargo clippy -p kiwi-mail --all-targets -- -D warnings` clean,
+`cargo fmt --check` clean.
+
+### New layout
+
+```
+kiwi-mail/src/
+  imap/{mod,parser,commands}.rs        1543 → 333 + 522 + 720
+    mod.rs      consts, ImapClient/ImapConfig/ImapAuth, re-exports, tests
+    parser.rs   SExp/SParser/parse_sexp, reply types, fetch-line parsing
+    commands.rs impl ImapClient (all commands + response driver)
+  smtp/{mod,client,commands}.rs        1289 → 168 + 361 + 190 (approx)
+    mod.rs      consts, SmtpReply/EhloInfo/SmtpConfig/SmtpAuth/SmtpClient/
+                SendRequest/SendOutcome, re-exports, tests
+    client.rs   impl SmtpClient (connect/EHLO/STARTTLS/AUTH/send/quit)
+    commands.rs reply/envelope/dot-stuff helpers + QueuedSend/SendQueue
+  store/{mod,schema,queries,outbox}.rs 1223 → 439 + 62 + 538 + 217
+    mod.rs      MailStore, open/open_memory/migrate, meta types, tests
+    schema.rs   SCHEMA_VERSION + DDL (pub(crate))
+    queries.rs  impl MailStore — accounts/folders/messages/bodies/pop3
+    outbox.rs   OutboxRow + outbox_* (persistent send queue)
+  testutil/{mod,script,server,tests}.rs 948 → 20 + ~180 + ~120 + 697
+    script.rs   Step/Proto/load/parse + protocol-aware matchers
+    server.rs   Wire/serve/spawn_script/tls_acceptor
+    tests.rs    the fixture + live-interop + sync test bodies
+```
+
+### Move mechanics (zero-change guarantee)
+
+- `impl` blocks split across files (children see parent's private fields —
+  no visibility change needed for `ImapClient.t`/`MailStore.conn` etc.).
+- Private helpers used by sibling files bumped to `pub(crate)` — the only
+  edit class besides moves.
+- Public surface preserved via `pub use` in each mod.rs (`crate::imap::X`
+  paths unchanged — sync.rs/testutil needed zero edits).
+- Imports re-scoped per file; test-only imports moved into `mod tests`.
+- Seam fixes during split: one doc comment straddled a cut (smtp
+  `parse_ehlo_reply`), one line dropped at a file tail (testutil) — both
+  restored byte-for-byte.
+- `lib.rs` module-map comment updated to name the subfiles.
+

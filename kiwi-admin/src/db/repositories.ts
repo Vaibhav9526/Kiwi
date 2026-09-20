@@ -3,7 +3,7 @@
  * query builder. Return shapes are IDENTICAL to the retired raw-SQL layer
  * (callers/services/tests unchanged). Boolean-ish columns stay 0/1 integers.
  */
-import { and, asc, desc, eq, gte, like, lte } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import * as s from "./schema.sqlite.js";
 import type { SqliteDrizzle } from "./sqlite.js";
 import type {
@@ -15,6 +15,29 @@ import type {
 import type { ExternalRecipientBehavior, OrgRole, RecipientDomainAction } from "../types.js";
 import type { MailflowIngest } from "../mailflow/model.js";
 import type { AuditEventInput, AuditRecord } from "../audit/model.js";
+import { ConflictError } from "../util/validate.js";
+
+/**
+ * Escape a caller-supplied value for use inside a LIKE pattern (T-193/L1):
+ * without this, `%` matches everything and `_` matches any character,
+ * silently widening the filter beyond what was asked. Used with an explicit
+ * `ESCAPE '\'` clause — the escape character itself is escaped first.
+ */
+export function escapeLikePattern(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+}
+
+/** True for SQLite unique-violation failures (duplicate email, dup policy id). */
+function isUniqueViolation(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const code = (err as { code?: unknown }).code;
+  const message = err instanceof Error ? err.message : "";
+  return (
+    code === "SQLITE_CONSTRAINT_UNIQUE" ||
+    code === "SQLITE_CONSTRAINT_PRIMARYKEY" ||
+    /UNIQUE constraint failed/i.test(message)
+  );
+}
 
 export class DrizzleOrgRepository implements OrgRepository {
   constructor(private readonly db: SqliteDrizzle) {}
@@ -53,7 +76,15 @@ export class DrizzleOrgRepository implements OrgRepository {
     email: string,
     now: number,
   ): { id: string; org_id: string; email: string; created_at: number } {
-    this.db.insert(s.users).values({ id, orgId, email, createdAt: now }).run();
+    // Duplicate email → typed 409 (T-193/M5), not a 500 with a driver
+    // constraint name. The UNIQUE(org_id, email) index is the backstop;
+    // callers cannot reliably pre-check it without racing it.
+    try {
+      this.db.insert(s.users).values({ id, orgId, email, createdAt: now }).run();
+    } catch (err) {
+      if (isUniqueViolation(err)) throw new ConflictError("email", "address already registered in this org");
+      throw err;
+    }
     return { id, org_id: orgId, email, created_at: now };
   }
 
@@ -90,6 +121,16 @@ export class DrizzleOrgRepository implements OrgRepository {
       .where(eq(s.userOrgRoles.userId, userId))
       .all()
       .map((r) => r.role as OrgRole);
+  }
+
+  listRolesForUsers(userIds: string[]): { user_id: string; role: OrgRole }[] {
+    if (userIds.length === 0) return [];
+    return this.db
+      .select({ user_id: s.userOrgRoles.userId, role: s.userOrgRoles.role })
+      .from(s.userOrgRoles)
+      .where(inArray(s.userOrgRoles.userId, userIds))
+      .all()
+      .map((r) => ({ user_id: r.user_id, role: r.role as OrgRole }));
   }
 
   createDevice(
@@ -174,6 +215,46 @@ export class DrizzlePolicyRuleRepository implements PolicyRuleRepository {
       .map((r) => ({ domain: r.domain, action: r.action as RecipientDomainAction }));
   }
 
+  listDomainRulesForPolicies(
+    policyIds: string[],
+  ): { policy_id: string; domain: string; action: RecipientDomainAction }[] {
+    if (policyIds.length === 0) return [];
+    return this.db
+      .select({
+        policy_id: s.policyDomainRules.policyId,
+        domain: s.policyDomainRules.domain,
+        action: s.policyDomainRules.action,
+      })
+      .from(s.policyDomainRules)
+      .where(inArray(s.policyDomainRules.policyId, policyIds))
+      .orderBy(s.policyDomainRules.domain)
+      .all()
+      .map((r) => ({ policy_id: r.policy_id, domain: r.domain, action: r.action as RecipientDomainAction }));
+  }
+
+  createPolicyWithRules(
+    id: string,
+    orgId: string,
+    name: string,
+    enabled: boolean,
+    minTls: string | null,
+    externalRecipients: ExternalRecipientBehavior,
+    now: number,
+    rules: { domain: string; action: RecipientDomainAction }[],
+  ): void {
+    // One transaction (T-193/M3): policy + rules commit together or not at
+    // all. The service pre-validates duplicates, the transaction guarantees
+    // it — either layer alone would leave a hole the other closes.
+    this.db.transaction((tx) => {
+      tx.insert(s.policies)
+        .values({ id, orgId, name, enabled: enabled ? 1 : 0, minTls, externalRecipients, createdAt: now, updatedAt: now })
+        .run();
+      for (const rule of rules) {
+        tx.insert(s.policyDomainRules).values({ policyId: id, domain: rule.domain, action: rule.action }).run();
+      }
+    });
+  }
+
   listPoliciesForOrg(orgId: string): {
     id: string;
     org_id: string;
@@ -237,7 +318,11 @@ export class DrizzleMailflowRepository implements MailflowRepository {
   }[] {
     const conditions = [];
     if (filter.orgId) conditions.push(eq(s.mailflowEvents.orgId, filter.orgId));
-    if (filter.recipientDomain) conditions.push(like(s.mailflowEvents.recipient, `%@${filter.recipientDomain}`));
+    if (filter.recipientDomain) {
+      conditions.push(
+        sql`${s.mailflowEvents.recipient} LIKE ${`%@${escapeLikePattern(filter.recipientDomain)}`} ESCAPE '\\'`,
+      );
+    }
     if (typeof filter.sinceTs === "number") conditions.push(gte(s.mailflowEvents.ts, filter.sinceTs));
     if (typeof filter.untilTs === "number") conditions.push(lte(s.mailflowEvents.ts, filter.untilTs));
     const rows = this.db

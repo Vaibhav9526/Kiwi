@@ -4,16 +4,16 @@
  * everything, ignore unknown fields, fail closed on any security-relevant
  * defect. Pure functions — deterministic, no I/O, no AI (rule 1).
  */
-import { isRecord, assertIntInRange, assertBoundedString } from "./validate";
-import type { QrPayload } from "./types";
+import { isRecord, assertIntInRange, assertBoundedString } from './validate';
+import type { QrPayload } from './types';
 
 const MAX_QR_CHARS = 1024;
 
 /** Non-secret public-key prefix kept in the QR for endpoint verification. */
-const DESKTOP_KEY_ED25519_PREFIX = "ed25519:";
+const DESKTOP_KEY_ED25519_PREFIX = 'ed25519:';
 
 function isFiniteInt(v: unknown): v is number {
-  return typeof v === "number" && Number.isSafeInteger(v);
+  return typeof v === 'number' && Number.isSafeInteger(v);
 }
 
 /**
@@ -22,44 +22,44 @@ function isFiniteInt(v: unknown): v is number {
  * never echo the raw payload into logs (it can contain attacker text).
  */
 export function parseQrPayload(raw: string, nowUnix: number): QrPayload {
-  if (typeof raw !== "string" || raw.length === 0 || raw.length > MAX_QR_CHARS) {
+  if (typeof raw !== 'string' || raw.length === 0 || raw.length > MAX_QR_CHARS) {
     throw new Error(`qr payload must be 1..${MAX_QR_CHARS} chars`);
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch {
-    throw new Error("qr payload is not valid JSON");
+    throw new Error('qr payload is not valid JSON');
   }
-  if (!isRecord(parsed)) throw new Error("qr payload must be a JSON object");
+  if (!isRecord(parsed)) {throw new Error('qr payload must be a JSON object');}
 
-  const v = parsed["v"];
-  if (!isFiniteInt(v)) throw new Error("missing integer field v");
-  if (v !== 1) throw new Error(`unsupported schema_version ${v} — update the app`);
-  if (parsed["type"] !== "kiwi-pairing") throw new Error("unknown QR payload type");
+  const v = parsed.v;
+  if (!isFiniteInt(v)) {throw new Error('missing integer field v');}
+  if (v !== 1) {throw new Error(`unsupported schema_version ${v} — update the app`);}
+  if (parsed.type !== 'kiwi-pairing') {throw new Error('unknown QR payload type');}
 
-  const pairingTicket = assertBoundedString(parsed["pairing_ticket"], "pairing_ticket", 8, 128);
-  const endpoint = assertBoundedString(parsed["desktop_endpoint"], "desktop_endpoint", 1, 256);
-  const label = assertBoundedString(parsed["device_label"], "device_label", 1, 128);
-  const keyB64 = assertBoundedString(parsed["desktop_public_key_b64"], "desktop_public_key_b64", 1, 512);
+  const pairingTicket = assertBoundedString(parsed.pairing_ticket, 'pairing_ticket', 8, 128);
+  const endpoint = assertBoundedString(parsed.desktop_endpoint, 'desktop_endpoint', 1, 256);
+  const label = assertBoundedString(parsed.device_label, 'device_label', 1, 128);
+  const keyB64 = assertBoundedString(parsed.desktop_public_key_b64, 'desktop_public_key_b64', 1, 512);
 
   if (!keyB64.startsWith(DESKTOP_KEY_ED25519_PREFIX)) {
-    throw new Error("unsupported desktop key algorithm");
+    throw new Error('unsupported desktop key algorithm');
   }
 
-  const issued = parsed["issued_unix"];
-  const expires = parsed["expires_unix"];
+  const issued = parsed.issued_unix;
+  const expires = parsed.expires_unix;
   if (!isFiniteInt(issued) || !isFiniteInt(expires)) {
-    throw new Error("issued_unix/expires_unix must be integers");
+    throw new Error('issued_unix/expires_unix must be integers');
   }
-  assertIntInRange(issued, "issued_unix", 0, Number.MAX_SAFE_INTEGER);
-  assertIntInRange(expires, "expires_unix", 0, Number.MAX_SAFE_INTEGER);
-  if (expires < issued) throw new Error("expires_unix precedes issued_unix");
-  if (nowUnix >= expires) throw new Error("pairing ticket expired — regenerate the QR");
+  assertIntInRange(issued, 'issued_unix', 0, Number.MAX_SAFE_INTEGER);
+  assertIntInRange(expires, 'expires_unix', 0, Number.MAX_SAFE_INTEGER);
+  if (expires < issued) {throw new Error('expires_unix precedes issued_unix');}
+  if (nowUnix >= expires) {throw new Error('pairing ticket expired — regenerate the QR');}
 
   // Bounded, opaque ticket charset (base64url-ish + dashes).
   if (!/^[A-Za-z0-9_-]{8,128}$/.test(pairingTicket)) {
-    throw new Error("pairing_ticket has unexpected charset");
+    throw new Error('pairing_ticket has unexpected charset');
   }
 
   // Unknown fields are ignored (contract invariant) — never copied.
@@ -82,6 +82,6 @@ export function isQrPayloadCurrent(payload: QrPayload, nowUnix: number): boolean
 
 /** Bounded human label for UI display — never trust the raw string. */
 export function safeDeviceLabel(label: string): string {
-  const cleaned = label.replace(/[\r\n\t]+/g, " ").trim();
-  return cleaned.length === 0 ? "Unnamed device" : cleaned.slice(0, 128);
+  const cleaned = label.replace(/[\r\n\t]+/g, ' ').trim();
+  return cleaned.length === 0 ? 'Unnamed device' : cleaned.slice(0, 128);
 }

@@ -18,6 +18,7 @@ import {
   pgTable,
   primaryKey,
   text,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 
 export const orgs = pgTable("orgs", {
@@ -49,7 +50,7 @@ export const users = pgTable(
     email: text("email").notNull(),
     createdAt: bigint("created_at", { mode: "number" }).notNull(),
   },
-  (t) => [index("idx_users_org_email").on(t.orgId, t.email)],
+  (t) => [uniqueIndex("idx_users_org_email").on(t.orgId, t.email)],
 );
 
 export const userOrgRoles = pgTable(

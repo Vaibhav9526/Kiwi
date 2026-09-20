@@ -47,8 +47,17 @@ export class MailflowService {
     actor: Actor,
     filter: { orgId?: string; recipientDomain?: string; sinceTs?: number; untilTs?: number; limit: number },
   ): Promise<{ items: MailflowEvent[] }> {
-    requirePermission(actor, "mailflow.read", filter.orgId ?? null);
-    const bounded = { ...filter, limit: Math.min(Math.max(filter.limit ?? 50, 1), 1000) };
+    // Org-defaulted reads (T-193/H4): an org-bound caller without an
+    // explicit filter reads their OWN org, never all orgs. Only an
+    // org-unbound (platform) caller with no filter reads globally —
+    // that is the platform read, not a default.
+    const orgId = filter.orgId ?? actor.orgId ?? null;
+    requirePermission(actor, "mailflow.read", orgId);
+    const bounded = {
+      ...filter,
+      ...(orgId === null ? {} : { orgId }),
+      limit: Math.min(Math.max(filter.limit ?? 50, 1), 1000),
+    };
     return { items: await this.repos.mailflow.query(bounded) };
   }
 }
@@ -81,8 +90,24 @@ export interface AuditQueryRow {
  */
 export class AuditService {
   constructor(private readonly repos: { audit: AuditRepository }) {}
+  /**
+   * In-process append serialization (T-193/H6): the read-compute-insert
+   * below must not interleave with itself. Await points yield to the event
+   * loop, so two concurrent appends would otherwise read the same `last`
+   * and collide on `seq`. The chain is failure-atomic per append — a
+   * rejected append never advances the gate.
+   */
+  private appendGate: Promise<unknown> = Promise.resolve();
 
   async append(input: AuditEventInput, ts: number): Promise<{ seq: number; entry_hash: string }> {
+    const run = this.appendGate.then(() => this.appendInner(input, ts));
+    // The gate always advances, even when an append rejects — a failure
+    // must not wedge every later append behind it.
+    this.appendGate = run.catch(() => undefined);
+    return run;
+  }
+
+  private async appendInner(input: AuditEventInput, ts: number): Promise<{ seq: number; entry_hash: string }> {
     const last = await this.repos.audit.last();
     const prevHash = last?.entry_hash ?? "genesis";
     const seq = (last?.seq ?? 0) + 1;
@@ -98,13 +123,15 @@ export class AuditService {
    * means the whole log, which is what the org-agnostic read is for.
    */
   async query(actor: Actor, filter: AuditQueryFilter): Promise<AuditQueryRow[]> {
-    requirePermission(actor, "audit.read", filter.orgId ?? null);
+    // Same org-default rule as mailflow reads (T-193/H4).
+    const orgId = filter.orgId ?? actor.orgId ?? null;
+    requirePermission(actor, "audit.read", orgId);
     const bounded = Math.min(Math.max(filter.limit, 1), 1000);
     const rows = await this.repos.audit.range(
       filter.since ?? 0,
       filter.until ?? Number.MAX_SAFE_INTEGER,
       bounded,
-      filter.orgId ?? null,
+      orgId,
     );
     return rows.map((r) => ({
       seq: r.seq,
@@ -128,6 +155,13 @@ export class AuditService {
    */
   async verify(actor: Actor, opts: { limit: number }): Promise<{ valid: boolean; checked: number; error: string | null }> {
     requirePermission(actor, "audit.read", null);
+    // Honest attestation (T-193/H8): limit 0 (or negative) would verify an
+    // empty window and report `valid: true` — attesting nothing. Refuse
+    // instead of attesting; callers that want the whole chain pass a large
+    // limit or none at all.
+    if (!Number.isSafeInteger(opts.limit) || opts.limit < 1) {
+      throw new RequestValidationError("limit", "must be an integer >= 1");
+    }
     const rows = await this.repos.audit.range(0, Number.MAX_SAFE_INTEGER, Math.min(opts.limit, AUDIT_EXPORT_MAX_ROWS));
     const state = verifyChain(rows);
     return { valid: state.valid, checked: state.checked, error: state.error };
@@ -163,6 +197,10 @@ export class AuditService {
     // row is appended AFTER the snapshot, so the export covers the chain as it
     // was just before its own record. Denials are not self-audited, matching
     // query/verify (see the note on AuditService).
+    // Unit note (T-193/M2): the row uses the same clock source as every other
+    // audit row (wall-clock milliseconds); `opts.now` is reserved for the
+    // export's `exported_at` header, where a caller-supplied deterministic
+    // timestamp actually belongs.
     await this.append(
       {
         actor: { subject: actor.subject, roles: actor.roles },
@@ -174,7 +212,7 @@ export class AuditService {
         // The key FINGERPRINT only — never the key (see audit/export.ts).
         details: { rows: result.rows, signed: result.signature.signed, key_id: result.signature.key_id },
       },
-      opts.now,
+      Date.now(),
     );
     return result;
   }

@@ -15,6 +15,13 @@
       "when": 1789846289080,
       "tag": "0001_audit-append-only-guard",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1789910963747,
+      "tag": "0002_striped_gressill",
+      "breakpoints": true
     }
   ]
 }

@@ -2,7 +2,8 @@
 
 > Owner: Agent 4 · **Contract version: 1.3** (T-134 list endpoints + dev HTTP
 > transport by Agent 5; **Lead-reviewed 2026-09-20 — approved**) · §13 (T-179
-> audit export, Agent 9) is an **addition pending Lead review** · Status: active
+> audit export, Agent 9) and §14 (device inventory, Agent 9, T-188) are
+> **additions pending Lead review** · Status: active
 > Implemented by `kiwi-admin/` (Node + TypeScript). Reference implementation:
 > `src/services.ts` (service layer) + `src/policy/evaluator.ts` (deterministic
 > evaluator). The REST transport is layered over these services; the endpoint
@@ -58,7 +59,8 @@ act. See §13.
 | Method + path | Service call | Permission | Notes |
 |---------------|--------------|------------|-------|
 | `POST /api/v1/orgs` | `OrgService.createOrg` | platform-level (bootstrap) | |
-| `GET /api/v1/orgs/{orgId}/users` | `OrgService.listUsers` | `user.read` | T-134: users with roles, email-ordered |
+| `GET  /api/v1/orgs/{orgId}/users` | `OrgService.listUsers` | `user.read` | T-134: users with roles, email-ordered |
+| `GET  /api/v1/orgs/{orgId}/devices` | `OrgService.listDevices` | `device.read` | T-188: device inventory; see §14 — **not implemented** |
 | `POST /api/v1/orgs/{orgId}/users` | `OrgService.createUser` | `user.invite` | |
 | `PUT /api/v1/orgs/{orgId}/users/{userId}/role` | `OrgService.grantRole` | `user.role.grant` | |
 | `POST /api/v1/devices/{deviceId}/revoke` | `OrgService.revokeDevice` | `device.revoke` | |
@@ -209,7 +211,7 @@ represent a client-side block as complete organizational enforcement.
   Tail truncation (deleting the newest rows) verifies clean without an
   external high-water mark. Mitigations: OS file ACLs on `kiwi-admin.db`,
   `verify()` on service startup, backup comparison for high-value
-  deployments. Multi-process appends still need a file lock (queued with
+  deployments. A retained signed export (`GET /api/v1/audit/export`, §13) is an externally verifiable high-water mark for its point in time: tail truncation after an export breaks against it. Multi-process appends still need a file lock (queued with
   Lead) — single-process appends are serialized in-process.
 
 ## 8. Cross-service notes
@@ -459,7 +461,172 @@ Denials are NOT self-audited, matching `query`/`verify`: the audit service
 is what writes the chain, so having it record its own refusals would make
 every refusal of a log read recurse into the log it was refused.
 
-<!-- CONTINUED-3 -->
+### 13.5 Line shapes (exact)
+
+Field order is part of the signed bytes: every line is `JSON.stringify` of the
+object below, in this order, with no whitespace. A producer that reorders keys
+produces a valid export that no independent verifier can check — the export's
+whole purpose — so these orders are normative, not illustrative.
+
+```jsonc
+// line 1
+{"type":"header","version":"kiwi.audit-export/1","exported_at":1726000000,
+ "rows":12,"first_seq":1,"last_seq":12}
+
+// lines 2..rows+1 — field order per src/audit/model.ts AuditRecord
+{"seq":1,"ts":1726000000,"actor_subject":"admin@acme.test",
+ "actor_roles":"[\"org_admin\"]","org_id":"org-…","action":"policy.create",
+ "resource":"pol-…","outcome":"allowed","request_id":null,"details":"{}",
+ "prev_hash":"genesis","entry_hash":"<hex64>"}
+
+// line rows+2
+{"type":"chain_state","valid":true,"error":null,"checked":12,
+ "head_hash":"<hex64>","first_seq":1,"last_seq":12}
+
+// line rows+3 — signed
+{"type":"signature","alg":"hmac-sha256","signed":true,
+ "key_id":"<16 hex>","signature":"<hex64>","covers_through":14}
+```
+
+Notes that matter to an implementer:
+
+- `actor_roles` and `details` are **JSON-encoded strings**, not nested objects —
+  they are stored as text and pass through verbatim, so a reader must parse
+  them once more to recompute the hash input. This is the easiest place to get
+  an independent verifier subtly wrong.
+- `covers_through` is `rows + 2`, i.e. one less than the total line count.
+- `exported_at` is Unix **seconds** (§4).
+- The record `ts` is what the log actually holds. See §13.6.
+
+**Empty chain.** A chain with no rows exports as exactly three lines —
+`header`, `chain_state`, `signature` — with `rows: 0`, `first_seq`/`last_seq`
+`null`, `head_hash: "genesis"`, `covers_through: 2`, and `chain_state.valid`
+`true`. This is honest rather than vacuous: with no rows there is nothing that
+could fail to verify. It is also definitionally different from
+`GET /api/v1/audit/verify?limit=0`, which reports `checked: 0` against a log
+that *does* have rows — the T-185 review logged that as a false attestation
+(`docs/audits/admin-review-1.md` H8). Read `checked` against `rows`: here they
+agree by construction.
+
+### 13.6 Known discrepancy — the export's own audit row is in the wrong unit
+
+Open code defect, **not** a contract statement; recorded so a reader is not
+misled by a log that mixes units. T-185 finding M2: the `audit.export` row is
+appended with `opts.now` (Unix **seconds**, `src/server.ts:210`), while every
+other audit row is written with `Date.now()` (**milliseconds**,
+`src/services.ts:134,139`). So the one record proving an export happened is
+~1000x smaller on the `ts` axis than its neighbours.
+
+§4 and §12.3 are the authority: `ts` is Unix seconds, and the millisecond
+writes are the defect, not the export. Fixing it is T-187's scope; it cannot be
+done by rewriting existing rows, because `ts` is inside every `entry_hash`.
+See `docs/audits/admin-review-1.md` M1/M2.
+
+## 14. Device inventory — T-188 (`GET /api/v1/orgs/{orgId}/devices`)
+
+> **PROPOSED — pending Lead review** (Agent 9, T-188). **Not implemented:**
+> this endpoint does not exist in `src/` today. The section fixes the shape and
+> the RBAC scoping requirement so the implementation cannot silently choose
+> weaker ones; §14.5 lists exactly what has to be written.
+
+### 14.1 Shape
+
+`200` with `{ "items": DeviceView[] }`, matching `GET /orgs/{orgId}/users`
+(§3). Devices are ordered by `created_at` ascending, ties broken by `id` — a
+total order, because `created_at` is a millisecond value and two devices
+registered in the same millisecond would otherwise come back in whatever order
+the driver chose. Deterministic output is a binding invariant (§1).
+
+```jsonc
+{ "id": "dev-…",            // PK, `dev-` + UUID
+  "org_id": "org-…",
+  "label": "…",             // 1..=200 chars
+  "revoked": 0,             // 0/1 — booleans are integers (§4)
+  "revoked_at": null,       // Unix seconds, null unless revoked
+  "created_at": 0 }         // Unix seconds
+```
+
+Superset of what `OrgService.createDevice` returns (§3), which omits
+`revoked_at`. Either both carry it or neither should; a create that cannot
+report the field its own list view reports is an asymmetry with no rationale.
+
+An unknown `orgId` returns `200 { "items": [] }`, consistent with `listUsers`
+(which does not check org existence either). A `404` for an unknown org is
+arguably better and would be a change to both endpoints — a decision for the
+Lead, not a divergence to introduce quietly on one of them.
+
+### 14.2 Permission and scoping
+
+Permission **`device.read`**, held by all three roles (§2). Two requirements
+that are not optional:
+
+- The permission check must use the **real `orgId` from the path**, never
+  `null`. `hasPermission` skips org scoping when the target is null
+  (`src/rbac/rbac.ts:91`), so passing null would hand every org's device
+  inventory to a caller bound to one org. The T-185 review logged exactly this
+  pattern as defects H3/H4 against `revokeDevice` and the unscoped read
+  filters; this endpoint must not join them.
+- `orgId` must pass `assertIdentifier` before use, as `listUsers` does
+  (`src/policy/services.ts:113`). The path segment is attacker-controlled and
+  the identifier gate is what keeps it a value rather than a shape.
+
+### 14.3 Auditing
+
+**Unaudited**, consistent with the other reads (`listUsers`/`listPolicies` are
+RBAC-gated and unaudited by design — §1 audits *mutating* operations and
+denials). Worth stating explicitly rather than leaving as an omission: a device
+inventory is a map of an org's enrolled endpoints, and an operator could
+reasonably expect inventory reads to be logged. If that is wanted, it is a
+change to every read endpoint, not a special case here.
+
+### 14.4 Relationship to the other device registries
+
+There are two device stores and they are **not** the same registry:
+
+| | `kiwi-admin` `devices` table | `kiwi-pair` `pair.db` `devices` |
+|---|---|---|
+| scope | org-scoped, multi-device per org | one endpoint, local profile |
+| id | `dev-<uuid>`, app-assigned | supplied at `register_device` |
+| states | `revoked` 0/1 | `pending`/`active`/`suspended`/`revoked` (terminal) |
+| holds | label, timestamps | public key, keystore ref, challenge state |
+| contract | this document | `contracts/pair.md`, `contracts/ipc.md` §9d |
+
+Nothing synchronizes them today, so this endpoint does **not** answer "which
+authenticators are paired to this endpoint" — that is `kiwi_list_devices`
+(`ipc.md` §9) reading `pair.db`, and it is per-endpoint rather than per-org. A
+UI that presents one as the other would be wrong in a way no error would
+surface. Cross-registry reconciliation is unbuilt and not part of this section.
+
+### 14.5 Implementation checklist (nothing built)
+
+1. `OrgRepository.listDevices(orgId)` — `db/interfaces.ts` (as
+   `MaybePromise<DeviceRow[]>`), plus both implementations:
+   `DrizzleOrgRepository` (sync, `db/repositories.ts`) and `PgOrgRepository`
+   (async, `db/repositories.pg.ts`). `getDevice(id)` exists; there is no
+   org-scoped list method on either driver.
+2. `OrgService.listDevices(actor, orgId)` — `requirePermission(actor,
+   "device.read", orgId)` then `assertIdentifier(orgId, "orgId")`, mirroring
+   `listUsers`.
+3. A route in `src/server.ts` inside the existing `/api/v1/orgs/:org/…` block
+   (`rest[2] === "devices" && rest.length === 3`, `GET`), answering
+   `{ items }` like the users route.
+4. The §3 row above (added).
+5. Unit coverage in `tests/server.test.ts` — including a **cross-org denial
+   assertion**, which is the test that would have caught H3/H4 had it existed.
+6. e2e coverage in `infra/e2e/test_admin_e2e.py`, and the `rbac.ts` matrix
+   needs no change (`device.read` already exists and is already granted).
+
+### 14.6 Open, and deliberately not decided here
+
+`POST` for device creation has **no route and no permission**:
+`OrgService.createDevice` is gated on `"device.revoke"`
+(`src/policy/services.ts:90`), which is the wrong permission for a create, and
+`rbac.ts` declares no `device.create` to use instead (T-185 finding L5). This
+section documents the read path only. Inventing a create contract here would
+paper over a permission-model question that needs a ruling.
+
+<!-- CONTINUED-4 -->
+
 
 
 

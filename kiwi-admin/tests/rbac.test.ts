@@ -45,6 +45,21 @@ describe("RBAC negative cases (unauthorized admin op rejected)", () => {
   });
 });
 
+describe("T-193/H2 fail-closed org scope", () => {
+  const nullOrgAdmin: Actor = { subject: "floater", roles: ["org_admin"], orgId: null };
+  it("a role without org binding holds no org scope", () => {
+    expect(hasPermission(nullOrgAdmin, "policy.read", "org-acme")).toBe(false);
+    expect(hasPermission(nullOrgAdmin, "device.revoke", "org-acme")).toBe(false);
+    expect(hasPermission(nullOrgAdmin, "mailflow.read", "org-acme")).toBe(false);
+    expect(() => requirePermission(nullOrgAdmin, "policy.read", "org-acme")).toThrow(AuthorizationDeniedError);
+  });
+  it("platform actions still check the role only", () => {
+    expect(hasPermission(nullOrgAdmin, "org.create", null)).toBe(true);
+    expect(hasPermission(viewer, "audit.read", null)).toBe(true);
+    expect(hasPermission(anonymous, "org.create", null)).toBe(false);
+  });
+});
+
 describe("RBAC denials are audited", () => {
   it("every denial produces an audit record with outcome=denied and chain stays valid", () => {
     const log = new InMemoryAuditLog();

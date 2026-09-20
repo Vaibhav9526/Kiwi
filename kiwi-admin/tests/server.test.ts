@@ -35,6 +35,10 @@ async function apiRaw(path: string, headers: Record<string, string>): Promise<{ 
 
 const adminHeaders = { "x-kiwi-subject": "tester", "x-kiwi-roles": "org_admin" };
 const viewerHeaders = { "x-kiwi-subject": "viewer", "x-kiwi-roles": "viewer", "x-kiwi-org": "__ORG__" };
+// Org-bound admin (T-193/H2): null-org actors hold no org scope, so every
+// org-scoped call below binds the org. `adminHeaders` stays platform-null
+// for the bootstrap + whole-log reads that are platform acts by design.
+const boundHeaders = { "x-kiwi-subject": "tester", "x-kiwi-roles": "org_admin", "x-kiwi-org": "__ORG__" };
 
 let orgId = "";
 
@@ -48,6 +52,7 @@ beforeAll(async () => {
   expect(created.status).toBe(201);
   orgId = (created.json as { id: string }).id as string;
   viewerHeaders["x-kiwi-org"] = orgId;
+  boundHeaders["x-kiwi-org"] = orgId;
 });
 
 afterAll(async () => {
@@ -66,7 +71,7 @@ describe("server transport", () => {
     const created = await api(`/api/v1/orgs/${orgId}/users`, {
       method: "POST",
       body: { email: "http-user@http.test" },
-      headers: adminHeaders,
+      headers: boundHeaders,
     });
     expect(created.status).toBe(201);
     const userId = (created.json as { id: string }).id as string;
@@ -74,11 +79,11 @@ describe("server transport", () => {
     const granted = await api(`/api/v1/orgs/${orgId}/users/${userId}/role`, {
       method: "PUT",
       body: { role: "viewer" },
-      headers: adminHeaders,
+      headers: boundHeaders,
     });
     expect(granted.status).toBe(200);
 
-    const listed = await api(`/api/v1/orgs/${orgId}/users`, { headers: adminHeaders });
+    const listed = await api(`/api/v1/orgs/${orgId}/users`, { headers: boundHeaders });
     expect(listed.status).toBe(200);
     const row = (listed.json.items as { email: string; roles: string[] }[]).find((u) => u.email === "http-user@http.test");
     expect(row?.roles).toEqual(["viewer"]);
@@ -94,26 +99,26 @@ describe("server transport", () => {
         external_recipients: "warn",
         domain_rules: [{ domain: "partner.example", action: "allow" }],
       },
-      headers: adminHeaders,
+      headers: boundHeaders,
     });
     expect(created.status).toBe(201);
     const policyId = (created.json as { id: string }).id as string;
 
-    const listed = await api(`/api/v1/orgs/${orgId}/policies`, { headers: adminHeaders });
+    const listed = await api(`/api/v1/orgs/${orgId}/policies`, { headers: boundHeaders });
     expect(listed.status).toBe(200);
     expect((listed.json.items as { id: string }[]).some((p) => p.id === policyId)).toBe(true);
 
     const single = await api(`/api/v1/policies/${policyId}/evaluate`, {
       method: "POST",
       body: { direction: "outbound", sender: "a@http.test", recipient: "b@partner.example", tlsVersion: "tls1.3" },
-      headers: adminHeaders,
+      headers: boundHeaders,
     });
     expect(single.json.verdict).toBe("allow");
 
     const bridge = await api(`/api/v1/orgs/${orgId}/policies/evaluate-outbound`, {
       method: "POST",
       body: { sender: "a@http.test", recipients: ["b@partner.example", "c@stranger.test"], tlsVersion: "tls1.0" },
-      headers: adminHeaders,
+      headers: boundHeaders,
     });
     expect(bridge.json.overall).toBe("block");
     expect((bridge.json.results as { verdict: string }[]).map((r) => r.verdict)).toEqual(["block", "block"]);
@@ -133,20 +138,20 @@ describe("server transport", () => {
         policy_verdict: "allow",
         org_id: orgId,
       },
-      headers: adminHeaders,
+      headers: boundHeaders,
     });
     expect(ingested.status).toBe(201);
 
-    const queried = await api(`/api/v1/mailflow/events?org=${orgId}&limit=10`, { headers: adminHeaders });
+    const queried = await api(`/api/v1/mailflow/events?org=${orgId}&limit=10`, { headers: boundHeaders });
     expect(queried.status).toBe(200);
     expect((queried.json.items as { recipient: string }[]).some((e) => e.recipient === "b@partner.example")).toBe(true);
   });
 
   it("reads and verifies the audit log", async () => {
-    const q = await api(`/api/v1/audit?limit=5`, { headers: adminHeaders });
+    const q = await api(`/api/v1/audit?limit=5`, { headers: boundHeaders });
     expect(q.status).toBe(200);
     expect(Array.isArray(q.json.items)).toBe(true);
-    const v = await api(`/api/v1/audit/verify?limit=1000`, { headers: adminHeaders });
+    const v = await api(`/api/v1/audit/verify?limit=1000`, { headers: boundHeaders });
     expect(v.json.valid).toBe(true);
   });
 
@@ -164,12 +169,12 @@ describe("server transport", () => {
     const bad = await api(`/api/v1/orgs/${orgId}/policies`, {
       method: "POST",
       body: { name: "bad", enabled: true, min_tls: "TLS9", external_recipients: "allow", domain_rules: [] },
-      headers: adminHeaders,
+      headers: boundHeaders,
     });
     expect(bad.status).toBe(400);
     expect(bad.json.error.code).toBe("validation.failed");
 
-    const missing = await api("/api/v1/nope", { headers: adminHeaders });
+    const missing = await api("/api/v1/nope", { headers: boundHeaders });
     expect(missing.status).toBe(404);
     expect(missing.json.error.code).toBe("not.found");
   });
@@ -213,7 +218,7 @@ describe("server transport", () => {
     // so it is the marker for "rows belonging to no org".
     expect((all.json.items as { action: string }[]).some((r) => r.action === "org.create")).toBe(true);
 
-    const scoped = await api(`/api/v1/audit?org=${orgId}&limit=1000`, { headers: adminHeaders });
+    const scoped = await api(`/api/v1/audit?org=${orgId}&limit=1000`, { headers: boundHeaders });
     expect(scoped.status).toBe(200);
     const scopedItems = scoped.json.items as { action: string; seq: number }[];
     // The filter must actually narrow the result — this is the regression

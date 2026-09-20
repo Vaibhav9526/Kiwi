@@ -10,7 +10,7 @@ import { TLS_VERSION_ALIASES } from "../types.js";
 import { evaluatePolicy } from "./evaluator.js";
 import type { PolicyDefinition, PolicyInput, PolicyDecision, PolicyReason } from "./model.js";
 import { REASON_CODES } from "./model.js";
-import { assertNonEmptyString, assertIdentifier, RequestValidationError } from "../util/validate.js";
+import { assertNonEmptyString, assertIdentifier, RequestValidationError, NotFoundError } from "../util/validate.js";
 import type { MaybePromise } from "../db/interfaces.js";
 import type { RecipientDomainAction, ExternalRecipientBehavior } from "../types.js";
 
@@ -41,8 +41,13 @@ export class OrgService {
 
   async createOrg(actor: Actor, name: string, now: number): Promise<{ id: string; name: string; created_at: number }> {
     const id = `org-${randomUUID()}`;
-    return this.ctx.auditWrap(actor, null, "org.create", id, () =>
-      this.repos.orgs.createOrg(id, assertNonEmptyString(name, "name", 200), now),
+    return this.ctx.auditWrap(
+      actor,
+      null,
+      "org.create",
+      id,
+      () => this.repos.orgs.createOrg(id, assertNonEmptyString(name, "name", 200), now),
+      "org.create",
     );
   }
 
@@ -64,12 +69,19 @@ export class OrgService {
   }
 
   async grantRole(actor: Actor, userId: string, orgId: string, role: OrgRole, now: number): Promise<void> {
+    const uid = assertIdentifier(userId, "userId");
+    const oid = assertIdentifier(orgId, "orgId");
+    // Membership check (T-193/M6): the grant targets (user, org) jointly —
+    // a user from another org (or nobody at all) is a 404, never a
+    // cross-org role row and never a constraint-name 500.
+    const user = await this.repos.orgs.getUser(uid);
+    if (!user || user.org_id !== oid) throw new NotFoundError(`user '${uid}' in org '${oid}'`);
     await this.ctx.auditWrap(
       actor,
-      orgId,
+      oid,
       "user.role.grant",
-      userId,
-      () => this.repos.orgs.grantRole(assertIdentifier(userId, "userId"), orgId, role, now),
+      uid,
+      () => this.repos.orgs.grantRole(uid, oid, role, now),
       "user.role.grant",
     );
   }
@@ -92,12 +104,18 @@ export class OrgService {
   }
 
   async revokeDevice(actor: Actor, deviceId: string, now: number): Promise<void> {
+    // Scoped revocation (T-193/H3): resolve the device's owning org first
+    // so the permission check — and the audit row — target that org. A
+    // revocation aimed at another org's device is denied, not executed.
+    const did = assertIdentifier(deviceId, "deviceId");
+    const device = await this.repos.orgs.getDevice(did);
+    if (!device) throw new NotFoundError(`device '${did}'`);
     await this.ctx.auditWrap(
       actor,
-      null,
+      device.org_id,
       "device.revoke",
-      deviceId,
-      () => this.repos.orgs.revokeDevice(assertIdentifier(deviceId, "deviceId"), now),
+      did,
+      () => this.repos.orgs.revokeDevice(did, now),
       "device.revoke",
     );
   }
@@ -107,18 +125,26 @@ export class OrgService {
     return this.repos.orgs.listDomains(orgId);
   }
 
-  /** T-134: org user listing with roles (read-only, RBAC-gated, unaudited like other reads). */
-  async listUsers(actor: Actor, orgId: string): Promise<{ id: string; email: string; roles: OrgRole[]; created_at: number }[]> {
+  async listUsers(actor: Actor, orgId: string, limit = 50): Promise<{ id: string; email: string; roles: OrgRole[]; created_at: number }[]> {
     requirePermission(actor, "user.read", orgId);
     const oid = assertIdentifier(orgId, "orgId");
-    const users = await this.repos.orgs.listUsers(oid);
-    const out: { id: string; email: string; roles: OrgRole[]; created_at: number }[] = [];
-    for (const u of users) {
-      out.push({ id: u.id, email: u.email, roles: await this.repos.orgs.listRoles(u.id), created_at: u.created_at });
+    // Bounded + batched (T-193/M7): one roles query for the page, not one
+    // per user; the page itself is capped like every other listing.
+    const bounded = Math.min(Math.max(Math.floor(limit), 1), 500);
+    const users = (await this.repos.orgs.listUsers(oid)).slice(0, bounded);
+    const roleRows = users.length > 0 ? await this.repos.orgs.listRolesForUsers(users.map((u) => u.id)) : [];
+    const byUser = new Map<string, OrgRole[]>();
+    for (const row of roleRows) {
+      const list = byUser.get(row.user_id) ?? [];
+      list.push(row.role);
+      byUser.set(row.user_id, list);
     }
-    return out;
+    return users.map((u) => ({ id: u.id, email: u.email, roles: byUser.get(u.id) ?? [], created_at: u.created_at }));
   }
 }
+
+/** Max domain rules per policy (T-193/M3): beside MAX_BRIDGE_RECIPIENTS. */
+const MAX_POLICY_DOMAIN_RULES = 256;
 
 export class PolicyService {
   constructor(
@@ -128,24 +154,41 @@ export class PolicyService {
 
   async createPolicy(actor: Actor, orgId: string, name: string, input: ExternalPolicyInput): Promise<{ id: string }> {
     const id = `pol-${randomUUID()}`;
+    // Validate the whole rule set BEFORE writing anything (T-193/M3): an
+    // unchecked duplicate domain used to fail mid-loop on the primary key,
+    // leaving earlier rules committed — a policy that was neither requested
+    // nor nothing. Length is capped beside MAX_BRIDGE_RECIPIENTS.
+    if (input.domainRules.length > MAX_POLICY_DOMAIN_RULES) {
+      throw new RequestValidationError("domainRules", `exceeds ${MAX_POLICY_DOMAIN_RULES} entries`);
+    }
+    const seen = new Set<string>();
+    const rules = input.domainRules.map((rule) => {
+      const domain = assertNonEmptyString(rule.domain, "domain", 253);
+      if (rule.action !== "allow" && rule.action !== "block") {
+        throw new RequestValidationError("domainRules[].action", "must be allow|block");
+      }
+      const key = domain.toLowerCase();
+      if (seen.has(key)) throw new RequestValidationError("domainRules[]", `duplicate domain '${domain}'`);
+      seen.add(key);
+      return { domain, action: rule.action };
+    });
+    const policyName = assertNonEmptyString(name, "name", 200);
     return this.ctx.auditWrap(
       actor,
       orgId,
       "policy.create",
       id,
       async () => {
-        await this.repos.policies.createPolicy(
+        await this.repos.policies.createPolicyWithRules(
           id,
           orgId,
-          assertNonEmptyString(name, "name", 200),
+          policyName,
           input.enabled,
           input.minTls,
           input.externalRecipients,
           Date.now(),
+          rules,
         );
-        for (const rule of input.domainRules) {
-          await this.repos.policies.addDomainRule(id, assertNonEmptyString(rule.domain, "domain", 253), rule.action);
-        }
         return { id };
       },
       "policy.write",
@@ -164,28 +207,41 @@ export class PolicyService {
     };
   }
 
-  async evaluate(id: string, input: PolicyInput): Promise<PolicyDecision> {
-    const definition = await this.getPolicyDefinition(id);
-    if (!definition) throw new Error(`policy '${id}' not found`);
-    return evaluatePolicy(definition, input);
+  async evaluate(actor: Actor, id: string, input: PolicyInput): Promise<PolicyDecision> {
+    // Authenticated + audited evaluation (T-193/H1): resolve the owning org
+    // first so the permission check — and the audit row — target it. The
+    // policy id alone was previously sufficient scope for anyone on loopback.
+    const row = await this.repos.policies.getPolicy(id);
+    if (!row) throw new NotFoundError(`policy '${id}'`);
+    return this.ctx.auditWrap(actor, row.org_id, "policy.evaluate", id, async () => {
+      const definition = await this.getPolicyDefinition(id);
+      if (!definition) throw new NotFoundError(`policy '${id}'`);
+      return evaluatePolicy(definition, input);
+    }, "policy.read");
   }
 
   /** T-134: full policy definitions of an org (read-only, RBAC-gated). */
-  async listPolicies(actor: Actor, orgId: string): Promise<PolicyDefinition[]> {
+  async listPolicies(actor: Actor, orgId: string, limit = 50): Promise<PolicyDefinition[]> {
     requirePermission(actor, "policy.read", orgId);
     const oid = assertIdentifier(orgId, "orgId");
-    const rows = await this.repos.policies.listPoliciesForOrg(oid);
-    const out: PolicyDefinition[] = [];
-    for (const row of rows) {
-      out.push({
-        id: row.id,
-        enabled: row.enabled === 1,
-        minTls: row.min_tls,
-        externalRecipients: row.external_recipients,
-        domainRules: await this.repos.policies.listDomainRules(row.id),
-      });
+    // Bounded + batched (T-193/M7): one domain-rules query for the page.
+    const bounded = Math.min(Math.max(Math.floor(limit), 1), 500);
+    const rows = (await this.repos.policies.listPoliciesForOrg(oid)).slice(0, bounded);
+    const ruleRows =
+      rows.length > 0 ? await this.repos.policies.listDomainRulesForPolicies(rows.map((r) => r.id)) : [];
+    const byPolicy = new Map<string, { domain: string; action: RecipientDomainAction }[]>();
+    for (const rule of ruleRows) {
+      const list = byPolicy.get(rule.policy_id) ?? [];
+      list.push({ domain: rule.domain, action: rule.action });
+      byPolicy.set(rule.policy_id, list);
     }
-    return out;
+    return rows.map((row) => ({
+      id: row.id,
+      enabled: row.enabled === 1,
+      minTls: row.min_tls,
+      externalRecipients: row.external_recipients,
+      domainRules: byPolicy.get(row.id) ?? [],
+    }));
   }
 
   /**

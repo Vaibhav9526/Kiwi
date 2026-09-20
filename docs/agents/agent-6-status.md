@@ -1116,6 +1116,114 @@ honestly; mobile team owns the 474 lint warnings.
 toolchain (cargo + admin image) — slowest job by a margin; if
 runner minutes matter, split the Rust leg out (flagged, Lead call).
 
+## 2026-09-20 — T-187 (audit verification + 2 safe fixes) + T-184 (mobile handoff)
+
+**Status:** both done. All 22 findings in
+`docs/audits/admin-review-1.md` verified REAL against the cited code
+(with two line-number drifts noted, same content). Implemented only
+L6 (doc) + L7 (version string) — everything else is Lead decisions
+(H1–H8) or owner behavior work (flagged with file:line). T-184:
+mobile lint 472 warnings → 0 with tests+typecheck green, and all 4
+§10 open items resolved in-contract (approval itself stays Lead's
+where noted).
+
+### T-187 verification (method: read every cited file, not the summary)
+
+Confirmed real, High first: H1 evaluate route passes no actor
+(`server.ts:301-325` → `policies.evaluate` without actor);
+H2 null-org bypass (`rbac.ts:91` exact); H3 `orgId: null` +
+id-only repo revoke (`policy/services.ts:94-103`,
+`db/interfaces.ts` revoke has no org param) + `createDevice`
+carrying the `device.revoke` permission (`:90`, copy-paste as
+claimed); H4 `filter.orgId ?? null` both queries
+(`mailflow/services.ts:50,101`) with the audit half documented at
+admin-api §12.3:382 ("Omitting `org` returns the whole log") and
+the mailflow half undocumented, exactly as the review states; H5
+six-arg `auditWrap` → `org.read` default (`policy/services.ts:44`,
+`services.ts:128`), `org.create` declared+granted but never checked;
+H6 read-then-write seq (`mailflow/services.ts:85-92` +
+`repositories.pg.ts:255-269` explicit-seq insert); H7 generated-SQL
+proof (`pg/0000:101` plain INDEX vs `sqlite/0000:101` UNIQUE);
+H8 `verify` un-floored (`:131`) while both queries floor, and
+`verifyChain([])` → valid:true/checked:0.
+Medium: M1 `Date.now()` ms at `services.ts:134,139` +
+`policy/services.ts:144` vs contract seconds (§4:106, §12.3:385 —
+cites drifted ~2 lines, content identical); M2 export row uses
+caller `now` (seconds) at `mailflow/services.ts:166-178`; M3 no
+transaction + no error-audit on `work()` throw
+(`policy/services.ts:129-153`, `services.ts:138`),
+`AuditOutcome` does carry `error` (unused); M4 raw `err.message`
+in 500s + `/not found/` regex (`server.ts:191-194`); M5 confirmed
+by absence — only `onConflictDo*` builder calls exist, no
+`ConflictError`/409 anywhere in `src/`; M6 raw `orgId` passthrough
+(`policy/services.ts:66-75` vs validated in `createUser`);
+M7 N+1 loops, no limits (`:111-120`, `:174-189`). Low: L1
+unescaped LIKE both dialects (`repositories.pg.ts:227`); L2
+`Number()` coercion (`server.ts:163-169`); L3 no content-type gate
+(`:89-116`); L4 logger imported nowhere + ambient clock
+(`util/logger.ts:25`); L5 routeless `listDomains`/`createDevice`
+(confirmed against the route table); L6 §7:209-213 silent on the
+export mitigation; L7 `"admin-api/1.3-pending"` only in
+`server.ts:213`. Held-up claims spot-checked true (fail-closed
+actor headers, ingest validation with outbound org_id required,
+export refuse-truncate + honest `signed:false`).
+Not implemented (out of brief scope, all flagged): H1–H8 (Lead
+rulings — several conflict with each other or the contract, e.g.
+H2-vs-bootstrap, H5's two readings, M1's hash-vs-timeline trade);
+M1–M4/M6/M7, L1–L5 (behavioral — owners' call).
+
+### T-187 fixes (2, both non-behavioral, Agent 5's tree — flagged)
+
+- **L6:** admin-api.md §7 residual paragraph now names the signed
+  export as the high-water-mark mitigation (doc-only).
+- **L7:** `/healthz` reports `"admin-api/1.3"` (the declared
+  version) instead of `"-pending"`.
+- Admin gates after: **85 tests green, typecheck exit 0** (the 3
+  T-170 tsc errors are gone — owners fixed them; my string change
+  adds nothing). Other diff hunks in admin-api.md are concurrent
+  Agent 5/9 work, verified untouched.
+- Incidental: admin-api.md is CRLF file-wide — byte-mode edits
+  only; ledger lesson applied proactively.
+
+### T-184 (Agent 4 handoff — all 5 items)
+
+- **ESLint:** 472 warnings (410 quotes, 28 curly, 18 no-bitwise,
+  16 dot-notation), 0 errors. `--fix` cleared 454; the 18
+  no-bitwise are legitimate (xorshift fixture RNG + byte-compare
+  tests) → 3 documented file-level disables. Final: **lint 0/0,
+  32 tests green, typecheck clean.**
+- **§10.1 keystore fallback:** Agent-6 assessment recorded in
+  contract — CONDITIONAL path to yes (non-extractable + gated
+  wrapping key, never persist raw seed, constant-time Ed25519,
+  integrity signal first, telemetry bit). Final approval stays
+  Lead's.
+- **§10.2 transport:** recommend `wss://` with QR-carried endpoint
+  (platform TLS owns framing+validation; no mDNS chatter; mDNS
+  stays future discovery). Lead to ratify.
+- **§10.3 session-id:** CONFIRMED `boot-<…>` in kiwi-app
+  (`system.rs:126`) vs contract's `x-tx:<txn>` — documented both
+  accepted forms (boot-ids for unlock/pairing, x-tx required when
+  recovery/elevated-action land). Needs Agent 7/Lead ratification.
+- **§10.4 wording:** deny-vs-timeout rule now binding in §6.3
+  (deny = explicit `challenge-denied`, unconsumed; timeout = no row,
+  late verify → `expired`; UI says "expired/no response") +
+  matching SECURITY.md §6 checklist bullet (mine).
+
+**Files changed:** `docs/contracts/admin-api.md` (L6 sentence),
+`kiwi-admin/src/server.ts` (1-line version string),
+`mobile/` (`--fix` fallout + 3 disable comments),
+`docs/contracts/authenticator.md` (§3.2/§4.2/§6.3/§10),
+`docs/SECURITY.md` (§6 bullet), `docs/TASKS.md` (T-187+T-184
+done), this log.
+
+**Assumptions:** Lead rules on H1–H8 (A9's order: H1/H3/H5, H2,
+H8, H6/H7, M1/M2, M4/M5 stands); Agent 5/7/8 own the flagged
+behavioral items; keystore + transport + session-id rulings are
+ratifications, not implementations.
+
+**Risks:** none new. The H-cluster is now a decision queue, not a
+discovery queue — recommend Lead batch-rule them in one pass.
+
 ## 2026-09-20 — T-171 done: sync-to-finding vertical e2e (live GreenMail)
 
 **Status:** done. `infra/e2e/test_mail_flow.py` (A9 house style:

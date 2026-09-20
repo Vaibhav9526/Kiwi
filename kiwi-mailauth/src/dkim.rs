@@ -800,6 +800,91 @@ mod tests {
         assert_eq!(out, b"Hi\r\n");
     }
 
+    /// Empty body edge cases per RFC 6376 §3.4.3/§3.4.4
+    #[test]
+    fn canon_body_empty_variants() {
+        // Simple: empty body -> single CRLF
+        assert_eq!(canon_body_bytes(CanonBody::Simple, b"", None), b"\r\n");
+        // Relaxed: empty body -> single CRLF
+        assert_eq!(canon_body_bytes(CanonBody::Relaxed, b"", None), b"\r\n");
+        // Body with only whitespace (relaxed strips to empty)
+        assert_eq!(canon_body_bytes(CanonBody::Relaxed, b"   \t  \r\n", None), b"\r\n");
+        // Body with only whitespace (simple keeps CRLF but strips trailing empty lines)
+        assert_eq!(canon_body_bytes(CanonBody::Simple, b"   \t  \r\n", None), b"   \t  \r\n");
+        // Body with only CRLF
+        assert_eq!(canon_body_bytes(CanonBody::Simple, b"\r\n", None), b"\r\n");
+        assert_eq!(canon_body_bytes(CanonBody::Relaxed, b"\r\n", None), b"\r\n");
+        // Multiple trailing CRLFs (simple strips to one)
+        assert_eq!(canon_body_bytes(CanonBody::Simple, b"Hi\r\n\r\n\r\n", None), b"Hi\r\n");
+        assert_eq!(canon_body_bytes(CanonBody::Relaxed, b"Hi\r\n\r\n\r\n", None), b"Hi\r\n");
+    }
+
+    /// Trailing CRLF handling edge cases
+    #[test]
+    fn canon_body_trailing_crlf() {
+        // Simple: ensure exactly one trailing CRLF
+        assert_eq!(canon_body_bytes(CanonBody::Simple, b"NoCRLF", None), b"NoCRLF\r\n");
+        assert_eq!(canon_body_bytes(CanonBody::Simple, b"HasCRLF\r\n", None), b"HasCRLF\r\n");
+        assert_eq!(canon_body_bytes(CanonBody::Simple, b"Multiple\r\n\r\n", None), b"Multiple\r\n");
+        
+        // Relaxed: exactly one trailing CRLF after WSP compression
+        assert_eq!(canon_body_bytes(CanonBody::Relaxed, b"NoCRLF", None), b"NoCRLF\r\n");
+        assert_eq!(canon_body_bytes(CanonBody::Relaxed, b"HasCRLF\r\n", None), b"HasCRLF\r\n");
+        assert_eq!(canon_body_bytes(CanonBody::Relaxed, b"Multiple\r\n\r\n", None), b"Multiple\r\n");
+        
+        // Mixed line endings normalization
+        assert_eq!(canon_body_bytes(CanonBody::Simple, b"LF\nonly", None), b"LF\r\nonly\r\n");
+        assert_eq!(canon_body_bytes(CanonBody::Simple, b"CR\ronly", None), b"CR\r\nonly\r\n");
+        assert_eq!(canon_body_bytes(CanonBody::Simple, b"CRLF\r\nonly", None), b"CRLF\r\nonly\r\n");
+        assert_eq!(canon_body_bytes(CanonBody::Relaxed, b"LF\nonly", None), b"LF\r\nonly\r\n");
+        assert_eq!(canon_body_bytes(CanonBody::Relaxed, b"CR\ronly", None), b"CR\r\nonly\r\n");
+        assert_eq!(canon_body_bytes(CanonBody::Relaxed, b"CRLF\r\nonly", None), b"CRLF\r\nonly\r\n");
+    }
+
+    /// l= body length tag edge cases (RFC 6376 §3.5)
+    #[test]
+    fn canon_body_length_tag() {
+        let body = b"Hello World\r\n";
+        
+        // l=0 -> empty body -> single CRLF
+        assert_eq!(canon_body_bytes(CanonBody::Simple, body, Some(0)), b"\r\n");
+        assert_eq!(canon_body_bytes(CanonBody::Relaxed, body, Some(0)), b"\r\n");
+        
+        // l=exact length
+        assert_eq!(canon_body_bytes(CanonBody::Simple, body, Some(12)), b"Hello World\r\n");
+        assert_eq!(canon_body_bytes(CanonBody::Relaxed, body, Some(12)), b"Hello World\r\n");
+        
+        // l=truncates mid-line (before CRLF normalization in relaxed, after in simple)
+        // Simple: truncates after CRLF normalization
+        let truncated = b"Hello World\r";
+        assert_eq!(canon_body_bytes(CanonBody::Simple, body, Some(11)), b"Hello World\r\r\n");
+        
+        // l=larger than body -> no effect
+        assert_eq!(canon_body_bytes(CanonBody::Simple, body, Some(100)), b"Hello World\r\n");
+        assert_eq!(canon_body_bytes(CanonBody::Relaxed, body, Some(100)), b"Hello World\r\n");
+        
+        // l= with multi-line body
+        let multi = b"Line1\r\nLine2\r\nLine3\r\n";
+        assert_eq!(canon_body_bytes(CanonBody::Simple, multi, Some(10)), b"Line1\r\nLi\r\n");
+        assert_eq!(canon_body_bytes(CanonBody::Relaxed, multi, Some(10)), b"Line1\r\nLi\r\n");
+    }
+
+    /// Combined header/body canonicalization modes (c= header/body)
+    #[test]
+    fn canon_header_body_combinations() {
+        let body = b"  Hello \t World  \r\n\r\n";
+        
+        // relaxed/simple
+        let h = canon_body_bytes(CanonBody::Simple, body, None);
+        let h_relaxed = canon_body_bytes(CanonBody::Relaxed, body, None);
+        assert_ne!(h, h_relaxed);
+        
+        // Verify simple preserves internal WSP
+        assert!(h.windows(2).any(|w| w == b"  "));
+        // Verify relaxed compresses WSP
+        assert!(!h_relaxed.windows(2).any(|w| w == b"  "));
+    }
+
     #[test]
     fn none_when_no_header() {
         let dns = MockResolver::new();

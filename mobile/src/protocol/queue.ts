@@ -9,11 +9,11 @@
  * - Nothing is sent by the queue itself; delivery is delegated to the
  *   injected `ChallengeTransport` (offline stub in scaffold).
  */
-import type { ChallengeData, ChallengeResponseData, Decision } from "./types";
+import type { ChallengeData, ChallengeResponseData, Decision } from './types';
 
 export type TransportResult =
-  | { kind: "delivered"; requestId: string }
-  | { kind: "offline"; reason: string };
+  | { kind: 'delivered'; requestId: string }
+  | { kind: 'offline'; reason: string };
 
 export interface QueueTransport {
   postResponse(resp: ChallengeResponseData): Promise<TransportResult>;
@@ -38,12 +38,12 @@ export interface QueueOptions {
 
 export type EnqueueResult =
   | { ok: true }
-  | { ok: false; reason: "duplicate" | "backlog-full" };
+  | { ok: false; reason: 'duplicate' | 'backlog-full' };
 
 export type DeliveryOutcome =
-  | { kind: "delivered"; requestId: string }
-  | { kind: "offline"; reason: string }
-  | { kind: "skipped"; reason: string };
+  | { kind: 'delivered'; requestId: string }
+  | { kind: 'offline'; reason: string }
+  | { kind: 'skipped'; reason: string };
 
 const DEFAULT_BACKLOG = 64;
 const DEFAULT_RETRY = 10;
@@ -65,8 +65,8 @@ export class ChallengeQueue {
 
   /** Add a signed outcome; dedupes per challenge id and bounds the backlog. */
   enqueue(challenge: ChallengeData, response: ChallengeResponseData, decision: Decision): EnqueueResult {
-    if (this.items.has(challenge.challenge_id)) return { ok: false, reason: "duplicate" };
-    if (this.items.size >= this.maxBacklog) return { ok: false, reason: "backlog-full" };
+    if (this.items.has(challenge.challenge_id)) {return { ok: false, reason: 'duplicate' };}
+    if (this.items.size >= this.maxBacklog) {return { ok: false, reason: 'backlog-full' };}
     this.items.set(challenge.challenge_id, {
       challenge,
       response,
@@ -93,16 +93,16 @@ export class ChallengeQueue {
   /** Try to deliver one item (throttled). Kept on offline; removed on delivery. */
   async deliver(challengeId: string): Promise<DeliveryOutcome> {
     const item = this.items.get(challengeId);
-    if (!item) return { kind: "skipped", reason: "not queued" };
+    if (!item) {return { kind: 'skipped', reason: 'not queued' };}
     const now = this.clock.nowUnix();
     const last = this.lastAttempt.get(challengeId);
     if (last !== undefined && now - last < this.minRetrySecs) {
-      return { kind: "skipped", reason: "throttled" };
+      return { kind: 'skipped', reason: 'throttled' };
     }
     this.lastAttempt.set(challengeId, now);
     item.attempts += 1;
     const result = await this.transport.postResponse(item.response);
-    if (result.kind === "delivered") {
+    if (result.kind === 'delivered') {
       this.items.delete(challengeId);
       return result;
     }
@@ -116,9 +116,9 @@ export class ChallengeQueue {
     let skipped = 0;
     for (const item of [...this.items.values()]) {
       const outcome = await this.deliver(item.challenge.challenge_id);
-      if (outcome.kind === "delivered") delivered.push(item.challenge.challenge_id);
-      else if (outcome.kind === "offline") offline.push(item.challenge.challenge_id);
-      else skipped += 1;
+      if (outcome.kind === 'delivered') {delivered.push(item.challenge.challenge_id);}
+      else if (outcome.kind === 'offline') {offline.push(item.challenge.challenge_id);}
+      else {skipped += 1;}
     }
     return { delivered, offline, skipped };
   }

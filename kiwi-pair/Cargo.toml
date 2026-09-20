@@ -1,0 +1,21 @@
+[package]
+name = "kiwi-pair"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "KIWI mobile-authenticator pairing engine: Ed25519 challenge issue/verify, persistent pairing record store, nonce+timestamp replay protection, device revocation, key fingerprints. Desktop side of contracts/authenticator.md."
+publish = false
+
+[dependencies]
+kiwi-core = { path = "../kiwi-core" }
+ed25519-dalek = "2"  # matches kiwi-app verifier; mailauth pins v3 — see workspace note
+rusqlite.workspace = true
+sha2.workspace = true
+base64.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+getrandom.workspace = true
+
+[lints]
+workspace = true

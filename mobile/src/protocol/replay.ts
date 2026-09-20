@@ -5,12 +5,12 @@
  * storage; in this scaffold it is in-memory behind an interface.
  * Pure logic, injectable clock (SECURITY.md rule 1).
  */
-import type { ChallengeData } from "./types";
+import type { ChallengeData } from './types';
 
 export interface LedgerEntry {
   challengeId: string;
   consumedUnix: number;
-  decision: "approve" | "deny" | "expired";
+  decision: 'approve' | 'deny' | 'expired';
 }
 
 export interface LedgerClock {
@@ -28,9 +28,9 @@ export class ReplayLedger {
   }
 
   /** Record the first answer; returns false if already answered or the ledger is full. */
-  record(challengeId: string, decision: LedgerEntry["decision"]): boolean {
-    if (this.entries.has(challengeId)) return false;
-    if (this.entries.size >= ReplayLedger.MAX_ENTRIES) return false; // bounded (§4.3)
+  record(challengeId: string, decision: LedgerEntry['decision']): boolean {
+    if (this.entries.has(challengeId)) {return false;}
+    if (this.entries.size >= ReplayLedger.MAX_ENTRIES) {return false;} // bounded (§4.3)
     this.entries.set(challengeId, { challengeId, consumedUnix: this.clock.nowUnix(), decision });
     return true;
   }

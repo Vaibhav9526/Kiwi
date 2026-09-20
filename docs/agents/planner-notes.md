@@ -114,3 +114,51 @@ Risks/conflicts: <contract conflicts, shared-file contention, unknowns>
   Phase B workspace.dependencies atomic commit; Phase C serialized splits
   (kiwi-mail >800-line files, src-tauri types.rs, App.tsx) in owner quiet
   windows. Gates: full green per phase, zero functional diffs.
+- 2026-09-20 — SENT PLAN: Thunderbird-faithful UI replica for kiwi-app.
+  Owner wants TB UI "same to same" + non-webby desktop feel. Key honesty
+  note baked in: literal XUL port infeasible (Mozilla chrome doesn't run
+  in a Tauri webview) — spec is faithful reproduction: layout/tokens/
+  menus/shortcuts/density cloned from source/comm/mail + mailnews
+  (MPL-compatible). Preserves all IPC bindings + KIWI security surfaces
+  in TB idiom. Subsumes T-145/151/165 — Lead reconciles ledger.
+- 2026-09-20 — SUPERSEDED by Mailspring plan: owner chose replica-not-copy
+  after license fork (Mailspring = GPL-3.0; direct code use would force
+  KIWI to GPL — owner picked MPL replica). Sent PLAN-UPDATE: clone
+  Mailspring to reference/mailspring/ (gitignored, study-only), extract
+  design tokens + animation catalog + layout maps → docs/ui-mailspring-map,
+  rebuild kiwi-app in Mailspring idiom, port feature CONCEPTS (task queue,
+  undo-send, snooze) as reimplementation. Backend unchanged — mailsync is
+  C++/Electron-bound, port explicitly rejected. Compliance gate: no GPL
+  files/verbatim blocks in repo.
+- 2026-09-20 — SENT PLAN: MailFlow feature-mine (repo is AGPL-3.0 +
+  $500 commercial — study-only, reference/mailflow/, zero copying).
+  Selected: F1 inbox rules engine (kiwi-mail ingest, deterministic),
+  F2 category tabs (header heuristics, AI-reclassify seam only),
+  F3 unsubscribe (URL-open default, never auto-send), F4 block list,
+  F5 mark-read prefs, F6 GTD labels as real IMAP folders, F7 sent-mail
+  autocomplete ranking, F8 LOCAL-only avatars (rejected remote favicons —
+  metadata leak), F9 remap shortcuts + layouts. EXPOSED GAP: OAuth2
+  token-acquisition flows (Google/M365) — kiwi-mail has XOAUTH2 but no
+  acquisition; needs own spec. Rejected: PWA/multi-user/TOTP/SSO/Todoist/
+  CardDAV-server/remote-favicons. Sequenced as BACKLOG — don't interrupt
+  Mailspring replica or current T-tasks.
+- 2026-09-20 — SENT PLAN-APPEND (F10–F15): rich composer (tables/emoji/
+  img-resize/Excel-paste — ammonia must cover new markup), native OS
+  notifications via Tauri on T-157 events (lock-aware: no body leak when
+  degraded/locked), threads incl. Sent items, junk marking (\Junk flag +
+  folder move, deterministic), X-Priority header, extra theme schemes;
+  custom CSS deferred. Rejections documented.
+- 2026-09-20 — Owner directive: FULL MailFlow feature parity. Sent
+  PLAN-APPEND-2: every rejected item got a KIWI-native mapping (TOTP as
+  secondary unlock factor, OIDC for admin plane P6, recovery-email into
+  P3 spec, CardDAV server P6/7, opt-in direct favicon fetch instead of
+  proxying, i18n/custom-CSS P8, AI summarize/draft/ask P7). True-rejects
+  remaining: remote favicon PROXYING, literal multi-user webmail model.
+  Rule now: parity-by-adaptation — nothing dropped without a home;
+  Phase 6+ items need owner sign-off before starting.
+- 2026-09-20 — SENT PLAN: product identity lock-in (owner-confirmed).
+  KIWI = full-featured mail client (Mailspring polish + MailFlow
+  feature set) + security spine. Tagline direction: "Email that proves
+  its security." Leader to record in ARCHITECTURE §1 + README; evidence-
+  first language rule for all UI/report copy; parity never compromises
+  deterministic-security rules.

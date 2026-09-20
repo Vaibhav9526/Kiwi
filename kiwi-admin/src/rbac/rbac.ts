@@ -84,11 +84,13 @@ export function hasPermission(actor: Actor, permission: Permission, targetOrgId:
     const set = ROLE_PERMISSIONS[role];
     if (!set) return false;
     if (!set.has(permission)) return false;
-    // Org scoping: an actor with roles in one org cannot exercise org-scoped
-    // permissions against another org. Platform-level (orgId null) actors
-    // must hold the permission with no org binding (local-first single-org
-    // scaffold: roles granted with orgId === actor.orgId count).
-    if (targetOrgId !== null && actor.orgId !== null && targetOrgId !== actor.orgId) return false;
+    // Org scoping (T-193/H2, fail-closed): an actor with roles in one org
+    // cannot exercise org-scoped permissions against another org — and an
+    // actor with NO org binding holds NO org scope at all. A null-org actor
+    // previously satisfied every org-scoped check (global reach by omitting
+    // a header); now any non-null target denies it. Platform-level actions
+    // pass a null target and check the role only (bootstrap, audit export).
+    if (targetOrgId !== null && targetOrgId !== actor.orgId) return false;
     return true;
   });
 }

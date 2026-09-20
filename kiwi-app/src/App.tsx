@@ -1,30 +1,26 @@
 /**
- * KIWI root (T-143, T-151): live backend orchestration over kiwi.ipc/1 with
- * labeled demo fallback outside the Tauri webview. The renderer owns NO
- * security verdicts — trust/lock/findings/policy outcomes all come from the
- * backend; star/read/archive go through kiwi_update_message in live mode
- * (T-146), attachments through kiwi_download_attachment, HTML through
- * kiwi_render_body (sanitized server-side, remote content opt-in per
- * account).
+ * KIWI root (T-143, T-151, T-182): live backend orchestration over kiwi.ipc/1
+ * with labeled demo fallback outside the Tauri webview. State lives in
+ * `src/state/` hooks (useToasts, useSession, useAccountModel, useMailbox,
+ * useCompose, useSecurity); this file keeps theme/route/query/palette wiring
+ * plus view composition. The renderer owns NO security verdicts — every
+ * verdict comes from the backend.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, BackendUnavailableError, IpcError } from "./ipc";
-import { applyUiPrefs, loadMuted, loadPref, savePref } from "./prefs";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { api, IpcError } from "./ipc";
+import { applyUiPrefs, loadPref, savePref } from "./prefs";
+import { useToasts } from "./state/toasts";
+import { DEMO_TRUST, useSession } from "./state/session";
+import { useAccountModel } from "./state/accounts";
 import {
-  DEMO_ACCOUNTS,
   DEMO_EVENTS,
   DEMO_FINDINGS,
-  DEMO_FOLDERS,
   DEMO_MESSAGES,
 } from "./mock";
 import { navigate, useRoute } from "./router";
 import type {
-  AccountInfo,
-  AccountView,
-  AppInfoView,
   AttachmentSavedView,
   ChallengeView,
-  DeviceView,
   FindingDetailView,
   FindingInfo,
   FolderView,
@@ -37,7 +33,6 @@ import type {
   RenderedBodyView,
   SecurityEventRow,
   Severity,
-  TrustState,
 } from "./kiwi";
 import {
   eventToRow,
@@ -53,7 +48,6 @@ import { CommandPalette } from "./components/palette";
 import type { PaletteAction } from "./components/palette";
 import { ShortcutsHelp } from "./components/shortcuts";
 import { ToastStack } from "./components/toasts";
-import type { Toast, ToastKind } from "./components/toasts";
 import { MailboxView } from "./views/mailbox";
 import { ComposeView } from "./views/compose";
 import { SetupWizardView } from "./views/setup";
@@ -62,8 +56,8 @@ import { SecurityCenterView } from "./views/security-center";
 import { SearchView } from "./views/search";
 import type { SearchResultRow } from "./views/search";
 import { ContactsView } from "./views/contacts";
+import { FiltersView } from "./views/filters";
 
-const DEMO_TRUST: TrustState = { trust: "unknown", locked: false, state: "unknown", score: null, requiredAction: "none" };
 
 function toEnvelope(
   accountId: string,
@@ -98,14 +92,29 @@ function toEnvelope(
 export default function App() {
   const route = useRoute();
   const [theme, setTheme] = useState(() => loadPref<string>("kiwi.theme", "dark"));
-  const [mode, setMode] = useState<"live" | "demo">("demo");
-  const [backendNote, setBackendNote] = useState("probing backend…");
-  const [appInfo, setAppInfo] = useState<AppInfoView | null>(null);
-  const [accountsRaw, setAccountsRaw] = useState<AccountView[]>([]);
-  const [trust, setTrust] = useState<TrustState>(DEMO_TRUST);
-  const [devices, setDevices] = useState<DeviceView[]>([]);
+  const { toasts, notify, dismissToast } = useToasts();
+  const {
+    mode,
+    demo,
+    backendNote,
+    appInfo,
+    setAppInfo,
+    accountsRaw,
+    trust,
+    setTrust,
+    devices,
+    refreshStatus,
+    refreshAccounts,
+    doLock,
+  } = useSession(notify);
   const [folderLists, setFolderLists] = useState<Record<string, FolderView[]>>({});
   const [foldersError, setFoldersError] = useState<string | null>(null);
+  const { emailById, accounts, folders, folderLabel, filtersListLabel, unreadByFolder } = useAccountModel(
+    demo,
+    accountsRaw,
+    folderLists,
+    route,
+  );
   const [messages, setMessages] = useState<MessageEnvelope[]>([]);
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [messagesError, setMessagesError] = useState<string | null>(null);
@@ -138,10 +147,6 @@ export default function App() {
   const [lockReason, setLockReason] = useState("Trust reduced — verify with your authenticator to unlock.");
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
-  const [toasts, setToasts] = useState<Toast[]>([]);
-  const toastId = useRef(0);
-
-  const demo = mode === "demo";
 
   // UI prefs (theme/accent/density) apply from storage; the theme state
   // writes through first so applyUiPrefs reads the fresh value.
@@ -161,63 +166,7 @@ export default function App() {
     return () => window.removeEventListener("kiwi-theme", onTheme);
   }, []);
 
-  /* ---------- probe ---------- */
-
-  const refreshStatus = useCallback(async () => {
-    try {
-      setTrust(toTrustState(await api.securityStatus()));
-    } catch (e) {
-      if (!(e instanceof BackendUnavailableError)) {
-        setBackendNote(e instanceof Error ? e.message : String(e));
-      }
-    }
-  }, []);
-
-  const refreshAccounts = useCallback(async () => {
-    const acc = await api.listAccounts();
-    setAccountsRaw(acc);
-    try {
-      setDevices(await api.listDevices());
-    } catch {
-      setDevices([]);
-    }
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const pong = await api.ping();
-        const [info, status, acc] = await Promise.all([api.appInfo(), api.securityStatus(), api.listAccounts()]);
-        if (cancelled) return;
-        setMode("live");
-        setAppInfo(info);
-        setTrust(toTrustState(status));
-        setAccountsRaw(acc);
-        try {
-          setDevices(await api.listDevices());
-        } catch {
-          setDevices([]);
-        }
-        const contract = typeof info.contractVersion === "string" ? info.contractVersion : "kiwi.ipc/1";
-        setBackendNote(`${pong} · ${contract} · ${acc.length} account(s)`);
-      } catch (e) {
-        if (cancelled) return;
-        setMode("demo");
-        setBackendNote(e instanceof Error ? e.message : String(e));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // Recompute trust periodically so the lock overlay tracks the backend.
-  useEffect(() => {
-    if (demo) return;
-    const t = window.setInterval(() => void refreshStatus(), 15000);
-    return () => window.clearInterval(t);
-  }, [demo, refreshStatus]);
+  /* ---------- live loaders ---------- */
 
   // Ctrl+K opens the palette; `/` focuses search; `?` opens shortcuts.
   // Single-letter keys never fire while typing in a text field.
@@ -244,72 +193,6 @@ export default function App() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
-
-  /* ---------- derived account/folder model ---------- */
-
-  // Muted accounts (T-167): re-read when accounts or routes change so the
-  // Settings toggle takes effect on return without a reload.
-  const muted = useMemo(() => loadMuted(), [accountsRaw, route.name]);
-
-  const emailById = useMemo(() => {
-    const m = new Map<string, string>();
-    for (const a of accountsRaw) m.set(a.id, a.email);
-    return m;
-  }, [accountsRaw]);
-
-  const accounts: AccountInfo[] = useMemo(() => {
-    if (demo) return DEMO_ACCOUNTS;
-    return accountsRaw.map((a, i) => ({
-      id: a.id,
-      email: a.email,
-      displayName: a.displayName || a.email,
-      trust: trustTokenToSeverity(a.trustToken),
-      unread: typeof a.unreadCount === "number" ? a.unreadCount : 0,
-      color: typeof a.color === "string" && a.color ? a.color : ["#2563eb", "#7a5b00", "#b23a22"][i % 3],
-      muted: muted.includes(a.id),
-    }));
-  }, [demo, accountsRaw, muted]);
-
-  const folders = useMemo(() => {
-    if (demo) return [...DEMO_FOLDERS, { id: "outbox", label: "Outbox" }];
-    const list = [
-      { id: "all-inboxes", label: "All Inboxes" },
-      { id: "outbox", label: "Outbox" },
-    ];
-    for (const a of accountsRaw) {
-      for (const f of folderLists[a.id] ?? []) {
-        list.push({ id: `${a.id}:${f.id}`, label: `${a.displayName || a.email} / ${f.name}` });
-      }
-    }
-    return list;
-  }, [demo, accountsRaw, folderLists]);
-
-  const folderLabel = useMemo(() => {
-    const id = route.name === "mail" ? (route.folder ?? "all-inboxes") : "all-inboxes";
-    return folders.find((f) => f.id === id)?.label ?? "All Inboxes";
-  }, [folders, route]);
-
-  const unreadByFolder = useMemo(() => {
-    if (demo) {
-      const counts: Record<string, number> = { "all-inboxes": 0 };
-      for (const m of DEMO_MESSAGES) {
-        if (!m.unread) continue;
-        counts["all-inboxes"] = (counts["all-inboxes"] ?? 0) + 1;
-        counts[m.folder] = (counts[m.folder] ?? 0) + 1;
-      }
-      return counts;
-    }
-    const counts: Record<string, number> = { "all-inboxes": 0 };
-    for (const a of accountsRaw) {
-      if (muted.includes(a.id)) continue;
-      for (const f of folderLists[a.id] ?? []) {
-        const key = `${a.id}:${f.id}`;
-        counts[key] = f.unseen ?? 0;
-        counts["all-inboxes"] = (counts["all-inboxes"] ?? 0) + (f.unseen ?? 0);
-      }
-    }
-    return counts;
-  }, [demo, accountsRaw, folderLists, muted]);
 
   /* ---------- live loaders ---------- */
 
@@ -515,50 +398,6 @@ export default function App() {
   const setLocalOverride = useCallback((id: string, patch: { starred?: boolean; unread?: boolean }) => {
     setFlagOverrides((m) => ({ ...m, [id]: { ...m[id], ...patch } }));
   }, []);
-
-  /* ---------- toasts (T-153): ephemeral send/sync/policy notices ---------- */
-
-  const dismissToast = useCallback((id: number) => {
-    setToasts((ts) => ts.filter((t) => t.id !== id));
-  }, []);
-
-  const notify = useCallback(
-    (kind: ToastKind, text: string, opts?: { action?: { label: string; run: () => void }; ttlMs?: number }) => {
-      // Toast kill-switch (T-167): in-view status lines still update, so
-      // nothing is lost — the popup is just skipped.
-      try {
-        if (loadPref<string>("kiwi.toasts", "on") === "off") return;
-      } catch {
-        // Prefs unreadable — notify anyway.
-      }
-      toastId.current += 1;
-      const id = toastId.current;
-      setToasts((ts) => [...ts.slice(-4), { id, kind, text, action: opts?.action }]);
-      window.setTimeout(() => dismissToast(id), opts?.ttlMs ?? 6000);
-      // Optional UI sound (T-167): tiny WebAudio blip, best-effort only —
-      // never throws, never blocks, no assets.
-      try {
-        if (loadPref<string>("kiwi.sound", "off") === "on") {
-          const Ctx = (window as unknown as { AudioContext?: new () => AudioContext }).AudioContext;
-          if (Ctx) {
-            const ctx = new Ctx();
-            const osc = ctx.createOscillator();
-            const gain = ctx.createGain();
-            osc.frequency.value = kind === "error" ? 220 : 660;
-            gain.gain.value = 0.04;
-            osc.connect(gain);
-            gain.connect(ctx.destination);
-            osc.start();
-            osc.stop(ctx.currentTime + 0.12);
-            window.setTimeout(() => void ctx.close().catch(() => undefined), 300);
-          }
-        }
-      } catch {
-        // Audio unavailable — the toast itself already rendered.
-      }
-    },
-    [dismissToast],
-  );
 
   const applyPatch = useCallback(
     async (id: string, patch: MessagePatch) => {
@@ -946,18 +785,6 @@ export default function App() {
     [refreshOutbox, notify],
   );
 
-  const doLock = useCallback(async () => {
-    if (demo) return;
-    try {
-      setTrust(toTrustState(await api.lock()));
-      notify("info", "Mailbox locked.");
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setBackendNote(msg);
-      notify("error", msg);
-    }
-  }, [demo, notify]);
-
   /* ---------- command palette actions (T-153) ---------- */
 
   const cycleTheme = useCallback(() => {
@@ -980,6 +807,7 @@ export default function App() {
       { id: "theme", label: `Toggle theme (now ${theme})`, hint: "light/dark/system", run: cycleTheme },
       { id: "security", label: "Open Security Center", run: () => navigate({ name: "security" }) },
       { id: "contacts", label: "Open Contacts", run: () => navigate({ name: "contacts" }) },
+      { id: "filters", label: "Open mail filters", run: () => navigate({ name: "filters" }) },
       { id: "settings", label: "Open Settings", run: () => navigate({ name: "settings" }) },
       { id: "shortcuts", label: "Show keyboard shortcuts", hint: "?", run: () => setHelpOpen(true) },
     ];
@@ -1222,6 +1050,17 @@ export default function App() {
           <SecurityCenterView events={events} findings={findings} demo={demo} onOpenFinding={openFinding} />
         )}
         {route.name === "contacts" && <ContactsView demo={demo} onNotify={notify} />}
+        {route.name === "filters" && (
+          <FiltersView
+            demo={demo}
+            accounts={accountsRaw.map((a) => ({ id: a.id, email: a.email, displayName: a.displayName || a.email }))}
+            messages={baseMessages}
+            listLabel={filtersListLabel}
+            onBulkPatch={(ids, patch, label) => void bulkPatch(ids, patch, label)}
+            onBulkDelete={(ids, permanent, label) => void bulkDelete(ids, permanent, label)}
+            onNotify={notify}
+          />
+        )}
         {route.name === "search" && (
           <SearchView
             query={query}

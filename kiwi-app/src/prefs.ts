@@ -42,6 +42,7 @@ export const PREF_KEYS = [
   "kiwi.sound",
   "kiwi.muted",
   "kiwi.defaultAccount",
+  "kiwi.filterRules",
 ] as const;
 
 /** Per-account prefs live under suffixed keys (never secrets). */

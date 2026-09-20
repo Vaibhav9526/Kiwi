@@ -6,13 +6,17 @@
 //!
 //! Module map (see docs/ARCHITECTURE.md §3):
 //! - [`transport`] — TCP + rustls; captures negotiated TLS params/cert chain
-//! - [`smtp`] — send client (EHLO/STARTTLS/AUTH/MAIL/RCPT/DATA)
-//! - [`imap`] — receive client (capabilities, SELECT/FETCH/IDLE, folder ops)
+//! - [`smtp`] — send client (`smtp/`: client.rs flow, commands.rs helpers+queue)
+//! - [`imap`] — receive client (`imap/`: parser.rs S-expr+reply types,
+//!   commands.rs command set)
 //! - [`pop3`] — receive client (USER/PASS/APOP, LIST/UIDL/RETR/DELE, STLS)
 //! - [`account`] — account/server/credential model
-//! - [`store`] — local mail storage (SQLite metadata + on-disk bodies)
+//! - [`store`] — local mail storage (`store/`: schema.rs DDL, queries.rs
+//!   CRUD, outbox.rs send queue)
 //! - [`sync`] — folder sync engine
 //! - [`mime`] — MIME parse/build boundary
+//! - `testutil` — transcript-replay harness (`testutil/`: script.rs,
+//!   server.rs, tests.rs)
 
 pub mod account;
 pub mod error;

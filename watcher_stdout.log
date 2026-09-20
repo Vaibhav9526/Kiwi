@@ -1,0 +1,11 @@
+KIWI WATCHER started. 7 workers, ~60s loop.
+Lead: term_a262bc09-3426-4675-bcd2-9c13d31755da
+BASELINE (startup state):
+  A4 done=True mtime=1789849760718
+  A5 done=True mtime=1789906585880
+  A6 done=True mtime=1789906674476
+  A7 done=True mtime=1789906721385
+  A8 done=True mtime=1789905583618
+  A9 done=True mtime=1789906688113
+  A10 done=True mtime=1789906838350
+------------------------------------------------------------------------
