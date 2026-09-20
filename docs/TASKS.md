@@ -99,3 +99,4 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-170 | Integration review: contract-vs-code consistency audit across all contracts + full contract + full gate matrix | Agent 6 | done (5 pairs reviewed, mismatches filed file:line; gate matrix reported) | repo-wide (read-only review) | T-166 |
 | T-172 | Mobile authenticator follow-ups: ESLint gate, pairing transport decision (WS vs mDNS/TCP), deny-vs-timeout wording alignment | Agent 4 | open | `mobile/`, `docs/contracts/authenticator.md` | T-136 |
 | T-173 | Contacts UI: contacts view + compose autocomplete + add-from-message; IPC wrappers (demo fallback) | Agent 5 | open | `kiwi-app/src/` | T-150 |
+| T-171 | Vertical e2e: compose → seed mailbox → kiwi-mail sync → store rows + observe→finding emitted | Agent 6 | open | `infra/e2e/` | T-157 |
