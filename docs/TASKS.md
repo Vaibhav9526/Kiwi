@@ -89,11 +89,11 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-160 | Search UI + lock screen | Agent 5 | done | `kiwi-app/src/` | T-156, T-159 |
 | T-161 | `kiwi-sandbox` crate: trait + Wsl2Provider + NullProvider | Agent 10 | done | `kiwi-sandbox/` | T-132 |
 | T-162 | Bulk actions + multi-select | Agent 5 | done (needs kiwi_delete_messages IPC) | `kiwi-app/src/` | T-160 |
-| T-163 | IPC: kiwi_delete_messages (trash/expunge), kiwi_move_messages — unblocks T-162 UI | Agent 7 | open | `src-tauri/commands/` | — |
-| T-164 | Forensics IPC: list_findings/list_events/finding_detail → Security view real data | Agent 7 | open | `src-tauri/commands/`, `ipc.md` | T-163 |
+| T-163 | IPC: kiwi_delete_messages, kiwi_move_messages | Agent 7 | done | `src-tauri/commands/` | — |
+| T-164 | Forensics IPC | Agent 7 | done (41/41, 7 new tests) | `src-tauri/commands/`, `ipc.md` | T-163 |
 | T-165 | Threading view | Agent 5 | done (needs inReplyTo/references fields — queued for A7) | `kiwi-app/src/` | T-162 |
 | T-166 | Forensics→app seam: contract query shapes + sync→observe→finding integration test | Agent 6 | done (query shapes in forensics.md S11; live auth threading; fixture-send seam test green; audit guard verified) | `kiwi-forensics/`, `docs/contracts/` | T-148 |
 | T-167 | Settings depth: per-account pane, notifications, appearance (theme/density), privacy section | Agent 5 | open | `kiwi-app/src/views/settings.tsx` | T-156 |
 | T-168 | kiwi-sandbox guest agent: in-guest runner, report.json schema (process tree/file writes/egress), exchange-dir transport | Agent 10 | open | `kiwi-sandbox/` | T-161 |
-| T-169 | MessageView + thread fields: expose inReplyTo/references for header-chain threading | Agent 7 | queued | `src-tauri/`, `kiwi-mail/` | T-163/164 |
+| T-169 | MessageView thread fields (inReplyTo/references) + account-add→sync-start wiring | Agent 7 | open | `src-tauri/`, `kiwi-mail/` | T-163/164 |
 | T-170 | Integration review: contract-vs-code consistency audit across all contracts + full gate matrix | Agent 6 | open | repo-wide (read-only review) | T-166 |
