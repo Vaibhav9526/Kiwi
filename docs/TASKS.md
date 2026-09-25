@@ -275,9 +275,10 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-295 | kiwi_message_source IPC (raw RFC822) + POP3 delete-after-download account toggle | Agent 19 | open | `kiwi-mail`, `commands/mail.rs`, ipc.md, ipc.ts | T-292,T-285 |
 | T-296 | outbox view: real state chips/undo/reschedule via IPC; OutboxItem state+lastError gap filed | Agent 25 | done |
 | T-297 | no-mock audit: 1100 clicks, 0 console errs, 1 dead fixed, 4 honest gaps filed → ui-honesty-1.md | Agent 25 | done |
-| T-298 | OutboxItem state+lastError fields (held-vs-failed) — backend gap | Agent 20 | open | `kiwi-mail`, `commands/`, kiwi.ts | T-296 |
+| T-298 | OutboxItem state+lastError (v16, honestly derived held) — T-296 gap closed | Agent 20 | done |
 | T-299 | context menus real: shared menu, message+folder actions on real IPC, state-aware | Agent 24 | done |
 | T-300 | kiwi_sandbox_sessions IPC (live/pending sessions for rail security card) — gap from T-283 | Agent 21 | open | `kiwi-sandbox`, `commands/`, ipc.ts | T-266,T-283 |
 | T-301 | templates UI real (picker/render/save-as/Settings CRUD, missingVars honest) — Mailspring parity complete | Agent 24 | done |
 | T-302 | plugin capability hosts: message-list-read (bounded snapshot) + composer-action (toolbar button→event) — last 2 declared caps | Agent 25 | open | `kiwi-app/src/plugins/` | T-297,T-274 |
 | T-303 | real pairing QR: pair_begin payload → reuse mobile/src/qr encoder → render (replaces security.tsx placeholder) | Agent 24 | open | `kiwi-app/src`, `mobile/src/qr` | T-269,T-297 |
+| T-304 | LAN pair-claim listener: bounded endpoint → claim_ticket_and_register, loopback-tested (T-269 flag) | Agent 20 | open | `kiwi-pair`, `kiwi-app/src-tauri` | T-269,T-270 |

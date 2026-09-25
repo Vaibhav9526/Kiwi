@@ -209,6 +209,58 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn outbox_item_state_is_derived_not_stored() {
+        // T-298: a fresh send lists as `queued` with no error; after a
+        // held dispatch writes attempts + reason (what `deliver` does on
+        // the requeue path), the same row reports `held` + the reason.
+        let state = test_state("send-state");
+        block_on(async {
+            let acct = crate::commands::accounts::add_account_impl(&state, acct_input())
+                .await
+                .unwrap();
+            let r = send_impl(&state, &acct.id, compose(), None).await.unwrap();
+            let items = super::enqueue::list_outbox_impl(&state).await.unwrap();
+            assert_eq!(items.len(), 1);
+            assert_eq!(items[0].state, "queued");
+            assert_eq!(items[0].last_error, None);
+
+            // Simulate the dispatcher's held-requeue write.
+            {
+                let mut metas = state.outbox_meta.lock().await;
+                let m = metas.get_mut(&r.queue_id).unwrap();
+                m.attempts = 1;
+                m.last_error = Some("server-reject: 421 try later".into());
+            }
+            state
+                .store
+                .lock()
+                .await
+                .outbox_set_timing(
+                    &r.queue_id,
+                    now_unix() + 30,
+                    1,
+                    Some("server-reject: 421 try later"),
+                )
+                .unwrap();
+
+            let items = super::enqueue::list_outbox_impl(&state).await.unwrap();
+            assert_eq!(items[0].state, "held");
+            assert_eq!(
+                items[0].last_error.as_deref(),
+                Some("server-reject: 421 try later")
+            );
+
+            // A manual reschedule recommits: stale reason cleared.
+            super::enqueue::schedule_impl(&state, &r.queue_id, now_unix() + 7200)
+                .await
+                .unwrap();
+            let items = super::enqueue::list_outbox_impl(&state).await.unwrap();
+            assert_eq!(items[0].state, "held", "attempts still evidence a failure");
+            assert_eq!(items[0].last_error, None, "stale reason cleared");
+        });
+    }
+
+    #[test]
     fn scheduled_send_recalled_past_undo_window() {
         // Send-later item: the undo window expires seconds after enqueue,
         // but the send stays recallable until its dispatch slot.
@@ -284,6 +336,8 @@ pub(crate) mod tests {
             not_before_unix: now_unix() + 3600,
             undo_window_until_unix: now_unix() + 30,
             attempts: 2,
+            // Legacy fixture predates T-298 — no recorded reason.
+            last_error: None,
         };
         let od = dir.join("outbox");
         std::fs::create_dir_all(&od).unwrap();

@@ -120,6 +120,7 @@ pub(crate) async fn deliver(
     let queue_id = item.queue_id.clone();
     let attempts = item.attempts;
     run_mail_io(state.clone(), move |s| async move {
+        let mut last_error: Option<String> = None;
         let outcome = match deliver_inner(&s, &item, meta.as_ref()).await {
             Ok(d) => d,
             Err(e) => {
@@ -132,6 +133,9 @@ pub(crate) async fn deliver(
                     &format!("{queue_id}: {} — {}", e.code, e.message),
                     now_unix(),
                 );
+                // T-298: the sanitized reason also rides the row so
+                // `kiwi_list_outbox` can say why a held send is held.
+                last_error = Some(format!("{}: {}", e.code, e.message));
                 match e.code {
                     "policy-unavailable" | "connect-failed" | "tls-failed" | "protocol-error"
                     | "server-reject" | "auth-failed" | "io-error" => Delivered::Held,
@@ -154,6 +158,7 @@ pub(crate) async fn deliver(
                 if let Some(m) = metas.get_mut(&queue_id) {
                     m.attempts = attempts + 1;
                     m.not_before_unix = now_unix() + backoff;
+                    m.last_error = last_error.clone();
                 }
             }
             // Keep the persisted row in step with the retry state.
@@ -161,6 +166,7 @@ pub(crate) async fn deliver(
                 &queue_id,
                 now_unix() + backoff,
                 attempts + 1,
+                last_error.as_deref(),
             );
             Ok(Delivered::Held)
         } else {

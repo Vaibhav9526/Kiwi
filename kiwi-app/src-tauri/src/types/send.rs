@@ -66,6 +66,16 @@ pub struct OutboxItem {
     pub attempts: u32,
     /// Whether `kiwi_cancel_send` can still undo it.
     pub cancelable: bool,
+    /// `queued` — awaiting first dispatch (send-later slot or undo
+    /// grace); `held` — at least one attempt failed and a retry is
+    /// pending (backoff). The wire vocabulary is larger
+    /// (`sending`/`sent`/`cancelled`) but those are never emitted here:
+    /// `sending` is a sub-second transient not derivable from persisted
+    /// state, and terminal outcomes drop the row entirely (T-298).
+    pub state: String,
+    /// Sanitized reason for the most recent failed attempt. `null`
+    /// until the first failure — never a guessed or empty string.
+    pub last_error: Option<String>,
 }
 
 /// `kiwi://outbox` event payload — emitted by the dispatcher.

@@ -918,6 +918,14 @@ pub async fn kiwi_set_pop3_policy(
     delete_after_download: bool,
 ) -> CmdResult<crate::types::Pop3PolicyView> {
     gate(state.inner()).await?;
+    set_pop3_policy_impl(state.inner(), account_id, delete_after_download).await
+}
+
+pub(crate) async fn set_pop3_policy_impl(
+    state: &AppState,
+    account_id: String,
+    delete_after_download: bool,
+) -> CmdResult<crate::types::Pop3PolicyView> {
     bounded("accountId", &account_id, 128)?;
     let acct = state
         .store
@@ -1363,6 +1371,245 @@ mod tests {
         let folders = list_folders_impl(&state, "a1").await.unwrap();
         let inbox = folders.iter().find(|f| f.name == "INBOX").unwrap();
         assert_eq!((inbox.exists, inbox.unseen), (3, 1));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -------------------------------------------------------------------
+    // T-295 — kiwi_message_source + POP3 delete-after-download policy
+    // -------------------------------------------------------------------
+
+    fn test_acct(id: &str, pop3: bool) -> MailAccount {
+        MailAccount {
+            account_id: id.into(),
+            display_name: "A".into(),
+            email: format!("{id}@x.test"),
+            incoming: kiwi_mail::account::IncomingAccount {
+                protocol: if pop3 {
+                    IncomingProtocol::Pop3
+                } else {
+                    IncomingProtocol::Imap
+                },
+                server: kiwi_mail::account::ServerConfig {
+                    host: "in.x.test".into(),
+                    port: 995,
+                    security: kiwi_mail::transport::SocketSecurity::ImplicitTls,
+                },
+                username: "a".into(),
+                auth: kiwi_mail::account::AuthRef::None,
+            },
+            outgoing: kiwi_mail::account::OutgoingAccount {
+                server: kiwi_mail::account::ServerConfig {
+                    host: "smtp.x.test".into(),
+                    port: 465,
+                    security: kiwi_mail::transport::SocketSecurity::ImplicitTls,
+                },
+                username: "a".into(),
+                auth: kiwi_mail::account::AuthRef::None,
+            },
+        }
+    }
+
+    fn test_dir(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "kiwi-t295-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ))
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn message_source_roundtrips_stored_rfc822() {
+        let dir = test_dir("src");
+        let state = Arc::new(AppState::open_test(dir.clone()).unwrap());
+        let fid = {
+            let store = state.store.lock().await;
+            store.upsert_account(&test_acct("a1", true)).unwrap();
+            let fid = store.ensure_folder("a1", "INBOX").unwrap();
+            // store_body sets body_path on the message row — it must exist.
+            store
+                .upsert_message(
+                    fid,
+                    &NewMessageMeta {
+                        uid: 7,
+                        message_id: Some("<src1@x>".into()),
+                        subject: Some("raw hello".into()),
+                        from_addr: Some("a@x.test".into()),
+                        to_addrs: None,
+                        date_unix: Some(100),
+                        size: None,
+                        flags: vec![],
+                        has_attachments: false,
+                        snippet: None,
+                        category: Default::default(),
+                        unsub_http: None,
+                        unsub_mailto: None,
+                        unsub_oneclick: false,
+                    },
+                    now_unix(),
+                )
+                .unwrap();
+            store
+                .store_body(
+                    fid,
+                    7,
+                    b"Subject: raw hello\r\nX-Custom: kept\r\n\r\nbody bytes\r\n",
+                )
+                .unwrap();
+            fid
+        };
+        let v = message_source_impl(state.clone(), "a1".into(), fid, 7)
+            .await
+            .expect("source");
+        assert_eq!(v.folder_id, fid);
+        assert_eq!(v.uid, 7);
+        assert_eq!(
+            v.source, "Subject: raw hello\r\nX-Custom: kept\r\n\r\nbody bytes\r\n",
+            "verbatim RFC822 — no parse/normalization"
+        );
+        assert_eq!(v.bytes, 50);
+        assert!(!v.truncated);
+
+        // Absent body (POP3 — nothing fetchable) → honest not-found.
+        let err = message_source_impl(state.clone(), "a1".into(), fid, 99)
+            .await
+            .expect_err("absent body must error");
+        assert_eq!(err.code, "not-found");
+        // uid bounds + unknown folder/account stay honest too.
+        assert_eq!(
+            message_source_impl(state.clone(), "a1".into(), fid, -1)
+                .await
+                .unwrap_err()
+                .code,
+            "invalid-input"
+        );
+        assert_eq!(
+            message_source_impl(state.clone(), "ghost".into(), fid, 1)
+                .await
+                .unwrap_err()
+                .code,
+            "not-found"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn message_source_byte_cap_is_honest() {
+        let dir = test_dir("cap");
+        let state = Arc::new(AppState::open_test(dir.clone()).unwrap());
+        let fid = {
+            let store = state.store.lock().await;
+            store.upsert_account(&test_acct("a1", true)).unwrap();
+            let fid = store.ensure_folder("a1", "INBOX").unwrap();
+            // Just over the 8 MiB wire cap, multi-byte char at the
+            // boundary proves the walk-back never splits a code point.
+            let mut raw = vec![b'x'; MAX_SOURCE_BYTES - 1];
+            raw.extend_from_slice("€".as_bytes()); // 3 bytes, straddles cap
+            raw.extend_from_slice(b"tail");
+            store
+                .upsert_message(
+                    fid,
+                    &NewMessageMeta {
+                        uid: 1,
+                        message_id: Some("<big@x>".into()),
+                        subject: None,
+                        from_addr: None,
+                        to_addrs: None,
+                        date_unix: None,
+                        size: Some(raw.len() as u64),
+                        flags: vec![],
+                        has_attachments: false,
+                        snippet: None,
+                        category: Default::default(),
+                        unsub_http: None,
+                        unsub_mailto: None,
+                        unsub_oneclick: false,
+                    },
+                    now_unix(),
+                )
+                .unwrap();
+            store.store_body(fid, 1, &raw).unwrap();
+            fid
+        };
+        let v = message_source_impl(state.clone(), "a1".into(), fid, 1)
+            .await
+            .expect("capped source");
+        assert!(v.truncated);
+        assert_eq!(v.bytes, (MAX_SOURCE_BYTES + 3 + 4 - 1) as u64);
+        assert_eq!(v.source.len(), MAX_SOURCE_BYTES - 1);
+        assert!(
+            !v.source.ends_with('\u{fffd}'),
+            "boundary walk-back must not fabricate a replacement char"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pop3_policy_toggle_persists_and_is_pop3_only() {
+        let dir = test_dir("pol");
+        let state = AppState::open_test(dir.clone()).unwrap();
+        {
+            let store = state.store.lock().await;
+            store.upsert_account(&test_acct("p1", true)).unwrap();
+            store.upsert_account(&test_acct("i1", false)).unwrap();
+        }
+        // Default: keep-on-server.
+        assert!(
+            !state
+                .index
+                .lock()
+                .await
+                .account_meta
+                .get("p1")
+                .map(|m| m.pop3_delete_after_download)
+                .unwrap_or(false)
+        );
+        let v = set_pop3_policy_impl(&state, "p1".into(), true)
+            .await
+            .expect("toggle on");
+        assert_eq!(v.account_id, "p1");
+        assert!(v.delete_after_download);
+        assert!(
+            state
+                .index
+                .lock()
+                .await
+                .account_meta
+                .get("p1")
+                .unwrap()
+                .pop3_delete_after_download
+        );
+        // Toggle back off persists (resume safety = keep).
+        set_pop3_policy_impl(&state, "p1".into(), false)
+            .await
+            .expect("toggle off");
+        assert!(
+            !state
+                .index
+                .lock()
+                .await
+                .account_meta
+                .get("p1")
+                .unwrap()
+                .pop3_delete_after_download
+        );
+        // IMAP account → invalid-input; unknown → not-found.
+        assert_eq!(
+            set_pop3_policy_impl(&state, "i1".into(), true)
+                .await
+                .unwrap_err()
+                .code,
+            "invalid-input"
+        );
+        assert_eq!(
+            set_pop3_policy_impl(&state, "ghost".into(), true)
+                .await
+                .unwrap_err()
+                .code,
+            "not-found"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

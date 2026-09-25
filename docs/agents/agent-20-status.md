@@ -804,3 +804,44 @@ gap: `MessageSourceView` import missing in mailbox.tsx — mechanical).
 
 **A25 hand-off:** consume `api.templates*`; `render.missingVars` is
 the UI flag for unresolved `{{name}}` tokens. `tpl-` ids reserved.
+
+## T-298 — OutboxItem state + lastError (schema v16)
+
+**Done.** Held-vs-failed is now distinguishable in `kiwi_list_outbox`.
+
+- **Schema v16** — `outbox.last_error TEXT` (nullable; `≤512 B` bounded at
+  the store boundary). `ensure_outbox_error_column` sentinel-guarded like
+  prior column adds. Pre-v16 rows keep `NULL` — a reason that predates
+  the column is unknowable, never backfilled.
+- **`OutboxRow.last_error`** threaded through `outbox_put`/`list`/`due`;
+  `outbox_set_timing` gained `last_error: Option<&str>` (both callers:
+  dispatch retry writes `Some`, reschedule writes `None`).
+- **State is derived, never stored:** `attempts > 0` → `held` (a prior
+  dispatch failed; the row only persists because retries remain),
+  `attempts == 0` → `queued`. The wire vocabulary is wider
+  (`queued|sending|held|cancelled|sent`) but `sending` is a sub-second
+  in-memory transient not derivable from persisted state, and
+  `sent`/`cancelled`/exhausted-`failed` delete the row — so the list
+  honestly emits only `queued`/`held`. Documented in ipc.md §7.
+- **lastError provenance:** dispatch's Held-requeue writes the sanitized
+  `code: message` (same text as the `send-attempt-failed` audit — no
+  provider body text, IpcError-sanitized) into `OutboxMeta` AND the
+  outbox row, so it survives restart (meta is rebuilt from the table on
+  open — a meta-only field would vanish). Manual reschedule clears it:
+  a recommit is not a retry. `None` until first failure.
+- **Wire:** `OutboxItem.state: String` + `last_error: Option<String>`;
+  `kiwi.ts` union type + `lastError: string | null`; `kiwi_list_outbox`
+  extracted to `list_outbox_impl` seam for tests.
+
+**Gates:** kiwi-mail **219** green (v15→v16 migration test + outbox
+roundtrip w/ error set+clear); kiwi-app **137** green (new
+`outbox_item_state_is_derived_not_stored`: queued→held→reschedule-clear);
+clippy `-D warnings` clean on mail+app; fmt + tsc clean.
+
+**Concurrent churn handled:** kiwi-integrations was mid-rewrite this
+session (SecretString/TestSlug capability-redaction, live-gate,
+reject_in_band_error). Fixed mechanically where forced (serde import,
+TestSlug::new call sites); owner's `public_url`+`reject_in_band_error`
+landed as canonical — my interim spamtester-local duplicate removed.
+Two A25 mid-flight gaps patched (`useRef`/`useComposerActions` imports,
+`MessageSourceView` import in mailbox.tsx). No semantics overridden.

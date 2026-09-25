@@ -169,6 +169,7 @@ pub(crate) async fn send_impl(
         not_before_unix: not_before,
         undo_window_until_unix: undo_until,
         attempts: 0,
+        last_error: None,
     };
     if mime_bytes.len() > MAX_OUTBOX_ITEM_BYTES {
         return Err(IpcError::invalid("queued message exceeds 32 MiB"));
@@ -268,6 +269,9 @@ pub(crate) async fn schedule_impl(
         match metas.get_mut(queue_id) {
             Some(m) => {
                 m.not_before_unix = send_at_unix;
+                // A manual reschedule recommits the send — a stale held
+                // reason no longer describes intent (T-298).
+                m.last_error = None;
                 (m.undo_window_until_unix, m.attempts)
             }
             None => (0, 0),
@@ -277,7 +281,7 @@ pub(crate) async fn schedule_impl(
         .store
         .lock()
         .await
-        .outbox_set_timing(queue_id, send_at_unix, attempts)?;
+        .outbox_set_timing(queue_id, send_at_unix, attempts, None)?;
     state.audit.lock().await.record(
         "send-rescheduled",
         &format!("{queue_id} → {send_at_unix}"),
@@ -295,8 +299,13 @@ pub(crate) async fn schedule_impl(
 #[tauri::command]
 pub async fn kiwi_list_outbox(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<OutboxItem>> {
     gate(state.inner()).await?;
+    list_outbox_impl(state.inner()).await
+}
+
+/// Envelope-only list, separated for tests (T-298 state derivation).
+pub(crate) async fn list_outbox_impl(state: &AppState) -> CmdResult<Vec<OutboxItem>> {
     let now = now_unix();
-    let meta = state.inner().outbox_meta.lock().await;
+    let meta = state.outbox_meta.lock().await;
     Ok(meta
         .iter()
         .map(|(queue_id, m)| OutboxItem {
@@ -309,6 +318,12 @@ pub async fn kiwi_list_outbox(state: State<'_, Arc<AppState>>) -> CmdResult<Vec<
             undo_window_until_unix: m.undo_window_until_unix,
             attempts: m.attempts,
             cancelable: now < m.undo_window_until_unix || now < m.not_before_unix,
+            // T-298: `attempts > 0` means a prior dispatch failed and the
+            // row only persists because retries remain → held. `sending`,
+            // `sent`, and `cancelled` are never emitted: the first is a
+            // transient invisible to persisted state, the rest drop the row.
+            state: if m.attempts > 0 { "held" } else { "queued" }.to_string(),
+            last_error: m.last_error.clone(),
         })
         .collect())
 }

@@ -136,6 +136,12 @@ pub struct OutboxMeta {
     pub not_before_unix: i64,
     pub undo_window_until_unix: i64,
     pub attempts: u32,
+    /// Sanitized reason for the most recent failed attempt (T-298).
+    /// `None` until the first failure. Mirrored to the `outbox` row so
+    /// the reason survives restart; legacy per-item files simply lack
+    /// the field.
+    #[serde(default)]
+    pub last_error: Option<String>,
 }
 
 /// Local admin-service binding (kiwi-admin, localhost only).
@@ -427,6 +433,7 @@ pub fn outbox_row_of(
         not_before_unix: meta.not_before_unix,
         undo_window_until_unix: meta.undo_window_until_unix,
         attempts: meta.attempts,
+        last_error: meta.last_error.clone(),
         created_unix,
     }
 }
@@ -731,6 +738,7 @@ impl AppState {
                     not_before_unix: row.not_before_unix,
                     undo_window_until_unix: row.undo_window_until_unix,
                     attempts: row.attempts,
+                    last_error: row.last_error,
                 },
             );
         }
