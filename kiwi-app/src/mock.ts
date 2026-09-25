@@ -56,6 +56,13 @@ export const DEMO_MESSAGES: MessageEnvelope[] = [
     category: "primary",
     unsub: { url: null, mailto: null, oneClick: false },
   },
+  {
+    id: "msg-5", accountId: "acc-demo-1", accountEmail: "ava@example.test", folder: "inbox",
+    folderId: 1, uid: 105,
+    from: "ops@project.test", subject: "Fwd: launch checklist", date: "2026-09-19T07:55:00Z",
+    unread: true, starred: false, hasAttachments: false, trust: "secure",
+    snippet: "Forwarding the checklist for the on-call rotation…",
+  },
 ];
 
 export const DEMO_FINDINGS: FindingInfo[] = [
