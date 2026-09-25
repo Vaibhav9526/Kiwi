@@ -272,7 +272,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-292 | print CSS + view-source (parsed headers/parts via real IPC); raw-RFC822 IPC gap filed | Agent 24 | done |
 | T-293 | resizable panes: a11y separators, keyboard+drag, persisted widths, CDP-verified | Agent 25 | done |
 | T-294 | drag-drop+paste attachments real (FileReader progress→send IPC, 25MiB pre-IPC cap) | Agent 24 | done |
-| T-295 | kiwi_message_source IPC (raw RFC822) + POP3 delete-after-download account toggle | Agent 19 | open | `kiwi-mail`, `commands/mail.rs`, ipc.md, ipc.ts | T-292,T-285 |
+| T-295 | kiwi_message_source IPC + POP3 delete-after-download policy + SourceDialog UI | Agent 19 | done |
 | T-296 | outbox view: real state chips/undo/reschedule via IPC; OutboxItem state+lastError gap filed | Agent 25 | done |
 | T-297 | no-mock audit: 1100 clicks, 0 console errs, 1 dead fixed, 4 honest gaps filed → ui-honesty-1.md | Agent 25 | done |
 | T-298 | OutboxItem state+lastError (v16, honestly derived held) — T-296 gap closed | Agent 20 | done |
@@ -286,3 +286,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-306 | CSP-safe Worker plugin loader (blob: worker-src only, free isolation, live-proven) | Agent 25 | done |
 | T-307 | plugin install UX: file-picker sideload button + error surfaces + cap badges + live install demo | Agent 25 | open | `kiwi-app/src` settings+plugins | T-302,T-306 |
 | T-308 | device-management surface vs canonical T-269 cmds: real device list + revoke + fingerprint display | Agent 24 | done | `kiwi-app/src` settings/security | T-269,T-303 |
+| T-309 | mbox import: parser (From_ boundaries, flags map) + kiwi_import_mbox IPC + audit | Agent 19 | open | `kiwi-mail`, `commands/` | onboarding/migration |
