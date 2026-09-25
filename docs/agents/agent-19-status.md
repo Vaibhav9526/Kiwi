@@ -540,3 +540,75 @@ delete test scopes the guard before readback calls.
 Flags: the IPC path has NO delete-after-download switch today —
 hardcoded keep-on-server. If the contract grows a per-account flag,
 `pop3_sync` just needs to pass it through.
+
+## T-295 — message_source IPC + POP3 delete-after-download policy (2026-09-25)
+
+Two backend closes, delivered together.
+
+### `kiwi_message_source` (T-292 follow-up — view-source had no command)
+
+- `commands/mail.rs`: `kiwi_message_source` → `message_source_impl`. Lock-gated.
+  Resolves `account_id` (len-bound) + `folder_id`/`uid` (negative uid →
+  `invalid-input`), asserts folder belongs to the account
+  (`store.folder_meta` cross-check → `not-found` on foreign/ghost folder),
+  then `store.body_file` → bounded raw read via `load_body_raw`. Absent body
+  → `not-found` — honest error, never an empty string.
+- `types/mail.rs`: `MessageSourceView { accountId, folderId, uid, source,
+  bytes, truncated }` — `bytes` reports the true stored size even when the
+  wire payload is truncated (reader sees honesty, not a guess).
+- Cap: same 8 MiB UTF-8 discipline as `message_body` — `MAX_SOURCE_BYTES` +
+  `truncate_to_byte_cap` char-boundary walk-back (verified with a multi-byte
+  `€` straddling the cap).
+- lib.rs registered; `kiwi.ts` type + `ipc.ts` `api.messageSource`; ipc.md
+  §6 row.
+- Frontend: `SourceDialog` gains a **Raw** tab — lazy-loads on first open,
+  renders verbatim `<pre>` source, shows `bytes` + a truncation notice when
+  `truncated`; error/loading states are honest.
+
+### POP3 delete-after-download policy (the T-285 flag)
+
+- `state.rs`: `AccountMeta.pop3_delete_after_download: bool`
+  (`#[serde(default)]` — existing sidecars keep keep-on-server).
+- `accounts.rs`: init `false` on account add.
+- `mail.rs::pop3_sync`: reads the flag from `index.account_meta` alongside
+  `accept_invalid_certs`, passes through to `sync_pop3_with_auth` — covers
+  manual sync AND the worker path (single funnel).
+- `kiwi_set_pop3_policy` → `set_pop3_policy_impl`: bounds account id,
+  `not-found` on unknown account, `invalid-input` on non-POP3 accounts
+  (IMAP has expunge semantics, not this), persists to sidecar index, audits
+  `pop3-delete-policy` with the account id + new value.
+- `types/mail.rs`: `Pop3PolicyView { accountId, deleteAfterDownload }`;
+  `kiwi.ts` + `ipc.ts api.setPop3Policy`; ipc.md documents default-keep,
+  UIDL dedup, and the destructive nature of enabling DELE.
+
+### Tests
+
+- `message_source_roundtrips_stored_rfc822` — verbatim RFC822 (no parse),
+  `bytes`/folder/uid echo; folded-in absent-body → `not-found`, negative
+  uid → `invalid-input`, ghost account → `not-found`.
+- `message_source_byte_cap_is_honest` — 8MiB+ straddling `€` →
+  `truncated:true`, `bytes` = full size, source ends on a char boundary.
+- `pop3_policy_toggle_persists_and_is_pop3_only` — toggle on a POP3 row
+  persists via `set_pop3_policy_impl` + `Pop3PolicyView` reflects it;
+  same call on an IMAP row → `invalid-input`; ghost → `not-found`.
+- The e2e DELE wire branch was already proven in T-285
+  (`e2e_pop3_delete_after_download_sends_dele`); the policy command is the
+  new IPC surface.
+
+### Verified
+
+`cargo test -p kiwi-app` — **139/139 green** on the final binary.
+`cargo clippy -p kiwi-app --all-targets -- -D warnings` clean; fmt clean;
+tsc clean.
+
+### Caveats (cross-agent churn, not this change)
+
+- The tree was heavily contended all session: kiwi-integrations +
+  `send/` T-298 (outbox `last_error`) + pairing_listen tests were all
+  mid-write during verification. Gates were taken on quiet windows;
+  two suite runs saw transient failures inside other agents' modules
+  (a stale-exe schema mismatch and a socket-contention stall) — both
+  resolved on rerun with zero changes from me.
+- `store_body` requires an existing message row (`UPDATE messages SET
+  body_path`) — the source tests `upsert_message` first. Noted for future
+  fixture authors.

@@ -590,3 +590,32 @@ plugin e2e not rerun (no plugin-surface changes).
   CSP delta + residual risks (shared process, no origin pinning, unsigned).
 - tsc 0 errors repo-wide; vite build green; plugin e2e 48/48.
 
+
+## T-307 — plugin install UX (done)
+
+- **Settings → Plugins "Install plugin…"** button → hidden `webkitdirectory`
+  input; `installPluginFiles` reads every picked file as text, strips the
+  top-level dir via `webkitRelativePath`, caps at 64 files / 512KB each, then
+  calls registry `installPlugin(manifestText, files)` (settings.tsx).
+- **Honest errors** — `.kiwi-banner.error` surfaces: missing root
+  `manifest.json`, invalid JSON, unknown capabilities (with the known list),
+  oversize/overflow files, read failures. Verified live for all three classes.
+- **Live FileList bug caught + fixed**: `input.value=""` ran BEFORE reading
+  the (live) FileList → installs silently no-op'd for real users too. Now
+  `Array.from(files)` snapshots before clearing — found via the CDP demo,
+  would have shipped broken otherwise.
+- **List refresh** rides the existing `kiwi-plugins-changed` → installed rows
+  re-render with declared-capability badges (`.ms-badge` per permission,
+  "no capabilities declared" when empty).
+- **Live install demo** (`artifacts/t307/install.mjs` + plugins-tab.png):
+  `vite preview` :4173 + CDP. CDP can't populate `webkitdirectory` inputs
+  headless, so files were injected via `DataTransfer` carrying the REAL
+  on-disk bytes — the production handler path ran unmodified:
+  notify-on-mail installed → row + `notify` badge → worker target spawned
+  (running under prod CSP) → hello installed → `[hello] Hello plugin
+  loaded.` toast → disable killed its worker (2→1) → re-enable respawned
+  (1→2) → Remove deleted the row.
+- e2e flake hardened: notify.show assertion now polls the toast itself
+  (plugin awaits renderPane THEN notify — trails one round-trip). 48/48 ×4.
+- tsc 0 errors repo-wide (foreign mid-flight errors settled); vite green.
+- Docs: GETTING-STARTED lifecycle section now documents the install UX.

@@ -281,10 +281,11 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-301 | templates UI real (picker/render/save-as/Settings CRUD, missingVars honest) — Mailspring parity complete | Agent 24 | done |
 | T-302 | all 4 plugin caps have real hosts (whitelist sinks, composer action, gates, 47/47); CSP-blocks-live-exec finding filed | Agent 25 | done |
 | T-303 | real pairing QR: reused mobile encoder, pair_begin payload→QR, status poll, Settings+LockOverlay | Agent 24 | done |
-| T-304 | LAN pair-claim listener: bounded endpoint → claim_ticket_and_register, loopback-tested (T-269 flag) | Agent 20 | open | `kiwi-pair`, `kiwi-app/src-tauri` | T-269,T-270 |
+| T-304 | LAN pair-claim listener: bounded POST, dev-flagged pending wss ruling, loopback-proven; also fixed stale-flat-file resurrection | Agent 20 | done |
 | T-305 | scripted UI smoke suite (CDP/playwright): boot→folders→list→reader→compose→settings→theme→menu→lock assertions, CI-runnable | Agent 24 | done | `kiwi-app`, scripts/ | regression gate |
 | T-306 | CSP-safe Worker plugin loader (blob: worker-src only, free isolation, live-proven) | Agent 25 | done |
-| T-307 | plugin install UX: file-picker sideload button + error surfaces + cap badges + live install demo | Agent 25 | open | `kiwi-app/src` settings+plugins | T-302,T-306 |
+| T-307 | plugin install UX: file-picker sideload button + error surfaces + cap badges + live install demo | Agent 25 | done | `kiwi-app/src` settings+plugins | T-302,T-306 |
 | T-308 | device surface verified vs canonical §9d: full DeviceView fields, revoke live, this-device badge | Agent 24 | done |
 | T-309 | mbox import: parser (From_ boundaries, flags map) + kiwi_import_mbox IPC + audit | Agent 19 | open | `kiwi-mail`, `commands/` | onboarding/migration |
 | T-310 | reader polish: quoted-text collapse, in-reply-to jump links, sig de-emphasis (presentation-only) | Agent 24 | open | `kiwi-app/src` reader | eM/Thunderbird parity |
+| T-311 | draft rulings for 8 authenticator contract contradictions (T-270 table) → DECISIONS.md proposals for owner ratification | Agent 20 | open | `docs/` | T-270,T-194 |

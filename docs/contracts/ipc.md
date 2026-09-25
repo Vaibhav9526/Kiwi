@@ -699,6 +699,44 @@ what stored evidence shows, never guesses). `conditionHits` lists only true
 predicate leaves using stable AST paths (`$`, `$.children[n]`, `$.child`); it
 never returns the matched address, header, or body value.
 
+### `kiwi_sandbox_sessions() → SandboxSessionsView` **[gated]**
+The transparency surface behind the Agenda security card's pending-sessions
+row (T-300): the bounded, in-memory record of sandbox opens, **newest first**.
+There is no live guest — every open above tears down before it is recorded —
+so a recorded session's `state` is always `completed` and `expiresAtUnix` is
+`null`. `expiresAtUnix` is reserved so a future live-session provider can
+populate it without a wire change.
+
+`sessions` is bounded at 128 rows (the store ring's capacity; oldest evicted
+first). When nothing has ever been opened the result is `{"sessions": []}` —
+**absence is never an error**, so the card renders an honest empty row rather
+than a failure. Errors: `locked` only.
+
+```jsonc
+{ "sessions": [
+    { "sessionId": "sandbox:0", "kind": "link",
+      "target": "https://evil.example/login",
+      "riskVerdict": "failed",
+      "evidenceReasons": ["insecureHttp", "ipLiteralHost"],
+      "openedAtUnix": 1760000000, "state": "completed",
+      "expiresAtUnix": null },
+    { "sessionId": "sandbox:1", "kind": "attachment",
+      "target": "attachment:f3/u712",
+      "riskVerdict": null,
+      "evidenceReasons": ["evidence-unavailable"],
+      "openedAtUnix": 1760000100, "state": "completed",
+      "expiresAtUnix": null } ] }
+```
+
+Field honesty: `target` is the same sanitized display target as the open
+receipts — a URL with userinfo/query/fragment removed for links, the
+`attachment:f<folderId>/u<uid>` coordinate for attachments. `riskVerdict` is the
+stored message's own link/attachment hint (`clean | noted | failed`) and is
+`null` when no stored evidence matched the target: absent evidence, **never a
+fabricated `clean`**. `evidenceReasons` stays the bounded stable reason codes —
+never a URL, filename, host path, or body fragment. The renderer drops rows it
+cannot parse rather than guessing a verdict.
+
 ### Ingest-time application (sync path — no IPC entry)
 The same engine runs automatically during sync: IMAP `sync_folder`
 evaluates envelope-stage rules on new INBOX messages (block verdicts

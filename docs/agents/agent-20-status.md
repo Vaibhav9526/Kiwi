@@ -845,3 +845,63 @@ TestSlug::new call sites); owner's `public_url`+`reject_in_band_error`
 landed as canonical — my interim spamtester-local duplicate removed.
 Two A25 mid-flight gaps patched (`useRef`/`useComposerActions` imports,
 `MessageSourceView` import in mailbox.tsx). No semantics overridden.
+
+---
+
+## T-304 — LAN pair-claim listener (done)
+
+A11's T-269 gap closed: the claim path (`claim_ticket_and_register`) now
+has a network listener that mobile can actually reach.
+
+- **`kiwi-app/src-tauri/src/pairing_listen.rs`** — bounded hand-rolled HTTP
+  over `tokio::net::TcpListener` (no new deps). `POST /pair` accepts the
+  §3.2 `kiwi-pairing-hello` (`pairing_ticket` + `device_public_key_b64` +
+  optional `keystore_ref`), decodes the key (canonical padded std Base64,
+  exactly 32 B), mints `dev-<id>` server-side, and hands off to
+  `PairEngine::claim_ticket_and_register` — the only registration path,
+  still atomic (consume+register+link). Claimant-supplied `device_label`
+  is ignored; the ticket's bound label is authoritative.
+- **Transport posture (documented, not resolved):** authenticator.md §3.2
+  requires TLS (`wss://`, pin = `desktop_public_key_b64`) and that ruling
+  is still unratified — so this listener is **plaintext, gated behind
+  `KIWI_PAIR_LISTEN=1`**, a development seam only. Production pairing
+  stays plaintext-forbidden; the claim semantics are transport-agnostic
+  so the wss swap changes only the socket layer.
+- **Lifecycle:** bind at `AppState::open` (std `TcpListener` on
+  `0.0.0.0:0`, no runtime needed), spawn the accept loop in `run()` setup.
+  Explicit provisioning (`KIWI_PAIR_ENDPOINT`/`pairing-channel.json`)
+  always wins over the flag. One listener per process; sequential
+  per-connection handling, 5 s read timeout, whole request ≤16 KiB,
+  Content-Length required, `connection: close` replies.
+- **QR wiring:** when the dev listener binds, its real
+  `http://<lan-ip>:<port>/pair` becomes `PairChannel.desktop_endpoint`
+  (LAN ip via UDP routing-table lookup — no packets sent), so
+  `pair_begin`'s QR payload advertises the actual socket.
+- **Fail-closed vocabulary:** `malformed-request`/`unexpected-type`/
+  `key-invalid`/`ticket-invalid`/`invalid-request`/`claim-failed` (400),
+  `device-conflict` (409), `method-not-allowed` (405), `unknown-path`
+  (404), `request-too-large` (413). Unknown/consumed/expired/malformed
+  tickets collapse to `ticket-invalid` — no ticket-state oracle, and
+  ticket/key bytes never enter replies, logs, or audit. Success audits
+  `pair-ticket-claimed` with device_id only.
+- **Tests:** real loopback `TcpStream` claims —
+  `claim_roundtrip_over_real_socket` (pair_begin → HTTP POST →
+  `kiwi-pairing-registered` → engine shows pending device with
+  ticket-bound label + pair_status "claimed") and
+  `unknown_and_malformed_claims_fail_closed` (unknown ticket →
+  ticket-invalid; bad JSON → malformed-request; GET /other → 405).
+
+**Gates:** kiwi-app **166** green; `cargo clippy --all-targets
+-D warnings` clean workspace-wide; fmt clean.
+
+**Concurrent churn handled:** this session spanned three other agents'
+live work — a stale-file resurrection (committed HEAD carried
+`send.rs`/`message.rs`/`types.rs` alongside their post-split dirs →
+E0761; the stale flats deleted), integrations' `DeliverabilitySession`
+rework (consent→consumed/enqueued/queue_id/last_status fields, cooldown
+machinery, `send_impl_class`), sandbox session-kind refactor, and a
+clippy `await_holding_lock` fix. Interim fills I made (session literals,
+`OutboxClass::Ordinary` defaults, cfg-gated test imports, `_until`,
+`.clone()` on a Drop type, std::sync::Mutex initializers) were all
+mechanical; the owners landed their canonical versions and every fix
+converged — final tree is theirs, not mine.

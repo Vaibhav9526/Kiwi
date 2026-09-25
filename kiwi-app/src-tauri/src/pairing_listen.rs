@@ -154,11 +154,7 @@ async fn write_reply(
     write_json(stream, status, &body).await
 }
 
-async fn write_json(
-    stream: &mut tokio::net::TcpStream,
-    status: u16,
-    body: &str,
-) -> Result<(), ()> {
+async fn write_json(stream: &mut tokio::net::TcpStream, status: u16, body: &str) -> Result<(), ()> {
     let reason = match status {
         200 => "OK",
         400 => "Bad Request",
@@ -183,7 +179,10 @@ async fn dispatch(state: &AppState, buf: &[u8]) -> (u16, String) {
     };
     let head = &buf[..head_end];
     let body = &buf[head_end + 4..];
-    let Some(line) = std::str::from_utf8(head).ok().and_then(|h| h.lines().next()) else {
+    let Some(line) = std::str::from_utf8(head)
+        .ok()
+        .and_then(|h| h.lines().next())
+    else {
         return (400, err_json("malformed-request"));
     };
     let mut parts = line.split_whitespace();
@@ -307,7 +306,9 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(serve(state.clone(), listener));
-        let mut conn = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let mut conn = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
         conn.write_all(
             format!(
                 "POST {CLAIM_PATH} HTTP/1.1\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
@@ -333,7 +334,10 @@ mod tests {
         );
         let reply = post(&state, &body).await;
         assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
-        assert!(reply.contains("\"type\":\"kiwi-pairing-registered\""), "{reply}");
+        assert!(
+            reply.contains("\"type\":\"kiwi-pairing-registered\""),
+            "{reply}"
+        );
         assert!(reply.contains("\"device_id\":\"dev-"), "{reply}");
         // The device is registered pending via the engine's atomic path.
         let devices = state.pair.lock().await.list_devices(10).unwrap();
@@ -367,7 +371,9 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         tokio::spawn(serve(state.clone(), listener));
-        let mut conn = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let mut conn = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
         conn.write_all(b"GET /other HTTP/1.1\r\ncontent-length: 0\r\n\r\n")
             .await
             .unwrap();
