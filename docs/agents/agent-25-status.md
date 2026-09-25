@@ -498,3 +498,37 @@ backend `state`+`lastError` pair to show real held/failed rows.
   state-chip CSS resolves (accent border, pill), 4-col grid intact.
 - Live queue cards need the Tauri backend (demo mode has no queue); the
   card path compiles and mounts via the same props as the verified list.
+
+## T-297 — No-mock UI audit → docs/audits/ui-honesty-1.md
+
+### Method
+Scripted CDP click-census (`artifacts/t297/audit.mjs`, `audit2.mjs`):
+21 route passes + all 8 Settings tabs, ~1,100 control clicks. Effect =
+nav | toast | DOM mutation | checked/aria flip | input focus.
+Destructive/dialog-confirm controls verified by handler binding instead.
+v1 census had mass false positives (React re-renders detach
+earlier-enumerated nodes) — v2 re-queries each control by CSS path.
+Console errors across the whole sweep: 0.
+
+### Findings
+- **1 dead control (fixed):** Quick Actions main button was
+  `onClick={() => undefined}` — `ToolBtn` gained `menuOnMain` (main click
+  toggles menu, `aria-haspopup/expanded`). CDP-verified.
+- **0 unlabeled mocks.** Demo data is globally chip-labeled + per-action
+  "Demo mode — needs the Tauri backend" toasts; agenda demo rows tagged.
+- **4 labeled gaps filed:** raw-RFC822 source IPC (T-295/A19), pairing QR
+  placeholder, OutboxItem state/lastError (T-298/A20), plugin
+  message-list-read/composer-action (documented not-implemented).
+- Context menu landed mid-audit (A24): right-click → 10 real items,
+  demo-gated items honestly titled; transient tsc errors resolved when
+  their App.tsx callsite landed. Verified post-settle.
+
+### Gotcha worth noting for future audits
+`#/rules`, `#/integrations`, `#/security-center` are NOT routes — the
+router falls back to mail. Real routes: mail/compose/setup/settings/
+security/search/contacts/filters; rules+integrations+plugins are
+Settings tabs.
+
+### Verify
+`tsc` 0 errors repo-wide (post-A24 settle); `vite build` green;
+plugin e2e not rerun (no plugin-surface changes).

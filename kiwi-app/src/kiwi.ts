@@ -1141,6 +1141,16 @@ export interface OutboxItem {
   undoWindowUntilUnix: number;
   attempts: number;
   cancelable: boolean;
+  /**
+   * Lifecycle state (T-298, ipc.md §7). The list only ever emits
+   * `queued` (attempts==0 — incl. send-later/undo-grace) and `held`
+   * (attempts>0 — a prior attempt failed, retry pending). `sending` is
+   * a sub-second transient; `sent`/`cancelled` drop the row — observe
+   * terminal transitions via the kiwi://outbox event, not the list.
+   */
+  state: "queued" | "sending" | "held" | "cancelled" | "sent";
+  /** Sanitized `code: message` of the last failed attempt; `null` until the first. */
+  lastError: string | null;
 }
 
 export interface VerifyStep {
@@ -1243,6 +1253,7 @@ export interface DeliverabilityStatusView {
   checksTotal: number;
   ready: boolean;
   sent: boolean;
+  retryAfterMs?: number;
 }
 
 export interface DeliverabilityCitationView {
@@ -1280,6 +1291,7 @@ export interface DeliverabilityReportView {
   checks: DeliverabilityCheckView[];
   /** ids of failed `auth` checks — the gate set. */
   authFailureIds: string[];
+  authGate: "pass" | "fail" | "unknown";
 }
 
 /* ---------------- mappers (backend → UI, never throw) ---------------- */

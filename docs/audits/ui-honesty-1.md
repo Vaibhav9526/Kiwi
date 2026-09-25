@@ -63,13 +63,17 @@ during the whole sweep: **0**.
 - Zero console errors / unhandled rejections across the full sweep.
 - All IPC failure paths render `kiwi-banner error` or toasts (T-287 sweep).
 
-## Not audited (in-flight, other agents)
+## Context menu (landed mid-audit by A24 — verified after it settled)
 
-- `components/contextmenu.tsx` (A24, T-294+) — file landed mid-audit with
-  transient tsc errors (`CtxItem` comparison, icon union). Right-click menus
-  excluded from this census; re-audit after it settles.
-- `views/mailbox.tsx` +171 foreign lines (contextmenu + `folderLists`,
-  `onSnooze`, `onMoveToFolder` props) — same window.
+- Right-click row menu (`components/contextmenu.tsx` + `views/mailbox.tsx`
+  `ctxEntries`): opens with 10 real items (Reply / Reply All / Forward /
+  Mark read / Star / Snooze submenu / Archive / Move-to submenu / Mark as
+  junk / Delete). Snooze + Move-to + Junk are **demo-disabled with the
+  honest title "Needs the Tauri backend"**; Move-to empty-account state
+  says "No other folders on this account". Click-through exercised.
+- The transient tsc errors seen during the sweep (CtxEntry icon union,
+  `folderLists`/`onSnooze`/`onMoveToFolder` callsite) resolved as the
+  agent's edit completed — repo-wide `tsc` is green.
 
 ## Verdict
 

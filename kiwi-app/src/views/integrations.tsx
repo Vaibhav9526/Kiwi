@@ -12,13 +12,13 @@
  * Deliverability: begin mints testId + a single-use consentToken; the
  * token stays in component memory (never rendered); the send requires
  * the consent checkbox — `consentNotice` is shown verbatim beside it.
- * Status polls are single-shot IPC calls; a 15 s interval drives the
- * loop while a test is in flight, and the report loads once `ready`.
+ * Status polls are single-shot IPC calls; one recursive timeout drives
+ * the loop while a test is in flight, and the report loads once `ready`.
  *
  * CSP strict: no remote assets, no navigation — `reportUrl` and citation
  * URLs render as text with Copy, never anchors.
  */
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, BackendUnavailableError, IpcError } from "../ipc";
 import type {
   AccountView,
@@ -76,7 +76,7 @@ function CopyButton({ text, label }: { text: string; label: string }) {
 
 /* ================= Temp mail ================= */
 
-function TempMailPanel({ live }: { live: boolean }) {
+export function TempMailPanel({ live }: { live: boolean }) {
   const [mailbox, setMailbox] = useState<TempMailboxView | null>(null);
   const [notice, setNotice] = useState(PUBLIC_INBOX_NOTICE);
   const [localPart, setLocalPart] = useState("");
@@ -278,6 +278,12 @@ function TempMailPanel({ live }: { live: boolean }) {
                         <div
                           /* Backend-sanitized fragment — remote resources
                              always stripped for a public inbox (T-227). */
+                          style={{ pointerEvents: "none" }}
+                          onClickCapture={(event) => event.preventDefault()}
+                          onKeyDownCapture={(event) => {
+                            if (event.key === "Enter" || event.key === " ") event.preventDefault();
+                          }}
+                          onSubmitCapture={(event) => event.preventDefault()}
                           dangerouslySetInnerHTML={{ __html: openBody.html }}
                         />
                       ) : (
@@ -347,18 +353,30 @@ function CheckRow({ c, flagged }: { c: DeliverabilityCheckView; flagged: boolean
 
 function ReportView({ r }: { r: DeliverabilityReportView }) {
   const flagSet = new Set(r.authFailureIds);
+  const authBlocked = r.authGate !== "pass";
   return (
     <div>
-      <p style={{ fontSize: "1.4rem", margin: "0.4rem 0" }}>
-        <strong>{milli(r.scoreOursMilli)}</strong>
-        <small> /100 deliverability</small>{" "}
-        {r.scoreCompatMilli !== undefined && (
-          <>
-            <span className="kiwi-pill unknown">compat {milli(r.scoreCompatMilli)}/10</span>{" "}
-          </>
-        )}
-        {!r.complete && <span className="kiwi-pill warn">partial report</span>}
-      </p>
+      {authBlocked && (
+        <div className="kiwi-banner error" role="alert">
+          <small>Authentication gate is {r.authGate}; this report is blocked until it passes.</small>
+        </div>
+      )}
+      {authBlocked ? (
+        <p>
+          <small>Deliverability score withheld because the authentication gate did not pass.</small>
+        </p>
+      ) : (
+        <p style={{ fontSize: "1.4rem", margin: "0.4rem 0" }}>
+          <strong>{milli(r.scoreOursMilli)}</strong>
+          <small> /100 deliverability</small>{" "}
+          {r.scoreCompatMilli !== undefined && (
+            <>
+              <span className="kiwi-pill unknown">compat {milli(r.scoreCompatMilli)}/10</span>{" "}
+            </>
+          )}
+          {!r.complete && <span className="kiwi-pill warn">partial report</span>}
+        </p>
+      )}
       {r.authFailureIds.length > 0 && (
         <div className="kiwi-banner error" role="alert">
           <small>
@@ -407,7 +425,35 @@ function ReportView({ r }: { r: DeliverabilityReportView }) {
   );
 }
 
-function DeliverabilityPanel({ accounts, live }: { accounts: AccountView[]; live: boolean }) {
+export const DELIVERABILITY_POLL_MS = 15_000;
+const MAX_POLL_DELAY_MS = 60 * 60 * 1000;
+
+function retryAfterMs(error: unknown): number | undefined {
+  if (error instanceof IpcError) return error.retryAfterMs;
+  if (typeof error === "object" && error !== null) {
+    const value = (error as Record<string, unknown>)["retryAfterMs"];
+    if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
+      return Math.min(value, MAX_POLL_DELAY_MS);
+    }
+  }
+  return undefined;
+}
+
+function pollDelay(status: DeliverabilityStatusView | undefined, error?: unknown): number {
+  const value = status?.retryAfterMs ?? retryAfterMs(error);
+  if (value === undefined) return DELIVERABILITY_POLL_MS;
+  return Math.max(1, Math.min(value, MAX_POLL_DELAY_MS));
+}
+
+function terminalStatus(status: DeliverabilityStatusView): boolean {
+  return status.ready || ["failed", "expired", "cancelled", "canceled", "error"].includes(status.analysisStatus.toLowerCase());
+}
+
+function retryableError(error: unknown): boolean {
+  return error instanceof BackendUnavailableError || (error instanceof IpcError && ["rate-limited", "connect-failed"].includes(error.code));
+}
+
+export function DeliverabilityPanel({ accounts, live }: { accounts: AccountView[]; live: boolean }) {
   const [begin, setBegin] = useState<DeliverabilityBeginView | null>(null);
   const [accountId, setAccountId] = useState("");
   const [consent, setConsent] = useState(false);
@@ -417,12 +463,30 @@ function DeliverabilityPanel({ accounts, live }: { accounts: AccountView[]; live
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const mounted = useRef(true);
+  const generation = useRef(0);
+  const timer = useRef<number | null>(null);
+  const inFlightGeneration = useRef<number | null>(null);
+  const reportRef = useRef<DeliverabilityReportView | null>(null);
+  const pollRef = useRef<(generation: number, testId: string) => Promise<void>>(async () => {});
+
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
     };
   }, []);
+
+  const clearTimer = useCallback(() => {
+    if (timer.current !== null) {
+      window.clearTimeout(timer.current);
+      timer.current = null;
+    }
+  }, []);
+
+  const stopPolling = useCallback(() => {
+    generation.current += 1;
+    clearTimer();
+  }, [clearTimer]);
 
   const run = async (what: string, fn: () => Promise<void>) => {
     setBusy(what);
@@ -436,34 +500,66 @@ function DeliverabilityPanel({ accounts, live }: { accounts: AccountView[]; live
     }
   };
 
-  const poll = () =>
-    run("status", async () => {
-      if (!begin) return;
-      const s = await api.integrationsDeliverabilityStatus(begin.testId);
-      if (!mounted.current) return;
-      setStatus(s);
-      if (s.ready && !report) {
-        const r = await api.integrationsDeliverabilityReport(begin.testId);
-        if (mounted.current) setReport(r);
-      }
-    });
+  const schedule = (currentGeneration: number, testId: string, delay: number) => {
+    if (!mounted.current || currentGeneration !== generation.current) return;
+    clearTimer();
+    timer.current = window.setTimeout(() => {
+      timer.current = null;
+      void pollRef.current(currentGeneration, testId);
+    }, delay);
+  };
 
-  // Poll every 15 s while a test is in flight (single-shot IPC; the loop
-  // is UI-owned per contract §9e). Stops when ready or unmounted.
+  const poll = async (currentGeneration: number, testId: string) => {
+    if (!mounted.current || currentGeneration !== generation.current || inFlightGeneration.current === currentGeneration) return;
+    inFlightGeneration.current = currentGeneration;
+    setBusy("status");
+    setError(null);
+    try {
+      const nextStatus = await api.integrationsDeliverabilityStatus(testId);
+      if (!mounted.current || currentGeneration !== generation.current) return;
+      setStatus(nextStatus);
+      if (nextStatus.ready) {
+        if (!reportRef.current) {
+          const nextReport = await api.integrationsDeliverabilityReport(testId);
+          if (!mounted.current || currentGeneration !== generation.current) return;
+          reportRef.current = nextReport;
+          setReport(nextReport);
+        }
+      } else if (!terminalStatus(nextStatus)) {
+        schedule(currentGeneration, testId, pollDelay(nextStatus));
+      }
+    } catch (e) {
+      if (!mounted.current || currentGeneration !== generation.current) return;
+      setError(errText(e));
+      if (retryableError(e)) schedule(currentGeneration, testId, pollDelay(undefined, e));
+    } finally {
+      if (inFlightGeneration.current === currentGeneration) inFlightGeneration.current = null;
+      if (mounted.current && currentGeneration === generation.current) setBusy(null);
+    }
+  };
+  pollRef.current = poll;
+
   useEffect(() => {
-    if (!sent || !begin || status?.ready) return;
-    const t = window.setInterval(() => void poll(), 15_000);
-    return () => window.clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sent, begin, status?.ready]);
+    if (!sent || !begin) return;
+    const currentGeneration = generation.current + 1;
+    generation.current = currentGeneration;
+    clearTimer();
+    void pollRef.current(currentGeneration, begin.testId);
+    return () => {
+      if (generation.current === currentGeneration) generation.current += 1;
+      clearTimer();
+    };
+  }, [begin?.testId, clearTimer, sent?.testId]);
 
   const doBegin = () =>
     run("begin", async () => {
+      stopPolling();
       const v = await api.integrationsDeliverabilityBegin();
       setBegin(v);
       setConsent(false);
       setSent(null);
       setStatus(null);
+      reportRef.current = null;
       setReport(null);
     });
 
@@ -471,18 +567,24 @@ function DeliverabilityPanel({ accounts, live }: { accounts: AccountView[]; live
     run("send", async () => {
       if (!begin || !accountId) return;
       const v = await api.integrationsDeliverabilitySend(begin.testId, begin.consentToken, accountId, {
-        to: [], // recipients are ignored — the reserved address is enforced
+        to: [],
         subject: "KIWI deliverability test",
         text: "This message exercises KIWI's outbound pipeline for deliverability analysis.",
       });
       setSent(v);
-      await poll();
     });
 
+  const checkStatus = () => {
+    if (!begin || !sent) return;
+    void pollRef.current(generation.current, begin.testId);
+  };
+
   const reset = () => {
+    stopPolling();
     setBegin(null);
     setSent(null);
     setStatus(null);
+    reportRef.current = null;
     setReport(null);
     setConsent(false);
     setError(null);
@@ -583,7 +685,7 @@ function DeliverabilityPanel({ accounts, live }: { accounts: AccountView[]; live
             </small>
           </p>
           <p>
-            <button type="button" className="ms-btn" disabled={busy !== null} onClick={() => void poll()}>
+            <button type="button" className="ms-btn" disabled={busy !== null} onClick={checkStatus}>
               {busy === "status" ? "Checking…" : "Check status"}
             </button>{" "}
             {status && (

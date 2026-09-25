@@ -76,6 +76,17 @@ import type {
   VerifyResult,
 } from "./kiwi";
 import { parseAutoconfigSuggestion, parseContact, parseOAuth2Begin, parseOAuth2Poll, parseOAuth2Status, parseSearchHit } from "./kiwi";
+import {
+  decodeDeliverabilityBeginView,
+  decodeDeliverabilityReportView,
+  decodeDeliverabilitySendView,
+  decodeDeliverabilityStatusView,
+  decodeTempDiscardView,
+  decodeTempExtendView,
+  decodeTempMailboxView,
+  decodeTempMessageView,
+  decodeTempPollView,
+} from "./integrations";
 
 export class BackendUnavailableError extends Error {
   constructor(command: string, cause?: unknown) {
@@ -89,6 +100,7 @@ export class IpcError extends Error {
   constructor(
     public readonly code: string,
     message: string,
+    public readonly retryAfterMs?: number,
   ) {
     super(message);
     this.name = "IpcError";
@@ -100,11 +112,22 @@ export function isTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
+function retryAfterMs(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) return undefined;
+  return Math.min(value, 60 * 60 * 1000);
+}
+
+function retryAfterFromMessage(message: string): number | undefined {
+  const match = message.match(/retry after\s+(\d+)\s*ms/i);
+  return match?.[1] === undefined ? undefined : retryAfterMs(Number(match[1]));
+}
+
 function asIpcError(value: unknown): IpcError | null {
   if (typeof value === "object" && value !== null) {
     const r = value as Record<string, unknown>;
     if (typeof r["code"] === "string" && typeof r["message"] === "string") {
-      return new IpcError(r["code"], r["message"]);
+      const hint = retryAfterMs(r["retryAfterMs"] ?? r["retry_after_ms"]) ?? retryAfterFromMessage(r["message"]);
+      return new IpcError(r["code"], r["message"], hint);
     }
   }
   if (typeof value === "string" && value.length > 0 && value.length < 300) {
@@ -120,6 +143,11 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
   } catch (err) {
     throw asIpcError(err) ?? new BackendUnavailableError(command, err);
   }
+}
+
+function decoded<T>(value: T | null, command: string): T {
+  if (value === null) throw new IpcError("malformed-response", `malformed integration response for ${command}`);
+  return value;
 }
 
 function asArray<T>(raw: unknown): T[] {
@@ -677,22 +705,27 @@ export const api = {
    * knows the address can read its mail. One session at a time; create
    * replaces, discard clears.
    */
-  integrationsTempmailCreate(localPart?: string): Promise<TempMailboxView> {
-    return call<TempMailboxView>("kiwi_integrations_tempmail_create", { localPart });
+  async integrationsTempmailCreate(localPart?: string): Promise<TempMailboxView> {
+    const raw = await call<unknown>("kiwi_integrations_tempmail_create", { localPart });
+    return decoded(decodeTempMailboxView(raw), "kiwi_integrations_tempmail_create");
   },
-  integrationsTempmailPoll(): Promise<TempPollView> {
-    return call<TempPollView>("kiwi_integrations_tempmail_poll");
+  async integrationsTempmailPoll(): Promise<TempPollView> {
+    const raw = await call<unknown>("kiwi_integrations_tempmail_poll");
+    return decoded(decodeTempPollView(raw), "kiwi_integrations_tempmail_poll");
   },
   /** Fetched message — `html` arrives pre-sanitized (remote resources
    * always stripped for a public inbox); raw MIME never crosses IPC. */
-  integrationsTempmailFetch(mailId: string): Promise<TempMessageView> {
-    return call<TempMessageView>("kiwi_integrations_tempmail_fetch", { mailId });
+  async integrationsTempmailFetch(mailId: string): Promise<TempMessageView> {
+    const raw = await call<unknown>("kiwi_integrations_tempmail_fetch", { mailId });
+    return decoded(decodeTempMessageView(raw), "kiwi_integrations_tempmail_fetch");
   },
-  integrationsTempmailDiscard(): Promise<TempDiscardView> {
-    return call<TempDiscardView>("kiwi_integrations_tempmail_discard");
+  async integrationsTempmailDiscard(): Promise<TempDiscardView> {
+    const raw = await call<unknown>("kiwi_integrations_tempmail_discard");
+    return decoded(decodeTempDiscardView(raw), "kiwi_integrations_tempmail_discard");
   },
-  integrationsTempmailExtend(): Promise<TempExtendView> {
-    return call<TempExtendView>("kiwi_integrations_tempmail_extend");
+  async integrationsTempmailExtend(): Promise<TempExtendView> {
+    const raw = await call<unknown>("kiwi_integrations_tempmail_extend");
+    return decoded(decodeTempExtendView(raw), "kiwi_integrations_tempmail_extend");
   },
 
   /**
@@ -702,27 +735,31 @@ export const api = {
    * missing/wrong/replayed token). Recipients in `message` are ignored;
    * the sole recipient is the reserved address.
    */
-  integrationsDeliverabilityBegin(): Promise<DeliverabilityBeginView> {
-    return call<DeliverabilityBeginView>("kiwi_integrations_deliverability_begin");
+  async integrationsDeliverabilityBegin(): Promise<DeliverabilityBeginView> {
+    const raw = await call<unknown>("kiwi_integrations_deliverability_begin");
+    return decoded(decodeDeliverabilityBeginView(raw), "kiwi_integrations_deliverability_begin");
   },
-  integrationsDeliverabilitySend(
+  async integrationsDeliverabilitySend(
     testId: string,
     consentToken: string,
     accountId: string,
     message: Record<string, unknown>,
   ): Promise<DeliverabilitySendView> {
-    return call<DeliverabilitySendView>("kiwi_integrations_deliverability_send", {
+    const raw = await call<unknown>("kiwi_integrations_deliverability_send", {
       testId,
       consentToken,
       accountId,
       message,
     });
+    return decoded(decodeDeliverabilitySendView(raw), "kiwi_integrations_deliverability_send");
   },
-  integrationsDeliverabilityStatus(testId: string): Promise<DeliverabilityStatusView> {
-    return call<DeliverabilityStatusView>("kiwi_integrations_deliverability_status", { testId });
+  async integrationsDeliverabilityStatus(testId: string): Promise<DeliverabilityStatusView> {
+    const raw = await call<unknown>("kiwi_integrations_deliverability_status", { testId });
+    return decoded(decodeDeliverabilityStatusView(raw), "kiwi_integrations_deliverability_status");
   },
-  integrationsDeliverabilityReport(testId: string): Promise<DeliverabilityReportView> {
-    return call<DeliverabilityReportView>("kiwi_integrations_deliverability_report", { testId });
+  async integrationsDeliverabilityReport(testId: string): Promise<DeliverabilityReportView> {
+    const raw = await call<unknown>("kiwi_integrations_deliverability_report", { testId });
+    return decoded(decodeDeliverabilityReportView(raw), "kiwi_integrations_deliverability_report");
   },
 
   /* ---------------- endpoint signals (exempt) ---------------- */
