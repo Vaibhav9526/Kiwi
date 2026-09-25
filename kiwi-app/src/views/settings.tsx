@@ -301,13 +301,15 @@ export function SettingsView({
    * readable errors which surface verbatim in the banner — no silent fails.
    */
   const installPluginFiles = async (files: FileList | null, input: HTMLInputElement) => {
-    input.value = ""; // allow re-picking the same folder
     if (!files || files.length === 0) return;
+    // FileList is live — snapshot the File objects BEFORE clearing the input,
+    // or input.value="" empties the list and silently drops the pick.
+    const picked = Array.from(files);
+    input.value = ""; // allow re-picking the same folder
     const errs: string[] = [];
     const map: Record<string, string> = {};
     const MAX_FILES = 64;
     const MAX_BYTES = 512 * 1024;
-    const picked = Array.from(files);
     if (picked.length > MAX_FILES) errs.push(`package has ${picked.length} files — max ${MAX_FILES}`);
     for (const f of picked.slice(0, MAX_FILES)) {
       const rel = (f.webkitRelativePath || f.name).split("/").slice(1).join("/") || f.name;

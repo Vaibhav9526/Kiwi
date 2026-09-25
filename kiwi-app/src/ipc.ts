@@ -52,6 +52,7 @@ import type {
   RuleView,
   SearchHit,
   SandboxOpenView,
+  SandboxSessionsView,
   SecurityStatusView,
   SendReceipt,
   SetJunkView,
@@ -75,7 +76,7 @@ import type {
   VCardImportView,
   VerifyResult,
 } from "./kiwi";
-import { parseAutoconfigSuggestion, parseContact, parseOAuth2Begin, parseOAuth2Poll, parseOAuth2Status, parseSearchHit } from "./kiwi";
+import { parseAutoconfigSuggestion, parseContact, parseOAuth2Begin, parseOAuth2Poll, parseOAuth2Status, parseSandboxSessions, parseSearchHit } from "./kiwi";
 import {
   decodeDeliverabilityBeginView,
   decodeDeliverabilityReportView,
@@ -464,6 +465,15 @@ export const api = {
   },
   sandboxOpenAttachment(folderId: number, uid: number, filename: string): Promise<SandboxOpenView> {
     return call<SandboxOpenView>("kiwi_sandbox_open_attachment", { folderId, uid, filename });
+  },
+  /**
+   * T-300: bounded record of completed sandbox opens, newest first — the
+   * Agenda security card's pending-sessions row. Resolves to `{sessions: []}`
+   * when nothing has been opened (absence is not an error).
+   */
+  async sandboxSessions(): Promise<SandboxSessionsView> {
+    const raw = await call<unknown>("kiwi_sandbox_sessions", {});
+    return parseSandboxSessions(raw) ?? { sessions: [] };
   },
 
   /**

@@ -97,6 +97,10 @@ function toEnvelope(
     snippet: m.snippet || "",
     category: normalizeCategory(m.category),
     unsub: parseUnsubscribe(m),
+    // T-310: reply-chain ids for the reader's in-reply-to jump.
+    messageId: m.messageId ?? null,
+    inReplyTo: m.inReplyTo ?? null,
+    references: m.references ?? [],
     // T-284: carry per-message evidence hints so the reader pill reflects
     // this message's auth/link/attachment evaluation, not just session trust.
     auth: m.auth ?? null,

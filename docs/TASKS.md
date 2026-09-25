@@ -284,8 +284,9 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-304 | LAN pair-claim listener: bounded POST, dev-flagged pending wss ruling, loopback-proven; also fixed stale-flat-file resurrection | Agent 20 | done |
 | T-305 | scripted UI smoke suite (CDP/playwright): boot→folders→list→reader→compose→settings→theme→menu→lock assertions, CI-runnable | Agent 24 | done | `kiwi-app`, scripts/ | regression gate |
 | T-306 | CSP-safe Worker plugin loader (blob: worker-src only, free isolation, live-proven) | Agent 25 | done |
-| T-307 | plugin install UX: file-picker sideload button + error surfaces + cap badges + live install demo | Agent 25 | done | `kiwi-app/src` settings+plugins | T-302,T-306 |
+| T-307 | plugin install UX live-proven (picker→install→worker→lifecycle); FileList-clear bug fixed | Agent 25 | done |
 | T-308 | device surface verified vs canonical §9d: full DeviceView fields, revoke live, this-device badge | Agent 24 | done |
 | T-309 | mbox import: parser (From_ boundaries, flags map) + kiwi_import_mbox IPC + audit | Agent 19 | open | `kiwi-mail`, `commands/` | onboarding/migration |
 | T-310 | reader polish: quoted-text collapse, in-reply-to jump links, sig de-emphasis (presentation-only) | Agent 24 | open | `kiwi-app/src` reader | eM/Thunderbird parity |
 | T-311 | draft rulings for 8 authenticator contract contradictions (T-270 table) → DECISIONS.md proposals for owner ratification | Agent 20 | open | `docs/` | T-270,T-194 |
+| T-312 | contacts depth (detail/edit or honest gap) + rail sandbox-pending row once T-300 lands | Agent 25 | open | `kiwi-app/src` | T-231,T-300 |

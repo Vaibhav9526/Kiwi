@@ -755,6 +755,7 @@ export function MailboxView(props: MailboxProps) {
                     m={m}
                     isSelected={m.id === selected.id}
                     folder={folder}
+                    threadMessages={selectedThread?.messages ?? [selected]}
                     body={m.id === selected.id ? props.body : null}
                     bodyLoading={m.id === selected.id && props.bodyLoading}
                     bodyError={m.id === selected.id ? props.bodyError : null}
@@ -1264,10 +1265,16 @@ function ThreadRow({
 
 /* ---------------- reader: stacked message cards ---------------- */
 
+/** T-310: normalize an RFC822 Message-ID header for matching. */
+function normMsgId(s: string | null | undefined): string {
+  return (s ?? "").trim().replace(/^<|>$/g, "").trim().toLowerCase();
+}
+
 function MessageCard({
   m,
   isSelected,
   folder,
+  threadMessages,
   body,
   bodyLoading,
   bodyError,
@@ -1289,6 +1296,8 @@ function MessageCard({
   m: MessageEnvelope;
   isSelected: boolean;
   folder: string;
+  /** T-310: loaded thread members — for the in-reply-to jump resolution. */
+  threadMessages: MessageEnvelope[];
   body: MessageBodyView | null;
   bodyLoading: boolean;
   bodyError: string | null;
@@ -1364,6 +1373,27 @@ function MessageCard({
               </span>
             )}
           </p>
+          {/* T-310: in-reply-to jump — resolves the message's chain header
+              against the loaded thread's real Message-IDs; nothing renders
+              when the parent isn't in view. */}
+          {(() => {
+            const wanted = normMsgId(m.inReplyTo) || normMsgId(m.references?.[m.references.length - 1]);
+            if (!wanted) return null;
+            const parent = threadMessages.find((t) => normMsgId(t.messageId) === wanted && t.id !== m.id);
+            if (!parent) return null;
+            return (
+              <p className="em-card-to" style={{ marginTop: 0 }}>
+                <button
+                  type="button"
+                  className="em-quote-toggle"
+                  onClick={() => navigate({ name: "mail", folder, messageId: parent.id })}
+                  title={`Message-ID ${parent.messageId}`}
+                >
+                  ← In reply to {senderName(parent.from)}
+                </button>
+              </p>
+            );
+          })()}
           <UnsubscribeChip
             unsub={m.unsub}
             accountId={m.accountId}
@@ -2007,6 +2037,76 @@ function displayUrl(raw: string): string {
   }
 }
 
+/**
+ * T-310 — quoted-content split for text/plain bodies. Conservative: a
+ * region only collapses when the quote marker is unambiguous — an
+ * "On … wrote:" preamble or a `>`-prefixed run — AND the region runs to
+ * end-of-message with at most a signature/`>` tail after it. Interleaved
+ * quoting (a quote run followed by more real text) is left fully visible:
+ * hiding it risks hiding real content.
+ */
+function splitQuotedText(text: string): { head: string; quoted: string | null; sig: string | null } {
+  const lines = text.split("\n");
+  const isQuote = (l: string) => /^>/.test(l.trim());
+  const isPreamble = (l: string) => /^On .{1,300}wrote:?\s*$/im.test(l.trim());
+  const isSigMark = (l: string) => /^--\s*$/.test(l);
+  let qStart = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i] ?? "";
+    if (isPreamble(l)) {
+      // The preamble only counts when what follows is really quoted
+      // material — at least one `>` line or nothing at all (bare trailer).
+      const rest = lines.slice(i + 1);
+      if (rest.some(isQuote) || rest.every((x) => x.trim() === "")) {
+        qStart = i;
+        break;
+      }
+      return { head: text, quoted: null, sig: null }; // stray "wrote:" text
+    }
+    if (isQuote(l)) {
+      // Accept only a quote run that extends to EOM, tolerating blanks and
+      // a trailing signature block — anything else interleaved means a
+      // human mixed quote and reply; collapse nothing.
+      let j = i;
+      while (j < lines.length && (isQuote(lines[j] ?? "") || (lines[j] ?? "").trim() === "")) j++;
+      const tail = lines.slice(j);
+      const tailIsBlank = tail.every((x) => x.trim() === "");
+      const tailIsSig = tail.length > 0 && isSigMark(tail[0] ?? "");
+      const runLen = j - i;
+      if (runLen >= 2 && (tailIsBlank || tailIsSig)) {
+        qStart = i;
+        break;
+      }
+      return { head: text, quoted: null, sig: null }; // ambiguous — collapse nothing
+    }
+  }
+  if (qStart < 0) return { head: text, quoted: null, sig: null };
+  const headLines = lines.slice(0, qStart);
+  const quoted = lines.slice(qStart).join("\n").replace(/\n+$/, "");
+  if (!headLines.join("\n").trim() || quoted.split("\n").length < 2) {
+    return { head: text, quoted: null, sig: null };
+  }
+  // Signature: RFC 3676 "-- " delimiter inside the head only.
+  let sigIdx = -1;
+  for (let i = headLines.length - 1; i >= 0; i--) {
+    if (/^--\s*$/.test(headLines[i] ?? "")) {
+      sigIdx = i;
+      break;
+    }
+  }
+  if (sigIdx >= 0) {
+    return {
+      head: headLines.slice(0, sigIdx).join("\n").replace(/\n+$/, ""),
+      sig: headLines.slice(sigIdx).join("\n"),
+      quoted,
+    };
+  }
+  return { head: headLines.join("\n"), quoted, sig: null };
+}
+
+/** Unambiguous quote containers in *already-sanitized* rendered HTML. */
+const QUOTE_SEL = 'blockquote, .gmail_quote, [class*="gmail_quote"], .moz-cite-prefix, [type="cite"]';
+
 function BodyPane({
   body,
   rendered,
@@ -2034,6 +2134,63 @@ function BodyPane({
   const [showSource, setShowSource] = useState(false);
   const [gate, setGate] = useState<LinkGate | null>(null);
   useEffect(() => setGate(null), [accountId, folderId, uid]);
+
+  // T-310: quote collapse. `quoteOpen` resets per message (toggle persists
+  // for the open only — no pref). `quoteCount` = DOM nodes tagged in the
+  // sanitized HTML; the text path uses `splitQuotedText`.
+  const [quoteOpen, setQuoteOpen] = useState(false);
+  const [quoteCount, setQuoteCount] = useState(0);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    setQuoteOpen(false);
+  }, [accountId, folderId, uid]);
+  useEffect(() => {
+    const root = bodyRef.current;
+    if (!root || !rendered?.html) {
+      setQuoteCount(0);
+      return;
+    }
+    // Top-level quote containers only (nested blockquotes ride their
+    // ancestor). A preceding "On … wrote:" preamble element collapses with
+    // its quote.
+    const tops = [...root.querySelectorAll<HTMLElement>(QUOTE_SEL)].filter(
+      (q) => !q.parentElement?.closest(QUOTE_SEL),
+    );
+    const targets: HTMLElement[] = [];
+    for (const q of tops) {
+      const prev = q.previousElementSibling;
+      if (prev && /^On .{1,300}wrote:?\s*$/im.test((prev.textContent ?? "").trim())) {
+        targets.push(prev as HTMLElement);
+      }
+      targets.push(q);
+    }
+    if (targets.length === 0) {
+      setQuoteCount(0);
+      return;
+    }
+    // Conservative: refuse to collapse when the quote is the ENTIRE body
+    // (nothing would stay visible) — only collapse when real content
+    // remains above/around it.
+    const remainingText = [...root.children]
+      .filter((el) => !targets.includes(el as HTMLElement))
+      .map((el) => (el.textContent ?? "").trim())
+      .join("");
+    if (!remainingText) {
+      setQuoteCount(0);
+      return;
+    }
+    for (const t of targets) t.setAttribute("data-kiwi-quote", "");
+    setQuoteCount(targets.length);
+    return () => {
+      for (const t of targets) t.removeAttribute("data-kiwi-quote");
+    };
+  }, [rendered?.html, accountId, folderId, uid]);
+
+  const textParts = useMemo(
+    () => splitQuotedText(body.textBody ?? ""),
+    [body.textBody],
+  );
+  const textQuoted = textParts.quoted;
 
   const openExternal = async (url: string) => {
     try {
@@ -2132,13 +2289,28 @@ function BodyPane({
               {gate.phase === "error" && <small>Link check failed — {gate.text}. Nothing was opened.</small>}
             </div>
           )}
+          {quoteCount > 0 && (
+            <p style={{ margin: "0.2rem 0" }}>
+              <button
+                type="button"
+                className="em-quote-toggle"
+                onClick={() => setQuoteOpen((o) => !o)}
+                aria-expanded={quoteOpen}
+              >
+                {quoteOpen ? "Hide quoted text" : `Show quoted text (${quoteCount})`}
+              </button>
+            </p>
+          )}
           <div
-            className="kiwi-rendered-body"
+            ref={bodyRef}
+            className={`kiwi-rendered-body${!quoteOpen ? " em-quotes-collapsed" : ""}`}
             onClick={onBodyClick}
             // Sanitized server-side by kiwi_render_body (ammonia strict
             // allowlist: no scripts/forms/iframes; remote images stripped
             // unless the per-account opt-in is on). Never raw htmlBody.
             // Clicks are gated through kiwi_link_click before any open.
+            // T-310: quote nodes are tagged with data-kiwi-quote by a
+            // post-mount DOM pass (presentation only — sanitize untouched).
             dangerouslySetInnerHTML={{ __html: rendered.html }}
           />
           {(rendered.remoteImagesStripped > 0 || remoteAllowed) && !demo && (
@@ -2164,7 +2336,29 @@ function BodyPane({
         </>
       ) : (
         <>
-          <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "inherit" }}>{body.textBody}</pre>
+          <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "inherit" }}>
+            {textParts.head}
+            {textParts.sig && <span className="em-sig">{`\n${textParts.sig}`}</span>}
+          </pre>
+          {textQuoted && (
+            <>
+              <p style={{ margin: "0.2rem 0" }}>
+                <button
+                  type="button"
+                  className="em-quote-toggle"
+                  onClick={() => setQuoteOpen((o) => !o)}
+                  aria-expanded={quoteOpen}
+                >
+                  {quoteOpen ? "Hide quoted text" : "Show quoted text"}
+                </button>
+              </p>
+              {quoteOpen && (
+                <pre className="em-quote-region" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "inherit" }}>
+                  {textQuoted}
+                </pre>
+              )}
+            </>
+          )}
           {body.htmlBody && !rendered && !renderLoading && !demo && (
             <p style={{ color: "var(--kiwi-text-secondary)" }}>
               <small>No HTML variant rendered for this message (text-only or unfetched).</small>

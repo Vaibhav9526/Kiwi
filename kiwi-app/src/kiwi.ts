@@ -50,6 +50,11 @@ export interface MessageEnvelope {
   snippet: string;
   /** F2 inbox tab (backend `MessageView.category` slug; unknown → primary). */
   category: MessageCategory;
+  /** RFC822 Message-ID + reply chain (T-310) — resolved against the loaded
+   *  thread for the in-reply-to jump; null/[] = unknown. */
+  messageId?: string | null;
+  inReplyTo?: string | null;
+  references?: string[];
   /**
    * T-267 "Unreplied" smart folder: `true` when the envelope carries the
    * IMAP `\Answered` flag. `undefined` = unknown (demo fixtures, backends
@@ -372,6 +377,83 @@ export interface SandboxOpenView {
   /** Stable link/attachment risk reason codes carried into the session. */
   evidenceReasons: string[];
   report: Record<string, unknown> & { evidenceReasons?: string[] };
+}
+
+/** One recorded sandbox open (T-300) — an honest, bounded session row. */
+export interface SandboxSessionView {
+  sessionId: string;
+  kind: "link" | "attachment";
+  /**
+   * Sanitized display target: a URL with userinfo/query/fragment removed for
+   * links, or the `attachment:f<folderId>/u<uid>` coordinate for attachments.
+   * Never a host path, filename, or payload.
+   */
+  target: string;
+  /**
+   * `clean | noted | failed`, or `null` when no stored message evidence
+   * matched the target — absent evidence, never a fabricated "clean".
+   */
+  riskVerdict: "clean" | "noted" | "failed" | null;
+  /** Bounded stable evidence reason codes; never the matched target text. */
+  evidenceReasons: string[];
+  openedAtUnix: number;
+  /**
+   * `completed` — every T-266 open tears down before it is recorded, so there
+   * is no live guest. Reserved for a future live-session provider.
+   */
+  state: "completed";
+  /** `null` for a torn-down session; a future live provider may populate it. */
+  expiresAtUnix: number | null;
+}
+
+/**
+ * `kiwi_sandbox_sessions` receipt — newest first, bounded. `sessions` is
+ * `[]` when nothing has been opened; absence is never an error.
+ */
+export interface SandboxSessionsView {
+  sessions: SandboxSessionView[];
+}
+
+/**
+ * Tolerant parser for `kiwi_sandbox_sessions` (T-300). The renderer never
+ * trusts the row shape: unknown or corrupt sessions are dropped rather than
+ * rendered, and a malformed envelope collapses to `null` so the wrapper can
+ * report an honest empty list. `riskVerdict` must be a known value — an
+ * unrecognized verdict is treated as absent evidence, never as "clean".
+ */
+export function parseSandboxSessions(raw: unknown): SandboxSessionsView | null {
+  const optNum = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+  const optStr = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+  const verdict = (v: unknown): "clean" | "noted" | "failed" | null =>
+    v === "clean" || v === "noted" || v === "failed" ? v : null;
+  if (typeof raw !== "object" || raw === null) return null;
+  const sessions = (raw as Record<string, unknown>)["sessions"];
+  if (!Array.isArray(sessions)) return null;
+  const out: SandboxSessionView[] = [];
+  for (const entry of sessions) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const r = entry as Record<string, unknown>;
+    const sessionId = optStr(r["sessionId"]);
+    const kind = r["kind"] === "link" || r["kind"] === "attachment" ? r["kind"] : null;
+    const target = optStr(r["target"]);
+    const openedAtUnix = optNum(r["openedAtUnix"]);
+    // `state` is a forward-compatible vocabulary; a torn-down session is the
+    // only honest value today, so anything else is dropped, not guessed.
+    if (!sessionId || !kind || !target || openedAtUnix === undefined) continue;
+    if (r["state"] !== "completed") continue;
+    const reasons = r["evidenceReasons"];
+    out.push({
+      sessionId,
+      kind,
+      target,
+      riskVerdict: verdict(r["riskVerdict"]),
+      evidenceReasons: Array.isArray(reasons) ? reasons.filter((x): x is string => typeof x === "string") : [],
+      openedAtUnix,
+      state: "completed",
+      expiresAtUnix: optNum(r["expiresAtUnix"]) ?? null,
+    });
+  }
+  return { sessions: out };
 }
 
 export interface AttachmentSavedView {

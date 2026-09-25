@@ -1,6 +1,55 @@
 # Agent 21 — Status Log
 
 
+
+## 2026-09-25 — T-300 sandbox-pending IPC gap closed
+
+**Status:** COMPLETE. Lock-gated `kiwi_sandbox_sessions()` returns the bounded,
+newest-first record of sandbox opens, so A25's Agenda security card has a real
+pending-sessions row to render.
+
+**Honest semantics (the part worth Lead attention):** T-266 always tears the
+guest down *before* recording, so there is no live sandbox session to report.
+Rather than invent a "running" state or a fake expiry, the contract states
+`state: "completed"` and `expiresAtUnix: null`, and reserves `expiresAtUnix` for
+a future live-session provider. The task brief asked for live/pending sessions;
+what genuinely exists is the completed-session record, and that is what ships.
+
+**What the command returns per row** — only real fields from the T-266 record:
+`sessionId`, `kind` (`link | attachment`), sanitized `target` (URL with
+userinfo/query/fragment stripped, or `attachment:f<id>/u<uid>`),
+`riskVerdict` + `evidenceReasons`, `openedAtUnix`, `state`, `expiresAtUnix`.
+
+**The `SandboxSessionRecord` needed enrichment first.** T-266 stored only
+`session_id`/`target`/`evidence_reasons`/`report`, so `kind`, `risk_verdict`,
+and `opened_at_unix` were captured at *write* time — the verdict is the stored
+message's own link/attachment hint where evidence matched, and `None`
+(absent, never a fabricated `clean`) when it did not. Both open paths now return
+`(verdict, reasons)` instead of reasons alone, so verdict and reasons can never
+disagree. This changes no open-command behavior or wire shape.
+
+**Bounds and failure posture:** 128-row ring (existing `MAX_SANDBOX_SESSIONS`),
+newest first, oldest evicted; the IPC re-asserts the bound independently.
+Absence returns `{"sessions": []}`, never `not-found`. Errors: `locked` only.
+No raw path, filename, URL query, or payload crosses the boundary.
+
+**Renderer is untrusted:** `parseSandboxSessions` drops rows it cannot parse
+rather than guessing, and treats an unrecognized `riskVerdict` as *absent*
+evidence — it can never be coerced into a fake `clean`.
+
+Files: `kiwi-app/src-tauri/src/commands/sandbox.rs`,
+`kiwi-app/src-tauri/src/state.rs`, `kiwi-app/src-tauri/src/types/security.rs`,
+`kiwi-app/src-tauri/src/lib.rs`, `kiwi-app/src/kiwi.ts`, `kiwi-app/src/ipc.ts`,
+`docs/contracts/ipc.md`.
+
+Verification: `cargo test -p kiwi-app -p kiwi-sandbox --lib -- --test-threads=1`
+= **166 + 5 passed, 0 failed**; `cargo clippy -p kiwi-app -p kiwi-sandbox
+--all-targets -- -D warnings` clean; `cargo fmt -p kiwi-app -p kiwi-sandbox --
+--check` clean; `npx tsc --noEmit` clean; scoped `git diff --check` clean.
+Three new Rust tests: recorded-session readback with honest verdict, empty→`[]`,
+and newest-first/bounded eviction.
+
+## 2026-09-25 — T-244 orphaned rules-engine completion
 ## 2026-09-25 — T-244 orphaned rules-engine completion
 
 **Status:** COMPLETE in the shared tree; Lead handoff pending final app-tree
