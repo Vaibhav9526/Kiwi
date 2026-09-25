@@ -7,9 +7,13 @@
  * markers (the send path is text-only; no HTML is generated). Drafts
  * autosave to this device's localStorage (no draft command in kiwi.ipc/1 —
  * attachments are never part of the autosave). Demo mode keeps the labeled
- * local simulation from T-112.
+ * local simulation from T-112. T-294: files attach via picker, drag-drop
+ * (DOM drop — the Tauri window sets dragDropEnabled:false so OS drops reach
+ * the DOM as File objects), or clipboard paste; chips show per-file read
+ * progress and the 25 MiB cap is enforced before the send IPC runs.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ClipboardEvent, DragEvent } from "react";
 import type { PolicyBannerVerdict } from "../kiwi";
 import type { ContactView } from "../kiwi";
 import { contactLabel, contactPrimaryEmail } from "../kiwi";
@@ -27,6 +31,10 @@ interface Attachment {
   size: number;
   contentType: string;
   dataB64: string;
+  /** true while FileReader is streaming the dropped/pasted file into b64. */
+  pending?: boolean;
+  /** 0..1 read progress — only meaningful while pending. */
+  progress?: number;
 }
 
 function demoEvaluate(recipients: string[]): { verdict: PolicyBannerVerdict; offenders: string[] } {
@@ -40,13 +48,16 @@ function demoEvaluate(recipients: string[]): { verdict: PolicyBannerVerdict; off
   return { verdict: "none", offenders: [] };
 }
 
-function fileToB64(file: File): Promise<string> {
+function fileToB64(file: File, onProgress?: (fraction: number) => void): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
       const url = typeof reader.result === "string" ? reader.result : "";
       const comma = url.indexOf(",");
       resolve(comma >= 0 ? url.slice(comma + 1) : url);
+    };
+    reader.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total);
     };
     reader.onerror = () => reject(new Error(`could not read ${file.name}`));
     reader.readAsDataURL(file);
@@ -207,7 +218,8 @@ export function ComposeView({
   const [showSchedule, setShowSchedule] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
-  const [readingFiles, setReadingFiles] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const dragDepth = useRef(0);
   const [draftNote, setDraftNote] = useState<string | null>(null);
   const [includeSig, setIncludeSig] = useState(true);
   const bodyRef = useRef<HTMLTextAreaElement | null>(null);
@@ -421,6 +433,10 @@ export function ComposeView({
       setSendError("Add at least one recipient (To or Cc).");
       return;
     }
+    if (attachments.some((a) => a.pending)) {
+      setSendError("Attachments are still being read — wait a moment and retry.");
+      return;
+    }
     // Send-later validation: the backend treats sendAtUnix as not-before.
     let sendAtUnix: number | null = null;
     if (scheduled) {
@@ -513,31 +529,88 @@ export function ComposeView({
     }
   };
 
-  const addFiles = async (files: FileList | null) => {
-    if (!files) return;
+  // Attach via File objects (input picker, DOM drop, clipboard paste — Tauri
+  // window has dragDropEnabled:false so OS drops reach the DOM). The send IPC
+  // contract takes dataB64 payloads, so each file streams through FileReader;
+  // chips render immediately as pending and flip when the read completes.
+  const addFiles = (files: Iterable<File> | FileList | null) => {
+    const list = files ? [...files] : [];
+    if (list.length === 0) return;
     setAttachError(null);
-    setReadingFiles(true);
-    try {
-      const current = attachments.reduce((n, a) => n + a.size, 0);
-      const list = [...files];
-      const total = current + list.reduce((n, f) => n + f.size, 0);
-      if (total > MAX_ATTACHMENT_BYTES) {
-        setAttachError(`Attachments exceed the 25 MB total cap (${(total / 1048576).toFixed(1)} MB).`);
-        return;
-      }
-      const read = await Promise.all(
-        list.map(async (f) => ({ name: f.name, size: f.size, contentType: f.type || "application/octet-stream", dataB64: await fileToB64(f) })),
+    const current = attachments.reduce((n, a) => n + a.size, 0);
+    const total = current + list.reduce((n, f) => n + f.size, 0);
+    if (total > MAX_ATTACHMENT_BYTES) {
+      const over = list.filter((f) => f.size > MAX_ATTACHMENT_BYTES);
+      setAttachError(
+        over.length > 0
+          ? `${over.map((f) => f.name).join(", ")} exceed${over.length > 1 ? "" : "s"} the 25 MiB per-message attachment cap — not attached.`
+          : `Attachments exceed the 25 MiB total cap (${(total / 1048576).toFixed(1)} MiB) — not attached.`,
       );
-      setAttachments((a) => [...a, ...read]);
-    } catch (e) {
-      setAttachError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setReadingFiles(false);
+      return;
     }
+    const entries: Attachment[] = list.map((f) => ({
+      name: f.name,
+      size: f.size,
+      contentType: f.type || "application/octet-stream",
+      dataB64: "",
+      pending: true,
+      progress: 0,
+    }));
+    setAttachments((a) => [...a, ...entries]);
+    entries.forEach((entry, i) => {
+      void fileToB64(list[i], (p) =>
+        setAttachments((xs) => xs.map((x) => (x === entry ? { ...x, progress: p } : x))),
+      )
+        .then((dataB64) =>
+          setAttachments((xs) => xs.map((x) => (x === entry ? { ...x, dataB64, pending: false, progress: 1 } : x))),
+        )
+        .catch(() => {
+          setAttachments((xs) => xs.filter((x) => x !== entry));
+          setAttachError(`Could not read ${entry.name} — attachment removed.`);
+        });
+    });
+  };
+
+  // DOM drop target (T-294): dragDepth tracks nested enter/leave so the veil
+  // doesn't flicker over children. Paste attaches clipboard files too.
+  const dragHandlers = {
+    onDragEnter: (e: DragEvent) => {
+      if (!e.dataTransfer.types.includes("Files")) return;
+      e.preventDefault();
+      dragDepth.current += 1;
+      setDragOver(true);
+    },
+    onDragOver: (e: DragEvent) => {
+      if (e.dataTransfer.types.includes("Files")) e.preventDefault();
+    },
+    onDragLeave: (e: DragEvent) => {
+      if (!e.dataTransfer.types.includes("Files")) return;
+      dragDepth.current = Math.max(0, dragDepth.current - 1);
+      if (dragDepth.current === 0) setDragOver(false);
+    },
+    onDrop: (e: DragEvent) => {
+      dragDepth.current = 0;
+      setDragOver(false);
+      if (e.dataTransfer.files.length === 0) return;
+      e.preventDefault();
+      addFiles(e.dataTransfer.files);
+    },
+    onPaste: (e: ClipboardEvent) => {
+      if (e.clipboardData.files.length > 0) {
+        e.preventDefault();
+        addFiles(e.clipboardData.files);
+      }
+    },
   };
 
   return (
-    <section aria-label="Compose message" style={{ maxWidth: "46rem" }}>
+    <section aria-label="Compose message" style={{ maxWidth: "46rem", position: "relative" }} {...dragHandlers}>
+      {dragOver && (
+        <div className="em-drop-veil" role="status">
+          <Icon name="file" size={28} />
+          <p>Drop files to attach</p>
+        </div>
+      )}
       <h1>Compose {mode === "demo" && <small style={{ color: "var(--kiwi-text-secondary)" }}>(demo)</small>}</h1>
       {mode === "demo" && demoResult && demoResult.verdict !== "none" && (
         <PolicyBanner verdict={demoResult.verdict} offenders={demoResult.offenders} onRemove={removeAddress} />
@@ -701,14 +774,10 @@ export function ComposeView({
       </div>
       <p>
         <label>
-          Attachments (25 MB total cap): <input type="file" multiple onChange={(e) => void addFiles(e.target.files)} />
-        </label>
-        {readingFiles && (
-          <span role="status">
-            <br />
-            <small>Reading files…</small>
-          </span>
-        )}
+          Attachments (25 MiB total cap):{" "}
+          <input type="file" multiple onChange={(e) => addFiles(e.target.files)} aria-label="Choose files to attach" />
+        </label>{" "}
+        <small style={{ color: "var(--kiwi-text-secondary)" }}>or drop files anywhere in this window / paste an image</small>
         {attachError && (
           <span role="alert">
             <br />
@@ -718,9 +787,14 @@ export function ComposeView({
       </p>
       {attachments.length > 0 && (
         <ul aria-label="Attachments">
-          {attachments.map((a) => (
-            <li key={`${a.name}-${a.size}`}>
-              {a.name} <small>({(a.size / 1024).toFixed(1)} KB)</small>{" "}
+          {attachments.map((a, i) => (
+            <li key={`${a.name}-${a.size}-${i}`}>
+              {a.name} <small>({a.size >= 1048576 ? `${(a.size / 1048576).toFixed(1)} MB` : `${(a.size / 1024).toFixed(1)} KB`})</small>{" "}
+              {a.pending && (
+                <small role="status" style={{ color: "var(--kiwi-text-secondary)" }}>
+                  {a.progress ? `reading ${(a.progress * 100).toFixed(0)}%…` : "reading…"}
+                </small>
+              )}{" "}
               <button
                 type="button"
                 onClick={() => setAttachments((x) => x.filter((y) => y !== a))}

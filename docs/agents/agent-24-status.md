@@ -332,3 +332,43 @@
 ### Verification
 
 - `npm run build` (`tsc && vite build`) — green, 84 modules.
+
+## T-294 — drag-drop + paste attachments in composer
+
+**Mechanism (real, not mocked):** attachments ride inside the `kiwi_send_enqueue`
+payload as `dataB64` (`commands/send/enqueue.rs` — `OutboundAttachment`,
+`MAX_ATTACH_TOTAL = 25 MiB` total). No separate attach IPC exists and no
+read-file IPC exists, so the Tauri path-drop event (`tauri://drag-drop`,
+paths only) could not produce bytes. Set `dragDropEnabled: false` on the
+window so OS drops reach the DOM as real `File` objects — `dataTransfer.files`
+→ existing `addFiles` path → chips → send payload. Nothing else used the
+Tauri drag events (verified: zero `tauri://drag` listeners in src/).
+
+**Landed (views/compose.tsx, shell.css, tauri.conf.json):**
+- Dropzone over the whole compose surface: `dragenter/over/leave/drop` with a
+  depth counter (no flicker over children), gated on `types.includes("Files")`
+  so text drags don't trigger. Veil: `.em-drop-veil` dashed-accent overlay,
+  `Icon name="file"` + "Drop files to attach", `pointer-events:none` so the
+  drop lands on the section.
+- Chips render immediately as pending entries (object-identity updates);
+  per-file progress is real — `FileReader.onprogress` fraction → "reading N%"
+  until `dataB64` resolves. Read failure removes the chip + names the file.
+  Size shown KB/MB, Remove unchanged, key now includes index (same name+size
+  collision edge).
+- 25 MiB cap enforced in `addFiles` before anything reaches the send IPC —
+  matches backend `MAX_ATTACH_TOTAL` exactly; oversized files are named in
+  the error ("…exceeds the 25 MiB per-message attachment cap — not attached").
+- Paste: `onPaste` on the compose section → `clipboardData.files` → same
+  path; real File objects, no fabricated paths. Text paste untouched
+  (`files.length === 0` → no preventDefault).
+- Send guard: pending attachments block `send()` with a clear error so an
+  empty `dataB64` can never reach the IPC.
+
+**Verification:** `tsc && vite build` green (84 modules). Static trace:
+drop/paste/input all funnel to `addFiles` → `attachments` state → chip render
+→ `send()` maps `{filename, contentType, dataB64}` into `kiwi_send_enqueue`.
+No UI driver exists in-repo (no playwright/vitest); FileReader/DOM-drop path
+is browser-verifiable in the vite dev server but was verified here by static
+trace per house convention. Interim build break during this session was A25's
+in-flight T-296 (`onScheduleSend` seam) — settled on their next save, final
+build green.
