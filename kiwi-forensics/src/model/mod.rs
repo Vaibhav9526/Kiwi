@@ -245,6 +245,9 @@ pub struct StartTlsObservation {
     pub client_requested: bool,
     /// Server reply to the upgrade command: `Some(true)` = ready, `Some(false)`
     /// = explicitly refused (temporary/permanent error), `None` = no reply seen.
+    /// Omitted from JSON when unobserved (contract `?:` convention — same as
+    /// `TlsObservation::sni` and `AuthObservation::mechanism`).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub server_reply_ok: Option<bool>,
     /// A TLS handshake was observed after the request.
     pub handshake_completed: bool,

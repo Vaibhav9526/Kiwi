@@ -67,16 +67,27 @@ pub(crate) async fn render_body_impl(
     let (clean, stripped) = sanitize_html(&html, allow_remote);
     // Post-sanitize bound — pathological documents compress to little but
     // the DOM can still explode; the webview gets a capped fragment.
-    let clean = if clean.len() > MAX_RENDER_BYTES {
-        clean.chars().take(MAX_RENDER_BYTES).collect()
-    } else {
-        clean
-    };
+    // Byte cap (ipc.md: "capped at 8 MiB") — a char count could emit far
+    // more than 8 MiB of UTF-8; truncation never splits a code point.
+    let clean = truncate_to_byte_cap(clean, MAX_RENDER_BYTES);
     Ok(RenderedBodyView {
         html: Some(clean),
         remote_content_allowed: allow_remote,
         remote_images_stripped: stripped,
     })
+}
+
+/// Cap a UTF-8 string to `max_bytes` without splitting a code point —
+/// rounds down to the nearest char boundary (≤3 steps).
+pub(crate) fn truncate_to_byte_cap(s: String, max_bytes: usize) -> String {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_string()
 }
 
 /// Sanitize an HTML fragment for display in the untrusted webview.

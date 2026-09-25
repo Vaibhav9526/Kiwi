@@ -240,14 +240,45 @@ pub async fn kiwi_security_report(
         .as_ref()
         .map(|a| format!("account:{a}"))
         .unwrap_or_else(|| "client".into());
-    let report = ReportBuilder::new(&scope, "live")
+        let sandbox_sessions = state.sandbox_sessions.lock().await;
+        let sandbox_observations = sandbox_sessions.len() as u32;
+        let sandbox_reason_codes = sandbox_sessions
+            .iter()
+            .flat_map(|session| {
+                std::iter::once(session.session_id.clone())
+                    .chain(std::iter::once(session.target.clone()))
+                    .chain(session.evidence_reasons.iter().cloned())
+            })
+            .take(256)
+            .collect::<Vec<_>>();
+        let sandbox_report = sandbox_sessions
+            .back()
+            .map(|session| {
+                format!(
+                    "exit={:?},timed_out={},incomplete={}",
+                    session.report.exit_code, session.report.timed_out, session.report.incomplete
+                )
+            })
+            .unwrap_or_else(|| "none".into());
+        drop(sandbox_sessions);
+    let mut builder = ReportBuilder::new(&scope, "live")
         .add_session_findings(sessions_observed, findings)
         .limitation(Limitation::new(
             "scope",
-            "covers live client observations only; no pcap, logs, or fixture input",
-        ))
-        .build();
-    Ok(report)
+            "covers live client and sandbox-open observations only; no pcap, logs, or fixture input",
+        ));
+    if !sandbox_reason_codes.is_empty() {
+        builder = builder.limitation(Limitation::new(
+            "sandbox-open-reasons",
+            &format!(
+                "{} sandbox sessions; context={}; latest={}",
+                sandbox_observations,
+                sandbox_reason_codes.join(","),
+                sandbox_report
+            ),
+        ));
+    }
+    Ok(builder.build())
 }
 
 #[cfg(test)]

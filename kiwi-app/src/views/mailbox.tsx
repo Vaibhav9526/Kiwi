@@ -855,7 +855,7 @@ function AttachmentList({
                   type="text"
                   value={destPaths[i] ?? a.filename}
                   onChange={(e) => setDestPaths((m) => ({ ...m, [i]: e.target.value }))}
-                  placeholder={a.filename}
+                  placeholder={a.filename ?? undefined}
                   style={{ width: "16rem" }}
                   aria-label={`Save destination for ${a.filename}`}
                 />

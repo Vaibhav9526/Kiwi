@@ -50,6 +50,13 @@ export interface MessageEnvelope {
   snippet: string;
   /** F2 inbox tab (backend `MessageView.category` slug; unknown → primary). */
   category: MessageCategory;
+  /**
+   * T-267 "Unreplied" smart folder: `true` when the envelope carries the
+   * IMAP `\Answered` flag. `undefined` = unknown (demo fixtures, backends
+   * that don't report flags) — the smart filter treats unknown as
+   * unreplied, matching eM Client's pessimistic count.
+   */
+  answered?: boolean;
   /** T-202 unsubscribe endpoints (dormant until the backend classifies). */
   unsub: UnsubscribeInfo;
 }
@@ -309,7 +316,8 @@ export interface UpstreamAuthView {
 }
 
 export interface MessageAttachmentView {
-  filename: string;
+  /** `null` when the MIME part carries no filename — never empty string. */
+  filename: string | null;
   contentType: string;
   size: number;
 }
@@ -325,6 +333,15 @@ export interface MessageUpdateView {
   uid: number;
   flags: string[];
   movedToFolderId: number | null;
+}
+
+export interface SandboxOpenView {
+  sessionId: string;
+  /** Sanitized URL or attachment coordinate; never raw attachment bytes. */
+  target: string;
+  /** Stable link/attachment risk reason codes carried into the session. */
+  evidenceReasons: string[];
+  report: Record<string, unknown> & { evidenceReasons?: string[] };
 }
 
 export interface AttachmentSavedView {
@@ -366,7 +383,10 @@ export interface DeleteResultView {
   folderId: number;
   movedToTrash: number;
   deleted: number;
+  /** `null` when nothing moved (hard delete / empty selection). */
   trashFolderId: number | null;
+  /** src uid → Trash uid for moved messages (uids are folder-scoped). */
+  uidMap: Record<string, number>;
 }
 
 /** `kiwi_move_messages` result (T-163). */
@@ -420,6 +440,117 @@ export interface SnoozedMessageView {
   fromAddr: string | null;
   messageId: string | null;
   dateUnix: number | null;
+}
+
+/**
+ * One relocated ref from `kiwi_message_set_junk` (T-263) — moves remap
+ * uids and refs may span folders, so each leg records its source.
+ */
+export interface SetJunkMoveView {
+  fromFolderId: number;
+  fromUid: number;
+  /** Fresh uid in the destination folder (uids are folder-scoped). */
+  toUid: number;
+}
+
+/**
+ * `kiwi_message_set_junk` result. `targetFolderId` is the Junk folder
+ * when `junk` and INBOX when un-junking out of Junk; `null` when the
+ * call only flipped flags (already-in-Junk / un-junk elsewhere).
+ */
+export interface SetJunkView {
+  junk: boolean;
+  flagged: number;
+  moved: number;
+  targetFolderId: number | null;
+  moves: SetJunkMoveView[];
+}
+
+/* ---------------- inbox rules DSL (T-228/T-233/T-244) ---------------- */
+
+/** Field comparison operator — `domain` is a post-`@` dot-boundary suffix. */
+export type RuleMatchOp = "contains" | "is" | "ends_with" | "domain";
+
+/**
+ * Predicate tree — `{"kind": "…"}` serde shape from the backend's
+ * rules DSL (docs/contracts/ipc.md §6d). `sender`/`recipient` match the
+ * email address only, never the display name.
+ */
+export type RulePredicate =
+  | { kind: "sender" | "recipient" | "subject" | "attachment_name"; op: RuleMatchOp; value: string }
+  | { kind: "header"; name: string; op: RuleMatchOp; value: string }
+  | { kind: "body_contains"; value: string }
+  | { kind: "all" | "any"; children: RulePredicate[] }
+  | { kind: "not"; child: RulePredicate }
+  | { kind: "always" };
+
+/**
+ * `{"do": "…"}` actions — folder dispositions (`move`/`archive`/`delete`)
+ * relocate the message (first wins); `delete` is Trash semantics, never
+ * a hard expunge.
+ */
+export type RuleAction =
+  | { do: "move"; folder: string }
+  | { do: "archive" | "delete" | "mark_read" | "star" };
+
+/**
+ * A rule as the renderer sees it — one shape serves both directions:
+ * `kiwi_rules_list` emits it, `kiwi_rules_upsert` consumes it (ids are
+ * caller-assigned — upsert is create-or-replace). `accountId` absent/
+ * null = applies to every account; `isBlock` marks the block-list class
+ * (evaluated before regular rules, terminal on match, verdict = Trash).
+ */
+export interface RuleView {
+  id: string;
+  accountId?: string | null;
+  name: string;
+  enabled: boolean;
+  position: number;
+  isBlock: boolean;
+  when: RulePredicate;
+  then: RuleAction[];
+}
+
+/** One audit row — which rule fired on which stored message, when. */
+export interface RuleHitView {
+  folderId: number;
+  uid: number;
+  ruleId: string;
+  messageId: string | null;
+  appliedUnix: number;
+}
+
+/** `kiwi_rules_apply_now` receipt — the re-run's aggregate effect. */
+export interface RulesApplyView {
+  scanned: number;
+  matched: number;
+  moved: number;
+  /** Block-list verdicts applied (each trashed the message). */
+  blocked: number;
+  flagsChanged: number;
+  /** Messages skipped — no parseable body stored yet. */
+  skippedNoBody: number;
+}
+
+/** One candidate-rule match in `kiwi_rules_preview`. */
+export interface PreviewHitView {
+  folderId: number;
+  uid: number;
+  /** Folder name (not id) — this is a display list. */
+  folder: string;
+  subject: string | null;
+  messageId: string | null;
+}
+
+/**
+ * `kiwi_rules_preview` receipt — a pure read: nothing was moved,
+ * flagged, hit-logged, or watermarked. `matched` = `hits.length`.
+ */
+export interface RulePreviewView {
+  scanned: number;
+  skippedNoBody: number;
+  matched: number;
+  hits: PreviewHitView[];
 }
 
 /**
@@ -760,15 +891,18 @@ export interface MessageBodyView {
   folderId: number;
   uid: number;
   messageId: string | null;
-  subject: string;
+  subject: string | null;
   from: string[];
   to: string[];
   cc: string[];
-  dateUnix: number;
-  textBody: string;
+  dateUnix: number | null;
+  /** `null` = no text/plain alternative or body not yet parsed. */
+  textBody: string | null;
   htmlBody: string | null;
   attachments: MessageAttachmentView[];
   bodyPresent: boolean;
+  inReplyTo: string | null;
+  references: string[];
 }
 
 /** kiwi.forensics/1 finding — exact fields vary; parsed tolerantly. */
@@ -813,11 +947,14 @@ export interface DeviceView {
   status: string;
   registeredUnix: number;
   lastSeenUnix: number;
+  /** Last 8 hex of SHA-256 over the raw public key — display only. */
+  keyFingerprintTail: string;
 }
 
 export interface OutboxItem {
   queueId: string;
-  accountId: string;
+  /** Always set by kiwi_list_outbox today; `null` = unbound queue row. */
+  accountId: string | null;
   from: string;
   to: string[];
   subject: string;

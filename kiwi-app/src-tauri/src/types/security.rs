@@ -102,6 +102,18 @@ pub struct SessionDetailView {
     pub label: String,
 }
 
+/// Result of one sandbox-open request. `target` is sanitized for display and
+/// audit: URL userinfo/query/fragment and host attachment paths are removed.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SandboxOpenView {
+    pub session_id: String,
+    pub target: String,
+    /// Stable link/attachment evidence reasons — never target text.
+    pub evidence_reasons: Vec<String>,
+    pub report: kiwi_sandbox::AnalysisReport,
+}
+
 fn kex(k: &KeyExchangeGroup) -> String {
     match k {
         KeyExchangeGroup::X25519 => "x25519".into(),

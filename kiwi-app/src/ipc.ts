@@ -38,8 +38,14 @@ import type {
   OutboxItem,
   RemoteContentView,
   RenderedBodyView,
+  RuleHitView,
+  RulePreviewView,
+  RulesApplyView,
+  RuleView,
   SearchHit,
+  SandboxOpenView,
   SecurityStatusView,
+  SetJunkView,
   SnoozePreset,
   SnoozeResultView,
   SnoozedMessageView,
@@ -349,6 +355,12 @@ export const api = {
   setRemoteContent(accountId: string, allowed: boolean): Promise<RemoteContentView> {
     return call<RemoteContentView>("kiwi_set_remote_content", { accountId, allowed });
   },
+  sandboxOpenLink(url: string): Promise<SandboxOpenView> {
+    return call<SandboxOpenView>("kiwi_sandbox_open_link", { url });
+  },
+  sandboxOpenAttachment(folderId: number, uid: number, filename: string): Promise<SandboxOpenView> {
+    return call<SandboxOpenView>("kiwi_sandbox_open_attachment", { folderId, uid, filename });
+  },
 
   /**
    * Execute the message's stored unsubscribe offer (T-234, F3).
@@ -413,6 +425,59 @@ export const api = {
   /** Account-wide parked mail, soonest-due first (the Snoozed view). */
   async listSnoozed(accountId: string, limit?: number): Promise<SnoozedMessageView[]> {
     return asArray<SnoozedMessageView>(await call<unknown>("kiwi_list_snoozed", { accountId, limit }));
+  },
+
+  /* ---------------- junk (gated, T-263) ---------------- */
+
+  /**
+   * Mark refs junk (`\Junk` flag + move to the account's Junk folder) or
+   * un-junk them (clear flag; Junk-folder rows return to INBOX). IMAP
+   * writes through immediately; POP3 is local-only. Refs may span
+   * folders; every folderId must belong to `accountId`.
+   */
+  setJunk(accountId: string, refs: MessageRef[], junk: boolean): Promise<SetJunkView> {
+    return call<SetJunkView>("kiwi_message_set_junk", { accountId, refs, junk });
+  },
+
+  /* ---------------- inbox rules (gated, T-233/T-244) ---------------- */
+
+  /**
+   * Stored rules: `accountId` scopes to that account's rules PLUS the
+   * global ones; omit for globals only.
+   */
+  async rulesList(accountId?: string): Promise<RuleView[]> {
+    return asArray<RuleView>(await call<unknown>("kiwi_rules_list", { accountId }));
+  },
+  /**
+   * Create-or-replace a rule — `rule.id` is caller-assigned. The backend
+   * re-runs `Rule::validate` (renderer input is untrusted): malformed
+   * specs throw `invalid-input`, a foreign `accountId` throws
+   * `not-found`.
+   */
+  rulesUpsert(rule: RuleView): Promise<RuleView> {
+    return call<RuleView>("kiwi_rules_upsert", { rule });
+  },
+  rulesDelete(ruleId: string): Promise<{ removed: boolean }> {
+    return call<{ removed: boolean }>("kiwi_rules_delete", { ruleId });
+  },
+  /**
+   * Re-run the enabled ruleset over stored messages (Trash never
+   * scanned). Deliberate re-run — ingest-time application is automatic.
+   */
+  rulesApplyNow(accountId: string): Promise<RulesApplyView> {
+    return call<RulesApplyView>("kiwi_rules_apply_now", { accountId });
+  },
+  /** Matched-rule audit trail, newest first (limit default 100). */
+  async rulesHits(accountId: string, limit?: number): Promise<RuleHitView[]> {
+    return asArray<RuleHitView>(await call<unknown>("kiwi_rules_hits", { accountId, limit }));
+  },
+  /**
+   * "Test this rule" dry-run — evaluates the candidate ALONE against the
+   * newest `limit` stored messages; never executes actions, never writes
+   * hits or watermarks (limit default 50, clamp 1–200).
+   */
+  rulesPreview(accountId: string, rule: RuleView, limit?: number): Promise<RulePreviewView> {
+    return call<RulePreviewView>("kiwi_rules_preview", { accountId, rule, limit });
   },
 
   /* ---------------- send / outbox (gated) ---------------- */

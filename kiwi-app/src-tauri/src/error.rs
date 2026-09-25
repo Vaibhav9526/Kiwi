@@ -43,6 +43,14 @@ impl IpcError {
     pub fn not_found(what: impl Into<String>) -> Self {
         Self::new("not-found", what)
     }
+
+    pub fn sandbox_unavailable(why: impl Into<String>) -> Self {
+        Self::new("sandbox-unavailable", why)
+    }
+
+    pub fn sandbox_failed(why: impl Into<String>) -> Self {
+        Self::new("sandbox-failed", why)
+    }
 }
 
 impl From<kiwi_mail::error::MailError> for IpcError {
@@ -60,6 +68,15 @@ impl From<kiwi_mail::error::MailError> for IpcError {
             Locked(_) => ("locked", e.to_string()),
         };
         Self::new(code, msg)
+    }
+}
+
+impl From<kiwi_sandbox::SandboxError> for IpcError {
+    fn from(e: kiwi_sandbox::SandboxError) -> Self {
+        match e {
+            kiwi_sandbox::SandboxError::Unavailable(why) => Self::sandbox_unavailable(why),
+            other => Self::sandbox_failed(other.to_string()),
+        }
     }
 }
 

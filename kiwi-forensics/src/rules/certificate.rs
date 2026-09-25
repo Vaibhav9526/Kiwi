@@ -158,7 +158,7 @@ static RULE_SPECS: [(CertificateProblem, RuleSpec); 12] = [
         CertificateProblem::BrokenSignatureAlgorithm,
         RuleSpec {
             id: ids::CERT_BROKEN_SIGNATURE,
-            title: "Certificate uses a broken signature algorithm",
+            title: "Broken signature algorithm (MD2/MD5)",
             description: "The leaf certificate is signed with MD2 or MD5, both practically forgeable.",
             severity: Severity::High,
             confidence: Confidence::Certain,
@@ -172,7 +172,7 @@ static RULE_SPECS: [(CertificateProblem, RuleSpec); 12] = [
         CertificateProblem::DeprecatedSignatureAlgorithm,
         RuleSpec {
             id: ids::CERT_DEPRECATED_SIGNATURE,
-            title: "Certificate uses a deprecated signature algorithm",
+            title: "Deprecated signature algorithm (SHA-1)",
             description: "The leaf certificate is signed with SHA-1, deprecated for certificate signing.",
             severity: Severity::Medium,
             confidence: Confidence::Certain,
@@ -188,7 +188,7 @@ static RULE_SPECS: [(CertificateProblem, RuleSpec); 12] = [
         CertificateProblem::WeakPublicKey,
         RuleSpec {
             id: ids::CERT_WEAK_KEY,
-            title: "Certificate public key below minimum size",
+            title: "Public key below minimum size",
             description: "The leaf public key is shorter than the configured minimum (2048-bit RSA / 256-bit EC by default).",
             severity: Severity::High,
             confidence: Confidence::Certain,
@@ -202,7 +202,7 @@ static RULE_SPECS: [(CertificateProblem, RuleSpec); 12] = [
         CertificateProblem::DiscouragedPublicKeyAlgorithm,
         RuleSpec {
             id: ids::CERT_DISCOURAGED_KEY_ALGORITHM,
-            title: "Certificate uses a discouraged public-key algorithm",
+            title: "Discouraged public-key algorithm",
             description: "The leaf key uses an algorithm not recommended for mail TLS (for example DSA).",
             severity: Severity::Medium,
             confidence: Confidence::Certain,
@@ -216,7 +216,7 @@ static RULE_SPECS: [(CertificateProblem, RuleSpec); 12] = [
         CertificateProblem::ChainTruncated,
         RuleSpec {
             id: ids::CERT_CHAIN_TRUNCATED,
-            title: "Certificate chain truncated by capture or bounds",
+            title: "Chain truncated by capture or bounds",
             description: "Certificates were dropped to stay within bounds, or the capture ended before the full chain was observed.",
             severity: Severity::Info,
             confidence: Confidence::Firm,

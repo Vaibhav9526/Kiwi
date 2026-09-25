@@ -21,6 +21,7 @@ pub mod message;
 pub mod oauth2;
 pub mod prefs;
 pub mod rules;
+pub mod sandbox;
 pub mod security;
 pub mod send;
 pub mod system;

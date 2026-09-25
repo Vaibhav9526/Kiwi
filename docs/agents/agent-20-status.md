@@ -402,3 +402,94 @@ to satisfy `cargo fmt --all --check` — disclosed.
   verified correct at HEAD.
 - Scores under `/2` can differ by ±1pt in fractional cases vs stored
   `/1` scores — `model_version` records which produced them.
+
+## 2026-09-25 — T-265: register cleanup (FINDINGS IPC-11..14 + FOR-7/8/9)
+
+**Status:** done. Four IPC reconciliations + three forensics leftovers.
+Direction per item chosen by consumer evidence and contract convention.
+
+### Per-item decisions
+
+**(1) IPC-11 `MessageBodyView` → contract amended.** `subject`,
+`dateUnix`, `textBody`, `attachments[].filename` are `Option` in
+`types/mail.rs`; forcing non-null would fabricate data when a MIME part
+is absent. ipc.md §6 shape now shows `| null` + an honest-absence note
+(`textBody: null` + `bodyPresent: true` = no text/plain alternative).
+`kiwi.ts` interface updated to match; `inReplyTo`/`references` were
+missing from the interface entirely — added (code emits them, contract
+documents them). `mailbox.tsx` renders `body.textBody` inline — React
+drops nulls, consumer-safe.
+
+**(2) IPC-12 → contract amended.** `OutboxItem.accountId`: producers
+always emit `Some` today — the `Option` is headroom for pre-binding
+queue rows; contract now `| null` with a "tolerate null" client note.
+`DeleteResultView.trashFolderId`: `| null`, documented as null when
+nothing moved (`movedToTrash > 0` ⇒ set). `kiwi.ts` mirrors updated;
+`uidMap` was missing from the interface — added.
+
+**(3) IPC-13 → contract amended.** `DeviceView.keyFingerprintTail`
+documented in §9: last 8 hex of SHA-256 over the raw public key —
+display fingerprint only (ui-surfaces §3), explicitly NOT an auth token.
+`kiwi.ts.DeviceView` updated.
+
+**(4) IPC-14 → code fixed (bytes win).** `kiwi_render_body` capped with
+`chars().take(8Mi)` — a char count, so multibyte payloads could emit far
+more than the documented 8 MiB. Now `truncate_to_byte_cap()` —
+`is_char_boundary` walk-back, never splits a code point, output always
+valid UTF-8 ≤ 8 MiB. Contract wording sharpened ("8 MiB of UTF-8
+bytes"). commands/message/render.rs touched per the task's explicit
+code-fix directive; minimal diff, no behavior change beyond the cap
+unit. Test in commands/message/mod.rs proves boundary behavior at small
+caps.
+
+**(5) FOR-7 → omit when unobserved.** `server_reply_ok` now has
+`skip_serializing_if = "Option::is_none"` — matching the contract's `?:`
+marker and sibling optionals (`TlsObservation::sni`,
+`AuthObservation::mechanism`/`succeeded` already omit). Deserialization
+is unaffected (absent Option → `None`; legacy `"server_reply_ok": null`
+also reads as `None` — dual-read safe). Contract unchanged — `?:` was
+already right.
+
+**(6) FOR-8 → code titles aligned to catalog.** CERT-006..010 `RuleSpec`
+titles now match forensics.md §5 verbatim (001..005 already matched).
+Ids/severities untouched; `FindingKey` uses rule_id + subject_key so
+diff semantics unchanged. `rule_catalog_version` kept at 1 (title is
+display text, not identity — same rationale as T-247's ratified v1).
+
+**(7) FOR-9 → contract amended.** §3 now documents the real
+`ChangeKind` vocabulary — `new | resolved | unchanged |
+severity_increased | severity_decreased` — with semantics per tag and
+the §12 legacy aliases (`added`→`new`, `persisting`→`unchanged`).
+
+### Files changed
+
+`commands/message/render.rs` (byte cap + helper), `commands/message/
+mod.rs` (cap test), `kiwi-forensics/src/model/mod.rs` (skip attr),
+`kiwi-forensics/src/rules/certificate.rs` (5 titles),
+`kiwi-app/src/kiwi.ts` (MessageBodyView/MessageAttachmentView/
+DeleteResultView/DeviceView/OutboxItem), `docs/contracts/ipc.md`
+(MessageBodyView + OutboxItem + DeleteResultView + DeviceView +
+render-cap wording), `docs/contracts/forensics.md` (§3 ChangeKind).
+
+### Verification
+
+- `cargo test -p kiwi-forensics` — 100 unit + all suites green.
+- `cargo test -p kiwi-app` — **106 green** incl.
+  `render_cap_is_bytes_and_never_splits_a_char` (byte-cap boundary
+  test: multibyte payload over a small cap drops rather than splits).
+- `npx tsc --noEmit` — clean.
+- `cargo clippy -p kiwi-forensics --lib -- -D warnings` — clean.
+- `cargo fmt` on touched files — clean. Workspace `--all` clippy/fmt
+  currently flags only T-266's in-flight files (`commands/sandbox.rs`,
+  `e2e.rs`, `state.rs` — unused imports/dead fields while A21 iterates);
+  none in this change's files. Re-check at integrate time.
+
+### Assumptions / risks
+
+- `commands/message/` touched only for the directed IPC-14 byte-cap fix;
+  no other commands/ files changed.
+- Workspace was mid-edit by T-266 (sandbox-open IPC) during verification
+  — transient compile breaks in `state.rs`/`commands/sandbox.rs` are
+  theirs; the suite passed after their module file landed.
+- `keyFingerprintTail` is informational — documented as display-only so
+  no reader treats an 8-hex tail as an authentication signal.

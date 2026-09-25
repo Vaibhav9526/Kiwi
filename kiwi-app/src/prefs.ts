@@ -33,6 +33,7 @@ export const PREF_KEYS = [
   "kiwi.theme",
   "kiwi.accent",
   "kiwi.density",
+  "kiwi.rail",
   "kiwi.grace",
   "kiwi.minTls",
   "kiwi.templates",
@@ -93,12 +94,16 @@ export function loadMuted(): string[] {
 export function applyUiPrefs(): void {
   try {
     const root = document.documentElement;
-    const theme = loadPref<string>("kiwi.theme", "dark");
+    // T-267: light is the default idiom (eM-idiom reference); dark tokens
+    // stay available as opt-in. A25 theme seam: any unknown non-empty
+    // theme name lands verbatim on data-theme so theme packages
+    // ([data-theme="…"] blocks under src/themes/) plug in without edits here.
+    const theme = loadPref<string>("kiwi.theme", "light");
     if (theme === "system") {
       const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
       root.setAttribute("data-theme", dark ? "dark" : "light");
     } else {
-      root.setAttribute("data-theme", theme);
+      root.setAttribute("data-theme", theme || "light");
     }
     root.setAttribute("data-accent", loadPref<string>("kiwi.accent", "standard"));
     root.setAttribute("data-density", loadPref<string>("kiwi.density", "comfortable"));

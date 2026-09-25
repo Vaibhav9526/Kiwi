@@ -8,6 +8,7 @@ use std::time::Duration;
 use tauri::{Emitter, Manager, State};
 
 use kiwi_core::session::{AuthMechanism, Protocol};
+use kiwi_mail::account::IncomingProtocol;
 use kiwi_mail::smtp::{QueuedSend, SmtpAuth, SmtpClient, SmtpConfig};
 use kiwi_mail::transport::{TlsSettings, Transport};
 
@@ -375,7 +376,54 @@ async fn transmit(
     ctx.security_status =
         bridge::security_status_label(true, record.findings.iter().map(|f| f.severity));
     let _ = client.quit().await;
+
+    // The send is committed — journal it, then file the Sent copy
+    // server-side via IMAP APPEND (the codebase's sent-mail mechanism; a
+    // local-only row would be expunged by the next real Sent sync, and
+    // POP3 has no remote folders at all). Best-effort: the recipient's
+    // server already accepted the mail, so a copy failure is audited but
+    // never retried and never flips the outcome.
+    let _ = state.audit.lock().await.record(
+        "send-sent",
+        &format!("{} via {account_id}", item.queue_id),
+        now_unix(),
+    );
+    if matches!(acct.incoming.protocol, IncomingProtocol::Imap)
+        && let Err(e) = file_sent_copy(state, &acct, &item.request.message).await
+    {
+        eprintln!(
+            "[kiwi-app] sent copy for {} failed: {}",
+            item.queue_id, e.message
+        );
+        let _ = state.audit.lock().await.record(
+            "send-sent-copy-failed",
+            &format!("{}: {}", item.queue_id, e.message),
+            now_unix(),
+        );
+    }
     Ok(Delivered::Sent)
+}
+
+/// File a copy of the transmitted RFC 5322 message into the account's
+/// Sent mailbox via IMAP APPEND — the `\Sent`-flagged LIST entry when
+/// the server advertises one (RFC 6154), the conventional "Sent" name
+/// otherwise. Opens a dedicated session: the send path owns no IMAP
+/// connection.
+async fn file_sent_copy(
+    state: &AppState,
+    acct: &kiwi_mail::account::MailAccount,
+    mime: &[u8],
+) -> CmdResult<()> {
+    let mut client = crate::commands::mail::connect_imap(state, acct).await?;
+    let boxes = client.list("", "*").await?;
+    let mailbox = boxes
+        .iter()
+        .find(|b| b.flags.iter().any(|f| f.eq_ignore_ascii_case("\\Sent")))
+        .map(|b| b.name.clone())
+        .unwrap_or_else(|| "Sent".into());
+    client.append(&mailbox, &["\\Seen"], mime).await?;
+    let _ = client.logout().await;
+    Ok(())
 }
 
 /// Record the SMTP connection observation (shared by sent + blocked paths).

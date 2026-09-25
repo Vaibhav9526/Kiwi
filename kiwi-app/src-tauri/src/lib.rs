@@ -37,6 +37,7 @@ use commands::message::*;
 use commands::oauth2::*;
 use commands::prefs::*;
 use commands::rules::*;
+use commands::sandbox::*;
 use commands::security::*;
 use commands::send::*;
 use commands::system::*;
@@ -102,10 +103,15 @@ pub fn run() {
             kiwi_render_body,
             kiwi_set_remote_content,
             kiwi_message_unsubscribe,
+            // sandbox-open (gated, fail closed)
+            kiwi_sandbox_open_link,
+            kiwi_sandbox_open_attachment,
             // snooze (gated — T-255, F-feature)
             kiwi_message_snooze,
             kiwi_message_unsnooze,
             kiwi_list_snoozed,
+            // junk (gated — T-263, completes T-212)
+            kiwi_message_set_junk,
             // send (gated)
             kiwi_send_message,
             kiwi_cancel_send,

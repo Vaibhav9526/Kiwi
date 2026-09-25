@@ -44,6 +44,16 @@ use crate::error::{CmdResult, IpcError};
 pub const MAX_SESSIONS: usize = 512;
 /// Bound on retained findings (deduped by finding id, latest wins).
 pub const MAX_FINDINGS: usize = 4096;
+/// Bound on retained sandbox-open sessions.
+pub const MAX_SANDBOX_SESSIONS: usize = 128;
+
+#[derive(Clone)]
+pub struct SandboxSessionRecord {
+    pub session_id: String,
+    pub target: String,
+    pub evidence_reasons: Vec<String>,
+    pub report: kiwi_sandbox::AnalysisReport,
+}
 
 /// One observed mail connection and everything it produced.
 #[derive(Clone)]
@@ -533,6 +543,11 @@ pub struct AppState {
     /// Discovery seam for `kiwi_discover_account`: live HTTPS fetch +
     /// MX lookup in production, `MockNet` in tests.
     pub autoconfig_net: Arc<dyn DiscoveryNet>,
+    /// Sandboxed hostile-content boundary. WSL2 when provisioned, otherwise
+    /// the always-unavailable NullProvider — never a host execution fallback.
+    pub sandbox: Arc<dyn kiwi_sandbox::SandboxProvider>,
+    /// Bounded sandbox-open session records for forensic report evidence.
+    pub sandbox_sessions: Mutex<VecDeque<SandboxSessionRecord>>,
     pub index: Mutex<AppIndex>,
     pub audit: Mutex<AuditLog>,
     /// Per-boot session id — challenges bind to it, so issued challenges die
@@ -550,6 +565,7 @@ impl AppState {
         let index = AppIndex::load(&data_dir)?;
         let audit = AuditLog::open(&data_dir)?;
         let http = integrations_transport()?;
+        let sandbox = configured_sandbox(&data_dir);
         let mut s = Self::assemble(
             data_dir,
             store,
@@ -558,6 +574,7 @@ impl AppState {
             Arc::new(OsCredentialStore::new()),
             http.clone(),
             Arc::new(crate::discovery_net::LiveDiscoveryNet::new(http)),
+            sandbox,
         )?;
         s.reload_outbox();
         Ok(s)
@@ -585,6 +602,17 @@ impl AppState {
         )
     }
 
+    /// Test open with a deterministic sandbox provider (offline command tests).
+    #[cfg(test)]
+    pub fn open_test_with_sandbox(
+        data_dir: PathBuf,
+        sandbox: Arc<dyn kiwi_sandbox::SandboxProvider>,
+    ) -> CmdResult<Self> {
+        let mut state = Self::open_test(data_dir)?;
+        state.sandbox = sandbox;
+        Ok(state)
+    }
+
     /// Test open with injected integration transport AND discovery net.
     #[cfg(test)]
     pub fn open_test_with_net(
@@ -604,6 +632,9 @@ impl AppState {
             Arc::new(kiwi_mail::account::MemoryCredentialStore::new()),
             integrations_http,
             autoconfig_net,
+            Arc::new(kiwi_sandbox::NullProvider::new(
+                "sandbox provider not injected in tests",
+            )),
         )?;
         s.reload_outbox();
         Ok(s)
@@ -668,6 +699,7 @@ impl AppState {
         credentials: Arc<dyn CredentialStore>,
         integrations_http: Arc<dyn HttpClient>,
         autoconfig_net: Arc<dyn DiscoveryNet>,
+        sandbox: Arc<dyn kiwi_sandbox::SandboxProvider>,
     ) -> CmdResult<Self> {
         Ok(Self {
             contacts: Mutex::new(
@@ -696,6 +728,8 @@ impl AppState {
             deliverability: Mutex::new(BTreeMap::new()),
             oauth2_sessions: Mutex::new(BTreeMap::new()),
             autoconfig_net,
+            sandbox,
+            sandbox_sessions: Mutex::new(VecDeque::new()),
             index: Mutex::new(index),
             audit: Mutex::new(audit),
             boot_session_id: new_id("boot"),
@@ -715,6 +749,11 @@ impl AppState {
         format!("app:{proto}:{n}")
     }
 
+    pub fn next_sandbox_session_id(&self) -> String {
+        let n = self.session_counter.fetch_add(1, Ordering::Relaxed);
+        format!("sandbox:{n}")
+    }
+
     /// Recompute the trust decision from every live signal source:
     /// endpoint indicators + device-registry status + all retained session
     /// signals. `Locked` is sticky inside `TrustMachine`.
@@ -732,6 +771,21 @@ impl AppState {
             signals.extend(record.signals.iter().cloned());
         }
         self.trust.lock().await.evaluate(&self.policy, signals)
+    }
+}
+
+fn configured_sandbox(data_dir: &Path) -> Arc<dyn kiwi_sandbox::SandboxProvider> {
+    let rootfs = data_dir.join("sandbox").join("rootfs.tar");
+    let config = kiwi_sandbox::Wsl2Config {
+        rootfs,
+        work_dir: data_dir.join("sandbox").join("work"),
+        ..Default::default()
+    };
+    match kiwi_sandbox::Wsl2Provider::new(config) {
+        Ok(provider) => Arc::new(provider),
+        Err(_) => Arc::new(kiwi_sandbox::NullProvider::new(
+            "sandbox provider configuration is invalid",
+        )),
     }
 }
 

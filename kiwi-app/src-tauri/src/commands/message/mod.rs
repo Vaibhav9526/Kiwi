@@ -9,6 +9,7 @@
 
 pub mod attachment;
 pub mod delete;
+pub mod junk;
 pub mod render;
 pub mod snooze;
 pub mod unsubscribe;
@@ -16,6 +17,7 @@ pub mod update;
 
 pub use attachment::*;
 pub use delete::*;
+pub use junk::*;
 pub use render::*;
 pub use snooze::*;
 pub use unsubscribe::*;
@@ -159,6 +161,23 @@ mod tests {
         let (on, n) = sanitize_html(html, true);
         assert_eq!(n, 0);
         assert!(on.contains("track.example"));
+    }
+
+    #[test]
+    fn render_cap_is_bytes_and_never_splits_a_char() {
+        // Multibyte-heavy payload: 4-byte emoji past a small cap. The old
+        // `chars().take(n)` counted *characters* and could emit n chars ×
+        // up to 4 bytes — far over the documented 8 MiB byte cap.
+        let s: String = "\u{1F600}".repeat(10);
+        let capped = render::truncate_to_byte_cap(s.clone(), 9);
+        assert!(capped.len() <= 9);
+        assert_eq!(capped.len(), 8, "2 emoji × 4B — third doesn't fit");
+        let capped = render::truncate_to_byte_cap("ab€cd".to_string(), 4);
+        assert_eq!(capped, "ab", "€ spans bytes 2..5 — dropped, never split");
+        let capped = render::truncate_to_byte_cap("ab€cd".to_string(), 5);
+        assert_eq!(capped, "ab€", "€ fits exactly at cap 5");
+        // Under-cap input returns unchanged.
+        assert_eq!(render::truncate_to_byte_cap(s, 100).len(), 40);
     }
 
     #[test]
