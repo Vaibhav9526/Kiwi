@@ -276,3 +276,59 @@ kiwi.ts`, `src/ipc.ts`.
 - `executed` means "request left the process", not "provider honored
   it" — `httpStatus` carries the endpoint's answer.
 - No live smoke; ScriptedHttp asserts the RFC 8058 body + content-type.
+
+## 2026-09-25 — T-242: integrations UI surfaces (own-vertical wiring)
+
+**Status:** implemented + verified. `npm run build` (tsc + vite) green,
+`tsc --noEmit` clean. CSP-strict: no remote assets, no remote anchors —
+URLs render as `<code>` + Copy; temp-mail HTML mounts pre-sanitized
+(remote stripped backend-side) via the same dangerouslySetInnerHTML
+idiom as the reading pane.
+
+### Surface
+
+- `src/views/integrations.tsx` (new) — `IntegrationsView` rendered as the
+  new **Preferences ▸ Integrations** tab (settings.tsx SECTIONS + render,
+  same embed idiom as Mail Rules → FiltersView; `ms-tabs`/`ms-tab`,
+  `ms-btn`, `kiwi-banner`, `kiwi-card`, `kiwi-pill`, `kiwi-evidence`,
+  `ms-view-enter` throughout — Mailspring tokens only, no new CSS).
+- **TempMail panel:** `PUBLIC_INBOX_NOTICE` (TS const mirroring the Rust
+  constant verbatim, exported from kiwi.ts) shown BEFORE the Create
+  control, then re-rendered from each response's `publicInboxNotice`.
+  Create (optional localPart), address + Copy, manual "Check for mail"
+  poll, click-to-fetch with sanitized-html expand, Extend, Discard
+  (shows remoteForgotten). Sessions reconnect on remount via one poll
+  (`not-found` → fresh state).
+- **Deliverability panel:** Begin → testId + reserved address + expiry +
+  consentNotice verbatim; consent checkbox ("single-use; backend refuses
+  replay") + account select gate [Send test]; queueId shown; status via
+  manual check + 15 s auto-poll while in flight; report renders score
+  (milli→decimal), compat score, subscores + per-category tallies as
+  pills, per-check list (status pill, title, summary, citations as
+  copyable text), authFailureIds as a danger banner, reportUrl as
+  copyable code — never a navigable link.
+- **UnsubscribeChip (mailbox.tsx):** T-231's copy-only chip now executes
+  `api.messageUnsubscribe` in live mode — oneClick POSTs directly (the
+  click IS the RFC 8058 action), plain-https and mailto go through a
+  labeled confirm step (`consent: true`; mailto copy states it sends
+  from the user's address, undo window applies). Copy fallback kept;
+  result/error states shown inline; demo mode degrades to copy-only.
+
+### Files changed
+
+`src/kiwi.ts` (+`PUBLIC_INBOX_NOTICE` const), `src/views/integrations.tsx`
+(new, ~470 lines), `src/views/settings.tsx` (+Integrations tab),
+`src/views/mailbox.tsx` (UnsubscribeChip execution wiring).
+
+### Assumptions / gaps
+
+- Temp-mail poll is manual-only (GM spacing ≥10 s per integrations.md
+  §3.5 — an always-on interval on a public inbox adds noise without
+  user benefit); deliverability status auto-polls 15 s only while a
+  test is in flight.
+- `TempPollView.address` is Option — reconnect fills it when present;
+  absent → user sees the create surface (next create replaces the
+  remote session anyway).
+- consentToken lives in component state only — never rendered, never
+  persisted; testId/address shown as evidence identifiers.
+- Demo mode renders the surfaces disabled with a live-backend note.

@@ -14,13 +14,15 @@ import type { AccountView, DeviceView, VerifyResult } from "../kiwi";
 import { navigate } from "../router";
 import { EDIT_HANDOFF_KEY, localAutoconfigGuess } from "./setup";
 import { FiltersView } from "./filters";
+import { IntegrationsView } from "./integrations";
 import { SHORTCUT_ROWS } from "../components/shortcuts";
 
 // T-191 tabbed preferences (Mailspring idiom): the eight legacy sections
-// fold into six tabs — General (general + notifications + privacy +
+// fold into seven tabs — General (general + notifications + privacy +
 // advanced), Accounts, Identity (KIWI Security), Appearance (appearance +
-// templates), Shortcuts, Mail Rules (embedded filters).
-const SECTIONS = ["General", "Accounts", "Identity", "Appearance", "Shortcuts", "Mail Rules"] as const;
+// templates), Shortcuts, Mail Rules (embedded filters), Integrations
+// (temp mail + deliverability, T-242).
+const SECTIONS = ["General", "Accounts", "Identity", "Appearance", "Shortcuts", "Mail Rules", "Integrations"] as const;
 type Section = (typeof SECTIONS)[number];
 
 function errText(e: unknown): string {
@@ -932,6 +934,8 @@ export function SettingsView({
             )}
           </>
         )}
+
+        {section === "Integrations" && <IntegrationsView accounts={accounts} mode={mode} />}
       </section>
     </div>
   );

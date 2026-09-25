@@ -147,13 +147,14 @@ export interface SignalView {
 }
 
 export interface SecurityStatusView {
+  trust: string;
   state: string;
   score: number | null;
   locked: boolean;
   requiredAction: string;
   signals: SignalView[];
-  endpointSignals: string[];
-  knownDevices: number;
+  sessionsObserved: number;
+  deviceId: string;
 }
 
 export interface AccountView {
@@ -220,6 +221,34 @@ export interface AuthResultsView {
   dkimDomain?: string | null;
   headerValue?: string | null;
   evidence?: unknown;
+  /** Upstream MTA evidence; untrustedRelay is a provenance limitation. */
+  upstream: UpstreamAuthView;
+  /** Exact pass/fail contradiction evidence flag — never a finding by itself. */
+  discrepancy: boolean;
+}
+
+export interface UpstreamAuthVerdictView {
+  authservId: string;
+  verdict: string;
+}
+
+export interface AuthVerdictComparisonView {
+  method: "spf" | "dkim" | "dmarc";
+  upstreamVerdict: string;
+  localVerdict: string;
+  discrepancy: boolean;
+}
+
+export interface UpstreamAuthView {
+  present: boolean;
+  untrustedRelay: boolean;
+  malformedHeaders: number;
+  authservIds: string[];
+  spf: UpstreamAuthVerdictView[];
+  dkim: UpstreamAuthVerdictView[];
+  dmarc: UpstreamAuthVerdictView[];
+  /** Evidence rows carrying both upstream and local verdicts. */
+  comparisons: AuthVerdictComparisonView[];
 }
 
 export interface MessageAttachmentView {
@@ -586,6 +615,16 @@ export interface VerifyResult {
 }
 
 /* ---------------- integrations (T-227, ipc.md §9e) ---------------- */
+
+/**
+ * The public-inbox disclosure, verbatim from
+ * `kiwi-integrations::tempmail::PUBLIC_INBOX_NOTICE`. Shown BEFORE the
+ * user enables a temp inbox — the backend also echoes it on every
+ * temp-mail response (`publicInboxNotice`), which the UI renders as
+ * received (never paraphrased).
+ */
+export const PUBLIC_INBOX_NOTICE =
+  "Temporary inboxes are PUBLIC: anyone who knows the address can read its mail, and messages pass through a third-party server. Never receive personal or sensitive mail here.";
 
 /** Every temp-mail response carries the mandated public-inbox disclosure. */
 export interface PublicInboxNotice {

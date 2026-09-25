@@ -567,7 +567,14 @@ export function MailboxView(props: MailboxProps) {
                 <small>{contactNote}</small>
               </p>
             )}
-            <UnsubscribeChip unsub={selected.unsub} />
+            <UnsubscribeChip
+              unsub={selected.unsub}
+              accountId={selected.accountId}
+              folderId={selected.folderId}
+              uid={selected.uid}
+              accountEmail={selected.accountEmail}
+              demo={props.demo}
+            />
             {locked ? (
               <p role="note">Message body unavailable — mailbox is locked.</p>
             ) : props.bodyLoading ? (
@@ -623,20 +630,49 @@ export function MailboxView(props: MailboxProps) {
 }
 
 /**
- * T-202 unsubscribe affordance (T-231): banner chip on messages carrying
- * List-Unsubscribe endpoints. Dormant (renders nothing) until the backend
- * exposes the fields. HTTPS links and mailto addresses are validated by
- * parseUnsubscribe; actions are confirm-gated and copy-based — the webview
- * never navigates to a remote URL and nothing is sent without consent.
- * One-click POST/open via shell integration is flagged as follow-up.
+ * T-202 unsubscribe affordance (T-231 chip, T-234 execution, T-242 UI):
+ * banner chip on messages carrying List-Unsubscribe endpoints. Dormant
+ * (renders nothing) until the backend exposes the fields.
+ *
+ * Executes `kiwi_message_unsubscribe` in live mode:
+ * - RFC 8058 one-click endpoint → the click IS the action (`http`,
+ *   no consent flag needed — the backend enforces that rule).
+ * - Plain https endpoint → a confirm step labels exactly what leaves
+ *   the process, then calls `http` with `consent: true`.
+ * - `mailto:` → always consent-gated: sends an email from the user's
+ *   own address through the normal outbox (undo window applies).
+ *
+ * HTTPS links and mailto addresses are validated by parseUnsubscribe;
+ * the webview never navigates to a remote URL, and copy-to-clipboard
+ * remains as a fallback on every endpoint.
  */
-function UnsubscribeChip({ unsub }: { unsub: UnsubscribeInfo | undefined }) {
+function UnsubscribeChip({
+  unsub,
+  accountId,
+  folderId,
+  uid,
+  accountEmail,
+  demo,
+}: {
+  unsub: UnsubscribeInfo | undefined;
+  accountId: string;
+  folderId: number;
+  uid: number;
+  accountEmail: string;
+  demo: boolean;
+}) {
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [result, setResult] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     setOpen(false);
     setCopied(null);
-  }, [unsub?.url, unsub?.mailto]);
+    setResult(null);
+    setError(null);
+    setBusy(null);
+  }, [unsub?.url, unsub?.mailto, accountId, folderId, uid]);
   if (!unsub || (!unsub.url && !unsub.mailto)) return null;
   const hostOf = (u: string): string => {
     try {
@@ -653,6 +689,24 @@ function UnsubscribeChip({ unsub }: { unsub: UnsubscribeInfo | undefined }) {
       setCopied(`Copy failed — ${what.toLowerCase()}: ${text}`);
     }
   };
+  const execute = async (action: "http" | "mailto", consent: boolean) => {
+    setBusy(action);
+    setError(null);
+    try {
+      const v = await api.messageUnsubscribe(accountId, folderId, uid, action, consent);
+      setResult(
+        v.action === "http"
+          ? `Unsubscribe request sent — endpoint answered HTTP ${v.httpStatus ?? "?"}${
+              (v.httpStatus ?? 0) >= 400 ? " (it may not have accepted it)" : ""
+            }.`
+          : `Unsubscribe email queued — undo from the outbox for a few seconds.`,
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
   return (
     <div className="ms-unsub">
       {!open ? (
@@ -660,47 +714,99 @@ function UnsubscribeChip({ unsub }: { unsub: UnsubscribeInfo | undefined }) {
           type="button"
           className="ms-btn"
           onClick={() => setOpen(true)}
-          title="This sender offers one-click unsubscribe"
+          title={unsub.oneClick ? "This sender offers one-click unsubscribe" : "This sender offers unsubscribe endpoints"}
         >
           Unsubscribe
         </button>
       ) : (
         <div className="ms-unsub-panel" role="group" aria-label="Unsubscribe options">
-          <p style={{ margin: "0 0 0.4rem" }}>
-            <small>
-              {unsub.oneClick
-                ? "One-click endpoint offered — until shell integration lands, copy it instead. Nothing is sent automatically."
-                : "Sender endpoints below — copy to use. Nothing is sent automatically."}
-            </small>
-          </p>
-          {unsub.url && (
-            <p style={{ margin: "0 0 0.4rem" }}>
-              <small>
-                Link ({hostOf(unsub.url)}):{" "}
-                <button type="button" className="ms-btn" onClick={() => void copy(unsub.url as string, "Link")}>
-                  Copy link
-                </button>
-              </small>
-            </p>
+          {result ? (
+            <>
+              <p role="status" style={{ margin: "0 0 0.4rem" }}>
+                <small>{result}</small>
+              </p>
+              <button type="button" className="ms-btn" onClick={() => setOpen(false)}>
+                Done
+              </button>
+            </>
+          ) : (
+            <>
+              <p style={{ margin: "0 0 0.4rem" }}>
+                <small>
+                  {demo
+                    ? "Demo mode — endpoints are shown for copy; execution needs the live backend."
+                    : unsub.oneClick
+                      ? "One-click endpoint offered — the button sends the single RFC 8058 request. Nothing else is sent."
+                      : "Sender endpoints below — nothing is sent until you pick one."}
+                </small>
+              </p>
+              {unsub.url && (
+                <p style={{ margin: "0 0 0.4rem" }}>
+                  <small>
+                    Endpoint ({hostOf(unsub.url)}):{" "}
+                    {!demo && (
+                      <button
+                        type="button"
+                        className="ms-btn"
+                        disabled={busy !== null}
+                        onClick={() => void execute("http", !unsub.oneClick)}
+                      >
+                        {busy === "http"
+                          ? "Sending…"
+                          : unsub.oneClick
+                            ? "Unsubscribe now"
+                            : "Send unsubscribe request"}
+                      </button>
+                    )}{" "}
+                    <button
+                      type="button"
+                      className="ms-btn"
+                      onClick={() => void copy(unsub.url as string, "Link")}
+                    >
+                      Copy link
+                    </button>
+                  </small>
+                </p>
+              )}
+              {unsub.mailto && (
+                <p style={{ margin: "0 0 0.4rem" }}>
+                  <small>
+                    Email <code>{unsub.mailto}</code> — sends from {accountEmail}:{" "}
+                    {!demo && (
+                      <button
+                        type="button"
+                        className="ms-btn"
+                        disabled={busy !== null}
+                        onClick={() => void execute("mailto", true)}
+                      >
+                        {busy === "mailto" ? "Sending…" : "Send unsubscribe email"}
+                      </button>
+                    )}{" "}
+                    <button
+                      type="button"
+                      className="ms-btn"
+                      onClick={() => void copy(unsub.mailto as string, "Address")}
+                    >
+                      Copy address
+                    </button>
+                  </small>
+                </p>
+              )}
+              {copied && (
+                <p role="status" style={{ margin: "0 0 0.4rem" }}>
+                  <small>{copied}</small>
+                </p>
+              )}
+              {error && (
+                <p role="alert" style={{ margin: "0 0 0.4rem", color: "var(--kiwi-danger)" }}>
+                  <small>{error}</small>
+                </p>
+              )}
+              <button type="button" className="ms-btn" onClick={() => setOpen(false)}>
+                Close
+              </button>
+            </>
           )}
-          {unsub.mailto && (
-            <p style={{ margin: "0 0 0.4rem" }}>
-              <small>
-                Email (<code>{unsub.mailto}</code>):{" "}
-                <button type="button" className="ms-btn" onClick={() => void copy(unsub.mailto as string, "Address")}>
-                  Copy address
-                </button>
-              </small>
-            </p>
-          )}
-          {copied && (
-            <p role="status" style={{ margin: "0 0 0.4rem" }}>
-              <small>{copied}</small>
-            </p>
-          )}
-          <button type="button" className="ms-btn" onClick={() => setOpen(false)}>
-            Close
-          </button>
         </div>
       )}
     </div>
