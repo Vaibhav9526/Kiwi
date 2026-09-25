@@ -310,3 +310,5 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-329 | new-mail OS notifications (tauri-plugin-notification, per-sync batched, pref-gated, junk-suppressed) | Agent 20 | open | `state.rs`, `commands/`, `capabilities` | |
 | T-330 | storage diagnostics IPC: real db_bytes/counts/integrity_check + compact (VACUUM) | Agent 15 | open | `kiwi-mail/store`, `commands/` | T-315 seam |
 | T-331 | surface audit-corruption in UI: persistent honest state + proactive integrity signal | Agent 21 | open | `commands/`, `security-center`, status strip | T-327/T-324 |
+| T-332 | Copy-to ctx-menu (kiwi_copy_messages seam, folder-picker reuse, multi-select) | Agent 24 | open | `mailbox.tsx` ctx-menu | T-325 |
+| T-333 | storage-stats wiring (About db-size + Compact) + notification pref toggle | Agent 25 | open | `settings.tsx`, About | T-330,T-329 |
