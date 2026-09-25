@@ -127,7 +127,7 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 
 | T-200 | F1 inbox rules engine (sync-ingest, ordered, block-list-first, deterministic) | unassigned | backlog | `kiwi-mail/` | — |
 | T-201 | F2 categorization: deterministic classifier + schema v4 + ingest wiring | Agent 14 | done (101/101) | `kiwi-mail/` | — |
-| T-202 | F3 unsubscribe: List-Unsubscribe/List-Unsubscribe-Post parse + store + MessageView (mailto consent-gated) | Agent 14 | open | `kiwi-mail/` + UI | — |
+| T-202 | F3 unsubscribe landed (schema v5, consent-gated mailto, 5 MessageView fields) | Agent 14 | done (116/116) | `kiwi-mail/` + UI | — |
 | T-203 | F4 sender block list (trash-before-rules, per-account) | unassigned | backlog | `kiwi-mail/` | — |
 | T-204 | F5 mark-as-read behavior pref | unassigned | backlog | `kiwi-app/` | — |
 | T-205 | F6 GTD labels as real IMAP folders (t/w/d keys, opt-in, Todo clears on send) | unassigned | backlog | `kiwi-mail/` + UI | — |
@@ -137,7 +137,7 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-209 | F10 WYSIWYG composer (fonts/tables/emoji/links/inline-image/Excel-paste; ammonia allowlist review) | unassigned | backlog | `kiwi-app/` | — |
 | T-210 | F11 native notifications via Tauri API on mail-changed; per-account toggle; lock-gated content | unassigned | backlog | `kiwi-app/` | T-157 |
 | T-211 | F12 sent items inside conversation threads | unassigned | backlog | `kiwi-mail/` + UI | T-165 |
-| T-212 | F13 junk marking (\Junk flag + move; context/toolbar/bulk) | unassigned | backlog | `kiwi-mail/` + UI | — |
+| T-212 | F13 junk marking (\Junk flag + move; context/toolbar/bulk) | Agent 14 | open | `kiwi-mail/` + UI | — |
 | T-213 | F14 email priority headers (compose + display) | unassigned | backlog | `kiwi-mail/` + composer | — |
 | T-214 | F15 extra theme schemes (custom CSS field deferred) | unassigned | backlog | `kiwi-app/` | — |
 | T-215 | kiwi-admin org plane (user mgmt/invites/admin panel) — Phase 6, needs owner sign-off | unassigned | deferred-P6 | `kiwi-admin/` | — |
@@ -167,7 +167,7 @@ rebuild context. Lead handle is now term_c20c6737.
 | 11 | Devin Pro | d869b293 | T-226 done → T-227 integrations IPC |
 | 12 | Muse Spark 1.3 xhigh | 4cc53da5 | T-192 done → T-231 live-data wiring |
 | 13 | Muse Spark 1.3 xhigh | e5adf4d9 | T-193 admin H1-H8 + M fixes |
-| 14 | OpenCode Zen xhigh | e26f119b | T-201 done → T-202 F3 unsubscribe |
+| 14 | OpenCode Zen xhigh | e26f119b | T-202 done → T-212 F13 junk marking |
 | 15 | Devin Pro | c47aa1d7 | T-181 done → T-228 rules engine core |
 | 16 | DeepSeek V4.1 Flash | 87c46343 | T-183 mailauth hardening |
 | 17 | DeepSeek V4.1 Flash | 71a0b324 | T-194 mobile authenticator screens |

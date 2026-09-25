@@ -160,3 +160,81 @@ store/{mod,schema,queries}.rs}`,
 (4 literals), this file. Committed by repo sweep (859a347 et al) —
 Lead owns integration.
 
+## 2026-09-25 — T-202 (F3): one-click unsubscribe, kiwi-mail side + MessageView
+
+**Status:** done — implemented + verified in-workspace (reqwest blocker from
+T-201 is resolved). `cargo test -p kiwi-mail` → **116/116** (was 101),
+clippy `--all-targets -D warnings` clean, `cargo fmt --check` clean,
+`unsafe`-free (workspace forbid). No commit — Lead integrates (repo sweeps
+are committing worktree state regularly).
+
+### What landed
+
+- **NEW `kiwi-mail/src/unsub.rs`** (~390 lines, 13 tests):
+  `UnsubscribeInfo{http_url, mailto, one_click}`,
+  `UnsubscribeAction::{None,Http,Mailto,Both}` via `action()`,
+  `has_consent_gated_option()` (mailto present → consent required, never
+  auto-send), `parse_unsubscribe(&[(name, value)])`. Policy (in-file docs):
+  `<>`-bracketed tokens only; **https-only** (plain-http dropped);
+  mailto params stripped to bare address; whitespace/CTL/overlong rejected;
+  `List-Unsubscribe-Post` normalized compare for the RFC 8058 flag; first
+  https + first mailto win across repeated headers; no offer → `None`.
+- **`mime.rs`**: `ParsedMessage.unsubscribe: Option<UnsubscribeInfo>`
+  filled on ingest. Two real bugs found by tests and fixed:
+  1. `List-Unsubscribe: <url>` parses as `Address`, losing brackets —
+     first fix (flatten addresses) worked for unit shapes but failed on
+     real parses;
+  2. fix proper: `capture_headers` now slices RAW value text via parser
+     offsets (`offset_start..offset_end`, unfolded, right-trimmed) with
+     typed extraction as defensive fallback; `received` explicitly skipped
+     (transport noise that would crowd the 128-header bound).
+- **Store schema v5**: `unsub_http TEXT, unsub_mailto TEXT,
+  unsub_oneclick INTEGER NOT NULL DEFAULT 0`. `migrate_conn` restructured
+  to version-gated append-only steps (v3→v4→v5, v4→v5, fresh skips);
+  shared `bodies_to_backfill` helper serves both backfills.
+  `MessageMeta`/`NewMessageMeta` carry the 3 fields; upsert writes them
+  (conflict clause untouched — refinement-safe); new `set_unsubscribe`;
+  `move_messages` carries them; `search.rs` selects/maps them.
+- **Ingest (`sync.rs`)**: POP3 stores the offer at ingest; IMAP `to_meta`
+  stores empty (no headers); `fetch_missing_bodies` refines both category
+  and unsubscribe once headers arrive.
+- **MessageView (`src-tauri types/mail.rs`)**: new `category: String`,
+  `unsubscribe_url/mailto/one_click/requires_consent` (camelCase
+  serialized; `requires_consent = mailto.is_some()`). Single `From` impl
+  updated; 4 `NewMessageMeta` literals fixed (`update.rs` archive-copy
+  preserves all new fields; 3 test literals defaulted).
+
+### Tests (15 new: 101 → 116)
+
+- `unsub.rs`: missing/garbage headers, https-only, mailto-only (gated),
+  both (http primary), first-wins incl. across repeated headers,
+  http/ftp dropped, malformed battery (bare/unterminated/empty/no-@/
+  CRLF-injection/overlong), RFC 8058 exact/case-folded/wrong-value/
+  post-alone, scheme case-insensitivity with value preservation, titles
+  ignored, determinism.
+- `mime.rs`: ingest sets `.unsubscribe` (params stripped, one-click set);
+  absent offer → `None`.
+- `store/mod.rs`: v3 test extended (offer+mailto+one-click backfilled,
+  bodyless row defaults); NEW v4→v5 test (category untouched, offer
+  filled); NEW persist/refine/no-clobber/move-carries test.
+
+### Verification notes / follow-ups (Lead)
+
+- `cargo check -p kiwi-app`: **blocked by another agent's in-flight file**
+  — `src-tauri/src/types/integrations.rs` (untracked, saved 15:41) fails
+  with E0382 (`r.tallies` partial move) plus an unused-import warning in
+  `types/mod.rs`. Not mine, not touched (§8). Evidence my changes are
+  sound: rustc reported ONLY that error — `types/mail.rs` and all command
+  modules (with my 4 literal fixes + new `From` fields) produced zero
+  errors. Please re-run the Tauri check once their file lands.
+- Contract/frontend: `ipc.md` documents `MessageView` shape (§~244) and
+  the frontend keeps local TS view types — both need the 5 new fields
+  (A7/A5 follow-up; additive backend fields break nothing). No IPC
+  behavior changes in this task: no fetching, no sending, no new command.
+- Syntax-break postscript: my first `unsub.rs` push had 4 delimiter typos
+  (`)]))` on multi-tuple arrays) that went workspace-red; user flagged it
+  — fixed all four, compile verified, then the header work above. Lesson:
+  run `cargo check` before considering any file done, even test-only edits.
+- Re-check suggestion: `cargo test --workspace` once integrations.rs lands,
+  to confirm no cross-crate regression from the schema bump.
+
