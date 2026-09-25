@@ -554,3 +554,43 @@ resolution, idempotence, snooze interaction).
   nicety wasn't in scope).
 - Junking a parked message keeps the snooze (releases inside Junk).
 - `SandboxSessionRecord.report` dead-field cleared by owner's own fix.
+
+---
+
+## T-264 — folder exists/unseen counts (IPC-6 follow-up)
+
+**Store** — `MailStore::folder_stats(folder_id) → FolderStats {exists, unseen}`:
+one indexed `COUNT(*)` per call; `unseen` = rows without a `\Seen` token via
+padded-token `LIKE '% \Seen %'` — space-separated `flags` column, so padding
+makes the match exact and SQLite's ASCII case-insensitive LIKE matches IMAP
+flag semantics. No wildcards in `\Seen`. Literal store counts: snoozed rows
+count (defer ≠ suppress), `\Junk` doesn't affect `unseen`, moves carry the
+flags so counts travel.
+
+**App** — `FolderView` gained `exists`/`unseen` (non-optional). `From<&
+FolderMeta>` deleted in favor of `FolderView::from_meta(meta, stats)` —
+the ctor *requires* a real count, so fabricated zeros are unrepresentable
+(the exact trap A20's withdrawal note warned about). `list_folders_impl`
+runs `folder_stats` inside the existing per-folder meta loop (N+1 → N+2
+queries; folders are tens, trivial).
+
+**Contract** — ipc.md §6 `kiwi_list_folders` amended back: `exists`/`unseen`
+are real `COUNT`s over stored rows, always fresh at call time; parked mail
+counts toward both; badge reads `unseen`. TS `FolderView.unseen` promoted
+from `?:` to required + `exists` added — the sidebar badge
+(`accounts.ts` `f.unseen ?? 0`) picks it up with zero view changes.
+
+**Tests** — store-level `folder_stats_counts_seen_and_unseen_and_moves`:
+seen/unseen mix, empty folder, `\Seen` set/clear (case-insensitive), junk
+flag orthogonality, move carrying counts across folders, delete dropping
+`exists`, parked-still-counted. App-level `list_folders_reports_exists_
+and_unseen`: wire shape end to end through `list_folders_impl`.
+
+**Gates** — `kiwi-mail` 205/205, `kiwi-app` 125/125, workspace clippy
+`-D warnings` clean, `tsc` clean, fmt clean.
+
+**Cross-agent unblock** — `queries.rs::message_exists` (in-flight) missed
+the `rusqlite::Error → MailError` conversion; added `Ok(...?)`. The e2e
+send-test wedge (DATA terminator stall hanging the suite >60s) was
+diagnosed + reported — owner landed `TRANSCRIPT_STEP_TIMEOUT` + the fix;
+suite now exits clean.

@@ -225,7 +225,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-260 | security-session.md contract-vs-impl enumeration (TrustMachine/lock gates) | Agent 22 | open | `docs/audits/` | T-196 |
 | T-261 | LinkRisk hints (linkrisk.rs 459L, 203/203, wired to TS) | Agent 21 | done |
 | T-262 | Send-path e2e: compose->outbox->scripted SMTP->sent (fail branches: reject/undo/no-STARTTLS) | Agent 19 | open | `src-tauri/`, `kiwi-mail/` testutil | T-257 |
-| T-264 | Folder exists/unseen counts (restores §6 contract) | Agent 15 | open | `kiwi-mail/store`, `types/` | T-247 |
+| T-264 | folder exists/unseen real COUNTs — folder_stats + non-optional FolderView (zeros unrepresentable); store half committed fd042d3, app half in-tree pending T-269 landing | Agent 15 | done |
 
 <!-- A18 terminal gone; e26f119b was a DUP A22 session — renumbered Agent 23, owns T-235. rule_catalog stays v1 (flags restore semantics, default output identical — ratified). -->
 | T-265 | Register batch cleared (IPC-11..14 + FOR-7/8/9; real byte-cap fix) | Agent 20 | done |
