@@ -482,6 +482,63 @@ async function runChecks(cdp, sid) {
     await waitFor(cdp, sid, `document.documentElement.getAttribute("data-theme")==="light"`, 4000);
     return "dark→reload→still dark→restored";
   });
+
+  await flow("dragdrop", "drag row → folder tree drop reaches the move path", async () => {
+    await cdp.eval(sid, "window.location.hash = '#/mail'");
+    await waitFor(cdp, sid, `${qsa(".em-row")} > 0`, 5000);
+    // Synthetic HTML5 DnD on real DOM nodes — Chromium constructs
+    // DataTransfer natively; Input.dispatchDragEvent is flaky in-page.
+    const srcKey = await cdp.eval(sid, `(()=>{
+      const dt = new DataTransfer();
+      const row = document.querySelector('.em-row[draggable]');
+      if (!row) return '';
+      row.dispatchEvent(new DragEvent('dragstart',{bubbles:true,cancelable:true,dataTransfer:dt}));
+      window.__dragDt = dt;
+      return (dt.types.find(t=>t.startsWith('application/x-kiwi-src-'))||'').replace('application/x-kiwi-src-','');
+    })()`);
+    if (!srcKey) throw new Error("dragstart carried no payload/source token");
+    const F = `.em-accounts .em-tree-item[data-folder-key]`;
+    // Same-folder denial: demo composite keys use slugs (demo1:inbox) while
+    // envelope ids carry numeric fids, so the real srcKey may match no row.
+    // Exercise the denial logic honestly — hand a fresh DataTransfer the
+    // token that matches the row we're hovering.
+    const denied = await cdp.eval(sid, `(()=>{
+      const el=document.querySelector('${F}');
+      if(!el) return 'no-rows';
+      const dt2=new DataTransfer();
+      dt2.setData('application/x-kiwi-messages','{"ids":[]}');
+      dt2.setData('application/x-kiwi-src-'+el.dataset.folderKey.replaceAll(':','_').toLowerCase(),'1');
+      el.dispatchEvent(new DragEvent('dragover',{bubbles:true,cancelable:true,dataTransfer:dt2}));
+      window.__denyRow = el; window.__denyDt = dt2;
+      return 'dispatched';
+    })()`);
+    if (denied !== "dispatched") throw new Error(`no folder rows (${denied})`);
+    // Chromium resets dropEffect to 'none' after synthetic dispatch (no live
+    // DnD session), so the honest observable is the React-state affordance:
+    // em-drop-denied class + aria-dropeffect="none".
+    const deniedOk = await waitFor(cdp, sid,
+      `window.__denyRow?.classList.contains('em-drop-denied') && window.__denyRow?.getAttribute('aria-dropeffect')==='none'`, 3000);
+    await cdp.eval(sid, `window.__denyRow?.dispatchEvent(new DragEvent('dragleave',{bubbles:true,dataTransfer:window.__denyDt}))`);
+    if (!deniedOk) throw new Error("same-folder hover never denied (class+aria)");
+    // Different folder → move affordance → drop hits the real handler.
+    const dst = await cdp.eval(sid, `(()=>{
+      const el=[...document.querySelectorAll('${F}')].find(r=>r.dataset.folderKey.replaceAll(':','_').toLowerCase()!=='${srcKey}');
+      if(!el) return 'no-dst';
+      el.dispatchEvent(new DragEvent('dragover',{bubbles:true,cancelable:true,dataTransfer:window.__dragDt}));
+      window.__dropRow = el;
+      return el.dataset.folderKey;
+    })()`);
+    if (dst === "no-dst") throw new Error("no destination folder row");
+    const painted = await waitFor(cdp, sid,
+      `window.__dropRow?.classList.contains('em-drop-target') && window.__dropRow?.getAttribute('aria-dropeffect')==='move'`, 3000);
+    if (!painted) throw new Error("drop target never painted affordance");
+    await cdp.eval(sid, `window.__dropRow.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:window.__dragDt}))`);
+    // Demo: the real moveToFolder answers with the honest backend-required
+    // toast. Live would produce 'Moved N to X'. Either proves the route.
+    const demoToast = await waitFor(cdp, sid, `document.body.textContent.includes('Demo mode — move') || document.body.textContent.includes('Moved ')`, 5000);
+    if (!demoToast) throw new Error("drop produced no move-path outcome");
+    return `drag→deny same-folder→drop→${await cdp.eval(sid, `document.body.textContent.includes('Demo mode') ? 'demo honest toast' : 'live move'`) }`;
+  });
 }
 
 // ----------------------------------------------------------------- main --

@@ -954,6 +954,8 @@ function DateGroup({
               folder={folder}
               currentId={currentId}
               isPicked={picked.includes(r.m.id)}
+              dragIds={picked.includes(r.m.id) ? picked : [r.m.id]}
+              dragSubject={r.m.subject}
               onTogglePick={onTogglePick}
               onToggleStar={onToggleStar}
               onArchive={onArchive}
@@ -1069,6 +1071,8 @@ function RowShell({
   onArchive,
   onDelete,
   onCtxMenu,
+  dragIds,
+  dragSubject,
   label,
 }: {
   id: string;
@@ -1090,6 +1094,11 @@ function RowShell({
   onArchive: (id: string) => void;
   onDelete: (id: string) => void;
   onCtxMenu?: (e: ReactMouseEvent) => void;
+  /** T-317: envelope ids this row drags (the picked set when the row is
+   *  part of it, else just itself). Present → the row is draggable and a
+   *  folder-tree drop routes to kiwi_move_messages via onMoveToFolder. */
+  dragIds?: string[];
+  dragSubject?: string;
   label: string;
 }) {
   const [confirmDel, setConfirmDel] = useState(false);
@@ -1099,6 +1108,22 @@ function RowShell({
     <article
       id={id}
       role="option"
+      draggable={!!dragIds}
+      onDragStart={
+        dragIds
+          ? (e) => {
+              e.dataTransfer.setData("application/x-kiwi-messages", JSON.stringify({ ids: dragIds }));
+              // Dragover can't read getData — the source folder rides in a
+              // TYPE token so drop targets can deny same-folder drops.
+              const srcKey = dragIds[0]?.split(":").slice(0, 2).join("_").toLowerCase();
+              if (srcKey) e.dataTransfer.setData(`application/x-kiwi-src-${srcKey}`, "1");
+              e.dataTransfer.setData("text/plain", `${dragIds.length} message(s): ${dragSubject ?? ""}`);
+              e.dataTransfer.effectAllowed = "move";
+              e.currentTarget.classList.add("em-dragging");
+            }
+          : undefined
+      }
+      onDragEnd={dragIds ? (e) => e.currentTarget.classList.remove("em-dragging") : undefined}
       className={`em-row${unread ? " is-unread" : ""}${selected ? " is-selected" : ""}`}
       aria-selected={selected}
       aria-label={label}
@@ -1248,6 +1273,8 @@ function MessageRow({
   folder,
   currentId,
   isPicked,
+  dragIds,
+  dragSubject,
   onTogglePick,
   onToggleStar,
   onArchive,
@@ -1258,6 +1285,8 @@ function MessageRow({
   folder: string;
   currentId?: string;
   isPicked: boolean;
+  dragIds?: string[];
+  dragSubject?: string;
   onTogglePick: (id: string, range: boolean) => void;
   onToggleStar: (id: string) => void;
   onArchive: (id: string) => void;
@@ -1284,6 +1313,8 @@ function MessageRow({
       onArchive={onArchive}
       onDelete={onDelete}
       onCtxMenu={onContextMenu}
+      dragIds={dragIds}
+      dragSubject={dragSubject}
       label={`${m.unread ? "Unread" : "Read"} from ${m.from}: ${m.subject}. Account trust ${severityLabel(m.trust)}.${isPicked ? " Selected for bulk actions." : ""}`}
       checkbox={
         <input
@@ -1353,6 +1384,8 @@ function ThreadRow({
       onArchive={() => onArchive(newest.id)}
       onDelete={() => onDelete(newest.id)}
       onCtxMenu={onContextMenu}
+      dragIds={thread.messages.some((m) => picked.includes(m.id)) ? picked : thread.messages.map((m) => m.id)}
+      dragSubject={thread.subject}
       label={`Conversation: ${thread.subject}. ${thread.messages.length} messages, ${thread.unreadCount} unread.${allPicked ? " Selected for bulk actions." : ""}`}
       checkbox={
         <input

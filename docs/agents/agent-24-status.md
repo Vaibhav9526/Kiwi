@@ -699,3 +699,42 @@ assertions, restore afterwards so the suite is order-independent):
 
 **Result:** 18/18 PASS (12 smoke + 6 flow) on real Edge headless, ~15s.
 `tsc && vite build` green.
+
+## T-317 — drag messages → folder tree (last un-wired mailbox interaction)
+
+**Drag side** (mailbox.tsx): `RowShell` gains `dragIds`/`dragSubject` —
+draggable rows write `application/x-kiwi-messages` JSON + `text/plain`
+summary + `effectAllowed=move`. Pick-aware: a dragged row inside the
+picked set drags the whole selection (threads resolve to member ids, or
+the picked set when a member is picked).
+
+**Drop side** (chrome.tsx): `FolderRow` accepts a `dropTarget` only on
+real account folders — Favorites/smart rows (incl. Outbox) get NO handler,
+so dropping there is impossible by construction (honest, not a fake deny).
+`getData` is unreadable during dragover, so the source folder rides as a
+`application/x-kiwi-src-*` TYPE token (lowercased — setData normalizes).
+Same-folder hover → `dropEffect=none` + `em-drop-denied` +
+`aria-dropeffect="none"`; valid target → `em-drop-target` + `move`.
+Drop filters same-folder members (multi-source drags keep the movable
+subset); all-local drops no-op silently.
+
+**Drop → same move path:** `onDropMessages` resolves the composite
+`accountId:folderId` → `moveToFolder` → the existing chunked
+`kiwi_move_messages` loop (shared with ctx-menu Move-to, which stays the
+keyboard fallback). Demo → honest "needs the Tauri backend" toast. Toast
+now names the destination ("Moved N to X."). **No undo** — no real undo
+IPC exists; not faked.
+
+**Smoke `dragdrop` flow:** synthetic `DragEvent`+`DataTransfer` on real
+DOM (Chromium resets `dropEffect` post-dispatch for synthetic events —
+proven via probe; so assertions use the React-state affordance:
+`em-drop-denied`/`em-drop-target` + `aria-dropeffect`). Verifies:
+dragstart carries the payload+source token → same-folder hover denied →
+different folder paints the move affordance → drop reaches the handler →
+demo answers the honest toast. **20/20 PASS.**
+
+**Mid-flight collisions:** A25's T-318 was landing in settings.tsx +
+ui-smoke.mjs concurrently (transient tsc errors + a `mbox-io` check
+appeared mid-run + one theme-check flake during their save). My staging
+was hunk-scoped: `git apply --cached` of ONLY the dragdrop hunk —
+mbox-io stays in the worktree for their own commit.

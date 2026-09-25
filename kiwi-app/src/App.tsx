@@ -874,11 +874,13 @@ export default function App() {
         }
       }
       await reloadMail();
-      const summary = fail === 0 ? `Moved ${moved} message(s).` : `Moved ${moved}, ${fail} failed.`;
+      const dstName = Object.values(folderLists).flat().find((f) => f.id === dstFolderId)?.name;
+      const where = dstName ? ` to ${dstName}` : "";
+      const summary = fail === 0 ? `Moved ${moved} message(s)${where}.` : `Moved ${moved}${where}, ${fail} failed.`;
       setSyncNote(summary);
       notify(fail === 0 ? "ok" : "warn", summary);
     },
-    [demo, groupByFolder, reloadMail, notify],
+    [demo, groupByFolder, reloadMail, notify, folderLists],
   );
 
   /**
@@ -1002,6 +1004,49 @@ export default function App() {
     },
     [demo, selectedEnvelope, notify],
   );
+
+  // T-318: folder ctx-menu "Export to mbox…" → path dialog → real IPC.
+  const [exportDlg, setExportDlg] = useState<{ folderId: number; label: string } | null>(null);
+  const [exportDlgPath, setExportDlgPath] = useState("");
+  const [exportDlgBusy, setExportDlgBusy] = useState(false);
+  const [exportDlgErr, setExportDlgErr] = useState<string | null>(null);
+  const openFolderExport = useCallback(
+    (folderKey: string, label: string) => {
+      const fid = Number(folderKey.split(":").pop());
+      if (!Number.isFinite(fid) || fid <= 0) {
+        notify("error", `Can't export “${label}” — not a real folder id.`);
+        return;
+      }
+      setExportDlgErr(null);
+      setExportDlgPath("");
+      setExportDlg({ folderId: fid, label });
+    },
+    [notify],
+  );
+  const runFolderExport = useCallback(async () => {
+    if (!exportDlg) return;
+    let path = exportDlgPath.trim();
+    if (!path) {
+      setExportDlgErr("Enter a destination path first.");
+      return;
+    }
+    if (!/\.mbox$/i.test(path)) path = `${path}.mbox`;
+    setExportDlgBusy(true);
+    setExportDlgErr(null);
+    try {
+      const r = await api.mailboxExportMbox(exportDlg.folderId, path);
+      const parts = [`Exported ${r.exported}`, `${r.bytes.toLocaleString()} B`];
+      if (r.skipped > 0) parts.push(`${r.skipped} skipped`);
+      if (r.truncated) parts.push("truncated at member cap");
+      if (r.exported === 0 && r.skipped === 0) parts.push("folder was empty");
+      notify(r.partial ? "warn" : "ok", `mbox export — ${parts.join(" · ")} → ${path}`);
+      setExportDlg(null);
+    } catch (e) {
+      setExportDlgErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setExportDlgBusy(false);
+    }
+  }, [exportDlg, exportDlgPath, notify]);
 
   /** Flag/star overrides applied, query NOT applied — feeds mailbox + search. */
   const baseMessages = useMemo(() => {
@@ -1378,10 +1423,23 @@ export default function App() {
             smartUnread={smartUnread}
             accountSections={accountSections}
             activeFolder={route.name === "mail" ? (route.folder ?? "all-inboxes") : "all-inboxes"}
+            onDropMessages={(ids, folderKey) => {
+              // T-317: drag→folder drop. The composite "accountId:folderId"
+              // resolves to the numeric id moveToFolder chunks onto
+              // kiwi_move_messages — same path as the Move-to menu.
+              if (demo) {
+                notify("info", "Demo mode — move needs the Tauri backend.");
+                return;
+              }
+              const fid = Number(folderKey.split(":").pop());
+              if (!Number.isFinite(fid)) return;
+              void moveToFolder(ids, fid);
+            }}
             outboxCount={outbox.length}
             foldersError={foldersError}
             demo={demo}
             onMarkAllRead={(key) => void markFolderRead(key)}
+            onExportMbox={openFolderExport}
           />
         }
         rail={
@@ -1520,6 +1578,70 @@ export default function App() {
                 }}
                 onNotify={notify}
               />
+            </div>
+          </div>
+        )}
+        {exportDlg && (
+          <div
+            className="ms-composer-backdrop"
+            onMouseDown={(e) => {
+              if (e.target === e.currentTarget && !exportDlgBusy) setExportDlg(null);
+            }}
+          >
+            <div
+              className="ms-composer-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-label={`Export ${exportDlg.label} to mbox`}
+              style={{ width: "min(430px, 100%)" }}
+              onKeyDown={(e) => {
+                if (e.key === "Escape" && !exportDlgBusy) setExportDlg(null);
+              }}
+            >
+              <div className="ms-composer-head">
+                <h1>Export “{exportDlg.label}” to mbox</h1>
+                <button
+                  type="button"
+                  className="ms-btn"
+                  onClick={() => setExportDlg(null)}
+                  disabled={exportDlgBusy}
+                  aria-label="Close export dialog"
+                >
+                  <Icon name="close" size={12} />
+                </button>
+              </div>
+              <p>
+                <label htmlFor="ctx-export-path">Destination file</label>
+                <br />
+                <input
+                  id="ctx-export-path"
+                  type="text"
+                  value={exportDlgPath}
+                  onChange={(e) => setExportDlgPath(e.target.value)}
+                  placeholder="C:\\…\\folder.mbox"
+                  style={{ width: "100%" }}
+                  disabled={exportDlgBusy}
+                  autoFocus
+                />
+                <br />
+                <small style={{ color: "var(--kiwi-text-secondary)" }}>
+                  kiwi_mailbox_export_mbox — .mbox appended if missing; atomic write. Rows whose body
+                  can't be loaded are skipped and reported.
+                </small>
+              </p>
+              {exportDlgErr && (
+                <div className="kiwi-banner error" role="alert">
+                  <small>{exportDlgErr}</small>
+                </div>
+              )}
+              <p style={{ marginBottom: 0 }}>
+                <button type="button" onClick={() => void runFolderExport()} disabled={exportDlgBusy}>
+                  {exportDlgBusy ? "Exporting…" : "Export"}
+                </button>{" "}
+                <button type="button" onClick={() => setExportDlg(null)} disabled={exportDlgBusy}>
+                  Cancel
+                </button>
+              </p>
             </div>
           </div>
         )}

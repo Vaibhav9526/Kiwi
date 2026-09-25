@@ -2753,3 +2753,17 @@ pre.em-quote-region {
   font-size: 0.78rem;
   color: var(--kiwi-text-secondary, #666);
 }
+
+/* T-317: drag messages → folder tree. Highlight real drop targets during
+ * a message drag; denied (same-folder/smart-view) targets stay inert. */
+.em-row.em-dragging {
+  opacity: 0.55;
+}
+.em-tree-item.em-drop-target {
+  outline: 2px solid var(--kiwi-accent, #3b6ea5);
+  outline-offset: -2px;
+  background: color-mix(in srgb, var(--kiwi-accent, #3b6ea5) 12%, transparent);
+}
+.em-tree-item.em-drop-denied {
+  opacity: 0.55;
+}

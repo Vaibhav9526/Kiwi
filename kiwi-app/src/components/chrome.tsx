@@ -475,6 +475,7 @@ function FolderRow({
   active,
   indent,
   onContextMenu,
+  dropTarget,
 }: {
   id: string;
   label: string;
@@ -483,16 +484,57 @@ function FolderRow({
   active: boolean;
   indent?: boolean;
   onContextMenu?: (e: ReactMouseEvent) => void;
+  /** T-317: real drop target — only set on real account folders (never on
+   *  smart views/outbox, which have no folderId to move INTO). The source
+   *  folder's id rides inside a dataTransfer TYPE (getData is unreadable
+   *  during dragover), so same-folder denial is honest at hover time. */
+  dropTarget?: { folderKey: string; onDropIds: (ids: string[]) => void };
 }) {
+  const [dropState, setDropState] = useState<"over" | "denied" | null>(null);
+  const srcToken = dropTarget ? `application/x-kiwi-src-${dropTarget.folderKey.replace(/:/g, "_").toLowerCase()}` : "";
   return (
     <button
       type="button"
       role="treeitem"
-      className="em-tree-item"
+      className={`em-tree-item${dropState === "over" ? " em-drop-target" : ""}${dropState === "denied" ? " em-drop-denied" : ""}`}
       aria-selected={active}
+      aria-dropeffect={dropState === "over" ? "move" : dropState === "denied" ? "none" : undefined}
+      data-folder-key={dropTarget?.folderKey}
       aria-label={`${label}${count > 0 ? `, ${count} unread` : ""}`}
       onClick={() => navigate({ name: "mail", folder: id })}
       onContextMenu={onContextMenu}
+      onDragOver={
+        dropTarget
+          ? (e) => {
+              if (!e.dataTransfer.types.includes("application/x-kiwi-messages")) return;
+              e.preventDefault(); // a real message drag — drop is permissible
+              const same = e.dataTransfer.types.includes(srcToken);
+              e.dataTransfer.dropEffect = same ? "none" : "move";
+              setDropState(same ? "denied" : "over");
+            }
+          : undefined
+      }
+      onDragLeave={dropTarget ? () => setDropState(null) : undefined}
+      onDrop={
+        dropTarget
+          ? (e) => {
+              setDropState(null);
+              const raw = e.dataTransfer.getData("application/x-kiwi-messages");
+              if (!raw) return;
+              e.preventDefault();
+              try {
+                const { ids } = JSON.parse(raw) as { ids?: string[] };
+                if (!Array.isArray(ids) || ids.length === 0) return;
+                // Honest no-op when every dragged id already lives here.
+                const dstKey = dropTarget.folderKey.toLowerCase();
+                const movable = ids.filter((i) => i.split(":").slice(0, 2).join(":").toLowerCase() !== dstKey);
+                if (movable.length > 0) dropTarget.onDropIds(movable);
+              } catch {
+                // Malformed payload — not a kiwi drag; ignore.
+              }
+            }
+          : undefined
+      }
     >
       {indent && <span className="em-tree-indent" aria-hidden="true" />}
       <span className="em-tree-icon" aria-hidden="true">
@@ -517,6 +559,8 @@ export function FolderPane({
   foldersError,
   demo,
   onMarkAllRead,
+  onDropMessages,
+  onExportMbox,
 }: {
   smartFolders: { id: string; label: string }[];
   smartUnread: Record<string, number>;
@@ -528,6 +572,13 @@ export function FolderPane({
   /** T-299: right-click folder menu — real folder ops only (mark-all-read
    *  loops kiwi_update_message server-side). */
   onMarkAllRead?: (folderId: string) => void;
+  /** T-318: "Export to mbox…" — key is the composite "accountId:folderId";
+   *  account-folder rows only (smart rows never open the menu). */
+  onExportMbox?: (folderKey: string, label: string) => void;
+  /** T-317: drop target for message drags — ids are envelope ids, the key
+   *  is this row's composite "accountId:folderId". Account folders only;
+   *  smart rows get no handler, so dropping on them is impossible. */
+  onDropMessages?: (ids: string[], folderKey: string) => void;
 }) {
   const [favOpen, setFavOpen] = useState(true);
   const [open, setOpen] = useState<Record<string, boolean>>({});
@@ -605,8 +656,11 @@ export function FolderPane({
                     count={f.unread}
                     active={activeFolder === f.id}
                     indent
+                    dropTarget={
+                      onDropMessages ? { folderKey: f.id, onDropIds: (ids) => onDropMessages(ids, f.id) } : undefined
+                    }
                     onContextMenu={
-                      onMarkAllRead
+                      onMarkAllRead || onExportMbox
                         ? (e) => {
                             e.preventDefault();
                             setCtx({ x: e.clientX, y: e.clientY, id: f.id, label: f.label, unread: f.unread });
@@ -631,6 +685,15 @@ export function FolderPane({
               disabled: demo || ctx.unread === 0,
               title: demo ? "Needs the Tauri backend" : ctx.unread === 0 ? `${ctx.label} has no unread messages` : undefined,
               onSelect: () => onMarkAllRead?.(ctx.id),
+            },
+            {
+              label: "Export to mbox…",
+              icon: "download",
+              disabled: demo || !onExportMbox,
+              title: demo
+                ? "Needs the Tauri backend — demo folders are fixtures"
+                : `Write ${ctx.label} to a .mbox file (kiwi_mailbox_export_mbox)`,
+              onSelect: () => onExportMbox?.(ctx.id, ctx.label),
             },
           ]}
         />
