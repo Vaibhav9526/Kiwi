@@ -226,3 +226,83 @@ accounts.rs}`, `kiwi-app/src/kiwi.ts`, `docs/contracts/ipc.md`, this file.
 - `AccountView` now carries `security` per direction — no secret material;
   consistent with the never-secrets rule.
 - Not committed — Lead integrates.
+
+## 2026-09-25 — T-245: FSV-1 forensics serde vocabulary (ratified spec)
+
+**Status:** done. Implemented `docs/audits/for-serde-vocab-1.md` across
+`kiwi-forensics`; `CONTRACT_VERSION` → `kiwi.forensics/2` (spec-recommended
+bump; `rule_catalog_version` and `scoring_model_version` untouched).
+
+### What changed (code)
+
+- `model/tls.rs` — `TlsVersion` got a custom `Deserialize`: canonical
+  snake tags (`ssl2`..`tls13`), externally-tagged `{"unknown": <u16>}`
+  (payload preserved), plus legacy aliases `ssl2.0`/`ssl3.0`/`tls1.0`–
+  `tls1.3` and bare `"unknown"` → `LEGACY_UNKNOWN_WIRE = 0xFFFF`
+  (documented sentinel — the `/1` bare string carried no payload, so no
+  raw value is fabricated). Unknown tags still fail closed.
+- `CaptureFormat`, `LinkType` (`pcap/mod.rs`) — added
+  `rename_all = "snake_case"` + PascalCase aliases (`ClassicPcap`,
+  `PcapNg`, `Ethernet`, `{"Other": N}`); payloads preserved on read.
+- Legacy `as_str()` aliases on `TransportSecurity` (`starttls`),
+  `AuthMechanism` (`cram-md5`, `digest-md5`, `xoauth2`, `oauthbearer`,
+  `oauth_bearer`, `scram-sha-1`, `scram-sha-256`, `scram-sha-256-plus`,
+  `scram-sha-512-plus`), `BulkCipher` (`3des`, `chacha20_poly1305`),
+  `Grade` (`A`–`F`), `ChangeKind` (`added`, `persisting`),
+  `FindingCategory` (`starttls`), `EvidenceKind`
+  (`starttls_negotiation`). Canonical writes stay snake_case.
+- `EvidenceValue` untouched — internally tagged `type` (contract-exact
+  exception). **Zero `as_str()` body changes** (verified in commit diff:
+  no `=> "` hunk). Finding IDs, subject keys, scoring unchanged.
+- `model/mod.rs` re-exports `LEGACY_UNKNOWN_WIRE`.
+
+### Spec corrections found by the fixture tests (documented)
+
+- `AuthMechanism::OAuthBearer` canonical is `o_auth_bearer` (serde
+  splits `O|Auth|Bearer`), not the spec's `oauth_bearer`; both legacy
+  spellings accepted as aliases.
+- `FindingCategory::StartTls`/`EvidenceKind::StartTlsNegotiation`
+  canonical are `start_tls`/`start_tls_negotiation`, not
+  `starttls`/`starttls_negotiation` as the spec table claimed — those
+  were real divergences (as_str spellings, now read-aliases).
+
+### Tests / fixtures
+
+- `tests/fixtures/fsv1_canonical.json` — all 27 serde-carrying enums,
+  every variant, canonical write form (frozen).
+- `tests/fixtures/fsv1_legacy.json` — `/1` spellings incl. lossy bare
+  `"unknown"` and payload-bearing `{"ClassicPcap":…}`/`{"Other":N}`.
+- `tests/fsv1_serde.rs` — 5 tests: canonical round-trip per variant,
+  legacy read→canonical write (lossy `unknown` via `None` index),
+  `Report::to_json`/`from_json` crossing the migration boundary,
+  `TlsVersion::Unknown(0x4A4A)` wire-value preservation, unknown-tag
+  fail-closed.
+
+### Contracts
+
+- `forensics.md` — header `/2`, §1 invariant dual-read, §2 enum
+  spellings canonical + `{"unknown":N}`, §3 `start_tls` category,
+  §6 `grade` wire note, §9 semantic-vs-wire clarification, §11 severity
+  note, **new §12** (FSV-1 rules, dual-read alias inventory,
+  `LEGACY_UNKNOWN_WIRE` sentinel, single-write, fixture pointer).
+- `ipc.md` — `kiwi.forensics/2` at §6 probe / §8 findings+detail+report;
+  SessionView note distinguishing session tokens (`tls1.3`, `xoauth2`,
+  `hostname-mismatch`, `starttls`) from forensics FSV-1 tags.
+
+### Verification
+
+- `cargo test -p kiwi-forensics` — all green (8 suites, incl. 5 fsv1).
+- `cargo clippy -p kiwi-forensics --all-targets -- -D warnings` — clean.
+- `cargo fmt --all -- --check` — clean after fixing one rustfmt
+  line-wrap in `kiwi-autoconfig/src/autoconfig_xml.rs:113` (Agent 19's
+  in-flight file; zero-semantic hunk, disclosed).
+
+### Assumptions / risks
+
+- `src/` changes were swept into A15's commit `fbc3c76` (shared-tree
+  `add -A`); content verified correct at HEAD. Only
+  `tests/fsv1_serde.rs` remains in my uncommitted diff.
+- `LEGACY_UNKNOWN_WIRE = 0xFFFF` reads as `{"unknown":65535}` on re-emit
+  — irrecoverable-value marker, never a real negotiated version.
+- Dual-read covers `/1` spellings enumerated in §12; any other historical
+  spelling fails closed by design.

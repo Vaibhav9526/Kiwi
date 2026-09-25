@@ -97,6 +97,10 @@ fetch detail via `kiwi_collect_endpoint_signals` (§10) and
 Field names follow `security-session.md` §3 verbatim, camelCased
 (`sessionId`, `tlsVersion`, `certChain`, `authMechanism`, …). Enum spellings
 match the contract (`"tls1.3"`, `"hostname-mismatch"`, `"xoauth2"`, …).
+These are **session-view tokens, not forensics wire tags** — embedded
+`Finding`/`Report` objects (§8) use FSV-1 snake_case (`"tls13"`,
+`"hostname_mismatch"`, `"x_o_auth2"`, `"start_tls"`, …); the two
+vocabularies are deliberately distinct (forensics.md §12).
 
 ## 4. Commands — system / lock path **[exempt]**
 
@@ -217,7 +221,7 @@ observation (session + findings) it produces.
   "steps": [ { "stage": "connect | smtp-handshake | … | auth | evaluate",
                "ok": true, "detail": "…" } ],
   "session": SessionView | null,      // the recorded observation
-  "findings": [Finding],              // kiwi.forensics/1 shape
+  "findings": [Finding],              // kiwi.forensics/2 shape (FSV-1 tags)
   "trust": SecurityStatusView }
 ```
 A failed probe returns `ok: false` with the failing step — it is *not* an
@@ -721,8 +725,10 @@ to `/api/v1/mailflow/events` — metadata only (no subject/body anywhere):
 ## 8. Commands — security data **[gated]**
 
 ### `kiwi_security_findings(accountId?, severity?, limit?) → Finding[]`
-Retained deterministic findings (`kiwi.forensics/1` shape verbatim,
-evidence included). This is forensics.md §11 `list_findings`:
+Retained deterministic findings (`kiwi.forensics/2` shape verbatim —
+FSV-1 enum tags, forensics.md §12; session-view spellings like
+`tls1.3`/`starttls` apply only to `SessionView`/`EventRow`, §3),
+evidence included. This is forensics.md §11 `list_findings`:
 `accountId` (≤256) and `severity` (`info|low|medium|high|critical` —
 unknown string → `invalid-input`, never silently ignored) AND together.
 Sort is binding and total: severity desc → `observedAt` desc → `ruleId`
@@ -742,7 +748,7 @@ Session journal rows, newest first (default 100, clamp 1000);
 One finding's full record + the session it was observed in (finding
 dialog, KIWI-UI-004). `findingId` is the stable `rule|subject` key.
 ```jsonc
-{ "finding": { /* full kiwi.forensics/1 Finding, evidence included */ },
+{ "finding": { /* full kiwi.forensics/2 Finding, evidence included */ },
   "session": SessionView | null,   // null once the session ring evicts it
   "signals": [SignalView],         // that session's trust signals
   "siblingFindingIds": ["KIWI-AUTH-001|imap:h:993"] }
@@ -757,7 +763,7 @@ Unknown id → `not-found`.
 (cert viewer KIWI-UI-008, finding dialog KIWI-UI-004.)
 
 ### `kiwi_security_report(accountId?) → Report`
-`kiwi.forensics/1` report built from retained findings
+`kiwi.forensics/2` report built from retained findings
 (`generatedFrom: "live"`, limitation noting live-observation scope).
 
 ## 9. Commands — devices / org binding **[gated]**

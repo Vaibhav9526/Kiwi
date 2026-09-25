@@ -2,7 +2,8 @@
 
 > Owner: Agent 6 (full ownership from 2026-09-20; transferred from Agent 3
 > per AGENT_HANDOFF.md T-003/T-107, 2026-09-19; Agent 3 did not return) ·
-> **Contract version: `kiwi.forensics/1`** · Status: done (T-003)
+> **Contract version: `kiwi.forensics/2`** · Status: done (T-003; FSV-1
+> wire vocabulary ratified T-245 — §12)
 > Implemented by `kiwi-forensics/` (Rust). Reference impl is authoritative
 > for field semantics; this document is authoritative for the JSON shape.
 > Changes require Lead review (API_CONTRACTS.md rule) → record in DECISIONS.md.
@@ -27,9 +28,12 @@ with `kiwi-core` (`security-session.md`).
   `EvaluationDiagnostics.dropped_without_evidence` (must be 0 in production).
 - Unknown enum values / new fields must be ignored, not fatal
   (API_CONTRACTS.md cross-cutting invariants).
-- `contract_version` is `"kiwi.forensics/1"`; `rule_catalog_version` is a
-  u16 (currently `1`, bumped on any decision-logic or default-severity
-  change). Consumers must not equate findings across catalog versions.
+- `contract_version` is `"kiwi.forensics/2"` (FSV-1 wire vocabulary, §12);
+  `rule_catalog_version` is a u16 (currently `1`, bumped on any
+  decision-logic or default-severity change). Consumers must not equate
+  findings across catalog versions. Readers MUST accept both `/1` and
+  `/2` enum spellings (§12 dual-read); stored `/1` payloads stay
+  byte-identical under their original version.
 - This crate never validates X.509 signatures or builds trust paths:
   certificate metadata is adapter input. Capture-based reports must never
   claim "chain verified"; unverifiable facts become report `limitations`.
@@ -44,18 +48,21 @@ JSON field names; Rust types in `kiwi_forensics::model`:
 | `protocol` | `"smtp" \| "imap" \| "pop3" \| "unknown"` | |
 | `client` / `server` | `{address: string, port: u16}` | sanitized text, never raw bytes |
 | `started_at_unix_ms` | i64 | caller-supplied (never the system clock) |
-| `transport` | `"plaintext" \| "starttls" \| "implicit_tls" \| "unknown"` | observed classification; `unknown` is NOT protected |
+| `transport` | `"plaintext" \| "start_tls" \| "implicit_tls" \| "unknown"` | observed classification; `unknown` is NOT protected |
 | `capabilities` | string[] | bounded (64), sanitized |
 | `tls` \| null | object | `{version, cipher_suite: {iana_id, name?, key_exchange, bulk, mac, strength, recognized}, sni?, alpn[], handshake_complete, session_resumed, sources[]}` |
 | `certificates` \| null | object | `{chain: CertificateInfo[] (leaf first, ≤16), trust: "not_evaluated" \| "trusted_by_local_anchor" \| "untrusted" \| "revoked" \| "unknown", chain_truncated: bool, sources[]}` |
 | `starttls` \| null | object | `{advertised_by_server, client_requested, server_reply_ok?: bool, handshake_completed, application_data_before_tls, plaintext_auth_after_request}` |
-| `auth` \| null | object | `{mechanism?: "plain" \| "login" \| "cram-md5" \| … \| "unknown", succeeded?: bool, attempts: u32, failures: u32}` |
+| `auth` \| null | object | `{mechanism?: "plain" \| "login" \| "cram_md5" \| … \| "unknown", succeeded?: bool, attempts: u32, failures: u32}` |
 | `sources` | `SourceRef[]` | `{session_id, frames: u64[] (1-based, empty for live), stream_offsets: u64[], excerpt: redacted SafeText}` |
 
-Enum strings use the `as_str()` spellings in code (`tls1.2`, `ecdhe`,
-`aes128_gcm`, `cram-md5`, `not_evaluated`, …). `TlsVersion::Unknown(raw)`
-serializes as `"unknown"` with the raw value available to rules via
-`wire_value()` (evidence records the numeric value).
+Enum strings are FSV-1 wire tags (§12): lower `snake_case` unit variants
+(`tls12`, `ecdhe`, `aes128_gcm`, `cram_md5`, `not_evaluated`, …).
+`TlsVersion::Unknown(raw)` is data-bearing and serializes externally
+tagged as `{"unknown": <u16>}`, preserving the raw wire value
+(`wire_value()` exposes it to rules). The `as_str()` spellings
+(`tls1.2`, `cram-md5`, …) are semantic/display tokens for evidence text
+and the §9 session mapping — they are NOT the JSON wire form.
 
 ## 3. Finding / Evidence shapes
 
@@ -77,7 +84,7 @@ persisting keys).
 `severity`: `info(0) | low(5) | medium(12) | high(25) | critical(40)` points
 at full weight. `confidence`: `tentative(0.5) | firm(0.85) |
 certain(1.0)` multiplier. Category vocabulary: `transport | cipher |
-key_exchange | certificate | authentication | starttls | protocol |
+key_exchange | certificate | authentication | start_tls | protocol |
 capture_integrity`.
 
 ## 4. Redaction rules (binding on every adapter)
@@ -157,6 +164,8 @@ round half up. Same rule repeating in one scope dims: 1st ×1.0, 2nd ×0.5,
 3rd ×0.25, 4th+ ×0.125. Total capped at 100 (`max_deduction_points`);
 `score = 100 − deduction`. Grades: A 90–100, B 80–89, C 70–79, D 55–69,
 F 0–54. Integer arithmetic only — identical input, identical score (§7).
+`Report.score.grade` carries the FSV-1 wire tag (`"a"`–`"f"`, lowercase);
+the uppercase letters are display/`as_str()` spellings, not JSON.
 
 ## 7. Determinism (binding)
 
@@ -181,7 +190,9 @@ views over the same aggregate.
 ## 9. `ConnectionSecurityEvent` ↔ `SecuritySession` mapping
 
 Both directions are contract; the trust decision stays with `kiwi-core`
-in both. Field vocabularies below are the `as_str()` spellings in code.
+in both. Field vocabularies below are the `as_str()` *semantic*
+spellings (`starttls`, `tls1.3`, `cram-md5`, …) — the mapping contract,
+distinct from the FSV-1 JSON wire tags in §12.
 `evidence_ref` on every derived signal is the finding stable key
 (`rule_id|subject_key`, §3).
 
@@ -288,7 +299,7 @@ spellings only.
 Full `Finding` objects (§3 shape, verbatim — evidence included, never
 projected). Filters: `account_id` (string ≤256, matches
 `subject.account_id`) and `severity` (`info` | `low` | `medium` |
-`high` | `critical`, the `Severity::as_str()` spellings) are ANDed;
+`high` | `critical`, the FSV-1/§12 spellings) are ANDed;
 either absent means unfiltered. An unrecognized `severity` string is
 an `invalid-input` error — never silently ignored (a typo must not
 look like a clean bill of health). Sort is binding and total:
@@ -351,3 +362,42 @@ mismatch — conservatism, not guessing); `succeeded` verbatim;
 when `succeeded == Some(false)` else 0. Until then the AUTH rules
 stay silent on the live path by design (proven by
 `absent_auth_leaves_auth_rules_silent`).
+
+## 12. Wire serialization & migration (FSV-1 — ratified, T-245)
+
+Every enum on this contract serializes under FSV-1
+(`docs/audits/for-serde-vocab-1.md`):
+
+- **Unit variants** are JSON strings in lower `snake_case`
+  (`"tls12"`, `"start_tls"`, `"x_o_auth2"`, `"triple_des"`, …).
+- **Data-bearing variants** keep serde's externally tagged object form
+  and preserve their payload: `TlsVersion::Unknown(u16)` →
+  `{"unknown": <u16>}`, `LinkType::Other(u16)` → `{"other": <u16>}`,
+  `CaptureFormat::ClassicPcap{nanosecond}` →
+  `{"classic_pcap": {"nanosecond": bool}}`.
+- **`EvidenceValue` is the contract-exact exception**: it stays
+  internally tagged by its `"type"` field (`{"type":"text", …}` etc.) —
+  unchanged by FSV-1.
+- Canonical spellings for every enum variant are frozen in
+  `kiwi-forensics/tests/fixtures/fsv1_canonical.json`; writers emit
+  these forms only (single-write).
+- **Dual-read migration**: stored `/1` payloads and their readers
+  spelled some enums differently — `as_str()` strings (`"tls1.2"`,
+  `"cram-md5"`, `"oauthbearer"`, `"3des"`, `"starttls"`), PascalCase
+  serde defaults (`"ClassicPcap"`, `"PcapNg"`, `"Ethernet"`,
+  `{"Other": N}`), uppercase `Grade` letters, `ChangeKind` `added` /
+  `persisting`, and bare `"unknown"` for `TlsVersion::Unknown`.
+  Deserializers accept all of these as aliases and normalize to the
+  typed domain value. One documented loss: bare `"unknown"` carried no
+  raw value, so it maps to `TlsVersion::LEGACY_UNKNOWN_WIRE` (`0xFFFF`)
+  — the original wire value is irrecoverable and MUST NOT be
+  fabricated.
+- Unknown *variant tags* still fail closed (FOR-6 stands); unknown
+  *fields* remain ignorable.
+- `as_str()` is unchanged and remains semantic-only: finding IDs,
+  subject keys, evidence text, §9 session mapping and the §11 severity
+  filter keep using it. IPC/session-view vocabularies (`tls1.3`,
+  `xoauth2`, `hostname-mismatch`, `starttls`) are a separate layer —
+  see ipc.md §3.
+- `scoring_model_version` stays `kiwi-score-1` (spelling ≠ scoring) and
+  `rule_catalog_version` stays `1` (no rule logic changed).

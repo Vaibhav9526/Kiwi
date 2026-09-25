@@ -205,3 +205,68 @@ source audit files were changed by T-252. The three source audits remain intact.
 - `git diff --check` for `docs/audits/FINDINGS.md` and this status entry — passed.
 - T-252 Orca DONE report sent to terminal
   `term_c20c6737-9b80-4911-bcd2-38aa5113e4d7`; receipt returned `accepted: true`.
+
+## 2026-09-25 — T-256: sandbox contract-vs-implementation enumeration
+
+**Status:** done (read-only contract/implementation audit; no source or
+contract implementation changes).
+
+### Files changed
+
+- `docs/audits/sandbox-drift-1.md` — full coverage matrix for the sandbox
+  contract, provider, guest agent, report schema, invariants, and caller
+  obligations; includes SBX-1/SBX-2 and the existing SBX-3–7/SBX-I findings.
+- `docs/agents/agent-22-status.md` — this entry.
+
+No Rust, TypeScript, shell, `docs/contracts/*`, Tauri, or `FINDINGS.md` files
+were changed by T-256. Unrelated shared-worktree changes were preserved.
+
+### Evidence and findings
+
+- Read `docs/contracts/sandbox.md` in full and mapped all ten declared types,
+  both async traits, errors, report fields, seven invariants, and caller
+  obligations to current source.
+- Read the complete `kiwi-sandbox/src/{lib,error,null,wsl2}.rs` implementation,
+  the full `kiwi-sandbox/agent/kiwi-agent.sh`, sandbox tests, design doc, and
+  T-161/T-168 status history.
+- Searched `kiwi-app/src-tauri` and the wider app/forensics tree: no
+  `kiwi-sandbox` dependency, sandbox module, Tauri command/registration,
+  provider consumer, or IPC wrapper was found.
+- Revalidated canonical SBX-1 (fs merge cap 3x), SBX-2 (`ImageMissing` dead),
+  SBX-3 (`limits_applied` dropped), SBX-4 (outside-workdir accounting), SBX-5
+  (process args string), SBX-6 (network attempts dropped), SBX-7 (probe
+  vocabulary), and SBX-I (undocumented surface).
+- Recorded provisional T256-O1..O6 observations for absent caller wiring,
+  management-command timeout cleanup, root-writable artifact mode, unverified
+  rootfs mount policy, incomplete JSON escaping, and the unspecified link
+  surface. These do not replace or alter the canonical T-252 register.
+
+### Commands run
+
+- Read-only `glob`, `grep`, and `read` inspection of the contract, provider,
+  guest agent, tests, Tauri registry/manifests, design docs, and prior audits.
+- `cargo test -p kiwi-sandbox` — **5 passed, 0 failed**.
+- `cargo clippy -p kiwi-sandbox --all-targets -- -D warnings` — passed.
+- `cargo fmt -p kiwi-sandbox --check` — passed.
+- `git diff --check --no-index -- NUL docs/audits/sandbox-drift-1.md` — passed.
+- `git diff --check --no-index -- NUL docs/agents/agent-22-status.md` — passed.
+
+### Assumptions / risks
+
+- The WSL2 live lifecycle test remains environment-gated; source evidence and
+  the existing test implementation were used for this read-only audit.
+- `wsl.conf` automount/interop policy is a prepared-image assumption, not a
+  provider-validated fact; T256-O2 records the deployment risk.
+- T256-O1..O6 are provisional owner-review notes and were not added to the
+  canonical `FINDINGS.md`; SBX-1/SBX-2 remain the required open register rows.
+- T-241, T-246, and T-250 remain closed and untouched; concurrent Agent 18/19/
+  20/21 work was not modified.
+
+### Verification
+
+- `docs/audits/sandbox-drift-1.md` contains a contract-promise matrix and
+  detailed SBX findings with file:line evidence, severity, and resolution.
+- `cargo test -p kiwi-sandbox` — **5 passed, 0 failed**.
+- `git diff --check` for the T-256 audit/status files — passed.
+- T-256 Orca DONE report sent to terminal
+  `term_c20c6737-9b80-4911-bcd2-38aa5113e4d7`; receipt returned `accepted: true`.
