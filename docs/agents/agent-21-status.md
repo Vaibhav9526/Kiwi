@@ -141,6 +141,56 @@ provenance, malformed/comment injection, raw-byte preservation + KIWI-first/pre-
 resistance, persistence/list roundtrip, and v7→v8 migration without fabricated
 backfill. All offline.
 
+## 2026-09-25 — T-249 deterministic per-message auth risk hint
+
+**Status:** COMPLETE. `cargo test -p kiwi-mail --all-targets` = 178 passed /
+0 failed; `cargo clippy -p kiwi-mail --all-targets -- -D warnings` clean;
+`cargo fmt --all -- --check` clean; `cargo check -p kiwi-app` clean; frontend
+`npx tsc --noEmit` clean.
+
+**Files changed (9):**
+- `kiwi-mail/src/authrisk.rs` — new bounded `AuthRisk` enum + pure ordered table.
+- `kiwi-mail/src/authstamp.rs` — stamp-time risk + independent SPF identifier
+  alignment evidence + integration tests.
+- `kiwi-mail/src/lib.rs` — registers the auth-risk module.
+- `kiwi-mail/src/store/schema.rs` — schema v10 adds bounded `auth_risk` column.
+- `kiwi-mail/src/store/mod.rs` — `AuthMeta.auth_risk` + idempotent migration.
+- `kiwi-mail/src/store/queries.rs` — atomic stamp persistence and read/list attach.
+- `kiwi-app/src-tauri/src/types/mail.rs` — typed `AuthView.authRisk` wire field.
+- `kiwi-app/src/kiwi.ts` — matching `"clean" | "noted" | "failed"` frontend type.
+- `kiwi-mail/src/rules/apply.rs` — one clippy allowance on concurrent T-244 helper
+  so the required crate-wide clippy gate is green; no T-244 behavior changed.
+
+**Exact deterministic table (failure first):**
+1. `failed` iff `dkim=fail AND dmarc=fail`, **or** `dmarc=fail AND
+   spf=fail AND spf_aligned=true`.
+2. Otherwise `noted` for every other result, including all `none`, `temperror`,
+   `permerror`, softfail/neutral, unknown, untrusted/missing upstream evidence,
+   discrepancies, and fail combinations that do not meet rule 1.
+3. Otherwise `clean` iff SPF/DKIM/DMARC all pass, upstream A-R is present and
+   trusted, and there is no discrepancy.
+
+`spf_aligned` is independent of SPF pass/fail and uses the discovered DMARC
+`aspf` mode to compare the SPF identifier domain with RFC 5322 From. This is
+necessary because a failed SPF result cannot authorize DMARC, but its identifier
+alignment is still the evidence required by the second failed rule.
+
+**Storage choice:** compute once at stamp time and persist in
+`message_auth.auth_risk` atomically with verdicts/upstream evidence. The column
+is CHECK-constrained to the three wire values. Historical v9 rows remain NULL;
+reads derive conservatively with alignment=false, so no receipt/alignment fact
+is fabricated and no mass backfill occurs.
+
+**Safety boundary:** this is a frontend pill hint only. It is not a finding,
+does not create findings, does not move mail, and has no store/UI side effects.
+Discrepancy alone and missing/untrusted upstream alone both remain `noted`.
+
+**Tests:** table-driven coverage for both failed rules, aligned vs unaligned SPF
+failure, all clean/noted categories, `none`/`temperror`/`permerror` exhaustive
+non-failure coverage, discrepancy-only, missing/untrusted upstream, wire
+vocabulary/corruption, stamp-time aligned-SPF integration, store roundtrip, and
+v7→v10 migration without fabricated backfill. All offline.
+
 ## 2026-09-25 — T-199 dependency vulnerability audit delivered
 
 **Status:** COMPLETE. `cargo audit` (0.22.2, 1,269 advisories, 579 crates) +

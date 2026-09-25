@@ -24,6 +24,7 @@
 //!   server.rs, tests.rs)
 
 pub mod account;
+pub mod authrisk;
 pub mod authstamp;
 pub mod category;
 pub mod error;

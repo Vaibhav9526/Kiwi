@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
+use crate::authrisk::AuthRisk;
 use crate::category::Category;
 use crate::error::Result;
 
@@ -85,6 +86,9 @@ pub struct AuthMeta {
     /// Bounded upstream MTA Authentication-Results and local/upstream
     /// comparisons (T-240). This is evidence, never a finding or trust claim.
     pub upstream: UpstreamAuthEvidence,
+    /// Deterministic bounded UI hint (T-249), persisted with the stamp.
+    /// It is not a finding and never moves or otherwise mutates mail.
+    pub auth_risk: AuthRisk,
 }
 
 /// One verdict emitted by an upstream authentication service.
@@ -194,6 +198,18 @@ pub struct RuleHit {
     pub applied_unix: i64,
 }
 
+/// A stored message's identity + display fields, folder-qualified — the
+/// row shape `recent_for_preview` returns for the rules dry-run (T-244).
+/// Carries what the preview list renders; no flags, no body bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessageRef {
+    pub folder_id: i64,
+    pub uid: u64,
+    pub folder_name: String,
+    pub subject: Option<String>,
+    pub message_id: Option<String>,
+}
+
 pub struct MailStore {
     conn: Connection,
     root: PathBuf,
@@ -278,6 +294,11 @@ pub(crate) fn migrate_conn(conn: &Connection, root: &Path) -> Result<()> {
             if v < 8 {
                 ensure_upstream_auth_column(conn)?;
             }
+            // Pre-v10 database: add the bounded T-249 hint column without
+            // backfilling verdicts or fabricating provenance/alignment.
+            if v < 10 {
+                ensure_auth_risk_column(conn)?;
+            }
         }
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     }
@@ -310,6 +331,23 @@ fn ensure_upstream_auth_column(conn: &Connection) -> Result<()> {
         }
     }
     conn.execute_batch("ALTER TABLE message_auth ADD COLUMN upstream_json TEXT")?;
+    Ok(())
+}
+
+/// Add the bounded T-249 hint idempotently. Existing rows stay NULL: deriving
+/// aligned-SPF-failure evidence would require the original receipt context.
+fn ensure_auth_risk_column(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare("PRAGMA table_info(message_auth)")?;
+    let cols = stmt.query_map([], |r| r.get::<_, String>(1))?;
+    for col in cols {
+        if col? == "auth_risk" {
+            return Ok(());
+        }
+    }
+    conn.execute_batch(
+        "ALTER TABLE message_auth ADD COLUMN auth_risk TEXT
+         CHECK (auth_risk IN ('clean', 'noted', 'failed'))",
+    )?;
     Ok(())
 }
 
@@ -1144,6 +1182,7 @@ mod tests {
                 dmarc_explanation: "no aligned identifier".into(),
                 header_value: "kiwi; spf=none; dkim=pass; dmarc=pass".into(),
                 upstream: Default::default(),
+                auth_risk: crate::authrisk::AuthRisk::Noted,
             }
         }
 
@@ -1196,6 +1235,7 @@ mod tests {
             assert_eq!(got.upstream.authserv_ids, ["mx.example"]);
             assert_eq!(got.upstream.comparisons.len(), 3);
             assert!(got.upstream.has_discrepancy());
+            assert_eq!(got.auth_risk, AuthRisk::Noted);
             let listed = s.list_messages(folder, 10).unwrap().remove(0);
             assert!(listed.auth.unwrap().upstream.has_discrepancy());
         }
@@ -1254,7 +1294,7 @@ mod tests {
         }
 
         #[test]
-        fn v7_to_v8_migration_preserves_local_auth_without_backfill() {
+        fn v7_to_v10_migration_preserves_auth_without_fabricated_backfill() {
             let conn = Connection::open_in_memory().unwrap();
             conn.execute_batch(DDL).unwrap();
             conn.execute_batch(
@@ -1294,6 +1334,14 @@ mod tests {
                 )
                 .unwrap();
             assert!(upstream.is_none(), "old rows are not backfilled");
+            let auth_risk: Option<String> = conn
+                .query_row(
+                    "SELECT auth_risk FROM message_auth WHERE folder_id = 1 AND uid = 7",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert!(auth_risk.is_none(), "missing alignment is not fabricated");
         }
     }
 

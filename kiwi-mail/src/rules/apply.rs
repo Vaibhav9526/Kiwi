@@ -19,7 +19,7 @@ use crate::mime::ParsedMessage;
 use crate::store::MailStore;
 
 use super::eval::evaluate;
-use super::model::{RuleAction, RuleOutcome};
+use super::model::{Rule, RuleAction, RuleOutcome};
 
 /// `Archive` resolves here (created on demand).
 pub const ARCHIVE_FOLDER: &str = "Archive";
@@ -27,6 +27,18 @@ pub const ARCHIVE_FOLDER: &str = "Archive";
 /// block-list verdict also lands here even when the block rule carried
 /// only flag actions: "block match = trash + stop".
 pub const TRASH_FOLDER: &str = "Trash";
+
+/// How much of the message the evaluator saw — the `rule_evals.stage`
+/// watermark's vocabulary (T-244). Ordered: later stages cover earlier
+/// facts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum EvalStage {
+    /// Envelope facts only: sender/recipients/subject/message-id.
+    /// Header, body, and attachment predicates could not have fired.
+    Envelope = 0,
+    /// The full `ParsedMessage` — every predicate was decidable.
+    Full = 1,
+}
 
 /// What applying one message's outcome did — the caller's receipt.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -43,13 +55,15 @@ pub struct AppliedRules {
 
 /// Ingest entry point: evaluate the account's in-scope rules against the
 /// just-parsed `msg` stored at `(folder_id, uid)` and execute the outcome.
-/// `now` stamps the audit trail.
+/// `now` stamps the audit trail; `stage` is the eval watermark.
+#[allow(clippy::too_many_arguments)]
 pub fn apply_on_ingest(
     store: &MailStore,
     account_id: &str,
     folder_id: i64,
     uid: u64,
     msg: &ParsedMessage,
+    stage: EvalStage,
     now: i64,
 ) -> Result<AppliedRules> {
     let rules = store.list_rules(Some(account_id))?;
@@ -57,11 +71,17 @@ pub fn apply_on_ingest(
         return Ok(AppliedRules::default());
     }
     let outcome = evaluate(msg, &rules);
-    execute(store, account_id, folder_id, uid, msg, &outcome, now)
+    execute(store, account_id, folder_id, uid, msg, &outcome, stage, now)
 }
 
 /// Execute an already-computed outcome for the message at
 /// `(folder_id, uid)`. Shared by ingest and `apply_now`.
+///
+/// The `rule_evals` watermark is written *only on success*, even when no
+/// rule matched — "evaluation happened" is what keeps a no-match message
+/// out of the deferred queue forever. A failed apply leaves the earlier
+/// stage, so the next sync retries instead of silently skipping.
+#[allow(clippy::too_many_arguments)]
 fn execute(
     store: &MailStore,
     account_id: &str,
@@ -69,9 +89,11 @@ fn execute(
     uid: u64,
     msg: &ParsedMessage,
     outcome: &RuleOutcome,
+    stage: EvalStage,
     now: i64,
 ) -> Result<AppliedRules> {
     if outcome.matched.is_empty() {
+        store.mark_rule_eval(folder_id, uid, stage as i64, now)?;
         return Ok(AppliedRules::default());
     }
     // Evidence before effect — hits record the eval coordinates; a move
@@ -126,6 +148,7 @@ fn execute(
             applied.moved_to_folder = Some(trash);
         }
     }
+    store.mark_rule_eval(folder_id, uid, stage as i64, now)?;
     Ok(applied)
 }
 
@@ -190,7 +213,16 @@ pub fn apply_now(store: &MailStore, account_id: &str, now: i64) -> Result<ApplyN
         };
         report.scanned += 1;
         let outcome = evaluate(&parsed, &rules);
-        let applied = execute(store, account_id, folder_id, uid, &parsed, &outcome, now)?;
+        let applied = execute(
+            store,
+            account_id,
+            folder_id,
+            uid,
+            &parsed,
+            &outcome,
+            EvalStage::Full,
+            now,
+        )?;
         if !applied.matched.is_empty() {
             report.matched += 1;
         }
@@ -203,6 +235,74 @@ pub fn apply_now(store: &MailStore, account_id: &str, now: i64) -> Result<ApplyN
         report.flags_changed += applied.flags_changed;
     }
     Ok(report)
+}
+
+/// One candidate-rule match in a dry run — the message's eval-time
+/// coordinates plus the display fields the preview list renders.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviewHit {
+    pub folder_id: i64,
+    pub uid: u64,
+    pub folder_name: String,
+    pub subject: Option<String>,
+    pub message_id: Option<String>,
+}
+
+/// [`preview_rule`] receipt — a read-only report; nothing was executed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RulePreview {
+    /// Candidates with a parseable stored body that were evaluated.
+    pub scanned: u64,
+    /// Candidates skipped — no body stored (absent fact, no guess).
+    pub skipped_no_body: u64,
+    /// Messages the candidate rule matched.
+    pub hits: Vec<PreviewHit>,
+}
+
+/// Dry-run a candidate rule against the account's newest stored messages
+/// (Trash excluded — same scope as [`apply_now`]), bounded by `limit`.
+/// Pure of effect: only `evaluate()` runs — no flags, moves, hit rows, or
+/// eval watermarks. Powers the editor's "test this rule" button (T-244).
+///
+/// The candidate is evaluated *alone* and *as given* — a rule whose
+/// `enabled` is false matches nothing, and ordering against the real
+/// ruleset isn't modeled: "matched" means the predicate fires, not that
+/// the actions would survive alongside other rules.
+pub fn preview_rule(
+    store: &MailStore,
+    account_id: &str,
+    rule: &Rule,
+    limit: u32,
+) -> Result<RulePreview> {
+    let mut preview = RulePreview::default();
+    for m in store.recent_for_preview(account_id, TRASH_FOLDER, limit)? {
+        let Some(path) = store.body_file(m.folder_id, m.uid)? else {
+            preview.skipped_no_body += 1;
+            continue;
+        };
+        let Ok(bytes) = std::fs::read(&path) else {
+            preview.skipped_no_body += 1;
+            continue;
+        };
+        let Ok(parsed) = crate::mime::parse_message(&bytes) else {
+            preview.skipped_no_body += 1;
+            continue;
+        };
+        preview.scanned += 1;
+        if !evaluate(&parsed, std::slice::from_ref(rule))
+            .matched
+            .is_empty()
+        {
+            preview.hits.push(PreviewHit {
+                folder_id: m.folder_id,
+                uid: m.uid,
+                folder_name: m.folder_name,
+                subject: m.subject,
+                message_id: m.message_id,
+            });
+        }
+    }
+    Ok(preview)
 }
 
 #[cfg(test)]
@@ -321,7 +421,7 @@ mod tests {
             .unwrap();
 
         let m = parsed("a@corp.example", "hi");
-        let applied = apply_on_ingest(&store, "a1", fid, 5, &m, 200).unwrap();
+        let applied = apply_on_ingest(&store, "a1", fid, 5, &m, EvalStage::Full, 200).unwrap();
         assert_eq!(applied.matched, vec!["r1"]);
         let work = store
             .folder_meta(applied.moved_to_folder.unwrap())
@@ -354,8 +454,16 @@ mod tests {
             })
             .unwrap();
 
-        let applied =
-            apply_on_ingest(&store, "a1", fid, 7, &parsed("x@evil.example", "s"), 200).unwrap();
+        let applied = apply_on_ingest(
+            &store,
+            "a1",
+            fid,
+            7,
+            &parsed("x@evil.example", "s"),
+            EvalStage::Full,
+            200,
+        )
+        .unwrap();
         assert_eq!(applied.blocked_by.as_deref(), Some("blk"));
         let trash = applied.moved_to_folder.unwrap();
         assert_eq!(
@@ -370,14 +478,14 @@ mod tests {
         store.upsert_message(fid, &meta(1), 100).unwrap();
         let m = parsed("a@x.test", "s");
         assert_eq!(
-            apply_on_ingest(&store, "a1", fid, 1, &m, 1).unwrap(),
+            apply_on_ingest(&store, "a1", fid, 1, &m, EvalStage::Full, 1).unwrap(),
             AppliedRules::default()
         );
         store
             .upsert_rule(&sender_rule("r", "nope.example", vec![RuleAction::Delete]))
             .unwrap();
         assert_eq!(
-            apply_on_ingest(&store, "a1", fid, 1, &m, 1).unwrap(),
+            apply_on_ingest(&store, "a1", fid, 1, &m, EvalStage::Full, 1).unwrap(),
             AppliedRules::default()
         );
         assert!(store.list_rule_hits("a1", 10).unwrap().is_empty());
@@ -419,5 +527,101 @@ mod tests {
         assert_eq!(rep2.matched, 2);
         assert_eq!(rep2.flags_changed, 0);
         assert_eq!(store.list_rule_hits("a1", 10).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn eval_watermark_drives_the_deferred_queue() {
+        let (store, fid) = seed();
+        store.upsert_message(fid, &meta(1), 100).unwrap();
+        store
+            .upsert_rule(&sender_rule(
+                "r1",
+                "corp.example",
+                vec![RuleAction::MarkRead],
+            ))
+            .unwrap();
+
+        // Envelope-stage eval marks stage 0 — and the message only enters
+        // the deferred queue once a body is on disk.
+        let env = parsed("a@corp.example", "s");
+        apply_on_ingest(&store, "a1", fid, 1, &env, EvalStage::Envelope, 1).unwrap();
+        assert!(
+            store.uids_pending_body_eval(fid, 10).unwrap().is_empty(),
+            "no body stored — nothing pending"
+        );
+        store
+            .store_body(fid, 1, b"From: a@corp.example\r\nSubject: s\r\n\r\nb")
+            .unwrap();
+        assert_eq!(store.uids_pending_body_eval(fid, 10).unwrap(), vec![1]);
+
+        // Full eval at body stage clears the watermark — and the deferred
+        // pass would not re-run it next sync.
+        let full =
+            crate::mime::parse_message(b"From: a@corp.example\r\nSubject: s\r\n\r\nb").unwrap();
+        apply_on_ingest(&store, "a1", fid, 1, &full, EvalStage::Full, 2).unwrap();
+        assert!(store.uids_pending_body_eval(fid, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn uid_epoch_reset_wipes_watermarks() {
+        let (store, fid) = seed();
+        store.upsert_message(fid, &meta(1), 100).unwrap();
+        apply_on_ingest(
+            &store,
+            "a1",
+            fid,
+            1,
+            &parsed("a@x", "s"),
+            EvalStage::Full,
+            1,
+        )
+        .unwrap();
+        store.clear_folder_messages(fid).unwrap();
+        // Same uid reused after reset: no stale stage row survives, so a
+        // stored body on the new message is pending again.
+        store.upsert_message(fid, &meta(1), 100).unwrap();
+        store
+            .store_body(fid, 1, b"From: b@y\r\nSubject: n\r\n\r\nb")
+            .unwrap();
+        assert_eq!(store.uids_pending_body_eval(fid, 10).unwrap(), vec![1]);
+    }
+
+    #[test]
+    fn preview_reports_matches_and_executes_nothing() {
+        let (store, fid) = seed();
+        store.upsert_message(fid, &meta(1), 100).unwrap();
+        store.upsert_message(fid, &meta(2), 100).unwrap();
+        store
+            .store_body(fid, 1, b"From: a@corp.example\r\nSubject: payroll\r\n\r\nb")
+            .unwrap();
+        // uid 2 has no stored body — counted, never guessed.
+        let trash = store.ensure_folder("a1", "Trash").unwrap();
+        store.upsert_message(trash, &meta(3), 100).unwrap();
+        store
+            .store_body(trash, 3, b"From: a@corp.example\r\nSubject: x\r\n\r\nb")
+            .unwrap();
+
+        let rule = sender_rule(
+            "cand",
+            "corp.example",
+            vec![RuleAction::Move {
+                folder: "Work".into(),
+            }],
+        );
+        let p = preview_rule(&store, "a1", &rule, 50).unwrap();
+        assert_eq!(p.scanned, 1, "trash excluded, no-body skipped");
+        assert_eq!(p.skipped_no_body, 1);
+        assert_eq!(p.hits.len(), 1);
+        assert_eq!(p.hits[0].uid, 1);
+        assert_eq!(p.hits[0].folder_name, "INBOX");
+        assert_eq!(p.hits[0].subject.as_deref(), Some("s")); // meta, not body parse
+
+        // Pure of effect: nothing moved, flagged, hit-logged, or watermarked.
+        assert_eq!(store.folder_uids(fid).unwrap(), vec![1, 2]);
+        assert!(flags_of(&store, fid, 1).is_empty());
+        assert!(store.list_rule_hits("a1", 10).unwrap().is_empty());
+        // uid 1 (body stored, no watermark) is still pending — the dry run
+        // did not consume its deferred-eval slot.
+        assert_eq!(store.uids_pending_body_eval(fid, 10).unwrap(), vec![1]);
     }
 }

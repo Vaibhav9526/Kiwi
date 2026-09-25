@@ -1,7 +1,7 @@
 //! SQLite schema — DDL + version. Migrations are explicit and
 //! append-only; `user_version` is the source of truth.
 
-pub(crate) const SCHEMA_VERSION: u32 = 8;
+pub(crate) const SCHEMA_VERSION: u32 = 10;
 
 pub(crate) const DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS accounts (
@@ -96,6 +96,20 @@ CREATE TABLE IF NOT EXISTS rule_hits (
     applied_unix INTEGER NOT NULL,
     PRIMARY KEY (folder_id, uid, rule_id)
 );
+-- Deferred-eval watermark (T-244): the deepest stage the rules engine has
+-- run per stored message. `stage` 0 = envelope facts only, 1 = full parse.
+-- Rows exist even when no rule matched — the marker records that
+-- *evaluation happened*, so a no-match message is not re-evaluated forever.
+-- Wiped with the folder's messages on UIDVALIDITY reset (uid epoch
+-- restarts); orphaned by moves, which is harmless — the pending query only
+-- looks at INBOX coordinates where the message row still exists.
+CREATE TABLE IF NOT EXISTS rule_evals (
+    folder_id INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+    uid       INTEGER NOT NULL,
+    stage     INTEGER NOT NULL,
+    at_unix   INTEGER NOT NULL,
+    PRIMARY KEY (folder_id, uid)
+);
 -- Authentication-Results verdicts (T-232). Deliberately a SEPARATE table
 -- rather than more `messages` columns: the auth stamp is written once at body
 -- ingest and read alongside the list, and keeping it out of `messages` leaves
@@ -119,6 +133,9 @@ CREATE TABLE IF NOT EXISTS message_auth (
     -- MTAs. This is evidence, not authority: the object retains authserv-id,
     -- all extracted verdicts, and pass<->fail comparisons with KIWI's stamp.
     upstream_json   TEXT,
+    -- T-249: bounded UI hint derived at stamp time from the local verdicts,
+    -- SPF alignment, and T-240 upstream evidence. Never a finding/action.
+    auth_risk      TEXT CHECK (auth_risk IN ('clean', 'noted', 'failed')),
     PRIMARY KEY (folder_id, uid)
 );
 "#;

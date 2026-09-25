@@ -26,6 +26,12 @@ use crate::store::{MailStore, NewMessageMeta};
 /// memory independently of folder size.
 const FETCH_CHUNK: usize = 200;
 
+/// Deferred-eval cap per sync pass (T-244): at most this many stored-body
+/// messages get their full-parse eval per `sync_folder` call. Leftovers
+/// keep their watermark slot and run on subsequent passes — a bulk
+/// body-arrival (first upgrade, batch fetch) never stalls one sync.
+const DEFERRED_EVAL_LIMIT: u32 = 200;
+
 #[derive(Debug, Clone, Default)]
 pub struct FolderSyncReport {
     pub folder: String,
@@ -34,6 +40,9 @@ pub struct FolderSyncReport {
     pub flag_updates: u64,
     pub expunged: u64,
     pub remote_exists: u64,
+    /// Rule-apply errors this pass swallowed (T-244) — surfacing the count
+    /// keeps a misbehaving rule visible without failing the sync.
+    pub rule_failures: u64,
 }
 
 /// One incremental sync pass for a single IMAP folder.
@@ -87,14 +96,24 @@ pub async fn sync_folder(
             store.upsert_message(folder_id, &to_meta(item), now)?;
             report.new_messages += 1;
             if rules_at_ingest && let Some(uid) = item.uid {
-                let _ = crate::rules::apply_on_ingest(
+                // Envelope-stage eval: sender/recipient/subject only.
+                // Errors are counted, never fatal — the message is stored
+                // either way. A failed apply writes no watermark, so the
+                // full eval still runs once the body lands (pending queue,
+                // step 6).
+                if crate::rules::apply_on_ingest(
                     store,
                     account_id,
                     folder_id,
                     uid,
                     &envelope_pseudo(item),
+                    crate::rules::EvalStage::Envelope,
                     now,
-                );
+                )
+                .is_err()
+                {
+                    report.rule_failures += 1;
+                }
             }
         }
     }
@@ -116,6 +135,40 @@ pub async fn sync_folder(
     // 5. Expunged locally.
     let gone: Vec<u64> = local.difference(&remote).copied().collect();
     report.expunged = store.delete_messages(folder_id, &gone)?;
+
+    // 6. Deferred full-parse eval (T-244): INBOX messages whose bodies
+    // arrived — by *any* path — since their envelope-stage eval get the
+    // complete predicate set now. This is the "re-evaluated at next sync"
+    // contract: the on-view loader stays unhooked so a rule never moves a
+    // message while it is open, and the watermark is written only on a
+    // successful apply (failures count and retry). Bounded per pass;
+    // leftovers stay pending for the next sync.
+    if rules_at_ingest {
+        for uid in store.uids_pending_body_eval(folder_id, DEFERRED_EVAL_LIMIT)? {
+            let Some(path) = store.body_file(folder_id, uid)? else {
+                continue;
+            };
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            let Ok(parsed) = crate::mime::parse_message(&bytes) else {
+                continue;
+            };
+            if crate::rules::apply_on_ingest(
+                store,
+                account_id,
+                folder_id,
+                uid,
+                &parsed,
+                crate::rules::EvalStage::Full,
+                now,
+            )
+            .is_err()
+            {
+                report.rule_failures += 1;
+            }
+        }
+    }
 
     Ok(report)
 }
@@ -190,7 +243,10 @@ async fn fetch_missing_bodies_inner(
                 }
                 // Full predicates now — body/header/attachment matchers
                 // only become decidable here. Flag merges and
-                // already-moved no-ops make re-eval idempotent.
+                // already-moved no-ops make re-eval idempotent. Errors are
+                // swallowed here, not lost: a failed apply writes no
+                // watermark, so the next `sync_folder` deferred pass
+                // retries it (and counts it against `rule_failures`).
                 if inbox_scope {
                     let _ = crate::rules::apply_on_ingest(
                         store,
@@ -198,6 +254,7 @@ async fn fetch_missing_bodies_inner(
                         folder_id,
                         uid,
                         &parsed,
+                        crate::rules::EvalStage::Full,
                         now,
                     );
                 }
@@ -221,6 +278,9 @@ pub struct Pop3SyncReport {
     pub remote_drops: u64,
     pub downloaded: u64,
     pub deleted_remote: u64,
+    /// Rule-apply errors swallowed this pass (T-244) — same contract as
+    /// `FolderSyncReport::rule_failures`.
+    pub rule_failures: u64,
 }
 
 /// POP3 ingest: UIDL-diff → RETR unseen → optional DELE (leave-on-server is
@@ -329,15 +389,22 @@ async fn sync_pop3_inner(
         store.upsert_message(folder_id, &meta, now)?;
         store.store_body(folder_id, number as u64, &bytes)?;
         // T-233: the POP3 drop folder *is* the inbox — rules run on the
-        // full parse at ingest (POP3 has no envelope-only stage).
-        let _ = crate::rules::apply_on_ingest(
+        // full parse at ingest (POP3 has no envelope-only stage). Errors
+        // count, never abort the download; an unmarked eval is retried by
+        // the deferred pass on a later IMAP sync or by `apply_now`.
+        if crate::rules::apply_on_ingest(
             store,
             account_id,
             folder_id,
             number as u64,
             &parsed,
+            crate::rules::EvalStage::Full,
             now,
-        );
+        )
+        .is_err()
+        {
+            report.rule_failures += 1;
+        }
         // T-232: Authentication-Results. `receipt` is always `None` on POP3 —
         // there is no SMTP client IP or envelope sender to evaluate SPF
         // against, so it records `none` with an explicit comment instead of a

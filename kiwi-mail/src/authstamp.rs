@@ -30,6 +30,7 @@ use kiwi_mailauth::dmarc::{DmarcInput, DmarcOutput, DmarcVerdict};
 use kiwi_mailauth::dns::DnsResolver;
 use kiwi_mailauth::spf::{SpfInput, SpfResult};
 
+use crate::authrisk::{AuthRisk, derive_auth_risk};
 use crate::mime::ParsedMessage;
 use crate::store::{AuthVerdictComparison, UpstreamAuthEvidence, UpstreamAuthVerdict};
 
@@ -93,6 +94,9 @@ pub struct AuthStamp {
     /// Authentication-Results received from upstream MTAs before this stamp
     /// (T-240). Evidence only; never treated as trusted or as a finding.
     pub upstream: UpstreamAuthEvidence,
+    /// Deterministic per-message UI hint (T-249), computed at stamp time and
+    /// persisted atomically with the verdicts. Never a finding or mail action.
+    pub auth_risk: AuthRisk,
 }
 
 impl AuthStamp {
@@ -166,6 +170,26 @@ fn first_dkim_header(parsed: &ParsedMessage) -> Option<String> {
         .iter()
         .find(|(n, _)| n.eq_ignore_ascii_case("dkim-signature"))
         .map(|(_, v)| format!("DKIM-Signature: {v}"))
+}
+
+/// Whether the SPF identifier domain aligns with From under the discovered
+/// DMARC `aspf` mode. Unlike DMARC authorization, this deliberately does not
+/// require SPF to pass, so the T-249 failed rule can retain that evidence.
+fn spf_identifier_aligned(
+    spf_domain: Option<&DomainName>,
+    from_domain: Option<&DomainName>,
+    dmarc: &DmarcOutput,
+) -> bool {
+    let (Some(spf), Some(from), Some(record)) = (spf_domain, from_domain, dmarc.record.as_ref())
+    else {
+        return false;
+    };
+    match record.spf_align {
+        kiwi_mailauth::dmarc::AlignMode::Strict => spf.as_str() == from.as_str(),
+        kiwi_mailauth::dmarc::AlignMode::Relaxed => {
+            kiwi_mailauth::org_domain_heuristic(spf) == kiwi_mailauth::org_domain_heuristic(from)
+        }
+    }
 }
 
 /// Split an RFC 8601 field on semicolons outside comments and quoted strings.
@@ -380,8 +404,9 @@ pub fn evaluate<R: DnsResolver>(
         .and_then(|s| DomainName::parse(&s.sdid).ok());
 
     // --- DMARC -----------------------------------------------------------
-    // Absent From domain â†’ no identifier to protect â†’ `none`, never a guess.
-    let (dmarc_out, dmarc_expl) = match parsed.from.first().and_then(|a| domain_of(&a.email)) {
+    // Absent From domain → no identifier to protect → `none`, never a guess.
+    let from_domain = parsed.from.first().and_then(|a| domain_of(&a.email));
+    let (dmarc_out, dmarc_expl) = match from_domain.clone() {
         None => (
             DmarcOutput {
                 result: DmarcVerdict::None,
@@ -431,6 +456,16 @@ pub fn evaluate<R: DnsResolver>(
         dkim_out.result.as_str(),
         dmarc_out.result.as_str(),
     );
+    let discrepancy = upstream.has_discrepancy();
+    let auth_risk = derive_auth_risk(
+        spf_result.as_str(),
+        dkim_out.result.as_str(),
+        dmarc_out.result.as_str(),
+        spf_identifier_aligned(spf_domain.as_ref(), from_domain.as_ref(), &dmarc_out),
+        upstream.present && !upstream.authserv_ids.is_empty(),
+        upstream.untrusted_relay,
+        discrepancy,
+    );
 
     AuthStamp {
         spf: spf_result.as_str().to_string(),
@@ -445,6 +480,7 @@ pub fn evaluate<R: DnsResolver>(
         dmarc_explanation: clip(&dmarc_expl, 500),
         header_value,
         upstream,
+        auth_risk,
     }
 }
 
@@ -729,6 +765,44 @@ mod tests {
         assert_eq!(stamp.dmarc_policy, "reject");
         assert!(stamp.dmarc_record.is_some(), "evidence ref recorded");
         assert!(stamp.has_failure());
+    }
+
+    #[test]
+    fn aligned_spf_failure_with_dmarc_failure_is_failed_hint() {
+        let raw = raw_with(&[("From", "a@example.com")], "body\n");
+        let dns = MockResolver::new()
+            .with_txt("example.com", &["v=spf1 -all"])
+            .with_txt("_dmarc.example.com", &["v=DMARC1; p=reject; aspf=s"]);
+        let stamp = evaluate(
+            &dns,
+            &parsed_of(&raw),
+            &raw,
+            NOW,
+            Some(&receipt("203.0.113.9")),
+        );
+        assert_eq!(stamp.spf, "fail");
+        assert_eq!(stamp.dmarc, "fail");
+        assert_eq!(stamp.auth_risk, AuthRisk::Failed);
+    }
+
+    #[test]
+    fn no_records_and_dmarc_fail_without_aligned_spf_fail_are_noted() {
+        let raw = raw_with(&[("From", "a@example.com")], "body\n");
+        let no_records = evaluate(&MockResolver::new(), &parsed_of(&raw), &raw, NOW, None);
+        assert_eq!(no_records.auth_risk, AuthRisk::Noted);
+
+        let dns = MockResolver::new()
+            .with_txt("example.com", &["v=spf1 -all"])
+            .with_txt("other.test", &["v=spf1 -all"])
+            .with_txt("_dmarc.example.com", &["v=DMARC1; p=reject; aspf=s"]);
+        let unaligned = SmtpReceipt {
+            mail_from_domain: Some("other.test".into()),
+            ..receipt("203.0.113.9")
+        };
+        let stamp = evaluate(&dns, &parsed_of(&raw), &raw, NOW, Some(&unaligned));
+        assert_eq!(stamp.spf, "fail");
+        assert_eq!(stamp.dmarc, "fail");
+        assert_eq!(stamp.auth_risk, AuthRisk::Noted);
     }
 
     #[test]

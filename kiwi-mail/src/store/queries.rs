@@ -203,10 +203,17 @@ impl MailStore {
     }
 
     /// UIDVALIDITY changed → all local UIDs are meaningless. Also drops the
-    /// folder's on-disk payloads — wiped UIDs must not leave orphan files.
+    /// folder's on-disk payloads — wiped UIDs must not leave orphan files —
+    /// and its rule-eval watermarks: the uid epoch restarted, so a stale
+    /// `stage` row would either skip evals the new message deserves or pin
+    /// an old message's state onto its uid's successor.
     pub fn clear_folder_messages(&self, folder_id: i64) -> Result<u64> {
         let n = self.conn.execute(
             "DELETE FROM messages WHERE folder_id = ?1",
+            params![folder_id],
+        )?;
+        self.conn.execute(
+            "DELETE FROM rule_evals WHERE folder_id = ?1",
             params![folder_id],
         )?;
         self.remove_payload_dirs(folder_id);
@@ -636,8 +643,9 @@ impl MailStore {
         let n = self.conn.execute(
             "INSERT OR REPLACE INTO message_auth
                 (folder_id, uid, spf, dkim, dmarc, dmarc_policy, dkim_domain,
-                 key_query, dmarc_record, header_value, evidence_json, upstream_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                 key_query, dmarc_record, header_value, evidence_json, upstream_json,
+                 auth_risk)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 folder_id,
                 uid as i64,
@@ -651,6 +659,7 @@ impl MailStore {
                 stamp.header_value,
                 evidence.to_string(),
                 upstream_json,
+                stamp.auth_risk.as_str(),
             ],
         )?;
         Ok(n > 0)
@@ -660,7 +669,7 @@ impl MailStore {
     pub fn get_auth(&self, folder_id: i64, uid: u64) -> Result<Option<AuthMeta>> {
         let mut stmt = self.conn.prepare(
             "SELECT spf, dkim, dmarc, dmarc_policy, dkim_domain, key_query,
-                    dmarc_record, header_value, evidence_json, upstream_json
+                    dmarc_record, header_value, evidence_json, upstream_json, auth_risk
              FROM message_auth WHERE folder_id = ?1 AND uid = ?2",
         )?;
         let mut rows = stmt.query(params![folder_id, uid as i64])?;
@@ -668,23 +677,41 @@ impl MailStore {
             return Ok(None);
         };
         let evidence: Option<String> = row.get(8)?;
+        let spf: String = row.get(0)?;
+        let dkim: String = row.get(1)?;
+        let dmarc: String = row.get(2)?;
+        let upstream: UpstreamAuthEvidence = row
+            .get::<_, Option<String>>(9)?
+            .and_then(|e| serde_json::from_str(&e).ok())
+            .unwrap_or_default();
+        // Legacy v9 rows have no stored hint. Derive conservatively without
+        // inventing SPF alignment; missing alignment can only avoid `failed`.
+        let auth_risk = row
+            .get::<_, Option<String>>(10)?
+            .map(|v| AuthRisk::from_wire(&v))
+            .unwrap_or_else(|| {
+                crate::authrisk::derive_auth_risk(
+                    &spf,
+                    &dkim,
+                    &dmarc,
+                    false,
+                    upstream.present,
+                    upstream.untrusted_relay,
+                    upstream.has_discrepancy(),
+                )
+            });
         Ok(Some(AuthMeta {
-            spf: row.get(0)?,
-            dkim: row.get(1)?,
-            dmarc: row.get(2)?,
+            spf,
+            dkim,
+            dmarc,
             dmarc_policy: row.get(3)?,
             dkim_domain: row.get(4)?,
             key_query: row.get(5)?,
             dmarc_record: row.get(6)?,
             header_value: row.get(7)?,
             evidence: evidence.and_then(|e| serde_json::from_str(&e).ok()),
-            upstream: row
-                .get::<_, Option<String>>(9)?
-                .and_then(|e| serde_json::from_str(&e).ok())
-                .unwrap_or_else(|| UpstreamAuthEvidence {
-                    untrusted_relay: true,
-                    ..Default::default()
-                }),
+            upstream,
+            auth_risk,
         }))
     }
 
@@ -700,7 +727,7 @@ impl MailStore {
         }
         let mut stmt = self.conn.prepare(
             "SELECT uid, spf, dkim, dmarc, dmarc_policy, dkim_domain, key_query,
-                    dmarc_record, header_value, evidence_json, upstream_json
+                    dmarc_record, header_value, evidence_json, upstream_json, auth_risk
              FROM message_auth WHERE folder_id = ?1",
         )?;
         let rows = stmt.query_map(params![folder_id], |r| {
@@ -721,10 +748,11 @@ impl MailStore {
                     upstream: r
                         .get::<_, Option<String>>(10)?
                         .and_then(|e| serde_json::from_str(&e).ok())
-                        .unwrap_or_else(|| UpstreamAuthEvidence {
-                            untrusted_relay: true,
-                            ..Default::default()
-                        }),
+                        .unwrap_or_default(),
+                    auth_risk: r
+                        .get::<_, Option<String>>(11)?
+                        .map(|v| AuthRisk::from_wire(&v))
+                        .unwrap_or(AuthRisk::Noted),
                 },
             ))
         })?;
@@ -995,6 +1023,74 @@ impl MailStore {
                 rule_id: r.get(2)?,
                 message_id: r.get(3)?,
                 applied_unix: r.get(4)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Mark that the rules engine evaluated the message at `(folder_id,
+    /// uid)` to `stage` (0 = envelope facts, 1 = full parse — the
+    /// `rule_evals.stage` contract). Callers write this only after a
+    /// successful apply: a failed apply keeps the earlier stage, so the
+    /// deferred pass retries it at the next sync instead of skipping.
+    pub fn mark_rule_eval(&self, folder_id: i64, uid: u64, stage: i64, now: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO rule_evals (folder_id, uid, stage, at_unix)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![folder_id, uid as i64, stage, now],
+        )?;
+        Ok(())
+    }
+
+    /// Messages in `folder_id` eligible for deferred full-parse eval: a
+    /// body is stored but the deepest eval watermark is envelope-stage (or
+    /// no row exists — e.g. mail moved into INBOX by the user, or rows
+    /// predating the table). Bounded, uid order (oldest first).
+    pub fn uids_pending_body_eval(&self, folder_id: i64, limit: u32) -> Result<Vec<u64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT m.uid FROM messages m
+             LEFT JOIN rule_evals re
+               ON re.folder_id = m.folder_id AND re.uid = m.uid
+             WHERE m.folder_id = ?1 AND m.body_path IS NOT NULL
+               AND (re.stage IS NULL OR re.stage < 1)
+             ORDER BY m.uid LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![folder_id, limit as i64], |r| r.get::<_, i64>(0))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r? as u64);
+        }
+        Ok(out)
+    }
+
+    /// The account's newest stored messages (insertion order — "last N
+    /// stored" per the preview contract), excluding the folder named
+    /// `exclude` case-insensitively (callers pass the Trash name so the
+    /// dry-run scope matches `rules::apply_now`).
+    pub fn recent_for_preview(
+        &self,
+        account_id: &str,
+        exclude: &str,
+        limit: u32,
+    ) -> Result<Vec<MessageRef>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT m.folder_id, m.uid, f.name, m.subject, m.message_id
+             FROM messages m
+             JOIN folders f ON f.id = m.folder_id
+             WHERE f.account_id = ?1 AND LOWER(f.name) != LOWER(?2)
+             ORDER BY m.id DESC LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![account_id, exclude, limit as i64], |r| {
+            Ok(MessageRef {
+                folder_id: r.get(0)?,
+                uid: r.get::<_, i64>(1)? as u64,
+                folder_name: r.get(2)?,
+                subject: r.get(3)?,
+                message_id: r.get(4)?,
             })
         })?;
         let mut out = Vec::new();
