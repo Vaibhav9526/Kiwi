@@ -12,6 +12,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { Severity, SnoozePreset, TrustState } from "../kiwi";
 import { severityGlyph, severityLabel } from "../kiwi";
+import { Icon, SEVERITY_ICON } from "./icons/index";
 import { navigate } from "../router";
 import { loadPref, savePref } from "../prefs";
 import { useTheme } from "../themes";
@@ -599,7 +600,70 @@ const DUE_GROUPS: { key: AgendaTask["due"]; label: string }[] = [
   { key: "tomorrow", label: "Tomorrow" },
 ];
 
-export function AgendaRail() {
+/**
+ * T-283 rail security summary — REAL data only. Every optional row renders
+ * only when a value with a real source is supplied; absent source = no row
+ * (honest absence, never mocked). `demo` tags fixture-derived numbers.
+ */
+export interface AgendaSecurity {
+  trust: TrustState;
+  lockReason?: string | null;
+  /** Open findings count (kiwi_security_findings; fixture count in demo). */
+  findings?: number | null;
+  /** Unread across inboxes — real `unseen` sum (live) / demo set. */
+  unread?: number | null;
+  /** Live has no store-wide flagged/unreplied aggregate — pass null. */
+  flagged?: number | null;
+  unreplied?: number | null;
+  /** Active paired devices (kiwi_list_devices); null in demo/none loaded. */
+  activeDevices?: number | null;
+  demo?: boolean;
+}
+
+function SecuritySummaryCard({ security }: { security: AgendaSecurity }) {
+  const { trust } = security;
+  const sev: Severity = trust.locked ? "danger" : trust.trust;
+  const rows: { icon: Parameters<typeof Icon>[0]["name"]; label: string; value: string | number }[] = [];
+  if (security.findings != null) rows.push({ icon: "alert-triangle", label: "Open findings", value: security.findings });
+  if (security.unread != null) rows.push({ icon: "unreplied", label: "Unread", value: security.unread });
+  if (security.flagged != null) rows.push({ icon: "flag", label: "Flagged", value: security.flagged });
+  if (security.unreplied != null) rows.push({ icon: "mail-open", label: "Unreplied", value: security.unreplied });
+  if (security.activeDevices != null)
+    rows.push({ icon: "device", label: "Active devices", value: security.activeDevices });
+  return (
+    <section className="em-security-card" aria-label="Security summary">
+      <div className="em-security-head">
+        <Icon name={SEVERITY_ICON[sev]} size={13} />
+        <strong>{trust.locked ? "Locked" : severityLabel(sev)}</strong>
+        {trust.score !== null && <small className="em-security-score">{trust.score}/100</small>}
+        {security.demo && (
+          <small className="em-security-demo" title="Fixture data — no backend">
+            demo
+          </small>
+        )}
+      </div>
+      {trust.locked && security.lockReason && <p className="em-security-reason">{security.lockReason}</p>}
+      {rows.length > 0 && (
+        <ul className="em-security-rows">
+          {rows.map((r) => (
+            <li key={r.label}>
+              <Icon name={r.icon} size={11} />
+              <span>{r.label}</span>
+              <strong>{r.value}</strong>
+            </li>
+          ))}
+        </ul>
+      )}
+      {/* Gap (honest absence): pending sandbox-open sessions have no list
+          IPC yet — the row appears once a real source exists. */}
+      <button type="button" className="em-security-link" onClick={() => navigate({ name: "security" })}>
+        Security Center →
+      </button>
+    </section>
+  );
+}
+
+export function AgendaRail({ security }: { security?: AgendaSecurity }) {
   const [collapsed, setCollapsed] = useState(() => loadPref<boolean>("kiwi.rail", false) === true);
   const [tasks, setTasks] = useState<AgendaTask[]>(() => {
     const v = loadPref<AgendaTask[]>("kiwi.agenda", AGENDA_SEED);
@@ -698,7 +762,7 @@ export function AgendaRail() {
           Add new task
         </button>
       )}
-      {/* TODO(security): security summary panel hooks land here (T-267 rail seam). */}
+      {security && <SecuritySummaryCard security={security} />}
       {DUE_GROUPS.map((g) => {
         const items = tasks.filter((t) => t.due === g.key);
         const expanded = groupOpen[g.key] ?? true;

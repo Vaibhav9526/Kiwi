@@ -59,6 +59,14 @@ export interface MessageEnvelope {
   answered?: boolean;
   /** T-202 unsubscribe endpoints (dormant until the backend classifies). */
   unsub: UnsubscribeInfo;
+  /**
+   * T-284 per-message evidence hints (T-232 auth / T-254 attach / T-261 link).
+   * All three are `undefined`/`null` until the body has been fetched and
+   * evaluated — "not evaluated" is deliberately distinct from clean.
+   */
+  auth?: AuthResultsView | null;
+  attachRisk?: AttachRiskView | null;
+  linkRisk?: LinkRiskView | null;
 }
 
 /** F2 inbox tabs — slugs match kiwi-mail `Category::as_str` (stable API). */

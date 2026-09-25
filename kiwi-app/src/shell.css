@@ -2111,6 +2111,86 @@ span.em-tool-primary {
   padding: 3px 8px;
 }
 
+/* T-283 — rail security summary card (real data only; rows omitted when
+ * no source exists). Compact bordered block above the task groups. */
+.em-security-card {
+  border: 1px solid var(--em-pane-border);
+  border-radius: var(--kiwi-ms-radius-base);
+  background: var(--em-pane-bg);
+  padding: 6px 8px;
+  margin: 4px 0 8px;
+  font-size: var(--kiwi-ms-text-small);
+  color: var(--kiwi-ms-text);
+}
+
+.em-security-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--kiwi-ms-text-small);
+}
+
+.em-security-head strong {
+  font-weight: 600;
+}
+
+.em-security-score {
+  margin-left: auto;
+  color: var(--kiwi-ms-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.em-security-demo {
+  color: var(--kiwi-ms-warning);
+  border: 1px solid var(--kiwi-ms-warning);
+  border-radius: 3px;
+  padding: 0 3px;
+  font-size: var(--kiwi-ms-text-smaller);
+}
+
+.em-security-reason {
+  margin: 4px 0 0;
+  color: var(--kiwi-ms-danger);
+  font-size: var(--kiwi-ms-text-smaller);
+  line-height: 1.35;
+}
+
+.em-security-rows {
+  list-style: none;
+  margin: 5px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.em-security-rows li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--kiwi-ms-text-secondary);
+}
+
+.em-security-rows li strong {
+  margin-left: auto;
+  color: var(--kiwi-ms-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.em-security-link {
+  background: none;
+  border: none;
+  padding: 4px 0 0;
+  color: var(--kiwi-ms-accent);
+  font-size: var(--kiwi-ms-text-smaller);
+  cursor: pointer;
+  text-align: left;
+}
+
+.em-security-link:hover {
+  text-decoration: underline;
+}
+
 .em-agenda-group .em-group-head {
   font-size: var(--kiwi-ms-text-smaller);
   padding: 4px 0;

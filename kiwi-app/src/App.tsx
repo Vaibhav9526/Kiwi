@@ -96,6 +96,11 @@ function toEnvelope(
     snippet: m.snippet || "",
     category: normalizeCategory(m.category),
     unsub: parseUnsubscribe(m),
+    // T-284: carry per-message evidence hints so the reader pill reflects
+    // this message's auth/link/attachment evaluation, not just session trust.
+    auth: m.auth ?? null,
+    attachRisk: m.attachRisk ?? null,
+    linkRisk: m.linkRisk ?? null,
   };
 }
 
@@ -1220,7 +1225,25 @@ export default function App() {
             outboxCount={outbox.length}
           />
         }
-        rail={route.name === "mail" ? <AgendaRail /> : null}
+        rail={
+          route.name === "mail" ? (
+            <AgendaRail
+              security={{
+                trust,
+                lockReason: trust.locked ? lockReason : null,
+                // Real sources only: unread is a real `unseen` sum in both
+                // modes; flagged/unreplied have no live store-wide aggregate
+                // (accounts.ts) → omitted live, shown from demo data in demo.
+                findings: findings.length,
+                unread: smartUnread["unread"] ?? null,
+                flagged: demo ? (smartUnread["flagged"] ?? null) : null,
+                unreplied: demo ? (smartUnread["unreplied"] ?? null) : null,
+                activeDevices: demo ? null : devices.filter((d) => d.status === "active").length,
+                demo,
+              }}
+            />
+          ) : null
+        }
         status={
           <StatusStrip pendingApprovals={authOpen && authStatus === "waiting" ? 1 : 0}>
             <span>{backendNote}</span>

@@ -93,7 +93,7 @@ provenance, not remediation assignments.
 | ACFG-18 | L | Empty-MX fallback emits two `mx_heuristic` attempts despite five-stage table. | `contract-drift-1.md:201` | T-246/contract owner | open |
 | ACFG-19 | L | Contract says 53 tests; current source has 60. | `contract-drift-1.md:202` | T-246/contract owner | open |
 | ACFG-I | I | Large undocumented autoconfig public API/OAuth surface. | `contract-drift-1.md:230` | T-251/contract owner | open |
-| MAUTH-1 | H | Contract claims a live Hickory resolver; no live resolver implementation exists. | `contract-drift-1.md:72` | T-122/T-183 | in-flight |
+| MAUTH-1 | H | Contract claims a live Hickory resolver; no live resolver implementation exists. | `contract-drift-1.md:72` | T-122/T-183 → T-279 | fixed — `HickoryResolver` landed in `dns.rs` (bounded `system()`/`with_bounds`, fail-closed `Temp`/`NxDomain`, scoped-thread `block_on`); wired via `commands/mail.rs::auth_sealer()` into `sync_pop3_with_auth` + lazy IMAP body ingest; offline seam tests in `dns.rs::tests`. |
 | MAUTH-2 | M | DKIM `l=` truncation is described before canonicalization but code canonicalizes first. | `contract-drift-1.md:124` | T-122/T-183 | fixed |
 | MAUTH-3 | M | DKIM ancient `t=` is not rejected when `x=` is present. | `contract-drift-1.md:125` | T-122/T-183 | fixed |
 | MAUTH-4 | M | `SigAlgorithm` wire spelling is PascalCase rather than documented `rsa-sha256`/`ed25519-sha256`. | `contract-drift-1.md:126` | T-122/T-245 | open |

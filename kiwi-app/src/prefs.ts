@@ -34,6 +34,7 @@ export const PREF_KEYS = [
   "kiwi.accent",
   "kiwi.density",
   "kiwi.rail",
+  "kiwi.agenda",
   "kiwi.grace",
   "kiwi.minTls",
   "kiwi.templates",
