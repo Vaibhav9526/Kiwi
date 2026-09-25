@@ -187,7 +187,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-227 | IPC for kiwi-integrations: tempmail commands (public-inbox flag on every response) + deliverability consent-token flow (non-bypassable server-side) | Agent 11 | open | `kiwi-app/src-tauri/`, `ipc.md` | T-226 |
 | T-228 | F1 rules engine core (AST/eval/persistence v6, 25 tests) | Agent 15 | done | `kiwi-mail/src/rules/` | T-181 |
 | T-229 | Review oauth2.md contract for drift vs Agent 19 impl when it lands | Agent 18 | queued | `docs/contracts/` | T-195 |
-| T-230 | OAuth2 IPC commands (begin/poll/status) + account-wizard seam (autoconfig oauth2 → flow → CredentialStore) | Agent 19 | open | `kiwi-app/src-tauri/`, `ipc.md` | T-195 |
+| T-230 | OAuth2 IPC + wizard seam (begin/poll/cancel/status/discover, CredentialStore, 86/86) | Agent 19 | done |
 | T-231 | Live-data wiring: category tabs UI (F2), search→real IPC, contacts view→IPC, unsubscribe chip | Agent 12 | open | `kiwi-app/src/` | T-192,T-201,T-202 |
 | T-232 | Authentication-Results stamping on ingest (RFC 8601) + verdict field on MessageView | Agent 16 | open | `kiwi-mail/` | T-183 |
 | T-233 | Apply rules on sync ingest + rules CRUD IPC + apply-now + matched-id audit surface | Agent 15 | open | `kiwi-mail/`, `kiwi-app/src-tauri/` | T-228 |
@@ -203,3 +203,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-240 | Upstream Authentication-Results parse + our-verdict discrepancy flag on AuthView | Agent 21 | open | `kiwi-mail/` | T-232 |
 | T-241 | ipc.md completeness: registered-commands reconciliation + missing entries (post T-230/233/234) | Agent 22 | open | `docs/`, `kiwi-app/src-tauri/` (read) | T-196 |
 | T-242 | Integrations UI: TempMail panel + deliverability view + unsub chip (Mailspring idiom) | Agent 11 | open | `kiwi-app/src/` | T-227, T-234 |
+| T-243 | OAuth2 wizard UI branch: provider sign-in, device-code display, poll states, needsRefresh re-auth | Agent 19 | open | `kiwi-app/src/` | T-230 |

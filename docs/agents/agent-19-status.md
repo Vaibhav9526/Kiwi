@@ -138,3 +138,104 @@ file:line to Lead, not edited — not my files):
 `orca terminal send` report to `term_c20c6737-…`: `accepted: true`
 (input_accepted; provider reports no delivery observation — same as the
 original DONE report).
+
+## 2026-09-25 — T-230 OAuth2 IPC + account-wizard seam (claimed → done, pending Lead review)
+
+Status: **done** — `cargo test -p kiwi-app` **86/86 green**, all offline
+(`ScriptedHttp` replays; the loopback test uses a real 127.0.0.1 socket
+only). `cargo check --all-targets`, `cargo clippy --all-targets -D
+warnings`, `cargo fmt --check`: all clean. `kiwi-autoconfig` still 92/92.
+
+Scope delivered (task spec):
+
+1. `kiwi_oauth2_begin(provider, email?)` → `{kind, userCode?,
+   verificationUri?, verificationUriComplete?, authorizeUrl?,
+   expiresAtUnix?, pollIntervalSecs?, ticketId}` — device-code returns
+   the code+URI to display; loopback returns `authorizeUrl` to open
+   externally with the `127.0.0.1` listener already bound and a waiter
+   thread parked (600 s deadline, own current-thread runtime).
+2. `kiwi_oauth2_poll(ticketId)` → `pending | complete | error`:
+   terminal failures (denied/expired/endpoint/malformed) arrive as
+   `status:"error"` + sticky `Failed` state; transient transport errors
+   stay IPC errors so the grant survives. Single-flight per ticket via
+   the sessions mutex. `slow_down` bumps `retryAfterSecs` per RFC 8628.
+3. `kiwi_oauth2_status(accountId)` → read-only posture of a stored
+   account: authMethod, provider/email parsed from `oauth2/…` grant keys,
+   credentialPresent, expiry + needsRefresh + hasRefreshToken from the
+   persisted TokenSet blob — never token material.
+4. `kiwi_oauth2_cancel(ticketId)` — drops the session (bounded listener
+   lifetime documented).
+5. `kiwi_discover_account(email)` — landed the T-178 contract shape
+   (`commands/autoconfig.rs`); `suggestion.oauth2` spec (`{provider,
+   grant}`) present iff the suggestion is XOAUTH2 **and** the incoming
+   IMAP host is one a shipped config services — fail-closed for Yahoo/
+   AOL-style OAuth2 providers and POP3.
+6. `kiwi_add_account` binding: `AuthInput.oauth2Ticket` (xoauth2 only;
+   same ticket both directions; grant email must match account email)
+   → both `AuthRef::XOAuth2`s carry `oauth2/<provider>/<email>`;
+   deferred grants (no email at begin) persist on consume; ticket
+   consumed only after the account row exists. Legacy inline-secret
+   xoauth2 preserved.
+
+Files changed:
+
+- `kiwi-app/src-tauri/src/commands/oauth2.rs` — new. begin/poll/cancel/
+  status commands + `oauth2_ticket_key`/`consume_oauth2_ticket`/
+  `oauth2_spec_for` seam fns + `SharedTransport` (Arc<dyn HttpClient> →
+  OAuthTransport bridge) + 11 tests.
+- `kiwi-app/src-tauri/src/commands/autoconfig.rs` — new.
+  `kiwi_discover_account` + wire mapping (auth `xoauth2`, security
+  `tls|starttls|plaintext`) + 6 tests.
+- `kiwi-app/src-tauri/src/commands/accounts.rs` — oauth2Ticket binding
+  in `add_account_impl`, `auth_ref`/`store_secret` ticket path,
+  `auth_input_from` field update.
+- `kiwi-app/src-tauri/src/commands/mod.rs` — + `autoconfig`, `oauth2`.
+- `kiwi-app/src-tauri/src/discovery_net.rs` — new. `LiveDiscoveryNet`:
+  HTTPS fetch via shared integrations transport (body-capped); MX via
+  hickory `TokioResolver` (system config), private runtime per call.
+- `kiwi-app/src-tauri/src/state.rs` — `OAuth2Session`/
+  `OAuth2SessionState` (Device/Loopback/Completed/CompletedDeferred/
+  Failed), `oauth2_sessions` map bounded at `MAX_OAUTH2_SESSIONS=32`
+  (evict expired/failed → oldest), `OAUTH2_LOOPBACK_TIMEOUT_SECS=600`,
+  `autoconfig_net` field, `open_test_with_net` injector.
+- `kiwi-app/src-tauri/src/types/oauth2.rs` — new wire views
+  (`OAuth2BeginView`/`PollView`/`StatusView`/`CancelView`/`SpecView`).
+- `kiwi-app/src-tauri/src/types/accounts.rs` — `AuthInput.oauth2Ticket`;
+  discovery views (`DiscoveryOutcomeView`, `SuggestionView`, …).
+- `kiwi-app/src-tauri/src/types/mod.rs`, `lib.rs` — module + handler
+  registration.
+- `kiwi-app/src-tauri/Cargo.toml` — + `kiwi-autoconfig` (path),
+  `hickory-resolver` 0.26 (tokio), `async-trait`.
+- `kiwi-autoconfig/src/oauth2/provider.rs` — `provider_id_for_suggestion`
+  (XOAUTH2+IMAP+host→provider, fail-closed), `grant_kind_str`.
+- `kiwi-autoconfig/src/net.rs` — `DiscoveryNet: Send + Sync` supertrait
+  (needed for `Arc<dyn DiscoveryNet>` inside `AppState`).
+- `docs/contracts/ipc.md` — §5 `oauth2Ticket` field + discover `oauth2`
+  spec (marked implemented); new §9f command family; §11 error rows
+  (`oauth2-not-configured|-incomplete|-denied|-expired|-reauth|
+  -endpoint|-error`).
+
+Security properties: no token/PKCE-verifier/device-code/auth-code bytes
+cross IPC — `credentialKey`/`ticketId` are names/opaque ids; tokens reach
+the OS keystore only; audit sees provider+email+outcome; grant map is
+bounded in-memory and dies with the process; client_id resolves env
+`KIWI_OAUTH2_<PROVIDER>_CLIENT_ID` > pref `oauth2.<provider>.clientId`,
+missing → `oauth2-not-configured` before any network call.
+
+Assumptions / decisions (for Lead ratification):
+
+- Completed-grant tickets are consumable exactly once (post-upsert) — a
+  second `add_account` with the same ticket gets `oauth2-incomplete`.
+- Poll is the only refresh of grant state — no push; loopback waits are
+  driven by `pollIntervalSecs` hint (1 s fixed; device = provider's).
+- `kiwi_discover_account` runs on `spawn_blocking` — `LiveDiscoveryNet`
+  drives a private runtime per call (block_on inside a worker panics).
+- POP3+XOAUTH2 stays unsupported: the spec is never emitted for POP3
+  suggestions and `auth_ref` unchanged.
+- Token refresh at connect time stays inside `ensure_fresh` (T-195);
+  IPC `status` is read-only posture, not a refresh trigger.
+
+Blockers hit: transient foreign reds during the session —
+`kiwi-mail/src/store/mod.rs:1083` (`PLACEHOLDER_STORE_TESTS` mid-edit,
+self-resolved) and `kiwi-app/.../types/mail.rs:90` (T-232 `auth` field
+mid-wire, self-resolved). Nothing foreign was edited.
