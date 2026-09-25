@@ -318,7 +318,7 @@ export function ContactsView({
       const msg = r.issues.length
         ? `Import done: ${r.contacts.length} contact(s) imported, ${r.issues.length} issue(s) — ${r.issues
             .slice(0, 2)
-            .map((i) => `card ${i.cardIndex + 1}: ${i.detail}`)
+            .map((i) => `card ${i.cardIndex >= 0 ? i.cardIndex + 1 : "—"}: ${i.detail}`)
             .join("; ")}.`
         : `Import done: ${r.contacts.length} contact(s) imported.`;
       setIoNote(msg);

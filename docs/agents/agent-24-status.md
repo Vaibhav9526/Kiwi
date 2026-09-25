@@ -94,3 +94,73 @@
   no backend mail/security behavior changed.
 - Required Orca T-267 completion report sent to terminal
   `term_c20c6737-9b80-4911-bcd2-38aa5113e4d7`.
+
+## 2026-09-25 — T-231: live-data UI wiring
+
+**Status:** done (`tsc && vite build` green).
+
+### Files changed
+
+- `kiwi-app/src/App.tsx` — debounced (300 ms) `kiwi_search_messages` effect
+  gated on `!demo && !trust.locked && route === "mail" && query.trim()`;
+  `searchHits`/`searchBusy`/`searchNote` state; `visibleMessages`
+  client-side substring filter now runs in demo mode only (live delegates
+  to FTS). Landed via A25's T-275 commit `dc66778` (same-file sweep of
+  in-flight work — content verified identical in HEAD).
+- `kiwi-app/src/views/mailbox.tsx` — `searchResults`/`searchBusy`/
+  `searchNote`/`searchQuery` props; when hits are non-null the list pane
+  swaps to a "Search results" view (skeletons while busy, error banner on
+  IPC failure, zero-hit empty state); tabs, select-all, and bulk bar hide
+  during search. New `SearchHitRow` renders only backend-returned fields
+  (sender/subject/snippet/date/paperclip — no fabricated unread/star/
+  category state) and navigates to `mail` route `accountId:folderId` +
+  `accountId:folderId:uid`; hits without `accountId` render inert.
+- `kiwi-app/src/views/contacts.tsx` — live import now calls
+  `kiwi_import_vcards` with the original file payload (server-side dedupe
+  + contract issue report) instead of per-card `kiwi_create_contact`;
+  live export calls `kiwi_export_vcards`. Client-side parse retained only
+  for the preview table. Stale "no import IPC exists yet" comment fixed.
+  Bulk of the file landed via `dc66778`; this commit adds the
+  file-level-issue `cardIndex` guard.
+- `docs/TASKS.md` — T-231 row → done.
+- `docs/agents/agent-24-status.md` — this entry.
+
+### Verification per requirement
+
+1. **Category tabs on real envelopes** — already satisfied by T-267:
+   `toEnvelope` maps `MessageView.category` (backend emits the store row's
+   category, `kiwi-mail/src/store/queries.rs`) through `normalizeCategory`;
+   tabs filter `m.category` and `+N` counts non-primary envelopes in the
+   loaded list. No fabricated values.
+2. **Search pill → real FTS** — `api.searchMessages` → registered command
+   `kiwi_search_messages` (src-tauri/src/lib.rs:101, commands/mail.rs:162;
+   grammar in `kiwi_mail::search`, `accountId` resolved server-side per
+   hit). Debounced 300 ms, capped at 50 hits, Enter still opens the full
+   Search view.
+3. **Contacts IPC** — surface exists and is registered (`kiwi_list_contacts`,
+   `kiwi_search_contacts`, `kiwi_get_contact`, `kiwi_create_contact`,
+   `kiwi_update_contact`, `kiwi_delete_contact`, `kiwi_contact_tags`,
+   `kiwi_import_vcards`, `kiwi_export_vcards` — src-tauri/src/lib.rs:141-151).
+   The view was already IPC-wired for list/CRUD; import/export are now on
+   the contract commands too. Contacts search filters the 500-row loaded
+   list client-side — `kiwi_search_contacts` left for larger books
+   (documented in-file, not a gap).
+
+### Commands run
+
+- `npm run build` (`tsc && vite build`) — green, 74 modules.
+- Contract-gap sweep: `grep` over `src-tauri/src/lib.rs` registry — every
+  command the UI calls is registered; **no contract gaps found**.
+
+### Assumptions / risks
+
+- Nothing was mocked: every live-mode surface calls a registered IPC
+  command; demo mode keeps its existing labeled localStorage fixture.
+- Stale comments in `ipc.ts` ("pending backend" on contacts/search
+  wrappers) are wrong now — left alone, that file carries other agents'
+  uncommitted work.
+- `visibleMessages` no longer narrows in live mode while a query is set —
+  `onEmptyTrash` consequently uses the full loaded trash list, which is
+  the correct semantics.
+- Required Orca T-231 completion report sent to terminal
+  `term_c20c6737-9b80-4911-bcd2-38aa5113e4d7`.

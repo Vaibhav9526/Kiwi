@@ -188,7 +188,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-228 | F1 rules engine core (AST/eval/persistence v6, 25 tests) | Agent 15 | done | `kiwi-mail/src/rules/` | T-181 |
 | T-229 | Review oauth2.md contract for drift vs Agent 19 impl when it lands | Agent 18 | queued | `docs/contracts/` | T-195 |
 | T-230 | OAuth2 IPC + wizard seam (begin/poll/cancel/status/discover, CredentialStore, 86/86) | Agent 19 | done |
-| T-231 | live-data UI wiring: category tabs on real envelopes, real FTS search, contacts IPC | Agent 24 (reassigned from A11) | open | `kiwi-app/src` | T-267 |
+| T-231 | live-data UI wiring: category tabs on real envelopes, real FTS search, contacts IPC | Agent 24 (reassigned from A11) | done | `kiwi-app/src` | T-267 |
 | T-232 | Authentication-Results stamping on ingest (RFC 8601) + verdict field on MessageView | Agent 16 | open | `kiwi-mail/` | T-183 |
 | T-233 | Rules ingest application + IPC (5 cmds, rule_hits audit, schema v8) | Agent 15 | done |
 
