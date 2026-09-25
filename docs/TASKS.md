@@ -117,8 +117,8 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-188 | Contract work: pair/challenge IPC section in ipc.md + admin devices/export endpoint specs | Agent 9 | open | `docs/contracts/` | T-185 |
 | T-189 | Snooze UI | Agent 5 | held — returns in TB idiom post-T-191 | `kiwi-app/src/` | T-182 |
 | T-190 | Mailspring archaeology: ui-mailspring-map.md + mailspring-tokens.css (clean-room) | Agent 12 | done | `source/comm/` → `docs/` | — |
-| T-191 | Rebuild kiwi-app/src Mailspring-faithful (layout+animations+IPC preserved) | Agent 12 | in-progress | `kiwi-app/src/` | T-190 |
-| T-192 | Re-integrate KIWI security surfaces in Mailspring idiom | Agent 5 | open | `kiwi-app/src/` | T-191 |
+| T-191 | Mailspring-faithful rebuild (sidebar/rows/reader/composer/prefs/motion/keys/CSP) | Agent 12 | done | `kiwi-app/src/` | T-190 |
+| T-192 | KIWI security surfaces in Mailspring idiom (pill, banner, lock, security center, approvals badge) | Agent 12 | in-progress | `kiwi-app/src/` | T-191 |
 | T-193 | kiwi-admin H1-H8 fixes per Lead rulings + M1-M7 + e2e regression guards | Agent 6 | open | `kiwi-admin/` | T-187 |
 | T-194 | Mobile authenticator screens: pairing QR, approvals, devices, history (mock transport) | Agent 4 (Nemotron 3.5 Lightning) | open | `mobile/` | T-136 |
 | T-195 | OAuth2 flows (Google loopback + Microsoft device-code) spec + impl | Agent 19 | open | `kiwi-autoconfig/`, `kiwi-mail/` | T-183 |
@@ -165,7 +165,7 @@ rebuild context. Lead handle is now term_c20c6737.
 | Agent | Model | Terminal | Assignment |
 |---|---|---|---|
 | 11 | Devin Pro | d869b293 | T-226 done → T-227 integrations IPC |
-| 12 | Muse Spark 1.3 xhigh | 4cc53da5 | T-190b done → T-191 rebuild in-progress |
+| 12 | Muse Spark 1.3 xhigh | 4cc53da5 | T-191 done → T-192 security surfaces |
 | 13 | Muse Spark 1.3 xhigh | e5adf4d9 | T-193 admin H1-H8 + M fixes |
 | 14 | OpenCode Zen xhigh | e26f119b | T-180 done → T-201 F2 categorization |
 | 15 | Devin Pro | c47aa1d7 | T-181 done → T-228 rules engine core |
