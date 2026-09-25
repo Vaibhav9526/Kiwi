@@ -82,3 +82,45 @@ No Rust, TypeScript, schema, or contract implementation files were changed.
 - `git diff --check` passed for the new audit file and status log.
 - T-238 Orca DONE report sent to terminal
   `term_c20c6737-9b80-4911-bcd2-38aa5113e4d7`; receipt returned `accepted: true`.
+
+## 2026-09-25 — T-246: autoconfig-parser drift enumeration
+
+**Status:** done (read-only analysis and candidate rulings; no code change).
+
+### Files changed
+
+- `docs/audits/autoconfig-drift-1.md` — new focused ACFG-3..10 audit with contract/source evidence, severity, and code-fix versus contract-fix recommendations.
+- `docs/audits/contract-drift-1.md` — appended the T-246 ACFG-3..10 reconciliation section.
+- `docs/agents/agent-22-status.md` — this entry.
+
+No Rust, TypeScript, schema, or `docs/contracts/*` files were changed by T-246.
+
+### Evidence and findings
+
+- Read `docs/contracts/autoconfig.md` and the existing ACFG-3..10 rows in `docs/audits/contract-drift-1.md`.
+- Read `kiwi-autoconfig/src/lib.rs`, `ispdb.rs`, `heuristics.rs`, `autoconfig_xml.rs`, `discovery.rs`, `net.rs`, and `suggest.rs`; traced validation, fixture lookup, MX suffix matching, XML bounds/PI/root/domain selection, placeholder substitution, and stage error mapping.
+- ACFG-3/5/6/10 are primarily contract corrections: RFC `atext` acceptance, stale `pphosted.com` example, distinct `Error::TooLong` taxonomy, and `%EMAILDOMAIN%` support.
+- ACFG-4 is a product/data decision: GoDaddy is absent from nine bundled ISPdb entries but remains available through the `secureserver.net` MX hint; do not invent fixture endpoints.
+- ACFG-7/8/9 are the security/selection subset: arbitrary PIs are skipped, bare `emailProvider` roots are accepted, and provider selection can fall through to the first provider; candidate resolution is fail-closed code work.
+- Candidate severities are M for ACFG-4/7/8/9 and L for ACFG-3/5/6/10; no H finding was identified.
+- ACFG-1/2 and ACFG-11 onward remain outside T-246 scope.
+
+### Commands run
+
+- Read-only `glob`, `grep`, and `read` inspection of the contract, existing audit, task/status files, and all relevant `kiwi-autoconfig/src` modules/tests.
+- `cargo test -p kiwi-autoconfig` — **92 passed, 0 failed**.
+- `git diff --check -- docs/audits/contract-drift-1.md docs/audits/autoconfig-drift-1.md` — passed.
+
+### Assumptions / risks
+
+- Line references describe the current T-246 snapshot; concurrent worktree edits may shift them.
+- GoDaddy ISPdb support requires verified provider endpoint data before any code fix.
+- Candidate rulings are recommendations for Lead/Agent 8 review, not implementation approvals.
+- T-241 is closed and was not modified; unrelated shared-worktree changes were preserved.
+
+### Verification
+
+- `cargo test -p kiwi-autoconfig` — **92 passed, 0 failed**.
+- `git diff --check` passed for the T-246 audit files.
+- T-246 Orca DONE report sent to terminal
+  `term_c20c6737-9b80-4911-bcd2-38aa5113e4d7`; receipt returned `accepted: true`.

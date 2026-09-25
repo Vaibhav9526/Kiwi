@@ -312,6 +312,24 @@ uids, or lazily from stored bodies (≤32 parses per list call). `null`/
 `[]` means "unknown" — no-body messages predating the cache learn on
 their next sync or body fetch.
 
+### `kiwi_search_messages(query, folderId?, limit?) → SearchHitView[]` (T-231)
+FTS5 over the local store (`kiwi_mail::search` — subject/from/to/snippet
+columns; `body:` terms match the snippet proxy). Grammar: plain terms,
+`subject:`/`from:`/`to:`/`body:` scopes, `"quoted phrases"`, `-negation`;
+≤8 terms, `limit` default 50 clamp 1–500, `query` bounded at 512 chars.
+`folderId` (must be ≥0) scopes to one folder; omitted → every folder.
+`accountId` is resolved server-side from the folder row per hit.
+`has:`/`folder:` are UI post-filters and are not part of this grammar.
+
+```jsonc
+{ "accountId": "a1", "folderId": 1, "uid": 991, "subject": "…",
+  "fromAddr": "…", "snippet": "…", "dateUnix": 0,
+  "hasAttachments": false }
+```
+
+Errors: `invalid-input` (query >512 chars, `folderId` < 0), `locked`,
+`internal` (store failure).
+
 ### `kiwi_get_message(accountId, folderId, uid) → MessageBodyView`
 Reads the stored body; for IMAP, missing bodies are fetched on demand
 (`BODY[]`) and stored — that fetch is itself recorded as a session.

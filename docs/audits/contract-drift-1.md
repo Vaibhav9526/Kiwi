@@ -359,3 +359,27 @@ in neither the registry nor any contract (UIS-5/6/7).
 - The T-230 `kiwi_lookup_autoconfig` alias was already present in the current
   worktree and was not duplicated. No new non-in-flight command entry was
   missing after the current T-230/T-233/T-234/§9e reconciliation.
+
+## T-246 follow-up — ACFG-3..10 autoconfig drift enumeration (2026-09-25)
+
+**Reviewer:** Agent 22 · **Mode:** read-only analysis. The current
+`docs/contracts/autoconfig.md` promise was compared with the parser, validation,
+ISPdb, MX-heuristic, and discovery implementations. Detailed candidate rulings
+and severity rationale are in `docs/audits/autoconfig-drift-1.md`; no Rust or
+contract implementation files were changed.
+
+| ID | contract promise vs current behavior | file:line evidence | severity | proposed resolution |
+|---|---|---|---|---|
+| ACFG-3 | Narrow local-part charset promise; code accepts the RFC-5321 `atext` superset. | `autoconfig.md:47-50`; `kiwi-autoconfig/src/lib.rs:131-154` | L | Contract-fix: document the complete accepted `atext` set. |
+| ACFG-4 | GoDaddy is listed as an ISPdb fixture; code has nine fixtures and only an MX hint for GoDaddy. | `autoconfig.md:105-110`; `src/ispdb.rs:70-146`; `src/heuristics.rs:126-132` | M | Decision gate: add a verified fixture if offline support is required, otherwise remove GoDaddy from the fixture promise and document MX-only coverage. |
+| ACFG-5 | `pphosted.com` is an MX example; code has no such suffix, though `secureserver.net` covers GoDaddy. | `autoconfig.md:111-114`; `src/heuristics.rs:67-133,147-170` | L | Contract-fix: replace the stale example or mark examples non-normative. |
+| ACFG-6 | Oversize documents are promised as `MalformedXml`; parser returns distinct `Error::TooLong`, which discovery maps to a non-fatal `malformed` stage. | `autoconfig.md:118-125`; `src/autoconfig_xml.rs:56-60`; `src/discovery.rs:98-105,152-163` | L | Contract-fix: document `TooLong` and its stage mapping; no code change required. |
+| ACFG-7 | Processing instructions are prohibited; `skip_misc` silently skips every PI, including the XML declaration. | `autoconfig.md:118-125`; `src/autoconfig_xml.rs:69-79,102-118` | M | Code-fix: allow only the XML declaration and reject other PIs; document the narrow exception. |
+| ACFG-8 | Root must be `clientConfig`; `ClientConfig::parse` also accepts bare `emailProvider`. | `autoconfig.md:118-129`; `src/autoconfig_xml.rs:347-361` | M | Code-fix: enforce the promised root unless compatibility is explicitly contracted. |
+| ACFG-9 | Domain entries are checked against the queried domain; selection falls back to provider id and then the first provider unconditionally. | `autoconfig.md:128-129`; `src/autoconfig_xml.rs:363-377` | M | Code-fix: remove first-provider fallback; retain id matching only if explicitly permitted. |
+| ACFG-10 | Only address/local placeholders are promised; code also expands `%EMAILDOMAIN%`. | `autoconfig.md:130-131`; `src/autoconfig_xml.rs:474-505,694-715` | L | Contract-fix: document `%EMAILDOMAIN%` as supported. |
+
+**T-246 result:** eight pre-existing drifts are enumerated; ACFG-3/5/6/10 are
+primarily contract corrections, ACFG-4 requires an offline-support product
+decision, and ACFG-7/8/9 need fail-closed parser code work. No additional
+source changes or tests were made by this audit.
