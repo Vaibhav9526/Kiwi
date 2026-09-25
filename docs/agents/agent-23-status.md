@@ -78,3 +78,47 @@ was not modified.
 - Required Orca T-235 completion report sent to terminal
   `term_c20c6737-9b80-4911-bcd2-38aa5113e4d7`; receipt returned
   `accepted: true` (request `93222fa4-513c-497b-8762-21365f1fa22b`).
+
+## 2026-09-25 — T-270: mobile authenticator drift audit
+
+**Status:** done (read-only implementation audit; no mobile, Rust, contract, task-ledger, or findings-register edits).
+
+### Files changed
+
+- `docs/audits/authenticator-drift-1.md` — final T-270 audit with contract decisions, pairing/approval/replay/queue/keystore matrices, current T-269 disposition, AUTH reconciliation, findings, verification, and required implementation order.
+- `docs/agents/agent-23-status.md` — this entry.
+
+### Evidence and findings
+
+- Audited `docs/contracts/authenticator.md` against mobile protocol/UI/keystore/transport, `kiwi-core`, current `kiwi-pair`, and Tauri state/commands/types.
+- Confirmed canonical bytes/event tags, exact mobile nonce parsing, replay helper, queue helper, and deterministic tests; confirmed the production mobile path remains fail closed (`UnavailableKeystore`, `OfflineTransport`).
+- Recorded unresolved contract decisions: 44-character canonical key encoding versus “64-char” example, TLS pin identity, plaintext `ws://` versus `wss://`, `nonce_b64`/`nonceB64` and schema-version boundary, session examples, trusted desktop label, timeout audit contradiction, and bearer-ticket wording.
+- Recorded mobile gaps: weak QR endpoint/key/TTL validation, no pre-parse challenge cap or session grammar, frozen clock, optional identity binding, stale pending state, no tap-time gates, non-durable replay/identity/queue state, indefinite deny retention, unverified RN `Buffer` availability, and fabricated scaffold pairing identity.
+- Reconciled current T-269 source: persisted `AppState::pair`, five registered canonical commands, legacy aliases, `nonceB64`, schema-v2 ticket claim/status, atomic challenge consume/activation, resource/error bounds, and expanded PairEngine tests. The first-flow opener, live claim/response channel, explicit deny/audit semantics, and Tauri verification remain open.
+- Confirmed the prior revoked-outstanding-response path is blocked and covered by `revoked_device_cannot_verify` in the current dirty worktree; it is recorded as a regression guard, not a current bypass.
+- Left the master findings register unchanged; AUTH-1/2, AUTH-3 end-to-end, AUTH-4/5/6/7/8/10/11/12/13/14/16, AUTH-I, and T-235 integration dispositions remain documented without reclassification.
+
+### Commands and tests
+
+- `npx vitest run tests/protocol tests/keystore` — **5 files, 32 passed**.
+- `npm run typecheck` — passed.
+- `npm run typecheck:app` — passed.
+- `npm run lint -- --quiet` — passed.
+- `npm test` — **43 passed, 3 unrelated QR-encoder failures** (`json-v21-l`, `json-v25-l`, penalty/mask selection).
+- `cargo test -p kiwi-pair` — **20 passed**.
+- `cargo clippy -p kiwi-pair --all-targets -- -D warnings` — passed.
+- `cargo fmt -p kiwi-pair -- --check` — failed on concurrent T-269 formatting only.
+- `cargo test -p kiwi-app` — blocked by unrelated concurrent `commands/link.rs:263` unclosed-delimiter work; Tauri tests not reached.
+- `git diff --check -- docs/audits/authenticator-drift-1.md` — passed (Git emitted only the expected Windows LF/CRLF warning).
+
+### Assumptions / risks
+
+- T-269 is uncommitted and actively edited; the audit labels its current desktop behavior as in progress rather than complete.
+- Full mobile lint warnings and QR failures are outside the authenticator protocol scope and are disclosed rather than hidden.
+- No T-270 production implementation was enabled; Phase 4 remains disabled pending the required sign-off and the listed gates.
+
+### Orca handoff
+
+- Completion report sent/enqueued to Lead terminal `term_c20c6737-9b80-4911-bcd2-38aa5113e4d7`: message `msg_09b80bd39fca`, request `5e73a569-d842-414e-bd76-9e26feb2a5b9`.
+- `orca orchestration check --terminal term_c20c6737-9b80-4911-bcd2-38aa5113e4d7 --json` observed the report in the Lead mailbox.
+- Orca warned that this legacy terminal-only mailbox is not durable after the terminal closes; the report was not falsely marked as acknowledged.

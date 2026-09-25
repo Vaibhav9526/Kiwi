@@ -251,5 +251,5 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 -->
 | T-272 | Final register items: FOR-10 emit 3 limitation codes + IPC-15 real wrappers | Agent 20 | open | `kiwi-forensics/`, `ipc.ts` | FINDINGS.md |
 | T-273 | Link-click policy gate: kiwi_link_click verdict + open_external risk-gating | Agent 21 | open | `src-tauri/` | T-266 |
-| T-274 | Reference plugin + capability-gate proof (bridge e2e in plugins/) | Agent 25 | open | `kiwi-app/src/plugins/` | T-268 |
+| T-274 | Reference plugin + capability-gate proof (bridge e2e in plugins/) | Agent 25 | done | `kiwi-app/src/plugins/` | T-268 |
 | T-275 | T-268 seam land: ThemePicker mount + useTheme swap + emoji sweep + visual pass | Agent 25 (A24 terminal expired — files transferred) | open | `kiwi-app/src` | T-267,T-268 |

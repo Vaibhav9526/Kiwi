@@ -22,6 +22,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, BackendUnavailableError, IpcError } from "../ipc";
 import type { OAuth2BeginView } from "../kiwi";
+import { Icon } from "./icons/index";
 
 type Phase =
   | { stage: "idle" }
@@ -213,7 +214,9 @@ export function OAuth2SignIn(props: {
   if (phase.stage === "done") {
     return (
       <div className="kiwi-banner warn" role="status">
-        <strong>✓ Signed in{phase.email ? ` as ${phase.email}` : ""}.</strong>{" "}
+        <strong>
+          <Icon name="check-circle" size={14} /> Signed in{phase.email ? ` as ${phase.email}` : ""}.
+        </strong>{" "}
         <small>The {label} grant is stored in the OS credential store — continue to finish adding the account.</small>
       </div>
     );

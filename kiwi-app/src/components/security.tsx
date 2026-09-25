@@ -7,7 +7,8 @@
  */
 import { useEffect, useRef } from "react";
 import type { FindingDetailView, FindingInfo, PolicyBannerVerdict, Severity } from "../kiwi";
-import { severityGlyph, severityLabel } from "../kiwi";
+import { severityLabel } from "../kiwi";
+import { Icon, SEVERITY_ICON } from "./icons/index";
 
 export function SecurityPill({
   level,
@@ -26,7 +27,7 @@ export function SecurityPill({
       aria-label={`Connection security: ${severityLabel(level)}. ${summary} Activate for details.`}
       title={summary}
     >
-      {severityGlyph(level)} {severityLabel(level)}
+      <Icon name={SEVERITY_ICON[level]} size={13} /> {severityLabel(level)}
     </button>
   );
 }
@@ -119,7 +120,7 @@ export function FindingDialog({
       >
         <p>
           <span className={`kiwi-pill ${finding.severity}` as string}>
-            {severityGlyph(finding.severity)} {severityLabel(finding.severity)}
+            <Icon name={SEVERITY_ICON[finding.severity]} size={13} /> {severityLabel(finding.severity)}
           </span>{" "}
           <small>
             {position} of {total} · {finding.id} · engine {finding.engineVersion}
@@ -183,10 +184,10 @@ export function FindingDialog({
         )}
         <div style={{ display: "flex", gap: "0.4rem", marginTop: "0.8rem" }}>
           <button type="button" className="ms-btn" onClick={onPrev} disabled={position <= 1}>
-            ← Prev
+            <Icon name="arrow-left" size={13} /> Prev
           </button>
           <button type="button" className="ms-btn" onClick={onNext} disabled={position >= total}>
-            Next →
+            Next <Icon name="arrow-right" size={13} />
           </button>
           <button type="button" className="ms-btn" onClick={onClose} ref={closeRef}>
             Close (Esc)
@@ -226,7 +227,7 @@ export function LockOverlay({
     <div className="kiwi-lock-overlay" role="alertdialog" aria-modal="true" aria-labelledby="lock-title">
       <div style={{ maxWidth: "30rem", padding: "0 1rem" }}>
         <div className="kiwi-lock-mark" aria-hidden="true">
-          🔒
+          <Icon name="lock" size={40} strokeWidth={1.1} />
         </div>
         <h1 id="lock-title">Mailbox locked</h1>
         <p>{reason}</p>

@@ -5,6 +5,31 @@
 > see `docs/THREAT-MODEL.md` RR-11. Only install plugins you trust; the
 > manifest capabilities below are the *contract*, not yet a hard boundary.
 
+## Alpha trust boundary — what is enforced vs. deferred
+
+**Enforced today** (proven by `e2e/run.mjs`, 21 assertions):
+
+| Control | Where | Behavior |
+|---|---|---|
+| Manifest validation | `manifest.ts` | id/version/entry regexes, permissions ⊆ known caps, no `..` traversal |
+| Install hygiene | `registry.ts` | entry file must exist in package, safe relative paths, localStorage persistence |
+| Capability gate | `bridge.ts` `createPluginHost` | undeclared capability → `capability-denied` before the handler runs |
+| Method registry | `bridge.ts` `CAPABILITY_METHODS` | method outside every capability → `unknown-method` |
+| Lock gate | `bridge.ts` `isLocked()` | every request rejects `locked` while the app is locked |
+| Envelope shape | `bridge.ts` `isBridgeMessage` | untagged/malformed/foreign-plugin frames dropped silently |
+| Timeout | `bridge.ts` `createPluginClient` | unanswered requests reject `timeout` after 10s (configurable) |
+
+**NOT enforced in alpha** (accepted risk RR-11 — plugins are trusted code):
+
+- No origin check (`e.origin` ignored) — any context can address the host.
+- No context isolation — `plugin.js` executes in the app context
+  (`new Function` loader style); it shares DOM, globals, and fetch.
+- No DOM/IPC hard boundary — a hostile plugin can reach anything the
+  renderer can. Capabilities gate *bridge methods only*.
+- No code review/signing gate — sideload is user-trust based.
+- `enabled=false` stops new loads; a running plugin context is not
+  preempted (no context to preempt yet).
+
 ## Package format
 
 A plugin is a folder (or flat file set) containing:
@@ -66,7 +91,23 @@ kiwi.onEvent("host.ready", async () => {
 });
 ```
 
-See `examples/hello/manifest.json` + `examples/hello/plugin.js`.
+See `examples/hello/` (minimal) and `examples/notify-on-mail/` (reference:
+declares `notify`, listens for host `mail-changed` events, calls
+`notify.show` — exercised end-to-end by the harness below).
+
+## Proving the bridge (`e2e/run.mjs`)
+
+```bash
+node src/plugins/e2e/run.mjs        # from kiwi-app/ — prints TAP-ish lines
+```
+
+The harness bundles the real `src/plugins` modules in-memory (esbuild), stubs
+a `window` bus + localStorage, then drives the full path: manifest on disk →
+validate → `installPlugin` → `getPlugin` → exec `plugin.js` with an injected
+`PluginClient` → `mail-changed` event → `notify.show` request → capability
+gate → host handler. It asserts a plugin *without* `notify` is denied
+(`capability-denied`) while its declared capability resolves — the gate is
+proven, not just documented. Exits non-zero on any failure.
 
 ## Lifecycle (v1)
 
@@ -76,9 +117,27 @@ See `examples/hello/manifest.json` + `examples/hello/plugin.js`.
 The Preferences → Integrations/Plugins pane (per-plugin enable/disable +
 remove UI) is wired by the layout task onto `listPlugins()` etc.
 
-## Post-alpha hardening (planned, tracked as follow-up task)
+## Post-alpha hardening checklist
 
-- Sandboxed iframe/worker execution context with origin pinning.
-- Capability enforcement at the context boundary (not just bridge methods).
-- No IPC-adjacent capability for unsigned/unreviewed plugins.
-- CSP for plugin assets; size caps; no raw DOM/net access by default.
+Tracked as a follow-up task (THREAT-MODEL RR-11). Each item closes a gap
+listed in "NOT enforced in alpha" above:
+
+1. **Isolated context** — run `plugin.js` in a sandboxed `<iframe
+   sandbox="allow-scripts">` or a `Worker`; no same-context `new Function`.
+2. **Origin pinning** — enforce `e.origin` against the plugin's assigned
+   origin in `createPluginHost` (the hook is already marked in `bridge.ts`).
+3. **Channel binding** — replace broadcast `postMessage("*")` with a
+   `MessageChannel`/port handoff per plugin instance.
+4. **Boundary re-check** — re-validate capabilities inside the isolated
+   context (the bridge gate alone isn't enough once contexts exist).
+5. **CSP + asset policy** — restrictive CSP for plugin contexts; file size
+   caps and MIME allowlist for package assets.
+6. **No ambient authority** — plugin contexts get no `window`, no
+   Tauri IPC (`__TAURI__`), no cookie/credential/session access.
+7. **Trust gate** — signing or review requirement before any plugin gains
+   IPC-adjacent capabilities; unsigned plugins stay on the v1 cap set.
+8. **Lifecycle enforcement** — `disable`/`remove` tears down the context,
+   not just registry state; crash isolation + auto-disable on repeated
+   faults; per-plugin rate limiting on bridge calls.
+9. **Audit** — log bridge denials and capability use to the existing audit
+   surface so plugin activity is reviewable like other security events.

@@ -198,9 +198,19 @@ and keys must not be equated across versions.
 
 `Report`: `{contract_version, scoring_model_version, rule_catalog_version,
 scope, sessions_evaluated, findings[], score, limitations[], ai_enrichment?,
-generated_from}`. `Limitation`: `{code, detail}` — e.g.
-`chain-unverified` (capture input), `kex-unobserved` (resumption),
-`protocol-unknown`. `AiEnrichment`: `{finding_keys[], text, model_id}` —
+generated_from}`. `Limitation`: `{code, detail}` — `chain-unverified`
+(capture input), `kex-unobserved`, `auth-unobserved`,
+`transport-unknown`, `protocol-unknown`, `stream-gap`,
+`capture-over-limit`, `rule-dropped-without-evidence`,
+`ai-uncited-keys`. Emit conditions are deterministic and evidence-derived
+(`report::session_limitation_codes` + the capture/live report paths):
+`transport-unknown` when a flow carried bytes but yielded no decodable
+lines, or an adapter session's `transport` is `unknown`; `kex-unobserved`
+when `tls.session_resumed`/`!tls.handshake_complete`, or a STARTTLS
+upgrade was accepted (`server_reply_ok`) yet `handshake_completed` is
+false; `auth-unobserved` when the transport is protected and no
+authentication exchange was observed (`auth` absent or `attempts: 0`;
+live path: `AuthMechanism::None`). `AiEnrichment`: `{finding_keys[], text, model_id}` —
 AI text must cite the deterministic keys it grounds in and is never
 authoritative (prompt.md §12). Reports render JSON first; HTML/PDF are
 views over the same aggregate.

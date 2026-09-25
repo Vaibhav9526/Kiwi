@@ -127,3 +127,66 @@ Visual glyph sites (emoji/dingbat/arrow-as-icon) found in: `App.tsx`,
 `security-center.tsx`, `kiwi.ts` (`severityGlyph`). Glyphs used as literal
 keyboard-hint text (`↑↓`, `→` in prose/strings) stay text — not icons.
 Full per-site mapping in `src/components/icons/README.md`.
+
+## 2026-09-25 — T-274: Reference plugin + capability-gate proof (bridge e2e)
+
+**Status:** complete — gate proven executable, not just documented.
+
+### Delivered
+
+- `src/plugins/examples/notify-on-mail/` — working reference plugin:
+  `manifest.json` declares `notify`; `plugin.js` listens for host
+  `mail-changed` events via the injected `PluginClient` and calls
+  `notify.show` with the event payload.
+- `src/plugins/e2e/run.mjs` — scripted harness (`node src/plugins/e2e/run.mjs`
+  from `kiwi-app/`). Bundles the real `src/plugins` modules in-memory via
+  esbuild → data-URL import (no reimplementation, no temp files), stubs
+  `window` as the host-side postMessage bus + in-memory `localStorage`, and
+  drives the full path: disk manifest → `validatePluginManifest` →
+  `installPlugin` → `getPlugin` → exec `plugin.js` via `new Function`
+  (the documented trusted-code alpha loader) → `host.emit("mail-changed")`
+  → plugin's `notify.show` request → capability gate → host handler.
+- `GETTING-STARTED.md` — new "Alpha trust boundary" table (enforced vs.
+  deferred controls), harness instructions, and an exact 9-item
+  post-alpha hardening checklist (isolated context, origin pinning,
+  MessageChannel binding, boundary re-check, CSP/assets, no ambient
+  authority incl. `__TAURI__`, trust gate, lifecycle enforcement,
+  audit logging).
+
+### Assertions (21/21 pass)
+
+- Manifest validates; declares exactly `notify`; install persists package.
+- `mail-changed` event reached the plugin; `notify.show` arrived at the
+  host handler carrying event data (`added=3, folder=Inbox`).
+- `added=0` correctly ignored by the plugin.
+- Rogue plugin (declared `message-list-read` only): `notify.show` →
+  `capability-denied` and the handler was never invoked; its declared
+  `messages.list` resolved through the same gate — selective grant proven
+  both directions; `settings.registerPane` also denied;
+  `messages.getEnvelope` (declared cap, no host handler) →
+  `not-implemented`; `bogus.nope` → `unknown-method`.
+- Lock gate: every request rejects `locked` while `isLocked()`.
+- Foreign-plugin + malformed + non-object frames dropped silently (no
+  response emitted); `isBridgeMessage` accepts/rejects correctly.
+- Unanswered request rejects `timeout` (60ms test window).
+- Manifest rejection cases: bad id, bad version, non-array permissions,
+  unknown capability, `..` entry traversal, missing entry file, non-JSON
+  text.
+
+### Files changed (T-274)
+
+- New: `plugins/examples/notify-on-mail/{manifest.json,plugin.js}`,
+  `plugins/e2e/run.mjs`.
+- Edited: `plugins/GETTING-STARTED.md`, this file.
+- Zero production-code changes — the harness exercises the shipped modules
+  as-is (stubbed DOM surface only).
+
+### Notes
+
+- Repo state on pickup: `tsc` fully green (A24's T-267 in-flight errors
+  resolved); `components/icons.tsx` adapter was renamed to
+  `shell-icons.tsx` — `./icons/index` specifiers still correct; the NOTE
+  comment inside `shell-icons.tsx` references the old shadowing but is
+  A24's file, left untouched.
+- `notify.show` host handler in the harness is a recording stub — the
+  production mapping to toasts is a host-side wiring task (UI owner).

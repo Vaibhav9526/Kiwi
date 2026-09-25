@@ -1,0 +1,9 @@
+{
+  "id": "notify-on-mail",
+  "version": "0.1.0",
+  "name": "Notify on Mail",
+  "description": "Reference plugin (T-274): raises a toast when the host reports new mail.",
+  "author": "KIWI",
+  "entry": "plugin.js",
+  "permissions": ["notify"]
+}
