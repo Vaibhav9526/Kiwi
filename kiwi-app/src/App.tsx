@@ -1290,6 +1290,7 @@ export default function App() {
             attachBusy={attachBusy}
             findings={findings}
             locked={trust.locked}
+            hasAccounts={accountsRaw.length > 0}
             demo={demo}
             syncing={syncing}
             syncNote={syncNote}

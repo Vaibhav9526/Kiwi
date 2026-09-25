@@ -121,6 +121,9 @@ export interface MailboxProps {
   attachBusy: boolean;
   findings: FindingInfo[];
   locked: boolean;
+  /** T-289: real account count — drives the first-run "Add account" CTA
+   *  instead of a misleading "no messages" empty state. */
+  hasAccounts: boolean;
   demo: boolean;
   syncing: boolean;
   syncNote: string | null;
@@ -456,7 +459,21 @@ export function MailboxView(props: MailboxProps) {
                 <small>{props.messagesError}</small>
               </div>
             )}
-            {messages.length === 0 && !props.messagesLoading && (
+            {messages.length === 0 && !props.messagesLoading && !props.hasAccounts && !props.demo ? (
+              <div className="kiwi-empty">
+                <span className="kiwi-empty-icon em-empty-icon" aria-hidden="true">
+                  <IconMail size={28} />
+                </span>
+                <strong>No accounts yet</strong>
+                <br />
+                <small>Add a mail account to start — the wizard covers IMAP/POP3, autoconfig, and OAuth2 sign-in.</small>
+                <br />
+                <button type="button" className="ms-btn ms-btn-primary" style={{ marginTop: "0.5rem" }} onClick={() => navigate({ name: "setup" })}>
+                  Add account…
+                </button>
+              </div>
+            ) : (
+            messages.length === 0 && !props.messagesLoading && (
               <div className="kiwi-empty">
                 <span className="kiwi-empty-icon em-empty-icon" aria-hidden="true">
                   <IconMail size={28} />
