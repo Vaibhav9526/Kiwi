@@ -212,3 +212,5 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-249 | auth_risk derived enum on AuthView (clean/noted/failed table, hint-not-finding) | Agent 21 | open | `kiwi-mail/` | T-240 |
 | T-250 | admin-api.md full contract-vs-impl enumeration (endpoints/permissions/org-scope/errors) | Agent 22 | open | `docs/audits/`, `kiwi-admin/` (read) | T-196 |
 | T-251 | ACFG-7/8/9 parser hardening (accepts prohibited constructs) | queued | backlog | `kiwi-autoconfig/` | T-246 |
+| T-248 | Repo hygiene sweep (junk cleanup + gitignore + gate verify) | Watcher | done | repo-wide | — |
+| T-249w | Standing gate-watch loop (fmt/tsc/overlap/secrets, report NEW failures only) | Watcher | standing | fast gates | T-248 |
