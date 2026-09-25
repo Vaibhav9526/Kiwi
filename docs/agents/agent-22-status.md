@@ -166,3 +166,42 @@ No `kiwi-admin` source, test, migration, or `docs/contracts/*` files were change
 - `git diff --check` for the T-250 audit/status files — passed.
 - T-250 Orca DONE report sent to terminal
   `term_c20c6737-9b80-4911-bcd2-38aa5113e4d7`; receipt returned `accepted: true`.
+
+## 2026-09-25 — T-252: master findings register
+
+**Status:** done (read-only consolidation; no source or audit-input changes).
+
+### Files changed
+
+- `docs/audits/FINDINGS.md` — new deduplicated 161-row register with severity, summary, source location, owner-task, and fixed/in-flight/queued/open status.
+- `docs/agents/agent-22-status.md` — this entry.
+
+No `kiwi-admin`, `kiwi-autoconfig`, `kiwi-forensics`, `kiwi-app`, contract, or
+source audit files were changed by T-252. The three source audits remain intact.
+
+### Evidence and findings
+
+- Read `contract-drift-1.md`, `autoconfig-drift-1.md`, `admin-drift-1.md`, `docs/TASKS.md`, Agent 19/20/22 status logs, recent commits, and current worktree status.
+- Canonicalized overlaps: T-241 IPC findings into IPC-1/6/7/8/9 and UIS-6/PAIR-I; T-246 ACFG-3..10 into the existing ACFG IDs; T-250 ADM-T250-01/09/10/11/12/14/15 into ADM-1/8/10/11/12/7/19; retained new ADM-T250-05..08 and 13.
+- Cross-referenced current queues: T-237 is in-flight because its ledger row is open/uncommitted; T-239 is fixed; T-245 is in-flight; T-247, T-251, and T-253 are queued; T-231 and T-193 remain active where applicable.
+- Included the original high/medium/low/info findings from the broad audit as well as the focused ACFG/admin findings; no duplicate T-241/T-246/T-250 rows remain as separate findings.
+- Added a queue/ownership summary and maintenance rule requiring current code/test/contract evidence before changing status to fixed.
+
+### Commands run
+
+- Read-only `glob`, `grep`, and `read` inspection of all three audits, task ledger, agent logs, commits, and worktree status.
+- `git diff --check` for the T-252 files — passed.
+- No code tests were run because T-252 changes documentation only; the T-250 admin checks remain recorded above.
+
+### Assumptions / risks
+
+- Status is based on the shared tree at consolidation time; concurrent agents may advance task state after this entry.
+- T-237’s Agent 20 status says done but explicitly says changes are uncommitted while the task ledger remains open; it is conservatively marked in-flight.
+- T-241/T-246/T-250 are audit provenance, not proof that their queued remediation findings are fixed.
+
+### Verification
+
+- `docs/audits/FINDINGS.md` contains one findings table with 161 canonical rows.
+- `git diff --check` for `docs/audits/FINDINGS.md` and this status entry — passed.
+- T-252 Orca DONE report sent to terminal
+  `term_c20c6737-9b80-4911-bcd2-38aa5113e4d7`; receipt returned `accepted: true`.

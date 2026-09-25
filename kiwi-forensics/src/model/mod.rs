@@ -20,8 +20,8 @@ pub use cert::{
 };
 pub use protocol::{Protocol, TransportSecurity};
 pub use tls::{
-    CipherStrength, CipherSuite, ForwardSecrecy, KeyExchange, TlsObservation, TlsVersion,
-    VersionComparison,
+    BulkCipher, CipherStrength, CipherSuite, ForwardSecrecy, KeyExchange, LEGACY_UNKNOWN_WIRE,
+    MacAlgorithm, TlsObservation, TlsVersion, VersionComparison,
 };
 
 /// Bounded, human-readable string taken from untrusted input.

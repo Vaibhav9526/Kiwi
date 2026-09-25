@@ -50,10 +50,10 @@ impl AuthRisk {
 /// 1. `failed` iff `dkim=fail AND dmarc=fail`, or `dmarc=fail AND spf=fail AND
 ///    spf_aligned`.
 /// 2. Otherwise `noted` for every result other than three local passes,
-///    including all `none`/`temperror`/`permerror`, softfail/neutral, untrusted
-///    or missing upstream evidence, discrepancies, and non-qualifying failures.
-/// 3. Otherwise `clean` iff all local methods pass, upstream evidence is
-///    present/trusted, and no discrepancy exists.
+///    including all `none`/`temperror`/`permerror`, softfail/neutral, malformed or
+///    untrusted/missing upstream evidence, discrepancies, and non-qualifying failures.
+/// 3. Otherwise `clean` iff all local methods pass, upstream evidence has a parsed
+///    `authserv-id` and is not untrusted, and no discrepancy exists.
 ///
 /// Pure: no clock, network, randomness, mail movement, or finding creation.
 #[must_use]
@@ -128,6 +128,19 @@ mod tests {
                 "spf={spf} dkim={dkim} dmarc={dmarc} aligned={aligned}"
             );
         }
+    }
+
+    #[test]
+    fn malformed_presence_without_authserv_id_cannot_be_clean() {
+        let headers = vec![("authentication-results".into(), "; spf=pass".into())];
+        let upstream = crate::authstamp::parse_upstream_auth_results(&headers);
+        let usable = upstream.present && !upstream.authserv_ids.is_empty();
+        assert!(upstream.present);
+        assert!(!usable);
+        assert_eq!(
+            derive_auth_risk("pass", "pass", "pass", false, usable, false, false),
+            AuthRisk::Noted
+        );
     }
 
     #[test]

@@ -695,7 +695,7 @@ impl MailStore {
                     &dkim,
                     &dmarc,
                     false,
-                    upstream.present,
+                    upstream.present && !upstream.authserv_ids.is_empty(),
                     upstream.untrusted_relay,
                     upstream.has_discrepancy(),
                 )

@@ -65,19 +65,25 @@ impl ScoringWeights {
     }
 }
 
-/// Letter grade for a score.
+/// Letter grade for a score. Wire form is lowercase (`"a"`–`"f"`); the
+/// uppercase `as_str()` spellings are display/legacy-read only (FSV-1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Grade {
     /// 90–100.
+    #[serde(alias = "A")]
     A,
     /// 80–89.
+    #[serde(alias = "B")]
     B,
     /// 70–79.
+    #[serde(alias = "C")]
     C,
     /// 55–69.
+    #[serde(alias = "D")]
     D,
     /// 0–54.
+    #[serde(alias = "F")]
     F,
 }
 

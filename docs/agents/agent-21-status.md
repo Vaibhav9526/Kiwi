@@ -143,7 +143,7 @@ backfill. All offline.
 
 ## 2026-09-25 — T-249 deterministic per-message auth risk hint
 
-**Status:** COMPLETE. `cargo test -p kiwi-mail --all-targets` = 178 passed /
+**Status:** COMPLETE. `cargo test -p kiwi-mail --all-targets` = 179 passed /
 0 failed; `cargo clippy -p kiwi-mail --all-targets -- -D warnings` clean;
 `cargo fmt --all -- --check` clean; `cargo check -p kiwi-app` clean; frontend
 `npx tsc --noEmit` clean.

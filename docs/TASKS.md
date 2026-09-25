@@ -204,7 +204,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-241 | ipc.md completeness + missing/divergent table (7 findings queued for wire owner) | Agent 22 | done |
 | T-242 | Integrations UI (TempMail panel, deliverability view, unsub chip) | Agent 11 | done |
 | T-243 | OAuth2 wizard UI + re-auth badge + kiwi_open_external (91/91) | Agent 19 | done |
-| T-244 | kiwi_rules_preview dry-run cmd + rule_failures counter + deferred body-predicate eval | Agent 15 | open | `kiwi-mail/`, `src-tauri/` | T-233 |
+| T-244 | Rules preview + rule_failures + deferred staged eval (schema v9, 176/91) | Agent 15 | done |
 | T-245 | Implement ratified FSV-1 forensics serde vocab + legacy reader + contract updates | Agent 20 | open | `kiwi-forensics/` | T-238, T-196 |
 <!-- QUEUE: ACFG-3..10 autoconfig-parser drift (ex-Agent-8 items) — assign when autoconfig owner frees. authstamp clippy -> A21 in-flight. -->
 | T-246 | ACFG-3..10 enumerated (autoconfig-drift-1.md; 7/8/9 = code-owner hardening) | Agent 22 | done |
@@ -217,3 +217,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-252 | Master findings register FINDINGS.md (dedupe 3 audits -> owner-task/status) | Agent 22 | open | `docs/audits/` | T-196/246/250 |
 | T-253 | Implement §14 device-inventory endpoint (ADM-T250-08) | Agent 11 | open | `kiwi-admin/` | T-250 |
 | T-254 | AttachRisk hints: dangerous exts + double-ext + macro-enabled (clean/noted/failed, evidence-not-finding) | Agent 21 | open | `kiwi-mail/` | T-249 |
+| T-255 | Snooze: store snoozeUntil + unsnooze sweep + IPC presets (schema v10) | Agent 15 | open | `kiwi-mail/`, `src-tauri/` | T-244 |

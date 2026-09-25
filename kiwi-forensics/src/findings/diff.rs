@@ -48,11 +48,14 @@ impl FindingSnapshot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ChangeKind {
-    /// Present after, absent before.
+    /// Present after, absent before. Legacy contract spelled this `added`.
+    #[serde(alias = "added")]
     New,
     /// Present before, absent after.
     Resolved,
-    /// Present in both with the same severity.
+    /// Present in both with the same severity. Legacy contract spelled
+    /// this `persisting`.
+    #[serde(alias = "persisting")]
     Unchanged,
     /// Present in both, severity higher after.
     SeverityIncreased,

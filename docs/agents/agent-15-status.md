@@ -296,3 +296,107 @@ Built the impure half of the engine and the renderer surface. The pure
   fix if Lead wants it.
 - `Message-Id` on hits is the canonicalized value (no `<>`) — consistent
   with `ParsedMessage` everywhere else.
+
+---
+
+## T-244 — rules preview + rule_failures + deferred body eval (DONE)
+
+Lead rulings applied: body predicates stay LAZY (no eager fetch — policy
+binding); `rule_failures` counter approved and implemented; bodies that
+arrive by any path get re-evaluated at next sync (documented contract);
+view path stays unhooked.
+
+### Deferred eval — `rule_evals` watermark table (schema v9)
+
+- `rule_evals(folder_id, uid, stage, at_unix)` PK `(folder_id, uid)`;
+  `stage` 0 = envelope, 1 = full (`EvalStage` enum in `rules/apply.rs`).
+- `mark_rule_eval` writes ONLY on successful apply — even no-match evals
+  mark (keeps them out of the deferred queue permanently); a failed
+  apply leaves the earlier stage so the next pass retries.
+- `uids_pending_body_eval(folder_id, limit)` — `body_path IS NOT NULL`
+  AND (`stage < 1` OR no row). Covers mail moved into INBOX by the user
+  and pre-v9 rows. uid-ordered, bounded.
+- `clear_folder_messages` now deletes `rule_evals` too — UIDVALIDITY
+  reset restarts the uid epoch; stale stage rows must not pin onto a
+  successor uid.
+- `sync_folder` ends each INBOX pass with a deferred sweep
+  (`DEFERRED_EVAL_LIMIT = 200`): stored-body uids missing a full
+  watermark get `apply_on_ingest(…, EvalStage::Full)`; parse failures
+  skip silently (retry next pass), apply failures count into
+  `rule_failures`. Runs every pass regardless of new envelopes, so
+  view-loaded bodies are picked up at the next sync.
+
+### `rule_failures` on sync reports
+
+- `FolderSyncReport.rule_failures` + `Pop3SyncReport.rule_failures`
+  (u64). Every `apply_on_ingest` error at ingest is swallowed and
+  counted — rules never abort a sync, but the count surfaces.
+- `SyncReportView.ruleFailures` (`#[serde(default)] u64`) filled at
+  both construction sites in `commands/mail.rs` (IMAP + POP3).
+
+### `kiwi_rules_preview` — dry-run command
+
+- `kiwi_rules_preview(accountId, rule: RuleView, limit?) →
+  RulePreviewView` — gated, `bounded` accountId, `Rule::validate` gate
+  (same as upsert — candidate is untrusted renderer input), unknown
+  account → `not-found`. limit default 50, clamp 1–200.
+- `rules::preview_rule` (kiwi-mail): `recent_for_preview` (newest N
+  stored, Trash excluded case-insensitively) → parse stored bodies →
+  `evaluate` the candidate ALONE (no ordering vs. stored ruleset).
+  Skips + counts missing/unreadable/unparseable bodies
+  (`skipped_no_body`). Pure read — no moves, flags, hits, or watermarks.
+- `PreviewHitView`: `folderId`, `uid`, `folder` (name — display list),
+  `subject`, `messageId`.
+
+### Files
+
+- `kiwi-mail`: `store/schema.rs` v9 + `rule_evals`; `store/mod.rs`
+  `MessageRef`; `store/queries.rs` `clear_folder_messages` wipe +
+  `mark_rule_eval` + `uids_pending_body_eval` + `recent_for_preview`;
+  `rules/apply.rs` `EvalStage` + watermark writes + `preview_rule` +
+  tests; `rules/mod.rs` exports + doc refresh; `sync.rs` stage args +
+  deferred pass + counters.
+- `kiwi-app`: `types/mail.rs` `ruleFailures`; `types/rules.rs`
+  `PreviewHitView`/`RulePreviewView`; `commands/mail.rs` both map sites;
+  `commands/rules.rs` `kiwi_rules_preview` + test; `lib.rs` registered.
+- `docs/contracts/ipc.md` — `ruleFailures` on `SyncReportView`, preview
+  command section, lazy-body paragraph rewritten for the staged/watermark
+  contract, ingest section documents deferred sweep + UIDVALIDITY wipe.
+
+### Gates at snapshot
+
+- `cargo test -p kiwi-mail` — 176/176 (new: deferred-queue behaviour,
+  UIDVALIDITY wipe, preview match+purity, envelope→full staging,
+  apply-failure watermark hold).
+- `cargo test -p kiwi-app` — 91/91 (new: `preview_dry_run_matches_and_
+  writes_nothing` — matches returned, nothing executed/marked,
+  invalid-input + gate preserved).
+- `cargo clippy --workspace --all-targets -- -D warnings` — clean.
+- `cargo fmt --check -p kiwi-mail -p kiwi-app` — clean.
+- Zero `unsafe` in new code; workspace `forbid` unchanged.
+
+### Cross-agent unblock (flagged)
+
+- `kiwi-forensics/src/model/mod.rs` — dir-module split dropped
+  `BulkCipher`/`MacAlgorithm` from the `pub use tls::{…}` list;
+  re-exported (test + old flat API expect `model::` paths).
+- `kiwi-forensics/tests/fsv1_serde.rs` — owner self-fixed mid-edit
+  (`TlsVersion::Unknown` u16 overflow literal → `0x4A4A`); no action.
+- `kiwi-mail` `AuthMeta`/`AuthStamp` `auth_risk` field — owner (T-249)
+  self-fixed both constructor sites mid-flight; no action.
+- My T-244 diff was swept into other agents' commits (`3f3eb3c`,
+  `1ef7d3e`) while uncommitted — committed state is complete and green;
+  `git diff` residual on `queries.rs` is T-249's own tweak.
+
+### Assumptions / risks
+
+- Deferred sweep cap is 200/pass — a bulk body arrival spreads across
+  passes; deterministic (uid order) but a very large backlog takes
+  several syncs. Documented.
+- A failed ENVELOPE apply writes no watermark and has no body → not in
+  the pending queue until a body arrives; the `rule_failures` count is
+  the only signal that pass. Acceptable (store-layer faults are rare,
+  and the count surfaces them).
+- Preview evaluates the candidate alone — it answers "would this rule
+  match these messages", not "what would the whole ruleset do" (ordering
+  interactions are out of scope by design; documented in ipc.md).

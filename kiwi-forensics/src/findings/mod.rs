@@ -123,6 +123,9 @@ pub enum FindingCategory {
     /// Authentication mechanism and outcome.
     Authentication,
     /// STARTTLS/STLS negotiation, downgrade and stripping indicators.
+    /// Canonical tag is `start_tls`; legacy `as_str()` spelling `starttls`
+    /// accepted on read (FSV-1).
+    #[serde(alias = "starttls")]
     StartTls,
     /// Protocol-level expectations.
     Protocol,
@@ -168,7 +171,9 @@ pub enum EvidenceKind {
     AuthMechanism,
     /// Authentication outcome observed.
     AuthOutcome,
-    /// STARTTLS/STLS negotiation state.
+    /// STARTTLS/STLS negotiation state. Canonical tag `start_tls_negotiation`;
+    /// legacy `starttls_negotiation` accepted on read (FSV-1).
+    #[serde(alias = "starttls_negotiation")]
     StartTlsNegotiation,
     /// Server capability advertisement.
     ProtocolCapability,
