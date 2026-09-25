@@ -121,6 +121,12 @@ pub async fn fetch_missing_bodies(
             && let Some((_, bytes)) = item.bodies.first()
         {
             store.store_body(folder_id, uid, bytes)?;
+            // Headers just arrived: refine the envelope-only category.
+            // Parse failures keep the existing value (absent fact, no guess).
+            if let Ok(parsed) = crate::mime::parse_message(bytes) {
+                let category = crate::category::categorize(&parsed).category;
+                let _ = store.set_category(folder_id, uid, category);
+            }
             done += 1;
         }
     }
@@ -175,6 +181,8 @@ pub async fn sync_pop3(
             flags: vec![],
             has_attachments: !parsed.attachments.is_empty(),
             snippet: Some(parsed.snippet.clone()),
+            // Full headers are in hand — classify with the complete ruleset.
+            category: crate::category::categorize(&parsed).category,
         };
         store.upsert_message(folder_id, &meta, now)?;
         store.store_body(folder_id, number as u64, &bytes)?;
@@ -218,6 +226,20 @@ fn to_meta(item: &FetchItem) -> NewMessageMeta {
             .join(", ");
         (!s.is_empty()).then_some(s)
     };
+    // Metadata fetch carries no headers — classify from the envelope From
+    // address only (social / no-reply domain rules still fire). The body
+    // path (`fetch_missing_bodies`) refines this once headers arrive.
+    let pseudo = crate::mime::ParsedMessage {
+        from: env
+            .from
+            .iter()
+            .map(|m| crate::mime::Addr {
+                name: None,
+                email: m.email.clone(),
+            })
+            .collect(),
+        ..Default::default()
+    };
     NewMessageMeta {
         uid: item.uid.unwrap_or(0),
         message_id: env.message_id,
@@ -233,6 +255,7 @@ fn to_meta(item: &FetchItem) -> NewMessageMeta {
             .map(has_attachment_parts)
             .unwrap_or(false),
         snippet: None,
+        category: crate::category::categorize(&pseudo).category,
     }
 }
 

@@ -228,7 +228,12 @@ async function route(
   const method = (req.method ?? "GET").toUpperCase();
   const seg = url.pathname.split("/").filter((s) => s.length > 0);
   const actor = actorFromHeaders(req);
-  const now = Math.floor(Date.now() / 1000);
+  // Single clock unit (T-193/M1): Unix milliseconds, matching Date.now()
+  // everywhere else service-stamped timestamps are produced (audit rows,
+  // policy created_at, received_at, the export's own audit row). A previous
+  // revision used seconds here, so org/user/role/device created_at lived in
+  // a different unit than every other timestamp in the same database.
+  const now = Date.now();
 
   if (method === "GET" && seg.length === 1 && seg[0] === "healthz") {
     send(res, 200, { status: "ok", service: "kiwi-admin", version: "0.1.0", contract: "admin-api/1.3" });

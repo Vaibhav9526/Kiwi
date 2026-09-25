@@ -163,7 +163,7 @@ pub fn evaluate<R: DnsResolver>(dns: &R, input: &SpfInput) -> Result<SpfOutput, 
         ptr_used: false,
         depth: 0,
     };
-    Ok(eval_domain(&mut ctx, &input.check_domain.clone(), true))
+    Ok(eval_domain(&mut ctx, &input.check_domain.clone()))
 }
 
 fn out(ctx: &Ctx<impl DnsResolver>, r: SpfResult, by: Option<&str>) -> SpfOutput {
@@ -322,10 +322,10 @@ fn eval_terms<R: DnsResolver>(ctx: &mut Ctx<R>, domain: &DomainName, record: &st
             }
         };
         ctx.depth += 1;
-        let mut o = eval_domain(ctx, &rdom, false);
+        let mut o = eval_domain(ctx, &rdom);
         ctx.depth -= 1;
         if o.result == SpfResult::None {
-            let mut n = out(ctx, SpfResult::Neutral, Some("redirect="));
+            let mut n = out(ctx, SpfResult::PermError, Some("redirect="));
             n.record = Some(record.chars().take(MAX_TXT_LEN).collect());
             n.explanation = "redirect target has no SPF record".to_string();
             return n;
@@ -386,7 +386,7 @@ fn eval_mechanism<R: DnsResolver>(
                 return MechOutcome::Error(SpfResult::PermError);
             }
             ctx.depth += 1;
-            let o = eval_domain(ctx, &target, false);
+            let o = eval_domain(ctx, &target);
             ctx.depth -= 1;
             match o.result {
                 SpfResult::Pass => MechOutcome::Match(q),
@@ -597,10 +597,15 @@ fn eval_mx<R: DnsResolver>(
         }
         return MechOutcome::NoMatch;
     }
-    for h in hosts.iter().take(32) {
-        if ctx.charge_lookup().is_err() {
-            return MechOutcome::Error(SpfResult::PermError);
-        }
+    // RFC 7208 §4.6.4: evaluation of each "MX" record MUST NOT result in
+    // querying more than 10 address records (either "A" or "AAAA"). If this
+    // limit is exceeded, the "mx" mechanism MUST produce a "permerror".
+    if hosts.len() > MAX_MX_ADDR_LOOKUPS {
+        return MechOutcome::Error(SpfResult::PermError);
+    }
+    for h in hosts.iter() {
+        // RFC 7208 §4.6.4: MX host lookups themselves do NOT count toward
+        // the 10 mechanisms limit (the mx mechanism itself counted as 1).
         match ctx.dns.lookup_host(h) {
             Err(DnsError::Temp(_)) => return MechOutcome::Error(SpfResult::TempError),
             Err(DnsError::NxDomain) => {
@@ -609,6 +614,9 @@ fn eval_mx<R: DnsResolver>(
                 }
             }
             Ok(addrs) => {
+                if addrs.is_empty() && ctx.charge_void().is_err() {
+                    return MechOutcome::Error(SpfResult::PermError);
+                }
                 if addrs
                     .iter()
                     .any(|a| ip_matches(*a, ctx.input.sender_ip, c4, c6))

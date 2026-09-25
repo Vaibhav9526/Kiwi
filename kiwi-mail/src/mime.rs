@@ -40,6 +40,12 @@ pub struct ParsedMessage {
     pub attachments: Vec<AttachmentMeta>,
     /// Short plain-text preview for list rows (bounded length).
     pub snippet: String,
+    /// Raw top-level headers as `(lowercased-name, value)` pairs, bounded
+    /// (see `MAX_CAPTURED_HEADERS`): the deterministic classifier
+    /// (`crate::category`) reads bulk/automation signals from these.
+    /// Only text-valued headers are kept; structured values (addresses,
+    /// dates, content-types, Received) are already surfaced typed above.
+    pub headers: Vec<(String, String)>,
 }
 
 /// Outbound message to serialize. `data` on attachments is already-decoded
@@ -70,6 +76,12 @@ pub struct OutboundAttachment {
     pub content_type: String,
     pub data: Vec<u8>,
 }
+
+/// Cap on retained raw headers: Received chains alone can run to dozens
+/// of lines and classification needs only a handful of signals.
+const MAX_CAPTURED_HEADERS: usize = 128;
+/// Header values are truncated past this length (matched signals are short).
+const MAX_HEADER_VALUE: usize = 1024;
 
 /// Parse inbound message bytes → bounded summary.
 /// Returns Err only on input too malformed to parse at all.
@@ -105,6 +117,7 @@ pub fn parse_message(raw: &[u8]) -> Result<ParsedMessage> {
     out.to = map_addrs(msg.to());
     out.cc = map_addrs(msg.cc());
     out.date_unix = msg.date().map(|d| d.to_timestamp());
+    out.headers = capture_headers(&msg);
 
     // First text/plain part becomes text_body; first text/html → html_body.
     for part in msg.text_bodies() {
@@ -138,6 +151,48 @@ pub fn parse_message(raw: &[u8]) -> Result<ParsedMessage> {
         .collect::<Vec<_>>()
         .join(" ");
     Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Raw header capture (classification input)
+// ---------------------------------------------------------------------------
+
+/// Copy the root part's text-valued headers into bounded
+/// `(lowercased-name, value)` pairs. Unknown `X-` headers surface as
+/// `HeaderName::Other`; structured values are skipped (typed fields above
+/// already carry them). Never fails — hostile input just yields fewer rows.
+fn capture_headers(msg: &mail_parser::Message<'_>) -> Vec<(String, String)> {
+    let Some(root) = msg.parts.first() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for h in &root.headers {
+        if out.len() >= MAX_CAPTURED_HEADERS {
+            break;
+        }
+        let name = match &h.name {
+            mail_parser::HeaderName::Other(n) => n.to_lowercase(),
+            known => known.as_static_str().to_lowercase(),
+        };
+        if name.is_empty() || name.len() > 128 {
+            continue;
+        }
+        let value = match &h.value {
+            mail_parser::HeaderValue::Text(t) => t.to_string(),
+            mail_parser::HeaderValue::TextList(l) => l.join(", "),
+            _ => continue,
+        };
+        let mut value = value;
+        if value.len() > MAX_HEADER_VALUE {
+            let mut end = MAX_HEADER_VALUE;
+            while !value.is_char_boundary(end) {
+                end -= 1;
+            }
+            value.truncate(end);
+        }
+        out.push((name, value));
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------

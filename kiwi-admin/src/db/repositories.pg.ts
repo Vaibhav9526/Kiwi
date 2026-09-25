@@ -18,6 +18,7 @@ import type {
 import type { ExternalRecipientBehavior, OrgRole, RecipientDomainAction } from "../types.js";
 import type { MailflowIngest, MailflowEvent } from "../mailflow/model.js";
 import type { AuditEventInput, AuditRecord } from "../audit/model.js";
+import { canonicalEventJson, computeEntryHash } from "../audit/chain.js";
 import { ConflictError } from "../util/validate.js";
 
 /**
@@ -324,14 +325,23 @@ export class PgMailflowRepository implements AsyncInterface<MailflowRepository> 
 export class PgAuditRepository implements AsyncInterface<AuditRepository> {
   constructor(private readonly db: PgDrizzle) {}
 
-  async append(input: AuditEventInput, prevHash: string, entryHash: string, seq: number, ts: number): Promise<AuditRecord> {
-    // Serialized against concurrent appends (T-193/H6): the service-level
-    // mutex covers a single process, but two processes (or two pool
-    // clients) can still interleave read-compute-insert. A transaction-
-    // scoped advisory lock makes the max+insert atomic; the lock releases
-    // with the transaction, so a crashed holder cannot wedge the log.
+  async appendChained(input: AuditEventInput, ts: number): Promise<AuditRecord> {
+    // Atomic chained append (T-193/H6): the tail read, `seq` assignment,
+    // hash computation, and insert all happen INSIDE one transaction behind
+    // a transaction-scoped advisory lock. A previous revision read the tail
+    // in the service layer and only locked the insert, so two processes
+    // could still compute the same `seq` and collide on the primary key —
+    // the lock serializes nothing unless the read it protects is inside it.
+    // Gapless by construction (a nextval/serial sequence would leave holes
+    // on rollback and break the contiguity `verify()` relies on); the lock
+    // releases with the transaction, so a crashed holder cannot wedge the log.
     return this.db.transaction(async (tx) => {
       await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('kiwi_audit_seq'))`);
+      const lastRows = await tx.select().from(p.auditLog).orderBy(desc(p.auditLog.seq)).limit(1);
+      const last = lastRows[0];
+      const prevHash = last?.entryHash ?? "genesis";
+      const seq = (last?.seq ?? 0) + 1;
+      const entryHash = computeEntryHash(canonicalEventJson(input), prevHash);
       await tx.insert(p.auditLog).values({
         seq,
         ts,
@@ -361,6 +371,40 @@ export class PgAuditRepository implements AsyncInterface<AuditRepository> {
         entry_hash: entryHash,
       };
     });
+  }
+
+  async append(input: AuditEventInput, prevHash: string, entryHash: string, seq: number, ts: number): Promise<AuditRecord> {
+    // Low-level primitive for tests that hand-construct chains (explicit
+    // seq). Production appends go through appendChained above — calling this
+    // with a client-computed `seq` under concurrency reintroduces H6.
+    await this.db.insert(p.auditLog).values({
+      seq,
+      ts,
+      actorSubject: input.actor.subject,
+      actorRoles: JSON.stringify(input.actor.roles),
+      orgId: input.orgId,
+      action: input.action,
+      resource: input.resource,
+      outcome: input.outcome,
+      requestId: input.requestId,
+      details: JSON.stringify(input.details),
+      prevHash,
+      entryHash,
+    });
+    return {
+      seq,
+      ts,
+      actor_subject: input.actor.subject,
+      actor_roles: JSON.stringify(input.actor.roles),
+      org_id: input.orgId,
+      action: input.action,
+      resource: input.resource,
+      outcome: input.outcome,
+      request_id: input.requestId,
+      details: JSON.stringify(input.details),
+      prev_hash: prevHash,
+      entry_hash: entryHash,
+    };
   }
 
   async readAt(seq: number): Promise<AuditRecord | undefined> {

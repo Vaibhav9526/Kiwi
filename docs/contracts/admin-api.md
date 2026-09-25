@@ -609,7 +609,7 @@ in v1. The path identifier is trimmed and must match
 response is `400 validation.failed`.
 
 Success is `200` with `{ "items": DeviceView[] }`, matching
-`GET /orgs/{orgId}/users` (§3):
+`GET /api/v1/orgs/{orgId}/users` (§3):
 
 ```jsonc
 {
@@ -654,10 +654,10 @@ current localhost scaffold, the actor comes from
 - `x-kiwi-org` must equal the path `{orgId}`. Current `hasPermission` is
   fail-closed for org-scoped targets: a null-org actor is not global and is
   denied for a non-null path target.
-- The service must call `requirePermission(actor, "device.read", orgId)` with
-  the **real path org id**, then validate that id with `assertIdentifier`
-  before querying. It must not pass `null` as the target or silently default a
-  missing `x-kiwi-org` to the path.
+- The service must validate the path id with `assertIdentifier`, then call
+  `requirePermission(actor, "device.read", orgId)` with that **real path org
+  id** before querying. It must not pass `null` as the target or silently
+  default a missing `x-kiwi-org` to the path.
 - A platform/bootstrap actor with no org session is not an exception to this
   endpoint. It has no legitimate device-inventory scope until an org-bound
   session exists.
@@ -668,12 +668,15 @@ and must not reveal whether the target org or device exists.
 
 ### 14.3 Auditing
 
-**Unaudited**, consistent with the other reads (`listUsers`/`listPolicies` are
-RBAC-gated and unaudited by design — §1 audits *mutating* operations and
-denials). Worth stating explicitly rather than leaving as an omission: a device
-inventory is a map of an org's enrolled endpoints, and an operator could
-reasonably expect inventory reads to be logged. If that is wanted, it is a
-change to every read endpoint, not a special case here.
+A successful inventory read is **unaudited**, consistent with `listUsers` and
+`listPolicies`; §1 audits mutations, not routine successful reads. An
+authorization denial **must** be audited with `outcome: "denied"` and
+`details.permission: "device.read"`, as required by §1, without including
+device data in `details`.
+
+This distinction is explicit because a device inventory maps an org's enrolled
+endpoints. If successful inventory reads must also be logged later, that is a
+contract-wide change to read auditing, not a device-only exception.
 
 ### 14.4 Relationship to the other device registries
 
@@ -703,7 +706,8 @@ surface. Cross-registry reconciliation is unbuilt and not part of this section.
    org-scoped list method.
 2. `OrgService.listDevices(actor, orgId)` — `assertIdentifier(orgId,
    "orgId")`, then `requirePermission(actor, "device.read", orgId)` with the
-   validated path target; do not use a nullable/defaulted target.
+   validated path target; do not use a nullable/defaulted target. Preserve an
+   auditable `device.read` denial without auditing successful reads.
 3. A route in `src/server.ts` inside the existing `/api/v1/orgs/:org/…` block
    (`rest[2] === "devices" && rest.length === 3`, `GET`), answering
    `{ items }` like the users route and mapping the uniform errors from §3.

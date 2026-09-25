@@ -7,9 +7,37 @@ use std::path::PathBuf;
 use rusqlite::{OptionalExtension, params};
 
 use crate::account::MailAccount;
+use crate::category::Category;
 use crate::error::{MailError, Result};
 
 use super::*;
+
+/// Shared `messages` row → [`MessageMeta`] mapping (list + category filter).
+/// Unknown `category` slugs fall back to Primary so a future tab never
+/// breaks old reads.
+fn map_message_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<MessageMeta> {
+    let slug: String = r.get(13)?;
+    Ok(MessageMeta {
+        id: r.get(0)?,
+        folder_id: r.get::<_, i64>(1)?,
+        uid: r.get::<_, i64>(2)? as u64,
+        message_id: r.get(3)?,
+        subject: r.get(4)?,
+        from_addr: r.get(5)?,
+        to_addrs: r.get(6)?,
+        date_unix: r.get(7)?,
+        size: r.get::<_, Option<i64>>(8)?.map(|v| v as u64),
+        flags: r
+            .get::<_, String>(9)?
+            .split_whitespace()
+            .map(str::to_string)
+            .collect(),
+        has_attachments: r.get::<_, i64>(10)? != 0,
+        snippet: r.get(11)?,
+        body_path: r.get(12)?,
+        category: Category::from_str(&slug).unwrap_or_default(),
+    })
+}
 
 impl MailStore {
     // -- accounts -----------------------------------------------------------
@@ -193,8 +221,9 @@ impl MailStore {
         self.conn.execute(
             "INSERT INTO messages
                (folder_id, uid, message_id, subject, from_addr, to_addrs,
-                date_unix, size, flags, has_attachments, snippet, fetched_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)
+                date_unix, size, flags, has_attachments, snippet, fetched_at,
+                category)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
              ON CONFLICT(folder_id, uid) DO UPDATE SET
                flags = excluded.flags,
                has_attachments = excluded.has_attachments",
@@ -211,6 +240,7 @@ impl MailStore {
                 meta.has_attachments as i64,
                 meta.snippet,
                 now,
+                meta.category.as_str(),
             ],
         )?;
         let id: i64 = self.conn.query_row(
@@ -221,9 +251,50 @@ impl MailStore {
         Ok(id)
     }
 
-    /// Update only flags (used by incremental UID FETCH (FLAGS) sync).
-    pub fn update_flags(&self, folder_id: i64, uid: u64, flags: &[String]) -> Result<bool> {
+    /// Refine a row's tab once full headers arrive (IMAP body fetch) or a
+    /// re-classification runs. Deliberately separate from `upsert_message`:
+    /// re-upserts must not clobber a refined category with an envelope-only
+    /// default, so the conflict clause above leaves `category` untouched.
+    pub fn set_category(
+        &self,
+        folder_id: i64,
+        uid: u64,
+        category: Category,
+    ) -> Result<bool> {
         let n = self.conn.execute(
+            "UPDATE messages SET category = ?3 WHERE folder_id = ?1 AND uid = ?2",
+            params![folder_id, uid as i64, category.as_str()],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Messages of one tab in a folder, uid order, bounded (powers the F2 UI tabs).
+    pub fn list_messages_by_category(
+        &self,
+        folder_id: i64,
+        category: Category,
+        limit: u32,
+    ) -> Result<Vec<MessageMeta>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, folder_id, uid, message_id, subject, from_addr,
+                    to_addrs, date_unix, size, flags, has_attachments,
+                    snippet, body_path, category
+             FROM messages WHERE folder_id = ?1 AND category = ?2
+             ORDER BY uid LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(
+            params![folder_id, category.as_str(), limit as i64],
+            map_message_row,
+        )?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Update only flags (used by incremental UID FETCH (FLAGS) sync).
+    pub fn update_flags(&self, folder_id: i64, uid: u64, flags: &[String]) -> Result<bool> {        let n = self.conn.execute(
             "UPDATE messages SET flags = ?3 WHERE folder_id = ?1 AND uid = ?2",
             params![folder_id, uid as i64, flags.join(" ")],
         )?;
@@ -300,7 +371,7 @@ impl MailStore {
                 .query_row(
                     "SELECT message_id, subject, from_addr, to_addrs, date_unix,
                             size, flags, has_attachments, snippet, body_path,
-                            fetched_at
+                            fetched_at, category
                      FROM messages WHERE folder_id = ?1 AND uid = ?2",
                     params![src_folder_id, *uid as i64],
                     |r| {
@@ -316,6 +387,7 @@ impl MailStore {
                             r.get::<_, Option<String>>(8)?,
                             r.get::<_, Option<String>>(9)?,
                             r.get::<_, i64>(10)?,
+                            r.get::<_, String>(11)?,
                         ))
                     },
                 )
@@ -332,6 +404,7 @@ impl MailStore {
                 snippet,
                 body_path,
                 fetched_at,
+                category,
             )) = row
             else {
                 continue; // uid absent in src — skip, not an error
@@ -342,8 +415,8 @@ impl MailStore {
                 "INSERT INTO messages
                    (folder_id, uid, message_id, subject, from_addr, to_addrs,
                     date_unix, size, flags, has_attachments, snippet,
-                    body_path, fetched_at)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,NULL,?12)",
+                    body_path, fetched_at, category)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,NULL,?12,?13)",
                 params![
                     dst_folder_id,
                     dst_uid,
@@ -357,6 +430,7 @@ impl MailStore {
                     has_attachments,
                     snippet,
                     fetched_at,
+                    category,
                 ],
             )?;
             // Relocate the body payload, then repoint body_path at it.
@@ -412,30 +486,10 @@ impl MailStore {
         let mut stmt = self.conn.prepare(
             "SELECT id, folder_id, uid, message_id, subject, from_addr,
                     to_addrs, date_unix, size, flags, has_attachments,
-                    snippet, body_path
+                    snippet, body_path, category
              FROM messages WHERE folder_id = ?1 ORDER BY uid LIMIT ?2",
         )?;
-        let rows = stmt.query_map(params![folder_id, limit as i64], |r| {
-            Ok(MessageMeta {
-                id: r.get(0)?,
-                folder_id: r.get::<_, i64>(1)?,
-                uid: r.get::<_, i64>(2)? as u64,
-                message_id: r.get(3)?,
-                subject: r.get(4)?,
-                from_addr: r.get(5)?,
-                to_addrs: r.get(6)?,
-                date_unix: r.get(7)?,
-                size: r.get::<_, Option<i64>>(8)?.map(|v| v as u64),
-                flags: r
-                    .get::<_, String>(9)?
-                    .split_whitespace()
-                    .map(str::to_string)
-                    .collect(),
-                has_attachments: r.get::<_, i64>(10)? != 0,
-                snippet: r.get(11)?,
-                body_path: r.get(12)?,
-            })
-        })?;
+        let rows = stmt.query_map(params![folder_id, limit as i64], map_message_row)?;
         let mut out = Vec::new();
         for r in rows {
             out.push(r?);

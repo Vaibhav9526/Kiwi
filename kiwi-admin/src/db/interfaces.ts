@@ -90,6 +90,23 @@ export interface MailflowRepository {
 
 export interface AuditRepository {
   append(input: AuditEventInput, prevHash: string, entryHash: string, seq: number, ts: number): MaybePromise<AuditRecord>;
+  /**
+   * Atomic chained append — the ONLY production write path (T-193/H6).
+   *
+   * Reads the current tail, assigns `seq = max+1`, computes the hash link,
+   * and inserts, all inside ONE driver transaction (SQLite: synchronous
+   * transaction; Postgres: transaction-scoped `pg_advisory_xact_lock`). No
+   * caller-supplied `seq`, so two concurrent appends — same process or two
+   * processes against one Postgres — cannot compute the same `seq` and
+   * collide on the primary key. Gapless by construction (unlike a DB
+   * sequence/nextval, which would leave holes on rollback and break the
+   * contiguity property `verify()` relies on).
+   *
+   * The explicit-seq `append` above remains as the low-level primitive for
+   * tests that construct chains by hand; services must never call it with a
+   * client-computed `seq`.
+   */
+  appendChained(input: AuditEventInput, ts: number): MaybePromise<AuditRecord>;
   readAt(seq: number): MaybePromise<AuditRecord | undefined>;
   last(): MaybePromise<AuditRecord | undefined>;
   /**

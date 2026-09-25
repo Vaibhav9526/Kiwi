@@ -125,6 +125,31 @@ impl HttpResponse {
     }
 }
 
+/// Percent-encode a URL query value or path segment: unreserved
+/// `[A-Za-z0-9._~-]` pass through, everything else is `%XX` (uppercase hex
+/// over UTF-8 bytes).
+pub(crate) fn encode_param(v: &str) -> String {
+    let mut out = String::with_capacity(v.len());
+    for &b in v.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'~' | b'-' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// Constructor-time check both providers share: base URLs are `https://`.
+pub(crate) fn check_https_base(base: &str) -> Result<(), IntegrationError> {
+    if base.starts_with("https://") && base.len() <= 1024 {
+        Ok(())
+    } else {
+        Err(IntegrationError::InsecureUrl)
+    }
+}
+
 /// The seam. Implemented by [`ReqwestClient`] in production and by
 /// [`ScriptedHttp`] in tests; callers may also inject their own transport
 /// (proxy, Tor — the providers do not care).
@@ -163,7 +188,10 @@ impl ReqwestClient {
     }
 
     fn check_url(url: &str) -> Result<(), IntegrationError> {
-        if url.len() > 4096 || !url.starts_with("https://") {
+        if url.len() > 4096 {
+            return Err(IntegrationError::Malformed("url"));
+        }
+        if !url.starts_with("https://") {
             return Err(IntegrationError::InsecureUrl);
         }
         Ok(())

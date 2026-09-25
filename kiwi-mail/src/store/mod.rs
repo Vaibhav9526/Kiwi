@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
+use crate::category::Category;
 use crate::error::Result;
 
 use schema::{DDL, SCHEMA_VERSION};
@@ -39,6 +40,8 @@ pub struct MessageMeta {
     pub has_attachments: bool,
     pub snippet: Option<String>,
     pub body_path: Option<String>,
+    /// Deterministic inbox tab (T-201) — set at ingest, refined on body fetch.
+    pub category: Category,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,6 +66,10 @@ pub struct NewMessageMeta {
     pub flags: Vec<String>,
     pub has_attachments: bool,
     pub snippet: Option<String>,
+    /// Tab assignment at ingest. IMAP metadata ingest only has the envelope
+    /// (domain rules still apply); the body-fetch path refines it via
+    /// `set_category` once headers arrive. Defaults to Primary.
+    pub category: Category,
 }
 
 pub struct MailStore {
@@ -116,20 +123,95 @@ impl MailStore {
     }
 
     fn migrate(&self) -> Result<()> {
-        let v: u32 = self
-            .conn
-            .query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if v < SCHEMA_VERSION {
-            self.conn.execute_batch(DDL)?;
-            // FTS5 search index (T-159): created/backfilled idempotently on
-            // every schema bump — an old DB reaches here with rows in
-            // `messages` and no `messages_fts`, the backfill fills it once.
-            crate::search::ensure_schema(&self.conn)?;
-            self.conn
-                .execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
-        }
-        Ok(())
+        migrate_conn(&self.conn, &self.root)
     }
+}
+
+/// One-time schema step + backfill, factored for tests (which build a
+/// pre-v4 database by hand and drive this directly).
+pub(crate) fn migrate_conn(conn: &Connection, root: &Path) -> Result<()> {
+    let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if v < SCHEMA_VERSION {
+        conn.execute_batch(DDL)?;
+        // FTS5 search index (T-159): created/backfilled idempotently on
+        // every schema bump — an old DB reaches here with rows in
+        // `messages` and no `messages_fts`, the backfill fills it once.
+        crate::search::ensure_schema(conn)?;
+        if v > 0 {
+            // Pre-v4 database: fresh DDL above is a no-op for existing
+            // tables, so add the column explicitly, then classify rows
+            // whose bodies are on disk.
+            ensure_category_column(conn)?;
+            backfill_categories(conn, root)?;
+        }
+        conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
+    }
+    Ok(())
+}
+
+/// `ALTER TABLE … ADD COLUMN` guarded by `PRAGMA table_info` so the step is
+/// idempotent (a partially-migrated DB never errors here).
+fn ensure_category_column(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare("PRAGMA table_info(messages)")?;
+    let cols = stmt.query_map([], |r| r.get::<_, String>(1))?;
+    for col in cols {
+        if col? == "category" {
+            return Ok(());
+        }
+    }
+    conn.execute_batch(
+        "ALTER TABLE messages ADD COLUMN category TEXT NOT NULL DEFAULT 'primary'",
+    )?;
+    Ok(())
+}
+
+/// Best-effort classification of pre-v4 rows: parse each stored body and
+/// write its tab. Rows without bodies, oversized bodies, or unparseable
+/// bodies keep the `'primary'` default — absent fact, no guess. Individual
+/// failures never abort the migration.
+fn backfill_categories(conn: &Connection, root: &Path) -> Result<()> {
+    /// Bodies above this are skipped (headers live at the top, but
+    /// `parse_message` walks the whole body — bound the one-time cost).
+    const MAX_BACKFILL_BYTES: u64 = 8 << 20;
+    let pending: Vec<(i64, u64, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT folder_id, uid, body_path FROM messages WHERE body_path IS NOT NULL",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            let (fid, uid, rel) = r?;
+            out.push((fid, uid as u64, rel));
+        }
+        out
+    };
+    for (folder_id, uid, rel) in pending {
+        let path = root.join(&rel);
+        let Ok(meta) = std::fs::metadata(&path) else {
+            continue;
+        };
+        if meta.len() > MAX_BACKFILL_BYTES {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        let Ok(parsed) = crate::mime::parse_message(&bytes) else {
+            continue;
+        };
+        let category = crate::category::categorize(&parsed).category;
+        let _ = conn.execute(
+            "UPDATE messages SET category = ?3 WHERE folder_id = ?1 AND uid = ?2",
+            rusqlite::params![folder_id, uid as i64, category.as_str()],
+        );
+    }
+    Ok(())
 }
 #[cfg(test)]
 mod tests {

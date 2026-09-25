@@ -82,6 +82,12 @@ jobs:
         env:
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
       - run: python tests/tools/secret_scan.py
+      # Copy-overlap gate (T-198, Agent 21). CHECK A (Mailspring/MailFlow
+      # provenance markers) always runs. CHECK B (>=45-char verbatim overlap)
+      # needs the reference/ checkouts, which are gitignored by design; mount
+      # them and set KIWI_COPY_REF_DIR to enable B. This is the gate that
+      # protects T-190/T-191 (Mailspring-faithful rebuild).
+      - run: python tests/tools/copy_overlap.py
       - run: python tests/tools/check_fixtures.py
       - run: python tests/tools/check_csp.py
       - run: python tests/tools/check_encoding.py

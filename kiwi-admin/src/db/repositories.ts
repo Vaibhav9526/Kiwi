@@ -15,6 +15,7 @@ import type {
 import type { ExternalRecipientBehavior, OrgRole, RecipientDomainAction } from "../types.js";
 import type { MailflowIngest } from "../mailflow/model.js";
 import type { AuditEventInput, AuditRecord } from "../audit/model.js";
+import { canonicalEventJson, computeEntryHash } from "../audit/chain.js";
 import { ConflictError } from "../util/validate.js";
 
 /**
@@ -350,6 +351,49 @@ export class DrizzleMailflowRepository implements MailflowRepository {
 
 export class DrizzleAuditRepository implements AuditRepository {
   constructor(private readonly db: SqliteDrizzle) {}
+
+  appendChained(input: AuditEventInput, ts: number): AuditRecord {
+    // Atomic chained append (T-193/H6): better-sqlite3 is synchronous, so
+    // wrapping tail-read → hash → insert in one transaction makes the whole
+    // step indivisible. No client max+1 outside the transaction — the `seq`
+    // is assigned from the tail row read INSIDE it.
+    return this.db.transaction((tx) => {
+      const last = tx.select().from(s.auditLog).orderBy(desc(s.auditLog.seq)).limit(1).get();
+      const prevHash = last?.entryHash ?? "genesis";
+      const seq = (last?.seq ?? 0) + 1;
+      const entryHash = computeEntryHash(canonicalEventJson(input), prevHash);
+      tx.insert(s.auditLog)
+        .values({
+          seq,
+          ts,
+          actorSubject: input.actor.subject,
+          actorRoles: JSON.stringify(input.actor.roles),
+          orgId: input.orgId,
+          action: input.action,
+          resource: input.resource,
+          outcome: input.outcome,
+          requestId: input.requestId,
+          details: JSON.stringify(input.details),
+          prevHash,
+          entryHash,
+        })
+        .run();
+      return {
+        seq,
+        ts,
+        actor_subject: input.actor.subject,
+        actor_roles: JSON.stringify(input.actor.roles),
+        org_id: input.orgId,
+        action: input.action,
+        resource: input.resource,
+        outcome: input.outcome,
+        request_id: input.requestId,
+        details: JSON.stringify(input.details),
+        prev_hash: prevHash,
+        entry_hash: entryHash,
+      };
+    });
+  }
 
   append(input: AuditEventInput, prevHash: string, entryHash: string, seq: number, ts: number): AuditRecord {
     this.db

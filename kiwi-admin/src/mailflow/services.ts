@@ -6,7 +6,7 @@ import { parseMailflowIngest } from "./model.js";
 import type { MailflowEvent, MailDirection, PolicyVerdict } from "./model.js";
 import type { AuditRepository, MailflowRepository } from "../db/interfaces.js";
 import type { AuditEventInput, AuditOutcome } from "../audit/model.js";
-import { canonicalEventJson, computeEntryHash, verifyChain } from "../audit/chain.js";
+import { verifyChain } from "../audit/chain.js";
 import { buildAuditExport, AUDIT_EXPORT_MAX_ROWS, type AuditExport } from "../audit/export.js";
 import { RequestValidationError } from "../util/validate.js";
 import type { ServiceContainerLike } from "../policy/services.js";
@@ -91,11 +91,11 @@ export interface AuditQueryRow {
 export class AuditService {
   constructor(private readonly repos: { audit: AuditRepository }) {}
   /**
-   * In-process append serialization (T-193/H6): the read-compute-insert
-   * below must not interleave with itself. Await points yield to the event
-   * loop, so two concurrent appends would otherwise read the same `last`
-   * and collide on `seq`. The chain is failure-atomic per append — a
-   * rejected append never advances the gate.
+   * In-process append serialization (T-193/H6, defense in depth): the
+   * repository's `appendChained` is already atomic inside its own
+   * transaction (including across processes on Postgres), so this gate only
+   * spares the database lock under bursts from this process. The chain is
+   * failure-atomic per append — a rejected append never advances the gate.
    */
   private appendGate: Promise<unknown> = Promise.resolve();
 
@@ -108,12 +108,12 @@ export class AuditService {
   }
 
   private async appendInner(input: AuditEventInput, ts: number): Promise<{ seq: number; entry_hash: string }> {
-    const last = await this.repos.audit.last();
-    const prevHash = last?.entry_hash ?? "genesis";
-    const seq = (last?.seq ?? 0) + 1;
-    const entryHash = computeEntryHash(canonicalEventJson(input), prevHash);
-    await this.repos.audit.append(input, prevHash, entryHash, seq, ts);
-    return { seq, entry_hash: entryHash };
+    // No client max+1 here (T-193/H6): tail-read, seq assignment, hash, and
+    // insert happen inside the repository transaction. A previous revision
+    // read `last()` here and inserted a precomputed `seq`, which two
+    // processes could compute identically and collide on the primary key.
+    const rec = await this.repos.audit.appendChained(input, ts);
+    return { seq: rec.seq, entry_hash: rec.entry_hash };
   }
 
   /**

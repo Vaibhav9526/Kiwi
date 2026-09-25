@@ -1,7 +1,7 @@
 //! SQLite schema — DDL + version. Migrations are explicit and
 //! append-only; `user_version` is the source of truth.
 
-pub(crate) const SCHEMA_VERSION: u32 = 3;
+pub(crate) const SCHEMA_VERSION: u32 = 4;
 
 pub(crate) const DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS accounts (
@@ -34,6 +34,8 @@ CREATE TABLE IF NOT EXISTS messages (
     snippet         TEXT,
     body_path       TEXT,
     fetched_at      INTEGER NOT NULL,
+    -- T-201: deterministic inbox-tab slug (category::Category::as_str).
+    category        TEXT NOT NULL DEFAULT 'primary',
     UNIQUE (folder_id, uid)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_folder ON messages(folder_id, uid);

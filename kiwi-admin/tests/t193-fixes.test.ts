@@ -29,17 +29,17 @@ describe("T-193/H1 evaluate is authenticated and audited", () => {
       })
     ).id;
     const input = { direction: "outbound" as const, sender: "a@t", recipient: "b@t", tlsVersion: null };
-    await expect(container.policies.evaluate({ subject: "v", roles: ["viewer"], orgId: a }, p.id, input)).rejects.toThrow(
+    await expect(container.policies.evaluate({ subject: "v", roles: ["viewer"], orgId: a }, p, input)).rejects.toThrow(
       AuthorizationDeniedError,
     );
-    await expect(container.policies.evaluate({ ...admin, orgId: b }, p.id, input)).rejects.toThrow(
+    await expect(container.policies.evaluate({ ...admin, orgId: b }, p, input)).rejects.toThrow(
       AuthorizationDeniedError,
     );
     const denied = (await container.audit.query(admin, { limit: 100 })).filter(
       (r) => r.outcome === "denied" && r.action === "policy.evaluate",
     );
     expect(denied.length).toBeGreaterThanOrEqual(2);
-    const ok = await container.policies.evaluate({ ...admin, orgId: a }, p.id, input);
+    const ok = await container.policies.evaluate({ ...admin, orgId: a }, p, input);
     expect(ok).toBeTruthy();
     const allowed = (await container.audit.query(admin, { limit: 100 })).filter(
       (r) => r.outcome === "allowed" && r.action === "policy.evaluate",

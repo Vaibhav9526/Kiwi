@@ -829,6 +829,25 @@ fn split_tag_list_key(s: &str) -> Result<Vec<(String, String)>, ()> {
     Ok(out)
 }
 
+fn verify_rsa_sha256(key: &rsa::RsaPublicKey, signed: &[u8], sig: &[u8]) -> bool {
+    use rsa::pkcs1v15::VerifyingKey;
+    use rsa::signature::Verifier;
+    let Ok(s) = rsa::pkcs1v15::Signature::try_from(sig) else {
+        return false;
+    };
+    let vk = VerifyingKey::<sha2::Sha256>::new(key.clone());
+    vk.verify(signed, &s).is_ok()
+}
+
+fn verify_ed25519(key: &ed25519_dalek::VerifyingKey, signed: &[u8], sig: &[u8]) -> bool {
+    use ed25519_dalek::Verifier;
+    let arr: &[u8] = sig;
+    let Ok(s) = ed25519_dalek::Signature::try_from(arr) else {
+        return false;
+    };
+    key.verify(signed, &s).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1428,23 +1447,4 @@ mod header_canon_tests {
         }
     }
     impl rand_core::CryptoRng for SimpleRng {}
-}
-
-fn verify_rsa_sha256(key: &rsa::RsaPublicKey, signed: &[u8], sig: &[u8]) -> bool {
-    use rsa::pkcs1v15::VerifyingKey;
-    use rsa::signature::Verifier;
-    let Ok(s) = rsa::pkcs1v15::Signature::try_from(sig) else {
-        return false;
-    };
-    let vk = VerifyingKey::<sha2::Sha256>::new(key.clone());
-    vk.verify(signed, &s).is_ok()
-}
-
-fn verify_ed25519(key: &ed25519_dalek::VerifyingKey, signed: &[u8], sig: &[u8]) -> bool {
-    use ed25519_dalek::Verifier;
-    let arr: &[u8] = sig;
-    let Ok(s) = ed25519_dalek::Signature::try_from(arr) else {
-        return false;
-    };
-    key.verify(signed, &s).is_ok()
 }

@@ -11,6 +11,7 @@
 //!   commands.rs command set)
 //! - [`pop3`] — receive client (USER/PASS/APOP, LIST/UIDL/RETR/DELE, STLS)
 //! - [`account`] — account/server/credential model
+//! - [`category`] — deterministic inbox-tab classifier (headers-only)
 //! - [`store`] — local mail storage (`store/`: schema.rs DDL, queries.rs
 //!   CRUD, outbox.rs send queue)
 //! - [`sync`] — folder sync engine
@@ -19,6 +20,7 @@
 //!   server.rs, tests.rs)
 
 pub mod account;
+pub mod category;
 pub mod error;
 pub mod imap;
 pub mod lines;
