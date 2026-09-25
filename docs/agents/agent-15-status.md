@@ -195,3 +195,104 @@ validate-gates-write, corrupt-row skip-vs-error, v5→v6 migration.
 - Multi-address values inside one header (`a@x, b@y` in one row) resolve
   the domain of the *last* address — fine for `List-Id`/block-list use;
   per-address splitting is a T-200/UI refinement if ever needed.
+
+---
+
+## T-233 — apply rules on ingest + IPC surface (F1 continues)
+
+Built the impure half of the engine and the renderer surface. The pure
+`evaluate` from T-228 is unchanged — all store/folder effects live in
+`kiwi-mail/src/rules/apply.rs`.
+
+### Layout
+
+- `kiwi-mail/src/rules/apply.rs` — `apply_on_ingest` (one stored message)
+  and `apply_now` (account-wide re-run). `execute()` order inside an
+  apply: `rule_hits` first (evidence lands before any effect), then flag
+  merges (`\Seen`/`\Flagged` via new generic `store.set_flag`), then the
+  folder disposition (a move remaps the uid — flags must run at eval
+  coordinates). `Archive`/`Delete` are intents resolved to the account's
+  `Archive`/`Trash` folders via `ensure_folder` — rules never
+  hard-expunge. A `blocked_by` verdict trashes even when the block rule
+  carried only flag actions ("block match = trash + stop").
+- `apply_now` freezes the work list up front (every `(folder_id, uid)`
+  with a stored body, Trash excluded — rules never resurrect deleted
+  mail), one eval per message, idempotent re-runs; messages without a
+  parseable body are counted as `skipped_no_body`, never guessed.
+- `store/schema.rs` — `rule_hits` audit table `(folder_id, uid, rule_id,
+  message_id, applied_unix)`, PK `(folder_id, uid, rule_id)`, `rule_id`
+  deliberately NOT an FK (evidence survives rule deletion);
+  `INSERT OR REPLACE` refreshes on re-eval. Folded into the same bump —
+  `SCHEMA_VERSION` is 7 alongside Agent N's `message_auth` (T-232).
+- `store/queries.rs` — `set_flag` (generic flag merge; `set_junk` now
+  delegates), `record_rule_hits`, `list_rule_hits` (newest-first,
+  account-scoped, bounded).
+- `store/mod.rs` — `RuleHit` row struct.
+
+### Ingest wiring (sync.rs)
+
+- `sync_folder` (IMAP): envelope-stage eval per newly-stored INBOX
+  message — sender/recipient/subject facts only; a block verdict trashes
+  the message **before its body is ever fetched**. INBOX-only gate:
+  syncing Sent/Archive must not re-file already-filed mail.
+- `fetch_missing_bodies(_inner)`: re-evals with the full parse — this is
+  where `header`/`body_contains`/`attachment_name` predicates become
+  decidable. Flag merges + same-folder no-ops keep re-eval idempotent.
+  (T-232's auth-stamp refactor wrapped this as `fetch_missing_bodies` /
+  `_with_auth`; my hook sits in the inner.)
+- `sync_pop3_inner`: full eval at ingest — POP3's drop folder is the
+  inbox and the whole message is already in hand.
+- `envelope_pseudo` builds the `ParsedMessage` for the envelope stage;
+  `to_meta` shares it.
+- Deliberately NOT hooked: `load_body_raw` (the on-view path) — opening a
+  message must not move it out from under the reader.
+- Apply failures are swallowed (`let _ =`) matching the file's
+  best-effort derived-data convention (category/unsub/auth stamp) — see
+  flag below.
+
+### IPC (`kiwi-app/src-tauri`)
+
+- `commands/rules.rs` — five gated commands: `kiwi_rules_list
+  (accountId?)`, `kiwi_rules_upsert(rule)`, `kiwi_rules_delete(ruleId)`,
+  `kiwi_rules_apply_now(accountId)`, `kiwi_rules_hits(accountId,
+  limit?)`. Untrusted input: bounded strings, `accountId` must exist
+  (`not-found`), and `upsert_rule` re-runs `Rule::validate` at the store
+  boundary — rejection = `invalid-input`.
+- `types/rules.rs` — `RuleView` (one shape both directions; `when`/`then`
+  carry the serde DSL verbatim), `RuleHitView`, `RulesApplyView`.
+- `docs/contracts/ipc.md` §6d — full contract incl. predicate/action
+  vocabulary and the ingest-application note.
+
+### Gates at this snapshot
+
+- `cargo test -p kiwi-mail` — 162/162 (28 rules tests).
+- `cargo test -p kiwi-app` — 86/86 (2 new command tests: CRUD+validate
+  gate; apply_now+hits roundtrip incl. unknown-account `not-found`).
+- `cargo clippy --workspace --all-targets -- -D warnings` — clean.
+- `rustfmt --edition 2024 --check` clean on every file I touched.
+- Zero `unsafe` in new code; workspace `forbid` unchanged.
+
+### Cross-agent unblock (flagged)
+
+- `store/mod.rs` — T-232's scripted edit left a literal `\n` in
+  `v6_to_v7_migration_creates_auth_table`; split into a real newline.
+- `commands/oauth2.rs` (mid-flight) — fixed `id != ids[0]` E0277 +
+  `single_match`, `collapsible_if`, 2×`needless_borrow` (comment moved
+  above the `if let`, semantics identical).
+- `discovery_net.rs` (mid-flight, untracked) — `DomainName::parse`
+  missing `&` on `to_utf8()` (E0308).
+
+### Assumptions / risks
+
+- **Body-predicate coverage on IMAP is partial in production**:
+  `fetch_missing_bodies` has no live caller (bodies arrive lazily via
+  `load_body_raw`, deliberately not hooked). Envelope predicates fire on
+  every new INBOX message today; `header`/`body`/`attachment_name`
+  predicates fire via `fetch_missing_bodies`/`apply_now` once a body is
+  stored. Decision for Lead: wire eager body fetch in the syncer (a
+  bandwidth policy change I didn't want to make solo) or keep lazy.
+- Silent `let _ =` on apply errors means a rule can fail invisibly; a
+  `rule_failures` counter on `SyncReportView` is the cheap observability
+  fix if Lead wants it.
+- `Message-Id` on hits is the canonicalized value (no `<>`) — consistent
+  with `ParsedMessage` everywhere else.
