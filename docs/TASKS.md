@@ -292,6 +292,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-312 | contacts depth (server search, compose handoff) + agenda sandbox row lit | Agent 25 | done |
 | T-313 | quick-filter chips (unread/starred/attachments/sender; live counts, AND-combine) | Agent 24 | done |
 | T-314 | smoke flow-checks 18/18; caught+fixed Reply blank-composer bug via real seedCompose | Agent 24 | done |
-| T-315 | About tab: real version, honest diagnostics (omit un-IPC-able stats), shared keymap panel | Agent 25 | open | `kiwi-app/src/views/settings.tsx` | |
+| T-315 | About tab: build-time version, honest diagnostics w/ omit-notes, shared keymap | Agent 25 | done |
 | T-316 | mbox export IPC (symmetric to T-309; temp+rename, partial-honest result, audited) | Agent 20 | open | `kiwi-app/commands`, `kiwi-mail/mbox.rs` | T-309 |
 | T-317 | drag messages→folder tree (multi-select aware, same kiwi_move_message path, ctx-menu is kbd fallback) | Agent 24 | open | `mailbox.tsx`, `chrome.tsx` folder tree | |
+| T-318 | import/export UI seam: file pickers, entry points, honest result counts for T-309/T-316 | Agent 25 | open | `settings.tsx`, folder ctx-menu | T-309,T-316 |
