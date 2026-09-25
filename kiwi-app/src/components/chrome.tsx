@@ -9,12 +9,13 @@
  * All glyphs are stub stroke icons — TODO(icon) swap to components/icons (T-268).
  */
 import { useEffect, useRef, useState } from "react";
-import type { CSSProperties, ReactNode } from "react";
+import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import type { Severity, SnoozePreset, TrustState } from "../kiwi";
 import { severityGlyph, severityLabel } from "../kiwi";
 import { Icon, SEVERITY_ICON } from "./icons/index";
 import { navigate } from "../router";
 import { loadPref, savePref } from "../prefs";
+import { ContextMenu } from "./contextmenu";
 import { usePaneWidth } from "../state/panes";
 import { useTheme } from "../themes";
 import {
@@ -223,13 +224,16 @@ function ToolBtn({
   menu,
   disabled,
   primary,
+  menuOnMain,
 }: {
   icon: ReactNode;
   label: string;
-  onClick: () => void;
+  onClick?: () => void;
   menu?: MenuEntry[];
   disabled?: boolean;
   primary?: boolean;
+  /** Menu-only split button: the main half opens the menu too (eM idiom). */
+  menuOnMain?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useDismissable(open, () => setOpen(false));
@@ -245,7 +249,15 @@ function ToolBtn({
   return (
     <div className="em-menu-wrap" ref={ref}>
       <span className={cls + (disabled ? " is-disabled" : "")}>
-        <button type="button" className="em-tool-main" onClick={onClick} disabled={disabled} title={label}>
+        <button
+          type="button"
+          className="em-tool-main"
+          onClick={menuOnMain ? () => setOpen((o) => !o) : onClick}
+          disabled={disabled}
+          title={label}
+          aria-haspopup={menuOnMain ? "menu" : undefined}
+          aria-expanded={menuOnMain ? open : undefined}
+        >
           {icon}
           <span className="em-tool-label">{label}</span>
         </button>
@@ -393,7 +405,7 @@ export function TopBar(props: TopBarProps) {
         <ToolBtn
           icon={<IconBolt size={13} />}
           label="Quick Actions"
-          onClick={() => undefined}
+          menuOnMain
           menu={[
             { label: "Mark all read", run: props.onMarkAllRead },
             { label: "Security details", run: props.onSecurityDetails, disabled: !sel },
@@ -462,6 +474,7 @@ function FolderRow({
   icon,
   active,
   indent,
+  onContextMenu,
 }: {
   id: string;
   label: string;
@@ -469,6 +482,7 @@ function FolderRow({
   icon: ReactNode;
   active: boolean;
   indent?: boolean;
+  onContextMenu?: (e: ReactMouseEvent) => void;
 }) {
   return (
     <button
@@ -478,6 +492,7 @@ function FolderRow({
       aria-selected={active}
       aria-label={`${label}${count > 0 ? `, ${count} unread` : ""}`}
       onClick={() => navigate({ name: "mail", folder: id })}
+      onContextMenu={onContextMenu}
     >
       {indent && <span className="em-tree-indent" aria-hidden="true" />}
       <span className="em-tree-icon" aria-hidden="true">
@@ -501,6 +516,7 @@ export function FolderPane({
   outboxCount,
   foldersError,
   demo,
+  onMarkAllRead,
 }: {
   smartFolders: { id: string; label: string }[];
   smartUnread: Record<string, number>;
@@ -509,9 +525,13 @@ export function FolderPane({
   outboxCount: number;
   foldersError?: string | null;
   demo?: boolean;
+  /** T-299: right-click folder menu — real folder ops only (mark-all-read
+   *  loops kiwi_update_message server-side). */
+  onMarkAllRead?: (folderId: string) => void;
 }) {
   const [favOpen, setFavOpen] = useState(true);
   const [open, setOpen] = useState<Record<string, boolean>>({});
+  const [ctx, setCtx] = useState<{ x: number; y: number; id: string; label: string; unread: number } | null>(null);
   return (
     <nav className="em-folders" aria-label="Accounts and folders">
       <h1 className="em-pane-title">Mail</h1>
@@ -585,12 +605,36 @@ export function FolderPane({
                     count={f.unread}
                     active={activeFolder === f.id}
                     indent
+                    onContextMenu={
+                      onMarkAllRead
+                        ? (e) => {
+                            e.preventDefault();
+                            setCtx({ x: e.clientX, y: e.clientY, id: f.id, label: f.label, unread: f.unread });
+                          }
+                        : undefined
+                    }
                   />
                 ))}
             </div>
           );
         })}
       </div>
+      {ctx && (
+        <ContextMenu
+          x={ctx.x}
+          y={ctx.y}
+          onClose={() => setCtx(null)}
+          entries={[
+            {
+              label: `Mark all as read${ctx.unread > 0 ? ` (${ctx.unread})` : ""}`,
+              icon: "mail-open",
+              disabled: demo || ctx.unread === 0,
+              title: demo ? "Needs the Tauri backend" : ctx.unread === 0 ? `${ctx.label} has no unread messages` : undefined,
+              onSelect: () => onMarkAllRead?.(ctx.id),
+            },
+          ]}
+        />
+      )}
     </nav>
   );
 }

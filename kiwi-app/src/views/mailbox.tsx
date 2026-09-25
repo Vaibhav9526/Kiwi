@@ -20,7 +20,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode } from "react";
-import type { AttachRiskView, FindingInfo, MessageBodyView, MessageEnvelope, MessagePatch, OutboxItem, RenderedBodyView, SearchHit, Severity, UnsubscribeInfo } from "../kiwi";
+import type { AttachRiskView, FindingInfo, FolderView, MessageBodyView, MessageEnvelope, MessagePatch, MessageSourceView, OutboxItem, RenderedBodyView, SearchHit, Severity, SnoozePreset, UnsubscribeInfo } from "../kiwi";
 import { severityLabel } from "../kiwi";
 import type { MessageCategory } from "../kiwi";
 import { listen } from "@tauri-apps/api/event";
@@ -30,6 +30,8 @@ import { loadLocalBook, saveLocalBook, upsertLocal } from "../contacts";
 import { navigate } from "../router";
 import { SecurityPill } from "../components/security";
 import { PaneSplitter } from "../components/chrome";
+import { ContextMenu } from "../components/contextmenu";
+import type { CtxEntry } from "../components/contextmenu";
 import { usePaneWidth } from "../state/panes";
 import { buildThreads, displaySubject } from "../threading";
 import type { Thread } from "../threading";
@@ -146,6 +148,10 @@ export interface MailboxProps {
   onCancelSend: (queueId: string) => void;
   onScheduleSend: (queueId: string, sendAtUnix: number) => void;
   onOutboxRefresh: () => void;
+  /** T-299: per-account folder lists — the real Move-to submenu source. */
+  folderLists: Record<string, FolderView[]>;
+  onSnooze: (ids: string[], preset: SnoozePreset) => void;
+  onMoveToFolder: (ids: string[], dstFolderId: number) => void;
 }
 
 export function MailboxView(props: MailboxProps) {
@@ -202,6 +208,73 @@ export function MailboxView(props: MailboxProps) {
   }, [picked, allPicked]);
 
   const isTrash = folder === "trash" || (folder !== "outbox" && /trash|deleted|bin/i.test(folderLabel));
+  /* ---- T-299: right-click menu on list rows. Right-click selects the row
+   * when it isn't part of the multi-selection (eM/Thunderbird idiom); the
+   * menu acts on the picked set if the row is picked, else the row's own
+   * ids (thread rows pass every member). ---- */
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; ids: string[] } | null>(null);
+  const openRowMenu = (e: ReactMouseEvent, ids: string[]) => {
+    e.preventDefault();
+    if (ids.length > 0 && !ids.some((id) => picked.includes(id))) {
+      navigate({ name: "mail", folder, messageId: ids[ids.length - 1] });
+    }
+    setCtxMenu({ x: e.clientX, y: e.clientY, ids });
+  };
+
+  const ctxIds = ctxMenu ? (ctxMenu.ids.some((id) => picked.includes(id)) ? picked : ctxMenu.ids) : [];
+  const ctxEnvs = ctxIds.map((id) => allMessages.find((m) => m.id === id)).filter((m): m is MessageEnvelope => !!m);
+  const ctxSingle = ctxEnvs.length === 1 ? ctxEnvs[0] : null;
+  const ctxAccount = ctxEnvs.length > 0 && ctxEnvs.every((m) => m.accountId === ctxEnvs[0].accountId) ? ctxEnvs[0].accountId : null;
+  const ctxMoveFolders = ctxAccount
+    ? (props.folderLists[ctxAccount] ?? []).filter((f) => !(ctxSingle && ctxSingle.folderId === f.id))
+    : [];
+  const backendTip = "Needs the Tauri backend";
+  const ctxEntries: CtxEntry[] = ctxMenu
+    ? [
+        { label: "Reply", icon: "reply", disabled: !ctxSingle, title: ctxSingle ? undefined : "Select a single message", onSelect: () => navigate({ name: "compose" }) },
+        { label: "Reply All", icon: "reply-all", disabled: !ctxSingle, title: ctxSingle ? undefined : "Select a single message", onSelect: () => navigate({ name: "compose" }) },
+        { label: "Forward", icon: "forward", disabled: !ctxSingle, title: ctxSingle ? undefined : "Select a single message", onSelect: () => navigate({ name: "compose" }) },
+        "divider",
+        ...(ctxSingle
+          ? ([
+              { label: ctxSingle.unread ? "Mark as read" : "Mark as unread", icon: ctxSingle.unread ? "mail-open" : "mail", onSelect: () => props.onToggleRead(ctxSingle.id) },
+              { label: ctxSingle.starred ? "Remove star" : "Star", icon: "star", onSelect: () => props.onToggleStar(ctxSingle.id) },
+            ] as CtxEntry[])
+          : ([
+              { label: `Mark ${ctxIds.length} as read`, icon: "mail-open", onSelect: () => props.onBulkPatch(ctxIds, { seen: true }, "Marked read") },
+              { label: `Mark ${ctxIds.length} as unread`, icon: "mail", onSelect: () => props.onBulkPatch(ctxIds, { seen: false }, "Marked unread") },
+              { label: `Star ${ctxIds.length}`, icon: "star", onSelect: () => props.onBulkPatch(ctxIds, { starred: true }, "Starred") },
+              { label: `Unstar ${ctxIds.length}`, icon: "star", onSelect: () => props.onBulkPatch(ctxIds, { starred: false }, "Unstarred") },
+            ] as CtxEntry[])),
+        "divider",
+        {
+          label: "Snooze",
+          icon: "snooze",
+          disabled: props.demo,
+          title: props.demo ? backendTip : undefined,
+          submenu: [
+            { label: "Later today", onSelect: () => props.onSnooze(ctxIds, "later_today") },
+            { label: "Tomorrow", onSelect: () => props.onSnooze(ctxIds, "tomorrow") },
+            { label: "Next week", onSelect: () => props.onSnooze(ctxIds, "next_week") },
+          ],
+        },
+        {
+          label: "Archive",
+          icon: "archive",
+          onSelect: () => (ctxSingle ? props.onArchive(ctxSingle.id, true) : props.onBulkPatch(ctxIds, { archived: true }, "Archived")),
+        },
+        {
+          label: "Move to",
+          icon: "folder",
+          disabled: props.demo || ctxMoveFolders.length === 0,
+          title: props.demo ? backendTip : ctxMoveFolders.length === 0 ? "No other folders on this account" : undefined,
+          submenu: ctxMoveFolders.map((f) => ({ label: f.name, onSelect: () => props.onMoveToFolder(ctxIds, f.id) })),
+        },
+        "divider",
+        { label: "Mark as junk", icon: "flag", disabled: props.demo, title: props.demo ? backendTip : undefined, onSelect: () => props.onBulkSpam(ctxIds) },
+        { label: isTrash ? "Delete permanently" : "Delete", icon: "trash", danger: true, onSelect: () => props.onBulkDelete(ctxIds, isTrash, isTrash ? "Deleted permanently" : "Moved to Trash") },
+      ]
+    : [];
   // T-284: the reader pill expands into the message's own evidence panel —
   // auth/link/attachment hints carried on the envelope, never the findings feed.
   const [evidenceOpen, setEvidenceOpen] = useState(false);
@@ -546,6 +619,7 @@ export function MailboxView(props: MailboxProps) {
                 onToggleStar={props.onToggleStar}
                 onArchive={(id) => props.onArchive(id, true)}
                 onDelete={(id) => props.onBulkDelete([id], false, "Deleted message")}
+                onRowContext={openRowMenu}
               />
               <DateGroup
                 label="Older"
@@ -559,6 +633,7 @@ export function MailboxView(props: MailboxProps) {
                 onToggleStar={props.onToggleStar}
                 onArchive={(id) => props.onArchive(id, true)}
                 onDelete={(id) => props.onBulkDelete([id], false, "Deleted message")}
+                onRowContext={openRowMenu}
               />
             </div>
           </>
@@ -664,7 +739,9 @@ export function MailboxView(props: MailboxProps) {
               </button>
             </div>
             {evidenceOpen && <MessageEvidence m={selected} />}
-            {sourceOpen && props.body && <SourceDialog body={props.body} onClose={() => setSourceOpen(false)} />}
+            {sourceOpen && props.body && (
+              <SourceDialog body={props.body} accountId={selected.accountId} onClose={() => setSourceOpen(false)} />
+            )}
             {contactNote && (
               <p role="status" className="em-note">
                 <small>{contactNote}</small>
@@ -709,6 +786,7 @@ export function MailboxView(props: MailboxProps) {
           </>
         )}
       </section>
+      {ctxMenu && <ContextMenu x={ctxMenu.x} y={ctxMenu.y} entries={ctxEntries} onClose={() => setCtxMenu(null)} />}
     </div>
   );
 }
@@ -733,6 +811,7 @@ function DateGroup({
   onToggleStar,
   onArchive,
   onDelete,
+  onRowContext,
 }: {
   label: string;
   rows: RowEntry[];
@@ -745,6 +824,7 @@ function DateGroup({
   onToggleStar: (id: string) => void;
   onArchive: (id: string) => void;
   onDelete: (id: string) => void;
+  onRowContext: (e: ReactMouseEvent, ids: string[]) => void;
 }) {
   if (rows.length === 0) return null;
   return (
@@ -768,6 +848,7 @@ function DateGroup({
               onToggleStar={onToggleStar}
               onArchive={onArchive}
               onDelete={onDelete}
+              onContextMenu={(e) => onRowContext(e, [r.m!.id])}
             />
           ) : r.t ? (
             <ThreadRow
@@ -780,6 +861,7 @@ function DateGroup({
               onToggleStar={onToggleStar}
               onArchive={onArchive}
               onDelete={onDelete}
+              onContextMenu={(e) => onRowContext(e, r.t!.messages.map((m) => m.id))}
             />
           ) : null,
         )}
@@ -876,6 +958,7 @@ function RowShell({
   starred,
   onArchive,
   onDelete,
+  onCtxMenu,
   label,
 }: {
   id: string;
@@ -896,6 +979,7 @@ function RowShell({
   onToggleStar: (id: string) => void;
   onArchive: (id: string) => void;
   onDelete: (id: string) => void;
+  onCtxMenu?: (e: ReactMouseEvent) => void;
   label: string;
 }) {
   const [confirmDel, setConfirmDel] = useState(false);
@@ -921,6 +1005,12 @@ function RowShell({
         }
         if ((e.target as HTMLElement).closest("button,input")) return;
         navigate({ name: "mail", folder, messageId: navId });
+      }}
+      onContextMenu={(e) => {
+        // Row-level menu (T-299): suppress the browser menu, let the
+        // handler decide targets. Buttons/inputs keep native behavior.
+        if ((e.target as HTMLElement).closest("button,input")) return;
+        onCtxMenu?.(e);
       }}
       onKeyDown={(e) => {
         if (e.key === "Enter") navigate({ name: "mail", folder, messageId: navId });
@@ -1052,6 +1142,7 @@ function MessageRow({
   onToggleStar,
   onArchive,
   onDelete,
+  onContextMenu,
 }: {
   m: MessageEnvelope;
   folder: string;
@@ -1061,6 +1152,7 @@ function MessageRow({
   onToggleStar: (id: string) => void;
   onArchive: (id: string) => void;
   onDelete: (id: string) => void;
+  onContextMenu: (e: ReactMouseEvent) => void;
 }) {
   return (
     <RowShell
@@ -1081,6 +1173,7 @@ function MessageRow({
       onToggleStar={onToggleStar}
       onArchive={onArchive}
       onDelete={onDelete}
+      onCtxMenu={onContextMenu}
       label={`${m.unread ? "Unread" : "Read"} from ${m.from}: ${m.subject}. Account trust ${severityLabel(m.trust)}.${isPicked ? " Selected for bulk actions." : ""}`}
       checkbox={
         <input
@@ -1109,6 +1202,7 @@ function ThreadRow({
   onToggleStar,
   onArchive,
   onDelete,
+  onContextMenu,
 }: {
   thread: Thread;
   folder: string;
@@ -1118,6 +1212,7 @@ function ThreadRow({
   onToggleStar: (id: string) => void;
   onArchive: (id: string) => void;
   onDelete: (id: string) => void;
+  onContextMenu: (e: ReactMouseEvent) => void;
 }) {
   const newest = thread.messages[thread.messages.length - 1];
   const allPicked = thread.messages.every((m) => picked.includes(m.id));
@@ -1147,6 +1242,7 @@ function ThreadRow({
       onToggleStar={() => onToggleStar(newest.id)}
       onArchive={() => onArchive(newest.id)}
       onDelete={() => onDelete(newest.id)}
+      onCtxMenu={onContextMenu}
       label={`Conversation: ${thread.subject}. ${thread.messages.length} messages, ${thread.unreadCount} unread.${allPicked ? " Selected for bulk actions." : ""}`}
       checkbox={
         <input
@@ -1705,13 +1801,40 @@ function MessageEvidence({ m }: { m: MessageEnvelope }) {
 }
 
 /**
- * T-292 "View source" — the honest version: every field shown comes from the
- * real `kiwi_message_body` payload (parsed headers + stored body parts). Full
- * RFC822 raw source (all MIME headers verbatim) is NOT exposed by any
- * registered IPC — flagged as a contract gap rather than fabricated.
+ * T-292 "View source" — parsed headers + stored parts from the real
+ * `kiwi_message_body` payload, plus (T-295) the verbatim RFC822 source via
+ * `kiwi_message_source`, lazy-loaded on first open of the Raw tab. The raw
+ * tab carries the backend's `truncated`/`bytes` honesty flags — never a
+ * fabricated "full source".
  */
-function SourceDialog({ body, onClose }: { body: MessageBodyView; onClose: () => void }) {
-  const [part, setPart] = useState<"html" | "text">(body.htmlBody ? "html" : "text");
+function SourceDialog({
+  body,
+  accountId,
+  onClose,
+}: {
+  body: MessageBodyView;
+  accountId: string;
+  onClose: () => void;
+}) {
+  const [part, setPart] = useState<"html" | "text" | "raw">(body.htmlBody ? "html" : "text");
+  const [raw, setRaw] = useState<MessageSourceView | null>(null);
+  const [rawNote, setRawNote] = useState<string | null>(null);
+  useEffect(() => {
+    if (part !== "raw" || raw || rawNote) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const v = await api.messageSource(accountId, body.folderId, body.uid);
+        if (!cancelled) setRaw(v);
+      } catch (e) {
+        if (!cancelled)
+          setRawNote(`Raw source unavailable: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [part, raw, rawNote, accountId, body.folderId, body.uid]);
   const headers: [string, string][] = [
     ["Subject", body.subject ?? "(no subject)"],
     ["From", body.from.join(", ") || "(unknown)"],
@@ -1775,9 +1898,55 @@ function SourceDialog({ body, onClose }: { body: MessageBodyView; onClose: () =>
             title={body.textBody ? "Stored text/plain part" : "No plaintext part stored"}
           >
             Plaintext part
+          </button>{" "}
+          <button
+            type="button"
+            aria-pressed={part === "raw"}
+            onClick={() => setPart("raw")}
+            title="Verbatim RFC822 bytes (kiwi_message_source, 8 MiB cap)"
+          >
+            Raw RFC822
           </button>
         </p>
-        {source ? (
+        {part === "raw" ? (
+          <>
+            {raw && raw.truncated && (
+              <p role="status">
+                <small>
+                  Truncated — showing first 8 MiB of {(raw.bytes / 1048576).toFixed(1)} MiB.
+                </small>
+              </p>
+            )}
+            {rawNote && (
+              <p role="alert">
+                <small>{rawNote}</small>
+              </p>
+            )}
+            {!raw && !rawNote && (
+              <p role="status">
+                <small>Loading raw source…</small>
+              </p>
+            )}
+            {raw && (
+              <pre
+                style={{
+                  maxHeight: "18rem",
+                  overflow: "auto",
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-all",
+                  fontFamily: "monospace",
+                  fontSize: "0.78rem",
+                  padding: "0.5rem",
+                  border: "1px solid var(--kiwi-border)",
+                  borderRadius: "6px",
+                  userSelect: "all",
+                }}
+              >
+                {raw.source}
+              </pre>
+            )}
+          </>
+        ) : source ? (
           <pre
             style={{
               maxHeight: "18rem",

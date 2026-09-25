@@ -372,3 +372,47 @@ is browser-verifiable in the vite dev server but was verified here by static
 trace per house convention. Interim build break during this session was A25's
 in-flight T-296 (`onScheduleSend` seam) — settled on their next save, final
 build green.
+
+## T-299 — right-click context menus (message list + folder tree)
+
+**New `components/contextmenu.tsx`** — shared native-look menu: fixed at
+cursor, viewport-clamped (layout-effect measure+flip), Esc / outside
+pointerdown / window-blur dismiss, full keyboard nav (↑↓ cycle enabled
+items, Enter select, → opens submenu, ← collapses, Home/End), one submenu
+level anchored per-row (`aria-haspopup`/`aria-expanded` on parents),
+`role=menu`/`menuitem`/`separator`, disabled items grayed with title
+explaining why.
+
+**Message-list menu (mailbox.tsx):** `RowShell` gained `onContextMenu`
+(suppressed on buttons/inputs so native behavior survives there);
+`openRowMenu` follows the eM idiom — right-clicking an unpicked row selects
+it; a picked row keeps the whole selection as targets; thread rows pass
+every member id. Entries vs real state:
+- Reply / Reply All / Forward → compose route (same as reader r/a/f keys);
+  disabled "Select a single message" on multi-select.
+- Mark read/unread + star flip by envelope state on single; multi shows
+  both directions with counts → `onToggleRead`/`onToggleStar`/`onBulkPatch`.
+- Snooze ▸ Later today/Tomorrow/Next week → new `onSnooze(ids,preset)`
+  (App `snoozeIds` groups refs per account → `kiwi_message_snooze`).
+- Archive → `onArchive`/`onBulkPatch`. Move to ▸ — submenu from the real
+  `props.folderLists[accountId]` (new prop), source folder excluded for
+  single targets, disabled when mixed-account or no folders → new
+  `onMoveToFolder` (App `moveToFolder` → `kiwi_move_messages` per
+  source-folder group, 400-uid chunks, same-as-destination skipped).
+- Mark as junk → `onBulkSpam` (kiwi_message_set_junk). Delete /
+  Delete permanently → `onBulkDelete` (permanent in Trash, same as Del key).
+- Demo: read/star/archive/delete/junk-disabled→honest titles; snooze/move
+  disabled "Needs the Tauri backend".
+
+**Folder-tree menu (chrome.tsx):** `FolderRow` + `FolderPane` gained
+`onMarkAllRead` — account-section folders only (smart rows have no scope
+key). Single item "Mark all as read (N)" — disabled when `unread===0` or
+demo. No folder-scope command exists; App `markFolderRead` loops
+`kiwi_update_message {seen:true}` over `listMessages` unread rows (500
+bound, per-row failure tally, honest summary + reload).
+
+**Verification:** `npm run build` (typecheck + vite) green, 86 modules.
+Static trace to registered commands: update/snooze/move/delete/set_junk/
+list_messages all in lib.rs. No UI driver in-repo — verified by trace +
+build per convention. A25's T-296 (onScheduleSend) was already in HEAD
+(3c29e3a) — no conflicts; one transient os-error-1224 file lock retried.

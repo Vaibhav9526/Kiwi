@@ -799,6 +799,125 @@ export default function App() {
   }, [demo, selectedEnvelope, reloadMail, notify]);
 
   /**
+   * T-299 context menu: id-scoped snooze (right-clicked row may differ from
+   * the selected envelope). Groups refs by account; one toast per preset.
+   */
+  const snoozeIds = useCallback(
+    async (ids: string[], preset: SnoozePreset) => {
+      const pool = demo ? DEMO_MESSAGES : messages;
+      const targets = ids.map((id) => pool.find((m) => m.id === id)).filter((m): m is MessageEnvelope => !!m);
+      if (targets.length === 0) return;
+      if (demo) {
+        notify("info", "Demo mode — snooze needs the Tauri backend.");
+        return;
+      }
+      const byAccount = new Map<string, { folderId: number; uid: number }[]>();
+      for (const t of targets) {
+        const refs = byAccount.get(t.accountId) ?? [];
+        refs.push({ folderId: t.folderId, uid: t.uid });
+        byAccount.set(t.accountId, refs);
+      }
+      let snoozed = 0;
+      let failed = 0;
+      for (const [accountId, refs] of byAccount) {
+        try {
+          const v = await api.snoozeMessages(accountId, refs, { preset });
+          snoozed += v.snoozed;
+        } catch {
+          failed += refs.length;
+        }
+      }
+      notify(
+        failed === 0 ? "ok" : "warn",
+        `Snoozed ${snoozed} message(s)${failed > 0 ? `, ${failed} failed` : ""}.`,
+      );
+      await reloadMail();
+    },
+    [demo, messages, reloadMail, notify],
+  );
+
+  /**
+   * T-299 context menu: move ids to a real destination folder via
+   * kiwi_move_messages (per source-folder group, chunked like bulk ops).
+   */
+  const moveToFolder = useCallback(
+    async (ids: string[], dstFolderId: number) => {
+      if (demo || ids.length === 0) {
+        if (ids.length === 0) return;
+        notify("info", "Demo mode — move needs the Tauri backend.");
+        return;
+      }
+      const { groups, missing } = groupByFolder(ids);
+      let moved = 0;
+      let fail = missing;
+      for (const g of groups) {
+        if (g.folderId === dstFolderId) {
+          moved += g.uids.length; // already there
+          continue;
+        }
+        for (let i = 0; i < g.uids.length; i += 400) {
+          try {
+            const r = await api.moveMessages(g.accountId, g.folderId, dstFolderId, g.uids.slice(i, i + 400));
+            moved += r.moved;
+          } catch {
+            fail += g.uids.slice(i, i + 400).length;
+          }
+        }
+      }
+      await reloadMail();
+      const summary = fail === 0 ? `Moved ${moved} message(s).` : `Moved ${moved}, ${fail} failed.`;
+      setSyncNote(summary);
+      notify(fail === 0 ? "ok" : "warn", summary);
+    },
+    [demo, groupByFolder, reloadMail, notify],
+  );
+
+  /**
+   * T-299 folder context menu: "Mark all as read" for one real folder
+   * (`accountId:folderId`). No folder-scope command exists — the loop hits
+   * kiwi_update_message per unread row, bounded by the list cap.
+   */
+  const markFolderRead = useCallback(
+    async (folderKey: string) => {
+      const sep = folderKey.indexOf(":");
+      const accountId = folderKey.slice(0, sep);
+      const folderId = Number(folderKey.slice(sep + 1));
+      if (demo || !accountId || !Number.isFinite(folderId)) {
+        notify("info", "Demo mode — mark-read needs the Tauri backend.");
+        return;
+      }
+      try {
+        const list = await api.listMessages(accountId, folderId, 500);
+        const unread = list.filter((m) => m.unread);
+        if (unread.length === 0) {
+          notify("info", "Folder has no unread messages.");
+          return;
+        }
+        let ok = 0;
+        let failed = 0;
+        for (const m of unread) {
+          try {
+            await api.updateMessage(accountId, folderId, m.uid, { seen: true });
+            ok++;
+          } catch {
+            failed++;
+          }
+        }
+        await reloadMail();
+        const summary =
+          failed === 0 ? `Marked ${ok} message(s) read.` : `Marked ${ok} read, ${failed} failed.`;
+        setSyncNote(summary);
+        notify(failed === 0 ? "ok" : "warn", summary);
+      } catch (e) {
+        const msg = `Mark-all-read failed: ${e instanceof Error ? e.message : e}`;
+        setSyncNote(msg);
+        notify("error", msg);
+      }
+    },
+    [demo, reloadMail, notify],
+  );
+
+  /**
    * Toolbar junk toggle (kiwi_message_set_junk, T-263): `junk` sets the
    * flag + moves to the account Junk folder; `false` clears/returns to
    * INBOX. Moves remap uids — always reload the list after.
@@ -1249,6 +1368,7 @@ export default function App() {
             outboxCount={outbox.length}
             foldersError={foldersError}
             demo={demo}
+            onMarkAllRead={(key) => void markFolderRead(key)}
           />
         }
         rail={
@@ -1333,6 +1453,9 @@ export default function App() {
             onCancelSend={(q) => void doCancelSend(q)}
             onScheduleSend={(q, at) => void doScheduleSend(q, at)}
             onOutboxRefresh={() => void refreshOutbox()}
+            folderLists={folderLists}
+            onSnooze={(ids, preset) => void snoozeIds(ids, preset)}
+            onMoveToFolder={(ids, dst) => void moveToFolder(ids, dst)}
           />
         )}
         {route.name === "compose" && (

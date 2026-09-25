@@ -2587,3 +2587,94 @@ summary:focus-visible {
   font-weight: 600;
   pointer-events: none;
 }
+
+/* ---------- T-299 context menus (message rows + folder tree) ---------- */
+
+.em-ctx {
+  position: fixed;
+  z-index: 90;
+  min-width: 200px;
+  max-width: 300px;
+  padding: 4px;
+  background: var(--em-card-bg, #fff);
+  border: 1px solid var(--kiwi-ms-border, #d8d4cc);
+  border-radius: 8px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+  font: inherit;
+  outline: none;
+}
+
+.em-ctx-item-wrap {
+  position: relative;
+}
+
+.em-ctx-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 10px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--kiwi-ms-text, inherit);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.em-ctx-item.is-active:not(:disabled) {
+  background: var(--em-hover, rgba(0, 0, 0, 0.06));
+}
+
+.em-ctx-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.em-ctx-item.is-danger:not(:disabled) {
+  color: var(--kiwi-danger, #b3261e);
+}
+
+.em-ctx-icon {
+  flex: none;
+  width: 15px;
+  display: inline-flex;
+  justify-content: center;
+  color: var(--kiwi-text-secondary, #666);
+}
+
+.em-ctx-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.em-ctx-hint {
+  margin-left: auto;
+  font-size: 0.78em;
+  color: var(--kiwi-text-secondary, #777);
+}
+
+.em-ctx-caret {
+  margin-left: auto;
+  display: inline-flex;
+  color: var(--kiwi-text-secondary, #777);
+}
+
+.em-ctx-sep {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--kiwi-ms-border, #d8d4cc);
+}
+
+.em-ctx-sub {
+  position: absolute;
+  left: calc(100% - 4px);
+  top: -4px;
+  min-width: 160px;
+}
