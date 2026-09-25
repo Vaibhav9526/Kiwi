@@ -298,3 +298,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-318 | import/export UI seam: file pickers, entry points, honest result counts for T-309/T-316 | Agent 25 | open | `settings.tsx`, folder ctx-menu | T-309,T-316 |
 | T-319 | folder management: local folder create/rename/delete IPC, audited, system folders protected | Agent 15 | open | `kiwi-mail/store`, `kiwi-app/commands` | |
 | T-320 | forensic report file export: canonical JSON + SHA-256 integrity envelope, audited, lock-gated | Agent 21 | open | `commands/security.rs`, `kiwi-forensics` | vision tamper-evident exports |
+| T-321 | post-T-286: contract/docs sweep — consent-boundary semantics documented as-built | Agent 23 | open | `ipc.md`, `docs/contracts/` | T-286 |
