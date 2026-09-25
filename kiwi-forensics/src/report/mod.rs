@@ -93,9 +93,9 @@ impl AiEnrichment {
 /// Top-level forensic report.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Report {
-    /// Finding/evidence/report contract version (`kiwi.forensics/1`).
+    /// Finding/evidence/report contract version (`kiwi.forensics/2`).
     pub contract_version: String,
-    /// Scoring model version (`kiwi-score-1`).
+    /// Scoring model version (`kiwi-score-2`).
     pub scoring_model_version: String,
     /// Rule catalog version the findings were produced with.
     pub rule_catalog_version: u16,

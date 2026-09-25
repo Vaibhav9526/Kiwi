@@ -81,4 +81,8 @@ pub const CONTRACT_VERSION: &str = "kiwi.forensics/2";
 pub const RULE_CATALOG_VERSION: u16 = 1;
 
 /// Version of the deterministic scoring model ([`score`]).
-pub const SCORING_MODEL_VERSION: &str = "kiwi-score-1";
+///
+/// `/2` (T-247) rounds each finding's deduction half-up before summing
+/// (contract §6 wording), instead of rounding the aggregate once —
+/// several fractional findings can cost one more point than under `/1`.
+pub const SCORING_MODEL_VERSION: &str = "kiwi-score-2";

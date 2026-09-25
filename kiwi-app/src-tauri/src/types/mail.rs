@@ -4,6 +4,7 @@ use serde::Serialize;
 
 use kiwi_mail::attachrisk::{AttachRisk, AttachRiskReason};
 use kiwi_mail::authrisk::AuthRisk;
+use kiwi_mail::linkrisk::{LinkRisk, LinkRiskReason};
 use kiwi_mail::store::{FolderMeta, MessageMeta};
 
 #[derive(Debug, Clone, Serialize)]
@@ -70,6 +71,9 @@ pub struct MessageView {
     /// body has not been parsed yet. This is a hint only, never a finding and
     /// never a blocking or mail-movement instruction.
     pub attach_risk: Option<AttachRiskView>,
+    /// Bounded URL evidence hint (T-261); absent until body parse. It never
+    /// resolves, opens, or blocks a link.
+    pub link_risk: Option<LinkRiskView>,
 }
 
 /// Wire row for `kiwi_search_messages` (T-231): an FTS hit with the owning
@@ -125,6 +129,14 @@ pub struct AttachRiskView {
     pub risk: AttachRisk,
     /// Fixed bounded reason vocabulary; no filenames or payload bytes.
     pub reasons: Vec<AttachRiskReason>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkRiskView {
+    pub risk: LinkRisk,
+    /// Fixed bounded reason vocabulary; no URLs, domains, or display text.
+    pub reasons: Vec<LinkRiskReason>,
 }
 
 /// Wire view of upstream Authentication-Results evidence (T-240).
@@ -252,6 +264,10 @@ impl From<&MessageMeta> for MessageView {
             attach_risk: m.attach_risk.as_ref().map(|a| AttachRiskView {
                 risk: a.risk,
                 reasons: a.reasons.clone(),
+            }),
+            link_risk: m.link_risk.as_ref().map(|l| LinkRiskView {
+                risk: l.risk,
+                reasons: l.reasons.clone(),
             }),
         }
     }

@@ -135,6 +135,16 @@ fn rule_deprecated_mechanism(ctx: &RuleContext<'_>) -> Vec<Finding> {
     if !mechanism.is_deprecated() {
         return Vec::new();
     }
+    // Under a protected channel a cleartext-secret mechanism (PLAIN/LOGIN/
+    // bearer) is deprecated but not exposed — reporting it is a separate
+    // opt-in (`report_cleartext_auth_under_tls`). Challenge-response and
+    // anonymous stays governed by `report_deprecated_auth` alone.
+    if ctx.session.is_encrypted()
+        && auth.credential_kind().is_reusable_secret()
+        && !ctx.policy.report_cleartext_auth_under_tls
+    {
+        return Vec::new();
+    }
     let name = mechanism.as_str();
     vec![
         Finding::builder(
@@ -399,6 +409,42 @@ mod tests {
                 .any(|f| f.category == FindingCategory::Authentication),
             "unknown mechanism must not produce auth findings"
         );
+    }
+
+    #[test]
+    fn cleartext_mechanism_under_tls_respects_report_flag() {
+        // FOR-4/T-247: `report_cleartext_auth_under_tls` gates the
+        // deprecated-mechanism finding for reusable-secret mechanisms on
+        // a protected channel — deprecation ≠ exposure under TLS.
+        let tls_session = |m: AuthMechanism| {
+            ConnectionSecurityEvent::new(
+                SessionId::from_label("t:imap:993"),
+                Protocol::Imap,
+                Endpoint::new("10.0.0.5", 51000),
+                Endpoint::new("mail.example.test", 993),
+                1_700_000_000_000,
+            )
+            .with_transport(TransportSecurity::ImplicitTls)
+            .with_auth(AuthObservation::with_outcome(m, true))
+        };
+        let permissive_cleartext = SecurityPolicy {
+            report_cleartext_auth_under_tls: false,
+            ..SecurityPolicy::default()
+        };
+
+        // Flag off: LOGIN under TLS is deprecated but not reported.
+        let findings = super::super::RuleEngine::new(permissive_cleartext)
+            .evaluate_session(&tls_session(AuthMechanism::Login));
+        assert!(!rule_ids(&findings).contains(&ids::AUTH_DEPRECATED_MECHANISM));
+
+        // Flag off: CRAM-MD5 is not a cleartext secret — still reported.
+        let findings = super::super::RuleEngine::new(permissive_cleartext)
+            .evaluate_session(&tls_session(AuthMechanism::CramMd5));
+        assert!(rule_ids(&findings).contains(&ids::AUTH_DEPRECATED_MECHANISM));
+
+        // Flag on (default): LOGIN under TLS reports as before.
+        let findings = engine().evaluate_session(&tls_session(AuthMechanism::Login));
+        assert!(rule_ids(&findings).contains(&ids::AUTH_DEPRECATED_MECHANISM));
     }
 
     #[test]

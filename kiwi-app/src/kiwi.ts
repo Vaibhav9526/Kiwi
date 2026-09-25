@@ -221,6 +221,8 @@ export interface MessageView {
   auth?: AuthResultsView | null;
   /** Bounded attachment evidence hint (T-254); absent until body parse. */
   attachRisk?: AttachRiskView | null;
+  /** Bounded URL evidence hint (T-261); absent until body parse. */
+  linkRisk?: LinkRiskView | null;
 }
 
 /**
@@ -247,6 +249,23 @@ export type AttachRiskReason =
 export interface AttachRiskView {
   risk: AttachRisk;
   reasons: AttachRiskReason[];
+}
+
+export type LinkRisk = "clean" | "noted" | "failed";
+export type LinkRiskReason =
+  | "ipLiteralHost"
+  | "displayDomainMismatch"
+  | "insecureHttp"
+  | "knownShortener"
+  | "excessiveSubdomains"
+  | "excessiveHyphens"
+  | "punycodeHost"
+  | "unicodeHost"
+  | "credentialsInUrl";
+
+export interface LinkRiskView {
+  risk: LinkRisk;
+  reasons: LinkRiskReason[];
 }
 
 export interface AuthResultsView {

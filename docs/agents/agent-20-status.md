@@ -306,3 +306,99 @@ bump; `rule_catalog_version` and `scoring_model_version` untouched).
   — irrecoverable-value marker, never a real negotiated version.
 - Dual-read covers `/1` spellings enumerated in §12; any other historical
   spelling fails closed by design.
+
+## 2026-09-25 — T-247: wire-shape batch 2 (T-241 queue + FOR leftovers)
+
+**Status:** done. Four IPC reconciliations + three forensics leftovers.
+Direction per item chosen by consumer evidence.
+
+### Per-item decisions
+
+**(1) IPC-6 `FolderView` → code right, contract amended.** `exists`/
+`unseen` require a per-folder `COUNT` query that does not exist in
+`kiwi-mail::store` (no count fn; `FolderMeta`/`FolderEntry` carry no
+counts) — producing them would need commands/ + store changes, both
+outside scope; emitting zeros would fabricate data. ipc.md §6 now
+documents the real shape (`id, accountId, name, uidValidity|null,
+uidNext|null, highestUid`), marks `exists`/`unseen` **withdrawn**, and
+notes the unread-badge gap as a follow-up store task. `kiwi.ts`
+interface updated; `unseen` kept `?: number` so badge code (`accounts.ts`
+reads it, always absent today → 0) can adopt it when a count query lands.
+
+**(2) IPC-7 `MessageView` → contract names win for `from`/`to`; contract
+amended for extras + nullability.** The frontend reads `fromAddr`/
+`toAddrs` everywhere (`mailbox.ts:47`, `App.tsx:83`, search-hit reader),
+matching `SearchHitView`'s existing convention — serde `rename` added in
+`types/mail.rs`. ipc.md §6 now documents the full emitted shape incl.
+`unread`/`starred`/`bodyStored`/`category`/`unsubscribe*`/`auth`/
+`attachRisk` and honest `| null` nullability. **Fixed a live dead
+feature**: `parseUnsubscribe` read snake_case keys but serde emits
+camelCase — now reads `unsubscribeUrl`/`Mailto`/`OneClick` (snake kept
+as fallback). `kiwi.ts` interface rewritten to the real wire shape.
+
+**(3) IPC-8 → canonical `vcardText`.** Rust param `vcard_text` → Tauri
+camelCase `vcardText`; commands/ off-limits so contract yields.
+ipc.md §9b + contacts.md now say `vcardText` (export response key
+`{vcard}` unchanged — different surface, documented).
+
+**(4) IPC-9 → serde rename.** `#[serde(rename_all = "camelCase")]` on
+`EndpointObservation` (signals.rs — a view producer, not commands/rules/
+oauth2/auth): `evidence_ref` → `evidenceRef`, matching `SignalView` and
+the contract; frontend treats the report opaquely, no consumer break.
+
+**(5) FOR-3** — forensics.md §5 documents KIWI-TRANSPORT-001's
+High→Critical escalation when a reusable secret crossed in the clear.
+
+**(6) FOR-4** — the three dormant flags are now live:
+- `reject_broken_ciphers` gates `rule_cipher_broken` (same pattern as
+  weak/legacy siblings) — `permissive()` no longer emits CIPHER-001.
+- `require_tls13` is wired via `SecurityPolicy::effective_min_tls_version()`
+  (shorthand for a TLS 1.3 floor); TLS-001 compares against it and
+  reports the *effective* floor in evidence. strict()/default unchanged
+  (strict already sets `min_tls_version: Tls13`).
+- `report_cleartext_auth_under_tls` gates AUTH-002 for reusable-secret
+  mechanisms under a protected channel only — challenge-response/
+  anonymous deprecation stays governed by `report_deprecated_auth`.
+`rule_catalog_version` kept at 1: gate wiring restores documented flag
+semantics; no rule identity or default-policy output changed (noted in
+forensics.md §5/§12 — flag for Lead ratification).
+
+**(7) FOR-5** — `score_findings` now rounds each finding's deduction
+half-up before summing (contract §6 wording); 2×High/Tentative now
+deducts 26 not 25. `SCORING_MODEL_VERSION` → `kiwi-score-2` (the spec's
+own rule: scoring changed, spelling didn't drive it); forensics.md §6
+header + §12 bullet + `report/mod.rs` doc updated.
+
+### Files changed
+
+`types/mail.rs` (rename attrs), `signals.rs` (camelCase attr),
+`types/security.rs` (doc), `kiwi-forensics/src/rules/{crypto,policy,
+auth}.rs`, `score.rs`, `lib.rs`, `report/mod.rs`, `kiwi-app/src/kiwi.ts`,
+`docs/contracts/{ipc,contacts,forensics}.md`. Plus two zero-semantic
+rustfmt hunks in T-254's in-flight `kiwi-mail/src/{mime.rs,store/mod.rs}`
+to satisfy `cargo fmt --all --check` — disclosed.
+
+### Verification
+
+- `cargo test -p kiwi-forensics` — 100 unit + all suites green incl. 4
+  new regressions (`permissive_suppresses_broken_cipher_like_its_siblings`,
+  `require_tls13_raises_the_effective_floor`,
+  `cleartext_mechanism_under_tls_respects_report_flag`,
+  `per_finding_rounding_sums_rounded_points`).
+- `cargo test -p kiwi-app` — 98 green.
+- `cargo clippy -p kiwi-forensics --all-targets -- -D warnings` — clean.
+- `cargo fmt --all -- --check` — clean (after the disclosed kiwi-mail hunks).
+- `npx tsc --noEmit` — clean.
+
+### Assumptions / risks
+
+- `signals.rs` is outside `types/` but is a wire-view producer, not
+  commands/rules/oauth2/auth — judged in-scope for the rename.
+- `require_tls13` semantics chosen: effective-floor shorthand (field doc
+  says "Require TLS 1.3 specifically"); alternative was deleting the
+  redundant field — kept for API stability.
+- Earlier T-245 hunks + this task's contract edits were swept into
+  concurrent commits again (`9c7255d`, `033af05`, `83847e3`); content
+  verified correct at HEAD.
+- Scores under `/2` can differ by ±1pt in fractional cases vs stored
+  `/1` scores — `model_version` records which produced them.

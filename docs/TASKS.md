@@ -195,7 +195,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 
 <!-- FSV-1 ratified: snake_case + externally-tagged data variants; EvidenceValue internal-tag exception; lossy-legacy reader. -->
 <!-- ROSTER SWEEP: A16/A17 terminals exited; A12/A13/A18 not in terminal list. Orphans: T-194 mobile screens, T-229 oauth2.md review, T-231 live-data wiring (if A12 gone), T-193 verify-in-tree. 3 unidentified OpenCode/SpaceBunny terminals pinged for identification. A21 reassigned to T-232. -->
-| T-235 | kiwi-pair contract-vs-impl gap audit (read-only, file:line evidence) | Agent 18 | open | `kiwi-pair/`, `kiwi-app/src-tauri/` | T-188 |
+| T-235 | kiwi-pair contract-vs-impl gap audit | Agent 23 (e26f119b — was dup A22 session) | open |
 | T-236 | rules.md contract (kiwi.rules/1, 445L) | Agent 22 | done | `docs/contracts/` | T-228 |
 | T-237 | Drift fixes batch: prefs IPC renames + contracts index + admin-api post-T-193 + challenge-expired ruling | Agent 20 | open | `kiwi-app/src/ipc.ts`, `docs/contracts/` | T-196 |
 | T-238 | Forensics serde vocab proposal — FSV-1 RATIFIED | Agent 22 | done | `docs/audits/` | T-196 FOR-1/2 |
@@ -208,7 +208,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-245 | FSV-1 implemented (kiwi.forensics/2, dual-read, sentinel, 120 tests) | Agent 20 | done |
 <!-- QUEUE: ACFG-3..10 autoconfig-parser drift (ex-Agent-8 items) — assign when autoconfig owner frees. authstamp clippy -> A21 in-flight. -->
 | T-246 | ACFG-3..10 enumerated (autoconfig-drift-1.md; 7/8/9 = code-owner hardening) | Agent 22 | done |
-| T-247 | Wire-shape batch 2 (IPC-6/7/8/9 + FOR-3/4/5) | Agent 20 | open | `types/`, `kiwi-forensics/` | T-241 |
+| T-247 | Wire-shape batch 2 (IPC-6/7/8/9 + FOR-3/4/5; found+fixed dead unsub chip) | Agent 20 | done |
 | T-249 | AuthRisk derived enum (clean/noted/failed truth table, authrisk.rs, 178/178) | Agent 21 | done |
 | T-250 | admin-api enumeration (admin-drift-1.md; ADM-08 §14 unimpl, ADM-01 projection gap) | Agent 22 | done |
 | T-251 | ACFG-7/8/9 parser hardening (PI whitelist, root strict, no fallback; 97/97) | Agent 19 | done |
@@ -225,3 +225,6 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-260 | security-session.md contract-vs-impl enumeration (TrustMachine/lock gates) | Agent 22 | open | `docs/audits/` | T-196 |
 | T-261 | LinkRisk hints: IP-literal, text/href mismatch, shorteners, punycode, cred-in-URL | Agent 21 | open | `kiwi-mail/` | T-254 |
 | T-262 | Send-path e2e: compose->outbox->scripted SMTP->sent (fail branches: reject/undo/no-STARTTLS) | Agent 19 | open | `src-tauri/`, `kiwi-mail/` testutil | T-257 |
+| T-264 | Folder exists/unseen COUNT query + FolderView fields (IPC-6 follow-up) | queued | backlog | `kiwi-mail/store` | T-247 |
+
+<!-- A18 terminal gone; e26f119b was a DUP A22 session — renumbered Agent 23, owns T-235. rule_catalog stays v1 (flags restore semantics, default output identical — ratified). -->

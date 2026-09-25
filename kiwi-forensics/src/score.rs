@@ -1,6 +1,6 @@
 //! Deterministic security scoring.
 //!
-//! # Model (`kiwi-score-1`)
+//! # Model (`kiwi-score-2`)
 //!
 //! 1. Each finding has a **weight** in points derived from its severity
 //!    (`Critical` 40, `High` 25, `Medium` 12, `Low` 5, `Info` 0).
@@ -9,12 +9,18 @@
 //! 3. Repeats of the *same rule* on the same subject are dimmed
 //!    (1st 1.00, 2nd 0.50, 3rd 0.25, 4th+ 0.125) so that one systematic
 //!    misconfiguration repeated across many sessions cannot monopolise the score.
-//! 4. Deductions are summed and capped at 100; the score is `100 - deduction`.
+//! 4. Each finding's deduction is rounded **half up** to whole points;
+//!    the per-finding deductions are summed and capped at 100; the score is
+//!    `100 - deduction`.
 //!
 //! All arithmetic is integer-only: scaling factors are basis points, intermediate
-//! units are `points × 10^8`, and the final division rounds **half up**. No
-//! floating point is used anywhere, so two platforms (or two runs) cannot produce
-//! different scores from the same findings.
+//! units are `points × 10^8`, and every per-finding division rounds **half up**
+//! before the sum. No floating point is used anywhere, so two platforms (or two
+//! runs) cannot produce different scores from the same findings.
+//!
+//! Model `kiwi-score-2` rounds per finding (the contract's wording); `kiwi-score-1`
+//! rounded the aggregate sum once and could land one point lower when several
+//! fractional findings were summed.
 
 use std::collections::BTreeMap;
 
@@ -186,7 +192,7 @@ pub fn score_findings(findings: &[Finding], policy: &ScoringPolicy) -> SecurityS
             .push((finding.severity, finding.confidence.multiplier_bp()));
     }
 
-    let mut units: u64 = 0;
+    let mut deduction_total: u64 = 0;
     let mut dimmed_repeats: u32 = 0;
     let slots = policy.repeat_multipliers_bp.len();
     for occurrences in by_rule.values_mut() {
@@ -200,17 +206,18 @@ pub fn score_findings(findings: &[Finding], policy: &ScoringPolicy) -> SecurityS
                 dimmed_repeats += 1;
             }
             let points = u64::from(policy.weights.points_for(*severity));
-            units = units.saturating_add(
-                points
-                    .saturating_mul(u64::from(*confidence_bp))
-                    .saturating_mul(u64::from(repeat_bp)),
-            );
+            let units = points
+                .saturating_mul(u64::from(*confidence_bp))
+                .saturating_mul(u64::from(repeat_bp));
+            // Per-finding half-up rounding, then sum (kiwi-score-2): two
+            // 12.5-point findings cost 26, not a once-rounded 25.
+            deduction_total =
+                deduction_total.saturating_add(units.saturating_add(UNIT_SCALE / 2) / UNIT_SCALE);
         }
     }
 
-    // Round half up, then cap: the floor is `100 - max_deduction_points`.
-    let rounded = units.saturating_add(UNIT_SCALE / 2) / UNIT_SCALE;
-    let deduction_points = u64::from(policy.max_deduction_points).min(rounded) as u32;
+    // Cap: the floor is `100 - max_deduction_points`.
+    let deduction_points = u64::from(policy.max_deduction_points).min(deduction_total) as u32;
     let score = 100u32.saturating_sub(deduction_points);
 
     SecurityScore {
@@ -370,6 +377,21 @@ mod tests {
         );
         assert_eq!(score.score, 87);
         assert_eq!(score.grade, Grade::B);
+    }
+
+    #[test]
+    fn per_finding_rounding_sums_rounded_points() {
+        // FOR-5/T-247 (kiwi-score-2): each finding rounds half up before
+        // summing — two 12.5-point findings deduct 13+13=26, not a
+        // once-rounded 25.
+        let s = session("a");
+        let findings = vec![
+            finding("KIWI-CIPHER-004", Severity::High, Confidence::Tentative, &s),
+            finding("KIWI-TLS-003", Severity::High, Confidence::Tentative, &s),
+        ];
+        let score = score_findings(&findings, &ScoringPolicy::default());
+        assert_eq!(score.deduction_points, 26);
+        assert_eq!(score.model_version, crate::SCORING_MODEL_VERSION);
     }
 
     #[test]
