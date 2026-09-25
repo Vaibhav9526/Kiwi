@@ -64,9 +64,9 @@ provenance, not remediation assignments.
 | AUTH-16 | L | Test fixture session-id form conflicts with reserved `x-tx:` recovery semantics. | `contract-drift-1.md:197` | T-194 | open |
 | AUTH-I | I | Phase-4 pairing/keystore/live transport surfaces remain intentionally unimplemented. | `contract-drift-1.md:229` | T-194 | open |
 | SS-1 | H | Locked trust evaluation could report no required action. | `contract-drift-1.md:70`; `agent-20-status.md:182-195` | T-239 | fixed |
-| SS-2 | M | `ThunderbirdHook` serializes as `live-client`, not documented `thunderbird-hook`. | `contract-drift-1.md:128` | Lead/contract owner | open |
+| SS-2 | M | `ThunderbirdHook` serialized as `live-client`, not documented `thunderbird-hook`. | `contract-drift-1.md:128`; T-260 re-verified at HEAD | T-260 | fixed (contract amended to `live-client`: KIWI is a standalone client, so a live observation has no Thunderbird hook behind it; spelling pinned by `types::tests`) |
 | SS-3 | M | Device transitions permit undocumented paths, including suspended-to-active. | `contract-drift-1.md:129` | T-194/T-188 | open |
-| SS-4 | L | No serde derives enforce the security-session version-skew invariant. | `contract-drift-1.md:206` | T-194/contract owner | open |
+| SS-4 | L | No serde derives enforce the security-session version-skew invariant. | `contract-drift-1.md:206`; T-260 clarified security-session.md §1 | T-260 (doc-clarified) / T-194 (codified) | open — invariant now names where tolerance actually lives (view boundary; no derived `Deserialize` in kiwi-core) |
 | SS-5 | L | Medium signals can degrade regardless of score. | `contract-drift-1.md:207` | T-194 | open |
 | SS-6 | L | Locked state can report a fresh score of 100, misleading telemetry. | `contract-drift-1.md:208` | T-194 | open |
 | SS-7 | L | Repeated-auth-failure indicator fires on a single failed attempt. | `contract-drift-1.md:209` | T-194 | open |
@@ -178,7 +178,25 @@ provenance, not remediation assignments.
 | UIS-21 | L | UI event row uses `id`/`tsUnix` while contract names `eventId`/`timestamp`. | `contract-drift-1.md:233` | T-237/contract owner | in-flight |
 | UIS-22 | I | Additional frontend routes/components are undocumented implementation surface. | `contract-drift-1.md:234` | T-145/contract owner | open |
 | INT-6 | L | Contract index omitted existing contract files; Agent 20 reports the index now lists all 14. | `contract-drift-1.md:216`; `agent-20-status.md:98-103` | T-237 | fixed |
-| INT | I | Integrations contract is absent while code cites it; integration seams and consent gates remain. | `contract-drift-1.md:235` | T-226 | open |
+| INTG-1 | H | "Consent is non-bypassable" was stronger than the implementation: the token was renderer-replayable and ordinary `kiwi_send_message` bypassed the integration boundary entirely. | `integrations-drift-1.md:67-73` | T-286 | fixed |
+| INTG-2 | M | Secret-bearing public types were not uniformly redacted or zeroized. | `integrations-drift-1.md:75-79` | T-286 | fixed |
+| INTG-3 | M | `report_url` could contradict the slug-never-crosses-IPC rule. | `integrations-drift-1.md:81-85` | T-286 | fixed |
+| INTG-4 | M | In-band provider errors could surface as apparent success. | `integrations-drift-1.md:87-91` | T-286 | fixed |
+| INTG-5 | M | Auth hard-gate failed open on unknown/truncated checks. | `integrations-drift-1.md:93-97` | T-286 | fixed |
+| INTG-6 | M | Sanitized temp mail still permitted external navigation. | `integrations-drift-1.md:99-103` | T-286 | fixed |
+| INTG-7 | M | `sent=true` could survive a failed enqueue. | `integrations-drift-1.md:105-109` | T-286 | fixed |
+| INTG-8 | M | Normal SMTP retry could duplicate into a single-use address. | `integrations-drift-1.md:111-115` | T-286 | fixed |
+| INTG-9 | M | Rate-limit hints were lost and UI polling amplified failures. | `integrations-drift-1.md:117-121` | T-286 | fixed |
+| INTG-10 | M | Temp-mail create/replacement could orphan remote public mailboxes. | `integrations-drift-1.md:123-127` | T-286 | fixed |
+| INTG-11 | M | Audit writes occurred after irreversible external/state effects. | `integrations-drift-1.md:129-133` | T-286 | fixed |
+| INTG-12 | M | Offline isolation and live constructors were convention-only. | `integrations-drift-1.md:135-139` | T-286 | fixed |
+| INTG-13 | M | Frontend consent/notice/polling/rendering had no automated gate. | `integrations-drift-1.md:141-145` | T-286 | fixed |
+| INTG-14 | L | Frontend trusted compile-time IPC types without runtime validation. | `integrations-drift-1.md:147-151` | T-286 | fixed |
+| INTG-15 | L | IPC/secret/notice wording was internally contradictory. | `integrations-drift-1.md:153-157` | T-286 | fixed |
+| INTG-16 | L | Error/status comments and reachable states drifted. | `integrations-drift-1.md:159-163` | T-286 | fixed |
+| INTG-17 | L | "Real IP is never sent" was too broad. | `integrations-drift-1.md:165-169` | T-286 | fixed |
+| INTG-18 | L | Transport guarantees did not apply to every public `HttpClient`. | `integrations-drift-1.md:171-175` | T-286 | fixed |
+| INTG-19 | L | Scripted request assertions were weaker than the contract wording. | `integrations-drift-1.md:177-181` | T-286 | fixed |
 
 ## Queue and ownership summary
 
@@ -189,7 +207,9 @@ provenance, not remediation assignments.
   FOR-7/8/9); T-271 (IPC-5, IPC-16 listener, FOR-6 §1 reconciliation,
   FOR-11/12 contract amends); T-230/T-195 ACFG-1/2 and IPC-10; T-251
   ACFG-7/8/9 parser hardening and contract exceptions; T-258 verified
-  MAUTH-2/3 resolved.
+  MAUTH-2/3 resolved; T-278 audit + T-286 closure of INTG-1..19 (native
+  integration-bound send confirmation, crate/app/frontend hardening,
+  contract amendments).
 - **In-flight:** T-193/T-250 admin residual findings; T-231/T-145 UI
   wrapper work; T-266 sandbox-open IPC (build churn observed during
   T-271); T-267 4-pane rebuild (App.tsx/chrome/Icon tsc churn).

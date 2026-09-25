@@ -263,7 +263,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-283 | Agenda rail real: security card on real trust/findings/devices (no mock), persisted tasks | Agent 25 | done |
 | T-284 | security-surface regression done: link-gate wired, evidence pill all-3, canonical unlock, useMailbox zombie deleted | Agent 24 | done |
 | T-285 | POP3 e2e proven: scripted wire, ingest+dedup/keep, failures, DELE-witnessed delete; all 3 protocols now wire-proven | Agent 19 | done |
-| T-286 | implement T-278 findings by severity — H consent-bypass server-side first, then 11M, 7L; apply own rulings | Agent 23 | open | `kiwi-integrations`, `commands/`, contracts | T-278 |
+| T-286 | 19 findings fixed: native rfd consent at integration boundary, fail-closed decoders, env-gated live tests, contract reconciled | Agent 23 | done |
 | T-287 | UI hardening sweep done: folder error/empty surfaces, focus rings, ?overlay verified real | Agent 25 | done |
 | T-288 | templates backend done (v15, 5 gated IPC, {{var}} render); UI half → next free UI agent | Agent 20 done / A24or25 UI pending | partial |
 | T-289 | OAuth2/account-add verified live e2e (device code, retryAfterSecs, needsRefresh, error map, first-run) | Agent 24 | done |
@@ -298,7 +298,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-318 | import/export UI seam wired to ipc.md §6j (both rows) w/ verbatim counts | Agent 25 | done |
 | T-319 | local folder create/rename/delete IPC; remote/system fail-closed; audited | Agent 15 | done |
 | T-320 | forensics file export: self-verifying SHA-256 envelope, atomic, verdict-not-panic | Agent 21 | done |
-| T-321 | post-T-286: contract/docs sweep — consent-boundary semantics documented as-built | Agent 23 | open | `ipc.md`, `docs/contracts/` | T-286 |
+| T-321 | consent-boundary docs sweep (as-built semantics) — ACTIVE post-T-286 | Agent 23 | in-progress | `ipc.md`, `docs/contracts/` | T-286 |
 | T-322 | folder-mgmt UI over T-319 (ctx create/rename/delete, system/smart protected) | Agent 24 | done |
 | T-323 | audit-log view shipped behind honest pending state; auto-lights on T-324 | Agent 25 | done |
 | T-324 | kiwi_audit_events read IPC (bounded keyset, lock-gated, honest nulls) | Agent 15 | done |

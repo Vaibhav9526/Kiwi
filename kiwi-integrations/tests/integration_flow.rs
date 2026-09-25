@@ -490,7 +490,10 @@ async fn forget_me_needs_the_exact_success_token() {
         gm.forget_me().await.unwrap_err(),
         IntegrationError::ProviderRejected("forget_me")
     );
-    assert_eq!(gm.address(), None);
+    assert_eq!(
+        gm.address().as_deref(),
+        Some("kctest01@guerrillamailblock.com")
+    );
     http.assert_exhausted();
 }
 
