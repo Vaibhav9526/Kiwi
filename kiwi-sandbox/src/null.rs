@@ -42,6 +42,8 @@ mod tests {
         let err = p
             .create(SandboxSpec {
                 artifact_path: PathBuf::from("x"),
+                link_url: None,
+                evidence_reasons: Vec::new(),
                 timeout_secs: 30,
                 max_memory_mb: 256,
                 allow_egress: false,
