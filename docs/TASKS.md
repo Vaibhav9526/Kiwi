@@ -151,3 +151,11 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-223 | i18n locale framework — Phase 8 | unassigned | deferred-P8 | `kiwi-app/` | — |
 | T-224 | AI assistant (summarize/draft/ask) — Phase 7, non-authoritative per SECURITY.md | unassigned | deferred-P7 | TBD | — |
 | T-225 | Spam-learning classifier — Phase 7, deterministic-first | unassigned | deferred-P7 | `kiwi-mail/` | — |
+| T-226 | New crate `kiwi-integrations`: TempMailProvider (Guerrilla, HTTPS-only, public-inbox rules, no credential persistence) + DeliverabilityTester (email-spam-tester, consent-gated, slug secrecy) + recorded-fixture tests + integrations.md contract + ADR-009 | Agent 11 (Devin Pro) | open | `kiwi-integrations/` | — |
+
+## Fleet note — runtime restart wiped agent sessions
+
+Prior roster (agents 4-10) lost all context when the runtime restarted. Fresh
+fleet as of 2026-09-25: Agent 11 (Devin Pro) + 4x OpenCode + 3x Cline + 2x Pi +
+Planner. Agents must read prompt.md/ARCHITECTURE/TASKS + their status files to
+rebuild context. Lead handle is now term_c20c6737.
