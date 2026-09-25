@@ -474,3 +474,83 @@ Snoozed view is `kiwi_list_snoozed`, account-wide.
   the origin can't exist.
 - Sweep is capped 200/pass — a pathological backlog releases over
   several passes; deterministic order, documented in ipc.md §6e.
+
+---
+
+## T-263 — junk command + rules TS wrappers (accepted scope)
+
+### `kiwi_message_set_junk` — completes orphaned T-212
+
+`commands/message/junk.rs` — `refs` shares the snooze contract (reuses
+`owned_refs`, now `pub(super)` in snooze.rs: non-empty, ≤500, deduped,
+every folderId proven account-owned). Semantics:
+
+- `junk=true`: `\Junk` flag via `mark_junk` then move into the resolved
+  Junk folder (`resolve_junk` mirrors `resolve_trash`: local name match
+  → live LIST `\Junk` special-use → CREATE "Junk" + index register).
+  Refs already in a Junk-named folder get the flag only (no self-move).
+- `junk=false`: `unmark_junk`; refs sitting in a Junk-named folder move
+  back to INBOX, others clear flag only (no origin tracking — INBOX is
+  the documented destination).
+- IMAP write-through is IMMEDIATE per ipc.md §6f — fresh connection per
+  call (same as update/delete), `UID STORE ±FLAGS.SILENT (\Junk)` on the
+  selected source folder BEFORE `UID MOVE`, so the flag applies at
+  current coordinates. No deferred flag queue; next sync's flag-diff is
+  the reconciliation net. POP3: local-only (no server flags/folders).
+- Local order mirrors update.rs: flag write before move so `\Junk` rides
+  the row copy; `move_messages` re-keys snooze rows — a parked message
+  stays parked in Junk.
+- `SetJunkView { junk, flagged, moved, targetFolderId?, moves[] }` —
+  `moves` carries `{fromFolderId, fromUid, toUid}` per leg because refs
+  span folders and uids are folder-scoped (flat uid map would collide).
+- Audit: `messages-junked` / `messages-unjunked` with counts.
+
+### Rules TS wrappers — the T-200 seam gap
+
+`kiwi.ts`: `RuleMatchOp`, `RulePredicate` (full `{"kind"}` union —
+sender/recipient/subject/attachment_name/header/body_contains/all/any/
+not/always), `RuleAction` (`{"do"}` union), `RuleView`, `RuleHitView`,
+`RulesApplyView`, `PreviewHitView`, `RulePreviewView`,
+`SetJunkMoveView`, `SetJunkView`.
+
+`ipc.ts`: `rulesList(accountId?)`, `rulesUpsert(rule)`, `rulesDelete`,
+`rulesApplyNow`, `rulesHits`, `rulesPreview`, `setJunk` — every rules
+command from §6d now has a typed wrapper.
+
+`ipc.md` §6f documents the junk contract (flag timing, folder
+resolution, idempotence, snooze interaction).
+
+### Gates at completion
+
+- `cargo test -p kiwi-app` — 106/106 (3 new junk tests: flag+move
+  roundtrip via POP3, direction edges, refs validation/ownership).
+- `cargo test -p kiwi-mail` — 203/203.
+- `cargo clippy --workspace --all-targets -- -D warnings` — clean.
+- `npx tsc --noEmit` — clean. `rustfmt --check` on touched files — clean.
+
+### Cross-agent unblock (flagged)
+
+- `kiwi-mail/src/store/queries.rs` — T-261's `stage_attachment` called
+  an unwritten `attachment_bytes_from_mime`; wrote it (re-parse stored
+  MIME, exact-filename match, invalid-input on miss — caller already
+  bounds existence/ambiguity/size).
+- `kiwi-sandbox/src/wsl2.rs` — 3 test `SandboxSpec` literals lacked the
+  new `link_url`/`evidence_reasons` fields; added `None`/`Vec::new()`
+  per the `null.rs` precedent.
+- `kiwi-app/src-tauri/src/commands/sandbox.rs` — spliced `use` inside
+  `require_available` + stray EOF brace + `FolderEntry` `.copied()` on
+  a Clone-only type; fixed. `state.rs` `configured_sandbox` move-order
+  hoisted. (Owner was mid-write; several of these self-resolved —
+  my edits were the overlap.)
+- `mailbox.tsx` — `MessageAttachmentView.filename` became `string|null`
+  under another agent; `placeholder={a.filename ?? undefined}`.
+
+### Assumptions / risks
+
+- Junk flag push is immediate (per-call conn), not "next sync push" —
+  chose the delete.rs/write-through pattern; documented in §6f.
+- Un-junk destination is always INBOX (no origin tracking — Junk rows
+  don't carry `from_folder`; adding it for a rare restore-precision
+  nicety wasn't in scope).
+- Junking a parked message keeps the snooze (releases inside Junk).
+- `SandboxSessionRecord.report` dead-field cleared by owner's own fix.

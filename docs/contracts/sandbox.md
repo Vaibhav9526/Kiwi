@@ -33,6 +33,8 @@ enum Availability {
 
 struct SandboxSpec {
     artifact_path: PathBuf,      // host-side, copied in read-only
+    link_url: Option<String>,     // HTTP(S), for providers supporting isolated link opening
+    evidence_reasons: Vec<String>, // fixed link/attachment evidence codes only
     timeout_secs: u64,           // hard kill past this
     max_memory_mb: u32,
     allow_egress: bool,          // default false
@@ -53,6 +55,7 @@ struct EgressEvidence {
 }
 
 struct AnalysisReport {
+    evidence_reasons: Vec<String>, // WHY this target entered the sandbox
     exit_code: Option<i32>,
     timed_out: bool,
     incomplete: bool,            // crash/kill → partial data, say so
@@ -169,6 +172,11 @@ and never executes the artifact (invariant 6). The provider maps this to
 ## Callers' obligations
 
 - Check `availability()` first; `Unavailable` → surface "active analysis
-  unavailable" to UI, do NOT execute the attachment any other way.
+  unavailable" to UI, do NOT execute the attachment or link any other way.
+- Link targets are absolute HTTP(S) URLs. A provider without enforceable,
+  monitored link egress (including the current egress-blocked WSL2 tier) MUST
+  return `Unavailable`; it never falls back to a host browser.
+- The `evidence_reasons` handoff and retained report are bounded stable reason
+  codes only — never store URLs, domains, filenames, or body fragments there.
 - Always `teardown()` (or rely on Drop) — no instance reuse.
 - Treat `AnalysisReport` as untrusted data; it is evidence, not a verdict.

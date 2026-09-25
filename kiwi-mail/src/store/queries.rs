@@ -4,6 +4,7 @@
 
 use std::path::PathBuf;
 
+use mail_parser::{MessageParser, MimeHeaders};
 use rusqlite::{OptionalExtension, params};
 
 use crate::account::MailAccount;
@@ -1053,6 +1054,61 @@ impl MailStore {
             .ok()
             .flatten();
         Ok(rel.map(|r| self.root.join(r)))
+    }
+
+    /// Resolve one stored attachment by its MIME filename into a private
+    /// sandbox-staging path. The caller supplies a reference only; raw bytes
+    /// never cross IPC.
+    pub fn stage_attachment(
+        &self,
+        folder_id: i64,
+        uid: u64,
+        filename: &str,
+        max_bytes: usize,
+    ) -> Result<(PathBuf, String)> {
+        let body_path = self
+            .body_file(folder_id, uid)?
+            .ok_or_else(|| MailError::InvalidInput("message body not stored".into()))?;
+        let raw = std::fs::read(body_path)?;
+        let message = MessageParser::default().parse(&raw).ok_or_else(|| {
+            crate::error::MailError::Protocol {
+                protocol: "mime",
+                detail: "stored body failed MIME parse".into(),
+            }
+        })?;
+        let mut matches = message.attachments().filter(|a| {
+            a.attachment_name()
+                .is_some_and(|stored| stored == filename)
+        });
+        let attachment = matches.next().ok_or_else(|| {
+            crate::error::MailError::InvalidInput("stored attachment not found".into())
+        })?;
+        if matches.next().is_some() {
+            return Err(crate::error::MailError::InvalidInput(
+                "attachment filename is ambiguous".into(),
+            ));
+        }
+        if attachment.contents().len() > max_bytes {
+            return Err(crate::error::MailError::InvalidInput(
+                "attachment exceeds sandbox size bound".into(),
+            ));
+        }
+        let content_type = attachment
+            .content_type()
+            .map(|c| format!("{}/{}", c.ctype(), c.subtype().unwrap_or("")))
+            .unwrap_or_else(|| "application/octet-stream".into());
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = self
+            .root
+            .join("sandbox-staging")
+            .join(format!("{}-{nonce}-{uid}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("artifact.bin");
+        std::fs::write(&path, attachment.contents())?;
+        Ok((path, content_type))
     }
 
     /// Store a decoded attachment payload.

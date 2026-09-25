@@ -1,20 +1,61 @@
 /**
- * App shell chrome (T-112 → T-191 Mailspring idiom): desktop MenuBar,
- * unified TopBar toolbar, Sidebar (folder tree + accounts + unread badges),
- * AppShell layout. Surfaces KIWI-UI-013/014/015/002.
- * Reskin/layout only — every prop and navigation target is preserved.
+ * App shell chrome (T-267 eM-idiom rebuild): titlebar (hamburger + centered
+ * search pill + window-side cluster), toolbar row (icon+label+chevron
+ * split buttons — +New orange primary), 4-pane body (folder pane with
+ * Mail/Favorites smart folders + per-account sections, list, reader,
+ * collapsible Agenda rail) and the bottom icon status strip.
+ * Mailspring-idiom tokens/motion stay the animation vocabulary; every prop
+ * and navigation target from the prior chrome is preserved.
+ * All glyphs are stub stroke icons — TODO(icon) swap to components/icons (T-268).
  */
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { AccountInfo, TrustState } from "../kiwi";
+import type { Severity, SnoozePreset, TrustState } from "../kiwi";
 import { severityGlyph, severityLabel } from "../kiwi";
 import { navigate } from "../router";
+import { loadPref, savePref } from "../prefs";
+import {
+  IconArchive,
+  IconBolt,
+  IconCheck,
+  IconChevronDown,
+  IconChevronRight,
+  IconCollapseRight,
+  IconCommand,
+  IconContacts,
+  IconDrafts,
+  IconFlag,
+  IconFolder,
+  IconForward,
+  IconHelp,
+  IconInbox,
+  IconJunk,
+  IconLock,
+  IconMail,
+  IconMenu,
+  IconMore,
+  IconOutbox,
+  IconPlus,
+  IconRefresh,
+  IconReply,
+  IconReplyAll,
+  IconSearch,
+  IconSent,
+  IconSettings,
+  IconSnooze,
+  IconStar,
+  IconTasks,
+  IconTrash,
+  IconUnread,
+  IconUnreplied,
+  IconUser,
+} from "./icons";
 
 export function TrustChip({ trust, locked }: TrustState) {
   if (locked) {
     return (
       <span className="kiwi-pill locked" role="status">
-        🔒 KIWI: Locked
+        <IconLock size={11} /> KIWI: Locked
       </span>
     );
   }
@@ -31,34 +72,26 @@ export function TrustChip({ trust, locked }: TrustState) {
   );
 }
 
-interface MenuEntry {
+/* ---------------- shared dropdown menu ---------------- */
+
+export interface MenuItem {
   label: string;
   hint?: string;
+  disabled?: boolean;
   run: () => void;
 }
+/** `null` renders a separator. */
+export type MenuEntry = MenuItem | { section: string } | null;
 
-/** Desktop menu bar — every item reuses an existing route/action. */
-function MenuBar({
-  demo,
-  onSync,
-  onLock,
-  onOpenShortcuts,
-}: {
-  demo: boolean;
-  onSync: () => void;
-  onLock: () => void;
-  onOpenShortcuts: () => void;
-}) {
-  const [open, setOpen] = useState<string | null>(null);
-  const barRef = useRef<HTMLDivElement | null>(null);
-
+function useDismissable(open: boolean, close: () => void) {
+  const ref = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!open) return;
     const onDoc = (e: MouseEvent) => {
-      if (barRef.current && !barRef.current.contains(e.target as Node)) setOpen(null);
+      if (ref.current && !ref.current.contains(e.target as Node)) close();
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(null);
+      if (e.key === "Escape") close();
     };
     document.addEventListener("mousedown", onDoc);
     document.addEventListener("keydown", onKey);
@@ -66,79 +99,90 @@ function MenuBar({
       document.removeEventListener("mousedown", onDoc);
       document.removeEventListener("keydown", onKey);
     };
-  }, [open ]);
+  }, [open, close]);
+  return ref;
+}
 
-  const menus: { name: string; items: MenuEntry[] }[] = [
-    {
-      name: "File",
-      items: [
-        { label: "New message", hint: "Ctrl+N", run: () => navigate({ name: "compose" }) },
-        { label: "Get new messages", hint: "F5", run: onSync },
-        { label: "Add account…", run: () => navigate({ name: "setup" }) },
-        { label: "Lock mailbox now", run: onLock },
-      ],
-    },
-    {
-      name: "Go",
-      items: [
-        { label: "Mail", run: () => navigate({ name: "mail", folder: "all-inboxes" }) },
-        { label: "Search", run: () => navigate({ name: "search" }) },
-        { label: "Contacts", run: () => navigate({ name: "contacts" }) },
-        { label: "Mail filters", run: () => navigate({ name: "filters" }) },
-        { label: "Security Center", run: () => navigate({ name: "security" }) },
-        { label: "Settings", run: () => navigate({ name: "settings" }) },
-      ],
-    },
-    {
-      name: "Help",
-      items: [{ label: "Keyboard shortcuts", hint: "?", run: onOpenShortcuts }],
-    },
-  ];
-  void demo;
-
+export function DropMenu({ entries, label, onClose }: { entries: MenuEntry[]; label: string; onClose: () => void }) {
   return (
-    <div className="ms-menubar" role="menubar" aria-label="Application menus" ref={barRef}>
-      {menus.map((m) => (
-        <div className="ms-menu-wrap" key={m.name}>
-          <button
-            type="button"
-            className="ms-menu-button"
-            role="menuitem"
-            aria-haspopup="menu"
-            aria-expanded={open === m.name}
-            onClick={() => setOpen((o) => (o === m.name ? null : m.name))}
-            onMouseEnter={() => {
-              if (open !== null) setOpen(m.name);
-            }}
-          >
-            {m.name}
-          </button>
-          {open === m.name && (
-            <ul className="ms-menu-list ms-pop" role="menu" aria-label={m.name}>
-              {m.items.map((it) => (
-                <li key={it.label} role="none">
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      setOpen(null);
-                      it.run();
-                    }}
-                  >
-                    {it.label}
-                    {it.hint && <span className="ms-menu-hint">{it.hint}</span>}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      ))}
+    <ul className="em-menu ms-pop" role="menu" aria-label={label}>
+      {entries.map((it, i) =>
+        it === null ? (
+          <li key={i} className="em-menu-sep" role="separator" />
+        ) : "section" in it ? (
+          <li key={i} className="em-menu-section" role="presentation">
+            {it.section}
+          </li>
+        ) : (
+          <li key={`${it.label}-${i}`} role="none">
+            <button
+              type="button"
+              role="menuitem"
+              disabled={it.disabled}
+              onClick={() => {
+                onClose();
+                it.run();
+              }}
+            >
+              {it.label}
+              {it.hint && <span className="em-menu-hint">{it.hint}</span>}
+            </button>
+          </li>
+        ),
+      )}
+    </ul>
+  );
+}
+
+/* ---------------- titlebar: hamburger + centered search ---------------- */
+
+function HamburgerMenu({
+  onSync,
+  onLock,
+  onOpenShortcuts,
+}: {
+  onSync: () => void;
+  onLock: () => void;
+  onOpenShortcuts: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useDismissable(open, () => setOpen(false));
+  const entries: MenuEntry[] = [
+    { section: "File" },
+    { label: "New message", hint: "Ctrl+N", run: () => navigate({ name: "compose" }) },
+    { label: "Get new messages", hint: "F5", run: onSync },
+    { label: "Add account…", run: () => navigate({ name: "setup" }) },
+    { label: "Lock mailbox now", run: onLock },
+    null,
+    { section: "Go" },
+    { label: "Mail", run: () => navigate({ name: "mail", folder: "all-inboxes" }) },
+    { label: "Search", run: () => navigate({ name: "search" }) },
+    { label: "Contacts", run: () => navigate({ name: "contacts" }) },
+    { label: "Mail filters", run: () => navigate({ name: "filters" }) },
+    { label: "Security Center", run: () => navigate({ name: "security" }) },
+    { label: "Settings", run: () => navigate({ name: "settings" }) },
+    null,
+    { section: "Help" },
+    { label: "Keyboard shortcuts", hint: "?", run: onOpenShortcuts },
+  ];
+  return (
+    <div className="em-menu-wrap" ref={ref}>
+      <button
+        type="button"
+        className="em-iconbtn"
+        aria-label="Application menu"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <IconMenu size={16} />
+      </button>
+      {open && <DropMenu entries={entries} label="Application menu" onClose={() => setOpen(false)} />}
     </div>
   );
 }
 
-interface TopBarProps {
+export interface TopBarProps {
   trust: TrustState;
   demo: boolean;
   query: string;
@@ -151,51 +195,96 @@ interface TopBarProps {
   onSync: () => void;
   onLock: () => void;
   syncing?: boolean;
+  /** T-267 toolbar wiring — actions on the selected message. */
+  hasSelection: boolean;
+  inTrash: boolean;
+  onReply: () => void;
+  onReplyAll: () => void;
+  onForward: () => void;
+  onMarkRead: (read: boolean) => void;
+  onMarkStarred: (starred: boolean) => void;
+  onMarkAllRead: () => void;
+  onMarkJunk: (junk: boolean) => void;
+  onArchive: (archived: boolean) => void;
+  onSnooze: (preset: SnoozePreset) => void;
+  onUnsnooze: () => void;
+  onDelete: (permanent: boolean) => void;
+  onSecurityDetails: () => void;
+  onEmptyTrash: () => void;
+  onReloadList: () => void;
 }
 
-export function TopBar({
-  trust,
-  demo,
-  query,
-  onQuery,
-  theme,
-  onTheme,
-  onOpenPalette,
-  onOpenShortcuts,
-  onSubmitSearch,
-  onSync,
-  onLock,
-  syncing,
-}: TopBarProps) {
+/** Split toolbar button — primary click + chevron dropdown (icon+label+chevron each). */
+function ToolBtn({
+  icon,
+  label,
+  onClick,
+  menu,
+  disabled,
+  primary,
+}: {
+  icon: ReactNode;
+  label: string;
+  onClick: () => void;
+  menu?: MenuEntry[];
+  disabled?: boolean;
+  primary?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useDismissable(open, () => setOpen(false));
+  const cls = `em-tool${primary ? " em-tool-primary" : ""}`;
+  if (!menu) {
+    return (
+      <button type="button" className={cls} onClick={onClick} disabled={disabled} title={label}>
+        {icon}
+        <span className="em-tool-label">{label}</span>
+      </button>
+    );
+  }
   return (
-    <header className="ms-chrome">
-      <MenuBar demo={demo} onSync={onSync} onLock={onLock} onOpenShortcuts={onOpenShortcuts} />
-      <div className="ms-toolbar" role="toolbar" aria-label="Mail toolbar">
-        <button type="button" className="ms-brand" aria-label="KIWI home" onClick={() => navigate({ name: "mail", folder: "all-inboxes" })}>
-          KIWI
+    <div className="em-menu-wrap" ref={ref}>
+      <span className={cls + (disabled ? " is-disabled" : "")}>
+        <button type="button" className="em-tool-main" onClick={onClick} disabled={disabled} title={label}>
+          {icon}
+          <span className="em-tool-label">{label}</span>
         </button>
-        <button type="button" className="ms-btn" onClick={onSync} disabled={!!syncing} title="Get new messages (F5)">
-          {syncing ? (
-            <span className="ms-spinner" aria-hidden="true">
-              <i />
-              <i />
-              <i />
-            </span>
-          ) : (
-            "⇅ Get"
-          )}
+        <button
+          type="button"
+          className="em-tool-caret"
+          aria-label={`${label} options`}
+          aria-haspopup="menu"
+          aria-expanded={open}
+          onClick={() => setOpen((o) => !o)}
+        >
+          <IconChevronDown size={10} />
         </button>
-        <button type="button" className="ms-btn ms-btn-primary" onClick={() => navigate({ name: "compose" })} title="Write a new message (Ctrl+N)">
-          ✎ Write
-        </button>
-        <div role="search">
+      </span>
+      {open && <DropMenu entries={menu} label={`${label} options`} onClose={() => setOpen(false)} />}
+    </div>
+  );
+}
+
+export function TopBar(props: TopBarProps) {
+  const { trust, demo, query, onQuery, theme, onTheme, onSync, syncing } = props;
+  const sel = props.hasSelection;
+  const composeActions: MenuEntry[] = [
+    { label: "Reply", run: props.onReply, disabled: !sel },
+    { label: "Reply all", run: props.onReplyAll, disabled: !sel },
+    { label: "Forward", run: props.onForward, disabled: !sel },
+  ];
+  return (
+    <header className="em-chrome">
+      <div className="em-titlebar">
+        <HamburgerMenu onSync={onSync} onLock={props.onLock} onOpenShortcuts={props.onOpenShortcuts} />
+        <div className="em-search" role="search">
+          <IconSearch size={13} className="em-search-icon" />
           <label className="kiwi-sr-only" htmlFor="kiwi-search">
             Search mail
           </label>
           <input
             id="kiwi-search"
             type="search"
-            placeholder="Search mail (/) — Enter for results"
+            placeholder="Search (type ? for help)"
             value={query}
             onChange={(e) => onQuery(e.target.value)}
             onKeyDown={(e) => {
@@ -206,148 +295,584 @@ export function TopBar({
             }}
           />
         </div>
-        <button type="button" className="ms-btn" onClick={onOpenPalette} aria-label="Open command palette" title="Commands (Ctrl+K)">
-          ⌘
-        </button>
-        <button type="button" className="ms-btn" onClick={onOpenShortcuts} aria-label="Show keyboard shortcuts" title="Shortcuts (?)">
-          ?
-        </button>
-        {demo && (
-          <span className="ms-demo-pill" title="Backend unreachable — showing local demo data">
-            demo data
-          </span>
-        )}
-        <label style={{ fontSize: "0.8rem", color: "var(--kiwi-ms-text-secondary)" }}>
-          Theme{" "}
-          <select value={theme} onChange={(e) => onTheme(e.target.value)} aria-label="Color theme">
-            <option value="system">System</option>
-            <option value="light">Light</option>
-            <option value="dark">Dark</option>
-          </select>
-        </label>
-        <TrustChip {...trust} />
+        <div className="em-titlebar-right">
+          {demo && (
+            <span className="em-demo-pill" title="Backend unreachable — showing local demo data">
+              demo data
+            </span>
+          )}
+          <label className="em-theme-label">
+            Theme{" "}
+            <select value={theme} onChange={(e) => onTheme(e.target.value)} aria-label="Color theme">
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+              <option value="system">System</option>
+            </select>
+          </label>
+          <button type="button" className="em-iconbtn" onClick={props.onOpenPalette} aria-label="Open command palette" title="Commands (Ctrl+K)">
+            <IconCommand size={15} />
+          </button>
+          <button type="button" className="em-iconbtn" onClick={props.onOpenShortcuts} aria-label="Show keyboard shortcuts" title="Shortcuts (?)">
+            <IconHelp size={15} />
+          </button>
+          <TrustChip {...trust} />
+        </div>
+      </div>
+      <div className="em-toolbar" role="toolbar" aria-label="Mail toolbar">
+        <ToolBtn
+          icon={<IconPlus size={13} />}
+          label="New"
+          primary
+          onClick={() => navigate({ name: "compose" })}
+          menu={[
+            { label: "New message", hint: "Ctrl+N", run: () => navigate({ name: "compose" }) },
+            { label: "New contact", run: () => navigate({ name: "contacts" }) },
+            { label: "New task", run: () => window.dispatchEvent(new CustomEvent("kiwi-agenda-new")) },
+          ]}
+        />
+        <ToolBtn
+          icon={<IconRefresh size={13} />}
+          label="Refresh"
+          onClick={onSync}
+          disabled={!!syncing}
+          menu={[
+            { label: "Sync now", hint: "F5", run: onSync },
+            { label: "Reload folder list", run: props.onReloadList },
+          ]}
+        />
+        <ToolBtn icon={<IconReply size={13} />} label="Reply" disabled={!sel} onClick={props.onReply} menu={composeActions} />
+        <ToolBtn icon={<IconReplyAll size={13} />} label="Reply All" disabled={!sel} onClick={props.onReplyAll} menu={composeActions} />
+        <ToolBtn icon={<IconForward size={13} />} label="Forward" disabled={!sel} onClick={props.onForward} menu={composeActions} />
+        <ToolBtn
+          icon={<IconFlag size={13} />}
+          label="Mark"
+          disabled={!sel}
+          onClick={() => props.onMarkRead(true)}
+          menu={[
+            { label: "Mark as read", run: () => props.onMarkRead(true), disabled: !sel },
+            { label: "Mark as unread", run: () => props.onMarkRead(false), disabled: !sel },
+            { label: "Star", run: () => props.onMarkStarred(true), disabled: !sel },
+            { label: "Unstar", run: () => props.onMarkStarred(false), disabled: !sel },
+            null,
+            { label: "Mark as junk", run: () => props.onMarkJunk(true), disabled: !sel },
+            { label: "Mark as not junk", run: () => props.onMarkJunk(false), disabled: !sel },
+            null,
+            { label: "Mark all read", run: props.onMarkAllRead },
+          ]}
+        />
+        <ToolBtn
+          icon={<IconArchive size={13} />}
+          label="Archive"
+          disabled={!sel}
+          onClick={() => props.onArchive(true)}
+          menu={[
+            { label: "Archive", run: () => props.onArchive(true), disabled: !sel },
+            { label: "Move to Inbox", run: () => props.onArchive(false), disabled: !sel },
+          ]}
+        />
+        <ToolBtn
+          icon={<IconSnooze size={13} />}
+          label="Snooze"
+          disabled={!sel}
+          onClick={() => props.onSnooze("tomorrow")}
+          menu={[
+            { label: "Later today", run: () => props.onSnooze("later_today"), disabled: !sel },
+            { label: "Tomorrow", run: () => props.onSnooze("tomorrow"), disabled: !sel },
+            { label: "Next week", run: () => props.onSnooze("next_week"), disabled: !sel },
+            null,
+            { label: "Unsnooze", run: props.onUnsnooze, disabled: !sel },
+          ]}
+        />
+        <ToolBtn
+          icon={<IconBolt size={13} />}
+          label="Quick Actions"
+          onClick={() => undefined}
+          menu={[
+            { label: "Mark all read", run: props.onMarkAllRead },
+            { label: "Security details", run: props.onSecurityDetails, disabled: !sel },
+            props.inTrash ? { label: "Empty trash", run: props.onEmptyTrash } : null,
+            null,
+            { label: "Lock mailbox now", run: props.onLock },
+          ]}
+        />
+        <ToolBtn
+          icon={<IconTrash size={13} />}
+          label="Delete"
+          disabled={!sel}
+          onClick={() => props.onDelete(props.inTrash)}
+          menu={[
+            { label: "Move to Trash", run: () => props.onDelete(false), disabled: !sel },
+            { label: "Delete permanently", run: () => props.onDelete(true), disabled: !sel },
+          ]}
+        />
       </div>
     </header>
   );
 }
 
-interface SidebarProps {
-  folders: { id: string; label: string }[];
-  accounts: AccountInfo[];
-  activeFolder: string;
-  unreadByFolder: Record<string, number>;
-  /** Pending authenticator challenges (unlock approvals waiting on device). */
-  pendingApprovals?: number;
+/* ---------------- folder pane ---------------- */
+
+export interface FolderSection {
+  id: string;
+  email: string;
+  displayName: string;
+  color: string;
+  trust: Severity;
+  muted: boolean;
+  unread: number;
+  items: { id: string; label: string; unread: number }[];
 }
 
-/** Inbox-class folders get the filled alt badge; everything else is outline. */
-function isAltBadge(id: string, label: string): boolean {
-  return /inbox|unread|starred|important/i.test(`${id} ${label}`);
+const SMART_ICONS: Record<string, (p: { size?: number }) => ReactNode> = {
+  "all-inboxes": (p) => <IconInbox {...p} />,
+  outbox: (p) => <IconOutbox {...p} />,
+  sent: (p) => <IconSent {...p} />,
+  trash: (p) => <IconTrash {...p} />,
+  drafts: (p) => <IconDrafts {...p} />,
+  junk: (p) => <IconJunk {...p} />,
+  unread: (p) => <IconUnread {...p} />,
+  flagged: (p) => <IconFlag {...p} />,
+  unreplied: (p) => <IconUnreplied {...p} />,
+  snoozed: (p) => <IconSnooze {...p} />,
+};
+
+/** Folder-name → outline icon (live folders arrive as free names). */
+function folderIcon(label: string): ReactNode {
+  if (/inbox/i.test(label)) return <IconInbox size={13} />;
+  if (/sent/i.test(label)) return <IconSent size={13} />;
+  if (/trash|deleted|bin/i.test(label)) return <IconTrash size={13} />;
+  if (/draft/i.test(label)) return <IconDrafts size={13} />;
+  if (/junk|spam/i.test(label)) return <IconJunk size={13} />;
+  if (/archive/i.test(label)) return <IconArchive size={13} />;
+  if (/outbox/i.test(label)) return <IconOutbox size={13} />;
+  return <IconFolder size={13} />;
 }
 
-export function Sidebar({ folders, accounts, activeFolder, unreadByFolder, pendingApprovals }: SidebarProps) {
-  const [accountsOpen, setAccountsOpen] = useState(true);
+function FolderRow({
+  id,
+  label,
+  count,
+  icon,
+  active,
+  indent,
+}: {
+  id: string;
+  label: string;
+  count: number;
+  icon: ReactNode;
+  active: boolean;
+  indent?: boolean;
+}) {
   return (
-    <nav className="ms-sidebar" aria-label="Accounts and folders">
-      <div className="ms-section-label" id="ms-mailboxes-head">
-        Mailboxes
-      </div>
-      <div role="tree" aria-labelledby="ms-mailboxes-head">
-        {folders.map((f) => {
-          const active = activeFolder === f.id;
-          const unread = unreadByFolder[f.id] ?? 0;
-          return (
-            <button
-              key={f.id}
-              type="button"
-              role="treeitem"
-              className="ms-tree-item"
-              aria-selected={active}
-              aria-label={`${f.label}${unread > 0 ? `, ${unread} unread` : ""}`}
-              onClick={() => navigate({ name: "mail", folder: f.id })}
-            >
-              <span className="ms-tree-label">{f.label}</span>
-              {unread > 0 && (
-                <span className={`ms-badge${isAltBadge(f.id, f.label) ? " ms-badge-alt" : ""}`} aria-hidden="true">
-                  {unread}
-                </span>
-              )}
-            </button>
-          );
-        })}
-      </div>
-      <button
-        type="button"
-        className="ms-section-head"
-        aria-expanded={accountsOpen}
-        aria-controls="ms-accounts-list"
-        onClick={() => setAccountsOpen((o) => !o)}
-      >
-        <span className="ms-disclosure" aria-hidden="true">
-          {accountsOpen ? "▾" : "▸"}
+    <button
+      type="button"
+      role="treeitem"
+      className="em-tree-item"
+      aria-selected={active}
+      aria-label={`${label}${count > 0 ? `, ${count} unread` : ""}`}
+      onClick={() => navigate({ name: "mail", folder: id })}
+    >
+      {indent && <span className="em-tree-indent" aria-hidden="true" />}
+      <span className="em-tree-icon" aria-hidden="true">
+        {icon}
+      </span>
+      <span className="em-tree-label">{label}</span>
+      {count > 0 && (
+        <span className="em-tree-count" aria-hidden="true">
+          {count}
         </span>
-        Accounts
+      )}
+    </button>
+  );
+}
+
+export function FolderPane({
+  smartFolders,
+  smartUnread,
+  accountSections,
+  activeFolder,
+  outboxCount,
+}: {
+  smartFolders: { id: string; label: string }[];
+  smartUnread: Record<string, number>;
+  accountSections: FolderSection[];
+  activeFolder: string;
+  outboxCount: number;
+}) {
+  const [favOpen, setFavOpen] = useState(true);
+  const [open, setOpen] = useState<Record<string, boolean>>({});
+  return (
+    <nav className="em-folders" aria-label="Accounts and folders">
+      <h1 className="em-pane-title">Mail</h1>
+      <button type="button" className="em-group-head" aria-expanded={favOpen} onClick={() => setFavOpen((o) => !o)}>
+        <span className={`em-disclosure${favOpen ? " is-open" : ""}`} aria-hidden="true">
+          <IconChevronRight size={11} />
+        </span>
+        <IconStar size={13} />
+        Favorites
       </button>
-      {accountsOpen && (
-        <ul id="ms-accounts-list" style={{ listStyle: "none", margin: 0, padding: 0 }}>
-          {accounts.map((a) => (
-            <li key={a.id} className="ms-account">
-              <span className="ms-account-bar" aria-hidden="true" style={{ background: a.color }} />
-              <span className="ms-account-meta">
-                {a.displayName}{" "}
-                {a.muted && (
-                  <span className="kiwi-pill unknown" title="Muted — unread excluded from counts">
-                    muted
+      {favOpen && (
+        <div role="tree" aria-label="Favorites" className="em-group">
+          {smartFolders.map((f) => (
+            <FolderRow
+              key={f.id}
+              id={f.id}
+              label={f.label}
+              icon={(SMART_ICONS[f.id] ?? (() => <IconFolder size={13} />))({ size: 13 })}
+              count={f.id === "outbox" ? outboxCount : (smartUnread[f.id] ?? 0)}
+              active={activeFolder === f.id}
+              indent
+            />
+          ))}
+        </div>
+      )}
+      <div role="tree" aria-label="Accounts" className="em-accounts">
+        {accountSections.map((s) => {
+          const expanded = open[s.id] ?? true;
+          return (
+            <div key={s.id} className="em-account-group">
+              <button
+                type="button"
+                className="em-group-head em-account-head"
+                aria-expanded={expanded}
+                onClick={() => setOpen((m) => ({ ...m, [s.id]: !expanded }))}
+                title={s.muted ? `${s.email} (muted — unread excluded from counts)` : s.email}
+              >
+                <span className={`em-disclosure${expanded ? " is-open" : ""}`} aria-hidden="true">
+                  <IconChevronRight size={11} />
+                </span>
+                <span className="em-avatar" aria-hidden="true" style={{ background: s.color }}>
+                  {(s.displayName || s.email || "?").slice(0, 1).toUpperCase()}
+                </span>
+                <span className="em-tree-label">{s.email}</span>
+                {s.unread > 0 && (
+                  <span className="em-tree-count" aria-hidden="true">
+                    {s.unread}
                   </span>
                 )}
-                <br />
-                <small>
-                  {a.email} · {a.muted ? "muted" : `${a.unread} unread`} · trust {severityLabel(a.trust).toLowerCase()}
-                </small>
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-      <div className="ms-nav">
-        <button type="button" className="ms-btn ms-btn-primary ms-nav-btn" onClick={() => navigate({ name: "compose" })}>
-          ✎ Compose
-        </button>
-        <button type="button" className="ms-btn ms-nav-btn" onClick={() => navigate({ name: "contacts" })}>
-          👥 Contacts
-        </button>
-        <button type="button" className="ms-btn ms-nav-btn" onClick={() => navigate({ name: "filters" })}>
-          🔀 Filters
-        </button>
-        <button
-          type="button"
-          className="ms-btn ms-nav-btn"
-          onClick={() => navigate({ name: "security" })}
-          aria-label={`Security Center${pendingApprovals ? `, ${pendingApprovals} approval${pendingApprovals === 1 ? "" : "s"} pending on device` : ""}`}
-        >
-          🛡 Security{" "}
-          {(pendingApprovals ?? 0) > 0 && (
-            <span className="ms-badge ms-badge-alt" aria-hidden="true" title="Authenticator approvals waiting on device">
-              {pendingApprovals}
-            </span>
-          )}
-        </button>
-        <button type="button" className="ms-btn ms-nav-btn" onClick={() => navigate({ name: "settings" })}>
-          ⚙ Settings
-        </button>
+              </button>
+              {expanded &&
+                s.items.map((f) => (
+                  <FolderRow
+                    key={f.id}
+                    id={f.id}
+                    label={f.label}
+                    icon={folderIcon(f.label)}
+                    count={f.unread}
+                    active={activeFolder === f.id}
+                    indent
+                  />
+                ))}
+            </div>
+          );
+        })}
       </div>
     </nav>
   );
 }
 
-export function AppShell({ sidebar, children, status }: { sidebar: ReactNode; children: ReactNode; status: ReactNode }) {
+/* ---------------- agenda rail (collapsible right rail, local GTD) ---------------- */
+
+interface AgendaTask {
+  id: string;
+  title: string;
+  done: boolean;
+  flag: boolean;
+  due: "none" | "today" | "tomorrow";
+  time?: string;
+}
+
+const AGENDA_SEED: AgendaTask[] = [
+  { id: "seed-1", title: "Pair authenticator device", done: false, flag: true, due: "none" },
+  { id: "seed-2", title: "Review security report", done: false, flag: false, due: "today", time: "5:00 PM" },
+  { id: "seed-3", title: "Try the agenda rail", done: false, flag: false, due: "tomorrow" },
+];
+
+const DUE_GROUPS: { key: AgendaTask["due"]; label: string }[] = [
+  { key: "none", label: "No Date" },
+  { key: "today", label: "Today" },
+  { key: "tomorrow", label: "Tomorrow" },
+];
+
+export function AgendaRail() {
+  const [collapsed, setCollapsed] = useState(() => loadPref<boolean>("kiwi.rail", false) === true);
+  const [tasks, setTasks] = useState<AgendaTask[]>(() => {
+    const v = loadPref<AgendaTask[]>("kiwi.agenda", AGENDA_SEED);
+    return Array.isArray(v) ? v : AGENDA_SEED;
+  });
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [groupOpen, setGroupOpen] = useState<Record<string, boolean>>({});
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => savePref("kiwi.rail", collapsed), [collapsed]);
+  useEffect(() => savePref("kiwi.agenda", tasks), [tasks]);
+  useEffect(() => {
+    const onNew = () => {
+      setCollapsed(false);
+      setAdding(true);
+      window.setTimeout(() => inputRef.current?.focus(), 0);
+    };
+    const onToggle = () => setCollapsed((c) => !c);
+    window.addEventListener("kiwi-agenda-new", onNew);
+    window.addEventListener("kiwi-rail-toggle", onToggle);
+    return () => {
+      window.removeEventListener("kiwi-agenda-new", onNew);
+      window.removeEventListener("kiwi-rail-toggle", onToggle);
+    };
+  }, []);
+  useEffect(() => {
+    if (adding) inputRef.current?.focus();
+  }, [adding]);
+
+  const addTask = () => {
+    const title = draft.trim();
+    if (title) {
+      setTasks((t) => [{ id: `t-${Date.now().toString(36)}`, title, done: false, flag: false, due: "none" }, ...t]);
+    }
+    setDraft("");
+    setAdding(false);
+  };
+
+  const patchTask = (id: string, patch: Partial<AgendaTask>) =>
+    setTasks((list) => list.map((t) => (t.id === id ? { ...t, ...patch } : t)));
+
+  if (collapsed) {
+    return (
+      <aside className="em-rail em-rail-collapsed" aria-label="Agenda (collapsed)">
+        <button
+          type="button"
+          className="em-iconbtn"
+          onClick={() => setCollapsed(false)}
+          aria-expanded={false}
+          title="Expand agenda rail"
+        >
+          <IconCollapseRight size={14} className="em-flip" />
+        </button>
+      </aside>
+    );
+  }
+
+  return (
+    <aside className="em-rail" aria-label="Agenda">
+      <div className="em-rail-head">
+        <h2 className="em-pane-title">Agenda</h2>
+        <button
+          type="button"
+          className="em-iconbtn"
+          onClick={() => setCollapsed(true)}
+          aria-expanded={true}
+          title="Collapse agenda rail"
+        >
+          <IconCollapseRight size={14} />
+        </button>
+      </div>
+      {adding ? (
+        <div className="em-agenda-add">
+          <input
+            ref={inputRef}
+            type="text"
+            value={draft}
+            placeholder="Task title"
+            aria-label="New task title"
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") addTask();
+              else if (e.key === "Escape") {
+                setDraft("");
+                setAdding(false);
+              }
+            }}
+          />
+          <button type="button" className="em-iconbtn" onClick={addTask} aria-label="Add task">
+            <IconPlus size={12} />
+          </button>
+        </div>
+      ) : (
+        <button type="button" className="em-add-task" onClick={() => setAdding(true)}>
+          Add new task
+        </button>
+      )}
+      {/* TODO(security): security summary panel hooks land here (T-267 rail seam). */}
+      {DUE_GROUPS.map((g) => {
+        const items = tasks.filter((t) => t.due === g.key);
+        const expanded = groupOpen[g.key] ?? true;
+        return (
+          <section key={g.key} className="em-agenda-group">
+            <button
+              type="button"
+              className="em-group-head"
+              aria-expanded={expanded}
+              onClick={() => setGroupOpen((m) => ({ ...m, [g.key]: !expanded }))}
+            >
+              <span className={`em-disclosure${expanded ? " is-open" : ""}`} aria-hidden="true">
+                <IconChevronDown size={11} />
+              </span>
+              {g.label}
+            </button>
+            {expanded && (
+              <ul className="em-agenda-list">
+                {items.length === 0 && (
+                  <li className="em-agenda-empty">
+                    <small>No tasks</small>
+                  </li>
+                )}
+                {items.map((t) => (
+                  <li key={t.id} className="em-agenda-item">
+                    <button
+                      type="button"
+                      className={`em-check${t.done ? " is-done" : ""}`}
+                      role="checkbox"
+                      aria-checked={t.done}
+                      aria-label={`Mark "${t.title}" ${t.done ? "not done" : "done"}`}
+                      onClick={() => patchTask(t.id, { done: !t.done })}
+                    >
+                      {t.done && <IconCheck size={10} />}
+                    </button>
+                    {g.key !== "none" && (
+                      <span className="em-tree-icon" aria-hidden="true">
+                        <IconTasks size={12} />
+                      </span>
+                    )}
+                    <span className={`em-agenda-title${t.done ? " is-done" : ""}`}>
+                      {t.title}
+                      {t.time && <small className="em-agenda-time"> ({t.time})</small>}
+                    </span>
+                    <button
+                      type="button"
+                      className={`em-iconbtn em-flag${t.flag ? " is-flagged" : ""}`}
+                      aria-pressed={t.flag}
+                      aria-label={`${t.flag ? "Unflag" : "Flag"} "${t.title}"`}
+                      onClick={() => patchTask(t.id, { flag: !t.flag })}
+                    >
+                      <IconFlag size={11} />
+                    </button>
+                    <button
+                      type="button"
+                      className="em-iconbtn em-agenda-del"
+                      aria-label={`Remove "${t.title}"`}
+                      onClick={() => setTasks((list) => list.filter((x) => x.id !== t.id))}
+                    >
+                      <IconTrash size={11} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        );
+      })}
+    </aside>
+  );
+}
+
+/* ---------------- status strip ---------------- */
+
+export function StatusStrip({
+  children,
+  pendingApprovals,
+}: {
+  children: ReactNode;
+  pendingApprovals: number;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useDismissable(open, () => setOpen(false));
+  return (
+    <footer className="em-statusbar">
+      <div className="em-status-icons" role="toolbar" aria-label="Modules">
+        <button
+          type="button"
+          className="em-iconbtn is-active"
+          aria-label="Mail"
+          aria-current="page"
+          onClick={() => navigate({ name: "mail", folder: "all-inboxes" })}
+        >
+          <IconMail size={15} />
+        </button>
+        <button type="button" className="em-iconbtn" aria-label="Contacts" onClick={() => navigate({ name: "contacts" })}>
+          <IconContacts size={15} />
+        </button>
+        <div className="em-menu-wrap" ref={ref}>
+          <button
+            type="button"
+            className="em-iconbtn"
+            aria-label="More modules"
+            aria-haspopup="menu"
+            aria-expanded={open}
+            onClick={() => setOpen((o) => !o)}
+          >
+            <IconMore size={15} />
+          </button>
+          {open && (
+            <DropMenu
+              label="More modules"
+              onClose={() => setOpen(false)}
+              entries={[
+                { label: "Search", run: () => navigate({ name: "search" }) },
+                {
+                  label: `Security Center${pendingApprovals > 0 ? ` (${pendingApprovals} pending)` : ""}`,
+                  run: () => navigate({ name: "security" }),
+                },
+                { label: "Mail filters", run: () => navigate({ name: "filters" }) },
+                { label: "Settings", run: () => navigate({ name: "settings" }) },
+                null,
+                { label: "Add account…", run: () => navigate({ name: "setup" }) },
+              ]}
+            />
+          )}
+        </div>
+      </div>
+      <div className="em-status-text">{children}</div>
+      <div className="em-status-icons em-status-right" role="toolbar" aria-label="Panels">
+        <button type="button" className="em-iconbtn" aria-label="Contacts" onClick={() => navigate({ name: "contacts" })}>
+          <IconUser size={14} />
+        </button>
+        <button
+          type="button"
+          className="em-iconbtn is-active"
+          aria-label="Agenda rail"
+          onClick={() => window.dispatchEvent(new CustomEvent("kiwi-rail-toggle"))}
+          title="Toggle agenda rail"
+        >
+          <IconTasks size={14} />
+        </button>
+        <button
+          type="button"
+          className="em-iconbtn"
+          aria-label="Mail"
+          onClick={() => navigate({ name: "mail", folder: "all-inboxes" })}
+        >
+          <IconMail size={14} />
+        </button>
+        <button type="button" className="em-iconbtn" aria-label="Settings" onClick={() => navigate({ name: "settings" })}>
+          <IconSettings size={14} />
+        </button>
+      </div>
+    </footer>
+  );
+}
+
+/* ---------------- shell ---------------- */
+
+export function AppShell({
+  sidebar,
+  children,
+  rail,
+  status,
+}: {
+  sidebar: ReactNode;
+  children: ReactNode;
+  rail: ReactNode;
+  status: ReactNode;
+}) {
   return (
     <>
-      <div className="ms-main">
+      <div className="em-main">
         {sidebar}
-        <div className="ms-content">{children}</div>
+        <div className="em-center">{children}</div>
+        {rail}
       </div>
-      <footer className="ms-statusbar">{status}</footer>
+      {status}
     </>
   );
 }

@@ -156,27 +156,34 @@ async fn link_reasons_for_url(state: &AppState, url: &Url) -> CmdResult<Vec<Stri
         .collect::<Vec<_>>();
     drop(index);
     let store = state.store.lock().await;
+    let mut message_budget = 512usize;
     for folder_id in folders.into_iter().take(128) {
         let Ok(messages) = store.list_messages(folder_id, 500) else {
             continue;
         };
         for message in messages {
+            if message_budget == 0 {
+                break;
+            }
+            message_budget -= 1;
             let Some(path) = store.body_file(folder_id, message.uid).ok().flatten() else {
                 continue;
             };
+            let Ok(metadata) = std::fs::metadata(&path) else {
+                continue;
+            };
+            if metadata.len() > 2 * 1024 * 1024 {
+                continue;
+            }
             let Ok(bytes) = std::fs::read(path) else {
                 continue;
             };
-            let Ok(parsed) = kiwi_mail::mime::parse_message(&bytes) else {
-                continue;
-            };
-            let bodies = [parsed.text_body.as_deref(), parsed.html_body.as_deref()];
-            if bodies
-                .into_iter()
-                .flatten()
-                .any(|body| body.contains(url.as_str()))
-            {
-                return Ok(reason_codes(&parsed.link_risk.reasons));
+            let body = String::from_utf8_lossy(&bytes);
+            if body.contains(url.as_str()) {
+                return Ok(message
+                    .link_risk
+                    .map(|evidence| reason_codes(&evidence.reasons))
+                    .unwrap_or_else(|| vec!["evidence-unavailable".into()]));
             }
         }
     }
@@ -230,7 +237,9 @@ mod tests {
     use async_trait::async_trait;
     use kiwi_sandbox::SandboxCapabilities;
 
-    struct FakeProvider;
+    struct FakeProvider {
+        seen: std::sync::Mutex<Vec<SandboxSpec>>,
+    }
     struct FakeSandbox;
 
     #[async_trait]
@@ -247,8 +256,9 @@ mod tests {
 
         async fn create(
             &self,
-            _spec: SandboxSpec,
+            spec: SandboxSpec,
         ) -> kiwi_sandbox::Result<Box<dyn Sandbox>> {
+            self.seen.lock().unwrap().push(spec);
             Ok(Box::new(FakeSandbox))
         }
     }
@@ -312,7 +322,10 @@ mod tests {
     async fn fake_provider_receives_reason_handoff_and_audits() {
         let dir = std::env::temp_dir().join(format!("kiwi-sbx-fake-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let state = AppState::open_test_with_sandbox(dir.clone(), Arc::new(FakeProvider)).unwrap();
+        let provider = Arc::new(FakeProvider {
+            seen: std::sync::Mutex::new(Vec::new()),
+        });
+        let state = AppState::open_test_with_sandbox(dir.clone(), provider.clone()).unwrap();
         let view = open_link_impl(&state, "http://evil.example/?secret=x".into())
             .await
             .unwrap();

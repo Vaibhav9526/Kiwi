@@ -55,8 +55,9 @@ able to drive the lock UI — are marked **[exempt]** below:
   `kiwi_request_challenge`, `kiwi_submit_challenge`,
   `kiwi_collect_endpoint_signals` (signals feed trust even while locked).
 
-Everything else — accounts, folders, messages, sync, send/outbox, findings,
-events, session detail, report, devices, org binding — is **gated**.
+Everything else — accounts, folders, messages, sync, send/outbox, sandbox
+open, findings, events, session detail, report, devices, org binding — is
+**gated**.
 
 Lock/unlock semantics come from `kiwi-core::TrustMachine` (sticky `Locked`;
 unlock requires an authenticator-verified challenge when
@@ -662,6 +663,50 @@ the folder's eval watermarks along with its messages (a new UID epoch
 can't inherit stale stage records). Apply errors inside a pass are
 swallowed and counted on `SyncReportView.ruleFailures`; the unwritten
 watermark makes the retry automatic.
+
+## 6f. Commands — sandbox open **[gated]** (T-266)
+
+Both commands are the only path for opening a hostile link or attachment.
+They fail closed: an absent/unusable provider returns
+`{"code":"sandbox-unavailable"}`; there is **never** a host browser or host
+process fallback. A completed open appends the hash-chained `sandbox-opened`
+audit action with a sanitized target and its evidence reason codes.
+
+### `kiwi_sandbox_open_link(url) → SandboxOpenView`
+
+`url` is bounded at 2,048 characters and must be an absolute `http://` or
+`https://` URL with a host. Other schemes (including `file:`, `mailto:`, and
+`javascript:`) return `invalid-input`; hostile HTTP is deliberately passed to
+the sandbox boundary. The backend associates the URL with the matching stored
+message evidence when possible and passes the message's `linkRisk.reasons` into
+the provider session. The returned/report `target` and audit row remove URL
+username/password, query, and fragment; the full target is never persisted.
+
+```jsonc
+{ "sessionId": "sandbox:3",
+  "target": "https://example.test/path",
+  "evidenceReasons": ["insecure-http", "ip-literal-host"],
+  "report": { /* bounded AnalysisReport; evidenceReasons repeats why */ } }
+```
+
+A link-capable provider must enforce and monitor isolated egress. The current
+WSL2 artifact tier structurally blocks egress and therefore returns
+`sandbox-unavailable` for links rather than claiming the URL was opened.
+
+### `kiwi_sandbox_open_attachment(folderId, uid, filename) → SandboxOpenView`
+
+The input is a **stored payload reference only**: the backend re-opens the
+message's stored MIME body, requires exactly one exact filename match, stages
+the decoded bytes privately, invokes the provider, and deletes the staging
+path afterwards. Raw attachment bytes and host paths never cross IPC and are
+not echoed. Decoded size is bounded at 64 MiB and at the active provider's
+`maxArtifactBytes`. The message's `attachRisk.reasons` are handed into the
+session record; absent evidence is explicitly `evidence-unavailable`, never
+clean. `target` is the coordinate `attachment:f<folderId>/u<uid>`, never the
+filename or staging path.
+
+Errors: `locked`, `invalid-input`, `not-found` for the stored reference,
+`sandbox-unavailable`, or `sandbox-failed`. No host-open fallback.
 
 ## 6e. Commands — snooze **[gated]** (T-255)
 

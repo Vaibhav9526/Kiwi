@@ -137,7 +137,7 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-209 | F10 WYSIWYG composer (fonts/tables/emoji/links/inline-image/Excel-paste; ammonia allowlist review) | unassigned | backlog | `kiwi-app/` | — |
 | T-210 | F11 native notifications via Tauri API on mail-changed; per-account toggle; lock-gated content | unassigned | backlog | `kiwi-app/` | T-157 |
 | T-211 | F12 sent items inside conversation threads | unassigned | backlog | `kiwi-mail/` + UI | T-165 |
-| T-212 | Junk marking — store helpers landed; REMAINDER = T-263 (A15) | Agent 15 | in-progress |
+| T-212 | Junk marking COMPLETE via T-263 | Agent 15 | done |
 | T-213 | F14 email priority headers (compose + display) | unassigned | backlog | `kiwi-mail/` + composer | — |
 | T-214 | F15 extra theme schemes (custom CSS field deferred) | unassigned | backlog | `kiwi-app/` | — |
 | T-215 | kiwi-admin org plane (user mgmt/invites/admin panel) — Phase 6, needs owner sign-off | unassigned | deferred-P6 | `kiwi-admin/` | — |
@@ -225,7 +225,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-260 | security-session.md contract-vs-impl enumeration (TrustMachine/lock gates) | Agent 22 | open | `docs/audits/` | T-196 |
 | T-261 | LinkRisk hints (linkrisk.rs 459L, 203/203, wired to TS) | Agent 21 | done |
 | T-262 | Send-path e2e: compose->outbox->scripted SMTP->sent (fail branches: reject/undo/no-STARTTLS) | Agent 19 | open | `src-tauri/`, `kiwi-mail/` testutil | T-257 |
-| T-264 | Folder exists/unseen COUNT query + FolderView fields (IPC-6 follow-up) | queued | backlog | `kiwi-mail/store` | T-247 |
+| T-264 | Folder exists/unseen counts (restores §6 contract) | Agent 15 | open | `kiwi-mail/store`, `types/` | T-247 |
 
 <!-- A18 terminal gone; e26f119b was a DUP A22 session — renumbered Agent 23, owns T-235. rule_catalog stays v1 (flags restore semantics, default output identical — ratified). -->
 | T-265 | Register batch cleared (IPC-11..14 + FOR-7/8/9; real byte-cap fix) | Agent 20 | done |
