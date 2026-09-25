@@ -6,8 +6,8 @@
  */
 import { Fragment, useEffect, useState } from "react";
 import type { AuditEventView, FindingInfo, SecurityEventRow, SecuritySessionView, Severity } from "../kiwi";
-import { severityGlyph, severityLabel } from "../kiwi";
-import { api, BackendUnavailableError } from "../ipc";
+import { AUDIT_CORRUPT_MESSAGE, severityGlyph, severityLabel } from "../kiwi";
+import { api, BackendUnavailableError, IpcError } from "../ipc";
 
 function pretty(v: unknown): string {
   try {
@@ -47,6 +47,11 @@ export function SecurityCenterView({
   const [auditDone, setAuditDone] = useState(false); // older page returned empty
   const [auditExpanded, setAuditExpanded] = useState<number | null>(null);
   const [auditCopy, setAuditCopy] = useState<string | null>(null);
+  // T-331: chain health. `corrupt` is a PERSISTENT security state, not a
+  // transient load failure — it must not clear on a successful reload, and it
+  // must not be a toast (a security signal has to stay on screen until the
+  // user dismisses or the backend reports a verified chain again).
+  const [auditIntegrity, setAuditIntegrity] = useState<"ok" | "corrupt" | "unknown" | null>(null);
 
   const loadAudit = async (beforeUnix?: number) => {
     setAuditState("loading");
@@ -62,12 +67,41 @@ export function SecurityCenterView({
       const msg = e instanceof Error ? e.message : String(e);
       if (e instanceof BackendUnavailableError || /unknown command|not found|unregistered|not implemented/i.test(msg)) {
         setAuditState("pending");
+      } else if (e instanceof IpcError && e.code === "audit-corrupt") {
+        // T-331: a failed verification is the headline, not a retry-able
+        // error string. Rows below are untrustworthy — don't render them as
+        // if they were evidence.
+        setAuditIntegrity("corrupt");
+        setAuditState("error");
+        setAuditErr(AUDIT_CORRUPT_MESSAGE);
       } else {
         setAuditState("error");
         setAuditErr(msg);
       }
     }
   };
+
+  // T-331: probe chain health on mount. Cheap (no rows), ungated, and it is
+  // the only way corruption becomes visible before the rows are requested.
+  useEffect(() => {
+    if (demo) {
+      setAuditIntegrity("unknown");
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const v = await api.auditIntegrity();
+        if (!cancelled) setAuditIntegrity(v.state);
+      } catch {
+        if (!cancelled) setAuditIntegrity("unknown");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [demo]);
 
   useEffect(() => {
     if (demo) {
@@ -285,7 +319,23 @@ export function SecurityCenterView({
           </small>
         </div>
       )}
-      {auditState === "error" && (
+      {/*
+        T-331: the persistent security state. Deliberately NOT a toast and NOT
+        dismissible-by-time: `audit-corrupt` means the log can no longer prove
+        what the app did, and that claim has to keep standing on screen.
+      */}
+      {auditIntegrity === "corrupt" && (
+        <div className="kiwi-banner error" role="alert" data-audit-integrity="corrupt">
+          <strong>Audit integrity failure.</strong> {AUDIT_CORRUPT_MESSAGE}.
+          <br />
+          <small>
+            The rows below are unverified and must not be treated as evidence. Do not clear the log — it
+            is the only record of what this app did. <code>kiwi_security_status</code> carries the same
+            verdict as <code>auditOk</code>.
+          </small>
+        </div>
+      )}
+      {auditState === "error" && auditIntegrity !== "corrupt" && (
         <div className="kiwi-banner error" role="alert">
           <small>Audit log failed to load: {auditErr}</small>{" "}
           <button type="button" className="ms-btn" onClick={() => void loadAudit()}>
@@ -298,7 +348,7 @@ export function SecurityCenterView({
           <small>Loading audit log…</small>
         </p>
       )}
-      {audit.length > 0 && (
+      {audit.length > 0 && auditIntegrity !== "corrupt" && (
         <>
           <div className="ms-filterbar">
             <button type="button" className="ms-btn" onClick={() => void loadAudit()} disabled={auditState === "loading"}>
@@ -388,7 +438,7 @@ export function SecurityCenterView({
           )}
         </>
       )}
-      {auditState === "ready" && audit.length === 0 && (
+      {auditState === "ready" && audit.length === 0 && auditIntegrity !== "corrupt" && (
         <p>
           <small>No audit events recorded yet.</small>
         </p>

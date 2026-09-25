@@ -206,9 +206,21 @@ impl AuditLog {
         Ok(())
     }
 
-    #[cfg(test)]
+    /// Number of records currently in the chain. This is the replayed `seq`
+    /// from `open()` (and re-replayed after a prune), so it is the real row
+    /// count of `audit.jsonl` — exposed for the T-330 storage diagnostics,
+    /// which cannot get it from SQL because the audit trail is a file, not a
+    /// table.
     pub fn len(&self) -> u64 {
         self.seq
+    }
+
+    /// Test-only: the on-disk file this handle owns. Kept out of the production
+    /// surface on purpose — a caller must go through `integrity()` / `record()`
+    /// rather than editing the chain behind the log's back.
+    #[cfg(test)]
+    pub fn path(&self) -> &Path {
+        &self.path
     }
 
     /// Bounded retention sweep (T-327). Drops rows that are **both** older
@@ -372,6 +384,70 @@ fn short_hash(hash: &str) -> String {
     hash.chars().take(12).collect()
 }
 
+/// Integrity verdict for the local audit chain (T-331).
+///
+/// `Unknown` is a real, reachable state — it means the log has never been
+/// verified *in this process*. It is deliberately distinct from `Ok`: "not
+/// checked" must never render as "verified".
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AuditIntegrity {
+    /// The chain verified from genesis to the current head.
+    Ok,
+    /// A record failed to parse, or a hash/link in the chain did not verify.
+    Corrupt,
+    /// Not checked in this process yet (honest absence, never "fine").
+    Unknown,
+}
+
+impl AuditIntegrity {
+    /// Tri-state as the security-status payload carries it: `Some(false)` is
+    /// corrupt, `None` is unknown. `Some(true)` is the only "fine".
+    #[must_use]
+    pub fn ok(self) -> Option<bool> {
+        match self {
+            Self::Ok => Some(true),
+            Self::Corrupt => Some(false),
+            Self::Unknown => None,
+        }
+    }
+}
+
+impl AuditLog {
+    /// Verify the chain without mutating anything (T-331). This is the cheap
+    /// path the renderer polls: it re-walks the same records `open()` does and
+    /// reports a verdict instead of throwing, so a tampered log becomes a
+    /// *visible state* rather than an invisible backend error.
+    ///
+    /// An absent log is `Ok` (nothing to tamper with) — the file is created on
+    /// first write, and "no log yet" is not evidence of corruption.
+    pub fn integrity(&self) -> AuditIntegrity {
+        if !self.path.exists() {
+            return AuditIntegrity::Ok;
+        }
+        let Ok(text) = std::fs::read_to_string(&self.path) else {
+            // Unreadable is not the same as corrupt — report unknown rather
+            // than accusing the user of tampering we could not check.
+            return AuditIntegrity::Unknown;
+        };
+        let mut prev = String::from("genesis");
+        for line in text.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+            let Ok(rec) = serde_json::from_str::<AuditRecord>(line) else {
+                return AuditIntegrity::Corrupt;
+            };
+            let expect = record_hash(rec.seq, rec.ts_unix, &rec.action, &rec.detail, &rec.prev);
+            if expect != rec.hash || rec.prev != prev {
+                return AuditIntegrity::Corrupt;
+            }
+            prev = rec.hash;
+        }
+        AuditIntegrity::Ok
+    }
+}
+
 /// One audit-log row as the read surface projects it (T-323/T-324 shape:
 /// `event`, `atUnix`, `actor`, `subjectId`, `detailJson`). Reads from the
 /// same `audit.jsonl` the writers append to, so the view and the retention
@@ -500,6 +576,104 @@ mod tests {
             ["first"]
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -- T-331 integrity probe -------------------------------------------
+
+    /// The cheap probe must agree with the strict opener, and — critically —
+    /// must never report "fine" for a log it could not check.
+    #[test]
+    fn integrity_reports_ok_corrupt_and_unknown_honestly() {
+        let dir = std::env::temp_dir().join(format!("kiwi-integrity-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Absent log: nothing to tamper with — `ok`, not "unknown".
+        let log = AuditLog::open(&dir).unwrap();
+        assert_eq!(log.integrity(), AuditIntegrity::Ok);
+        assert_eq!(log.integrity().ok(), Some(true));
+
+        let mut log = log;
+        log.record("lock", "manual", 100).unwrap();
+        log.record("unlock", "challenge ok", 200).unwrap();
+        assert_eq!(log.integrity(), AuditIntegrity::Ok, "a good chain verifies");
+        assert_eq!(log.integrity().ok(), Some(true));
+
+        // Tamper: the same edit that makes `open` fail closed must make the
+        // probe say `corrupt` (NOT throw) — that is the whole point: the
+        // failure has to become a renderable state.
+        let lines: Vec<String> = std::fs::read_to_string(dir.join("audit.jsonl"))
+            .unwrap()
+            .lines()
+            .map(str::to_string)
+            .collect();
+        let mut rec: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+        rec["detail"] = serde_json::Value::from("edited");
+        let tampered = dir.join("tampered");
+        std::fs::create_dir_all(&tampered).unwrap();
+        let mut out = lines.clone();
+        out[0] = serde_json::to_string(&rec).unwrap();
+        std::fs::write(tampered.join("audit.jsonl"), out.join("\n") + "\n").unwrap();
+        assert!(
+            AuditLog::open(&tampered).is_err(),
+            "open still fails closed"
+        );
+        let probe = AuditLog {
+            path: tampered.join("audit.jsonl"),
+            seq: 0,
+            last_hash: String::new(),
+            fail_next: 0,
+            fail_skip: 0,
+        };
+        assert_eq!(probe.integrity(), AuditIntegrity::Corrupt);
+        assert_eq!(
+            probe.integrity().ok(),
+            Some(false),
+            "corrupt is a real `false`, never absence"
+        );
+
+        // Unparseable line → corrupt, not a panic and not silence.
+        let junk = dir.join("junk");
+        std::fs::create_dir_all(&junk).unwrap();
+        std::fs::write(junk.join("audit.jsonl"), "{not json}\n").unwrap();
+        let probe = AuditLog {
+            path: junk.join("audit.jsonl"),
+            seq: 0,
+            last_hash: String::new(),
+            fail_next: 0,
+            fail_skip: 0,
+        };
+        assert_eq!(probe.integrity(), AuditIntegrity::Corrupt);
+
+        // A pruned (re-anchored) log must still verify — otherwise the
+        // integrity probe would cry wolf about our own retention sweep.
+        let prune_dir = dir.join("pruned");
+        std::fs::create_dir_all(&prune_dir).unwrap();
+        let mut plog = seed_log(&prune_dir, 6, 86_400);
+        plog.prune(
+            &RetentionPolicy {
+                retention_days: 1,
+                keep_last: 2,
+            },
+            100 + 86_400 * 5 + 365 * 86_400,
+        )
+        .unwrap();
+        assert_eq!(
+            plog.integrity(),
+            AuditIntegrity::Ok,
+            "re-anchored = verified"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `Unknown` must map to absence, so a never-checked log can never be
+    /// rendered as a passing state.
+    #[test]
+    fn integrity_unknown_is_honest_absence() {
+        assert_eq!(AuditIntegrity::Ok.ok(), Some(true));
+        assert_eq!(AuditIntegrity::Corrupt.ok(), Some(false));
+        assert_eq!(AuditIntegrity::Unknown.ok(), None);
     }
 
     // -- T-327 retention sweep -------------------------------------------

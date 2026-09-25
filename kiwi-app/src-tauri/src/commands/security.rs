@@ -10,10 +10,21 @@ use kiwi_forensics::findings::Finding;
 use kiwi_forensics::report::{Limitation, ReportBuilder};
 
 use super::{bounded, gate};
-use crate::audit::AuditEventView;
+use crate::audit::{AuditEventView, AuditIntegrity};
 use crate::error::{CmdResult, IpcError};
 use crate::state::{AppState, now_unix};
 use crate::types::{EventRow, SessionDetailView, SessionView, SignalView};
+
+/// T-331 `kiwi_audit_integrity` payload. `state` is the honest tri-state the
+/// UI words from; `auditOk` mirrors it for callers that only want a boolean
+/// (`null` = unknown).
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditIntegrityView {
+    /// `ok | corrupt | unknown`.
+    pub state: String,
+    pub audit_ok: Option<bool>,
+}
 
 /// `list_findings` — contract forensics.md §11. Full `Finding` objects
 /// verbatim (evidence included, never projected). `accountId` +
@@ -168,6 +179,33 @@ pub(crate) async fn audit_events_impl(
     let limit = super::clamp_u32(limit, 100, 500) as usize;
     let audit = state.audit.lock().await;
     audit.read_recent(before_unix, limit as u32)
+}
+
+/// Audit-chain integrity verdict (T-331) — `ok | corrupt | unknown`.
+///
+/// The cheap path, and deliberately cheaper than reading rows: it re-walks the
+/// chain the same way `AuditLog::open` does but **reports** instead of
+/// throwing, so the security strip can show audit health without the user
+/// having to open the audit view first. `unknown` is honest absence (the log
+/// could not be read) and must never be rendered as "fine".
+#[tauri::command]
+pub async fn kiwi_audit_integrity(
+    state: State<'_, Arc<AppState>>,
+) -> CmdResult<AuditIntegrityView> {
+    audit_integrity_impl(state.inner()).await
+}
+
+pub(crate) async fn audit_integrity_impl(state: &AppState) -> CmdResult<AuditIntegrityView> {
+    let verdict = state.audit.lock().await.integrity();
+    Ok(AuditIntegrityView {
+        state: match verdict {
+            AuditIntegrity::Ok => "ok",
+            AuditIntegrity::Corrupt => "corrupt",
+            AuditIntegrity::Unknown => "unknown",
+        }
+        .to_string(),
+        audit_ok: verdict.ok(),
+    })
 }
 
 /// One finding's full detail: the complete `kiwi.forensics/1` object
@@ -755,6 +793,51 @@ mod tests {
                 super::super::gate(&state)
                     .await
                     .is_err_and(|e| e.code == "locked")
+            );
+        });
+    }
+
+    // -- T-331 audit integrity surface ------------------------------------
+
+    /// The command-level contract the renderer depends on: an honest
+    /// tri-state on a healthy log, `corrupt` once the file is tampered with,
+    /// and a `security_status` payload that carries the same verdict.
+    #[test]
+    fn audit_integrity_reports_ok_and_corrupt() {
+        let state = test_state("integrity");
+        block_on(async {
+            // Healthy (no rows yet): ok / Some(true).
+            let v = audit_integrity_impl(&state).await.unwrap();
+            assert_eq!(v.state, "ok");
+            assert_eq!(v.audit_ok, Some(true));
+            assert_eq!(super::super::status_view(&state).await.audit_ok, Some(true));
+
+            state
+                .audit
+                .lock()
+                .await
+                .record("device-revoked", "dev-1", 100)
+                .unwrap();
+
+            // Tamper behind the log's back (the realistic case: the file was
+            // edited out-of-process, the in-memory handle is unchanged).
+            let path = state.audit.lock().await.path().to_path_buf();
+            let text = std::fs::read_to_string(&path).unwrap();
+            let mut rec: serde_json::Value =
+                serde_json::from_str(text.lines().next().unwrap()).unwrap();
+            rec["detail"] = serde_json::Value::from("edited");
+            let edited = serde_json::to_string(&rec).unwrap()
+                + &text.lines().skip(1).collect::<Vec<_>>().join("\n")
+                + "\n";
+            std::fs::write(&path, edited).unwrap();
+
+            let v = audit_integrity_impl(&state).await.unwrap();
+            assert_eq!(v.state, "corrupt", "a tampered log must say so");
+            assert_eq!(v.audit_ok, Some(false), "corrupt is never absence");
+            assert_eq!(
+                super::super::status_view(&state).await.audit_ok,
+                Some(false),
+                "the security strip payload carries the same backend-owned value"
             );
         });
     }
