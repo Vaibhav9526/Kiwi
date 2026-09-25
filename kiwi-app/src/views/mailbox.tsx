@@ -1088,6 +1088,7 @@ function RowShell({
   onCtxMenu,
   dragIds,
   dragSubject,
+  acctTag,
   label,
 }: {
   id: string;
@@ -1114,6 +1115,10 @@ function RowShell({
    *  folder-tree drop routes to kiwi_move_messages via onMoveToFolder. */
   dragIds?: string[];
   dragSubject?: string;
+  /** T-335: owning-account chip shown on aggregate views (All Inboxes,
+   *  smart rows) — the row's OWN account, so bulk/ctx actions stay
+   *  account-correct. Absent on per-account folders (context is obvious). */
+  acctTag?: { label: string; color: string };
   label: string;
 }) {
   const [confirmDel, setConfirmDel] = useState(false);
@@ -1186,6 +1191,16 @@ function RowShell({
             {subject}
           </span>
           <span className="em-row-marks">
+            {acctTag && (
+              <span
+                className="em-row-acct"
+                title={`Account: ${acctTag.label}`}
+                aria-label={`Account ${acctTag.label}`}
+                style={{ borderColor: acctTag.color, color: acctTag.color }}
+              >
+                {acctTag.label}
+              </span>
+            )}
             {hasAttachments && (
               <span title="Has attachments" aria-label="Has attachments">
                 <IconPaperclip size={11} />
@@ -1330,6 +1345,9 @@ function MessageRow({
       onCtxMenu={onContextMenu}
       dragIds={dragIds}
       dragSubject={dragSubject}
+      // T-335: aggregate views (folder key has no `acct:id` colon shape)
+      // tag each row with its OWN account — merged rows stay truthful.
+      acctTag={!folder.includes(":") ? { label: m.accountEmail, color: avatarTint(m.accountEmail) } : undefined}
       label={`${m.unread ? "Unread" : "Read"} from ${m.from}: ${m.subject}. Account trust ${severityLabel(m.trust)}.${isPicked ? " Selected for bulk actions." : ""}`}
       checkbox={
         <input
@@ -1401,6 +1419,17 @@ function ThreadRow({
       onCtxMenu={onContextMenu}
       dragIds={thread.messages.some((m) => picked.includes(m.id)) ? picked : thread.messages.map((m) => m.id)}
       dragSubject={thread.subject}
+      acctTag={
+        !folder.includes(":")
+          ? (() => {
+              const accts = [...new Set(thread.messages.map((m) => m.accountId))];
+              const emails = [...new Set(thread.messages.map((m) => m.accountEmail))];
+              return accts.length === 1
+                ? { label: emails[0], color: avatarTint(emails[0]) }
+                : { label: `${accts.length} accounts`, color: "var(--kiwi-text-secondary, #666)" };
+            })()
+          : undefined
+      }
       label={`Conversation: ${thread.subject}. ${thread.messages.length} messages, ${thread.unreadCount} unread.${allPicked ? " Selected for bulk actions." : ""}`}
       checkbox={
         <input

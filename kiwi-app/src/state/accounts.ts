@@ -55,8 +55,8 @@ export function useAccountModel(
    *   matches the class regex — aggregate cross-account like eM Client.
    * - `snoozed`: kiwi_list_snoozed across accounts (parked rows).
    */
-  const smartFolders: { id: string; label: string }[] = useMemo(
-    () => [
+  const smartFolders: { id: string; label: string }[] = useMemo(() => {
+    const base = [
       { id: "all-inboxes", label: "All Inboxes" },
       { id: "outbox", label: "Outbox" },
       { id: "sent", label: "Sent" },
@@ -67,9 +67,24 @@ export function useAccountModel(
       { id: "flagged", label: "Flagged" },
       { id: "unreplied", label: "Unreplied" },
       { id: "snoozed", label: "Snoozed" },
-    ],
-    [],
-  );
+    ];
+    // T-335 honesty rules for the unified view: a single-account "All
+    // Inboxes" would just duplicate that account's Inbox row — hidden.
+    // Likewise once every account's folder list has loaded AND every
+    // inbox reports 0 rows, the row hides rather than promise content it
+    // can't show; it reappears when a sync lands mail. While any list is
+    // still loading the row stays (unknown ≠ empty).
+    if (accounts.length < 2) return base.filter((f) => f.id !== "all-inboxes");
+    if (!demo && accounts.every((a) => Array.isArray(folderLists[a.id]))) {
+      const total = accounts.reduce((n, a) => {
+        const fl = folderLists[a.id] ?? [];
+        const inbox = fl.find((f) => f.name.toUpperCase() === "INBOX") ?? fl[0];
+        return n + (inbox?.exists ?? 0);
+      }, 0);
+      if (total === 0) return base.filter((f) => f.id !== "all-inboxes");
+    }
+    return base;
+  }, [accounts, folderLists, demo]);
 
   /** Per-account expandable sections. Demo children reuse the `acct:slug`
    * key shape (demo loader parses accountId + folder slug); live children

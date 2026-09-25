@@ -544,6 +544,39 @@ async function runChecks(cdp, sid) {
     return `drag→deny same-folder→drop→${await cdp.eval(sid, `document.body.textContent.includes('Demo mode') ? 'demo honest toast' : 'live move'`) }`;
   });
 
+  await flow("unified", "All Inboxes merges demo accounts w/ own-account badges", async () => {
+    await cdp.eval(sid, "window.location.hash = '#/mail/all-inboxes'");
+    await waitFor(cdp, sid, `${qsa(".em-row")} > 0`, 5000);
+    // Category tabs partition the merge — the acc-demo-2 fixture lives on
+    // Newsletters, so collect badge texts across every tab (union).
+    const tabs = await cdp.eval(sid,
+      `[...document.querySelectorAll('.em-list-tabs button')].map(b=>b.textContent.trim())`);
+    const accts = new Set();
+    for (const tab of tabs) {
+      await cdp.eval(sid,
+        `[...document.querySelectorAll('.em-list-tabs button')].find(b=>b.textContent.trim()===${JSON.stringify(tab)})?.click()`);
+      await waitFor(cdp, sid, `${qsa(".em-rows")} >= 0`, 2000);
+      await new Promise((r) => setTimeout(r, 250));
+      for (const t of await cdp.eval(sid,
+        `[...document.querySelectorAll('.em-row .em-row-acct')].map(b=>b.textContent.trim())`))
+        accts.add(t);
+    }
+    // ≥2 distinct account badges, OR a merged thread's "N accounts" chip.
+    const merged = accts.size >= 2 || [...accts].some((t) => /^([2-9]|\d\d) accounts$/.test(t));
+    if (!merged) {
+      const dbg = await cdp.eval(sid,
+        `[...document.querySelectorAll('.em-row')].map(r=>({s:r.querySelector('.em-row-subject')?.textContent,a:r.querySelector('.em-row-acct')?.textContent||null}))`);
+      throw new Error(`expected multi-account badges, got ${JSON.stringify([...accts])} rows=${JSON.stringify(dbg)}`);
+    }
+    // Per-account folder view must NOT badge (account context is obvious).
+    await cdp.eval(sid, "window.location.hash = '#/mail/acc-demo-1:inbox'");
+    await waitFor(cdp, sid, `${qsa(".em-row")} > 0`, 5000);
+    const leaked = await cdp.eval(sid, qsa(".em-row .em-row-acct"));
+    if (leaked > 0) throw new Error("account badges leak into single-account folder view");
+    await cdp.eval(sid, "window.location.hash = '#/mail'");
+    return `${accts.size} distinct account badges across category tabs, none on per-account view`;
+  });
+
   await flow("folder-mgmt", "folder ctx menu exposes real CRUD entries (demo-disabled)", async () => {
     const demoMode = await cdp.eval(sid, `/demo data/i.test(document.body.innerText)`);
     // Right-click a real account-folder row → New subfolder / Rename / Delete.

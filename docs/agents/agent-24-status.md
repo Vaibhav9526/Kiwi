@@ -827,3 +827,37 @@ No undo — no undo IPC.
 
 **Smoke:** `ctxmenu` now asserts exactly one "Move to" + one "Copy to"
 (both demo-disabled) — **22/22 PASS** (A21's audit-log green again too).
+
+## T-335 — Unified Inbox ("All Inboxes") completed + badges
+
+**Discovery:** the merge path already existed (T-267) — the Favorites
+"All Inboxes" row already loads every account's INBOX via
+`kiwi_list_messages` (50/page cap, existing page size — documented
+depth), merges date-desc, and each envelope keeps `accountId/folderId/uid`
+composite ids so reply/move/delete/junk/quick-filters/search/ctx-menu all
+operate on the row's own account by construction (groupByFolder on the
+composite id). The real gaps were presentation + honesty gating:
+
+- **Account badge:** `RowShell.acctTag` — a bordered chip in the marks
+  area showing the row's owning `accountEmail` (avatarTint color).
+  MessageRow passes it whenever the view key has no `acct:id` colon
+  (all-inboxes/sent/trash/drafts/junk/unread/flagged/unreplied/snoozed);
+  per-account folder views never badge (context obvious — asserted by
+  the smoke leg). ThreadRow: single-account threads show the email;
+  cross-account threads show an honest "N accounts" chip. Reader cards
+  already carried `To: m.accountEmail` — no change needed.
+- **Hide rules (accounts.ts):** `all-inboxes` drops from Favorites when
+  accounts <2 (would duplicate the lone Inbox row) or when every
+  account's folder list has loaded AND every inbox reports `exists: 0`.
+  While any list is still loading the row stays — unknown ≠ empty.
+- **Counts:** already real (`smartUnread["all-inboxes"]` sums per-inbox
+  `unseen`).
+
+**Smoke `unified` flow:** loads `#/mail/all-inboxes`, unions the badge
+texts across every category tab (the acc-demo-2 fixture is categorized
+`newsletters` — tabs partition the merge), asserts ≥2 accounts present;
+then a per-account folder must render ZERO badges. **24/24 PASS.**
+
+**Found via test:** demo all-inboxes includes the sent fixture row too —
+`base = DEMO_MESSAGES` unscoped. Left as-is (harmless in demo; live
+loader scopes to real inboxes); noted here for honesty.

@@ -2767,3 +2767,17 @@ pre.em-quote-region {
 .em-tree-item.em-drop-denied {
   opacity: 0.55;
 }
+
+/* T-335: owning-account chip on aggregate rows (All Inboxes / smarts) */
+.em-row-acct {
+  font-size: 0.62rem;
+  line-height: 1.1;
+  padding: 0 4px;
+  border: 1px solid var(--kiwi-text-secondary, #666);
+  border-radius: 3px;
+  max-width: 9em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.85;
+}
