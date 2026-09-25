@@ -29,8 +29,17 @@ export interface OrgRepository {
   listUsers(orgId: string): MaybePromise<{ id: string; org_id: string; email: string; created_at: number }[]>;
   grantRole(userId: string, orgId: string, role: OrgRole, now: number): MaybePromise<void>;
   listRoles(userId: string): MaybePromise<OrgRole[]>;
+  /** Batched role lookup for a user page (T-193/M7): one query, not N. */
+  listRolesForUsers(userIds: string[]): MaybePromise<{ user_id: string; role: OrgRole }[]>;
   createDevice(id: string, orgId: string, label: string, now: number): MaybePromise<{ id: string; org_id: string; label: string; revoked: number; created_at: number }>;
   getDevice(id: string): MaybePromise<{ id: string; org_id: string; label: string; revoked: number; created_at: number } | undefined>;
+  /**
+   * Org-scoped device inventory (§14, T-253): the first `limit` rows in
+   * the mandatory `created_at ASC, id ASC` order (the id tie-breaker gives
+   * same-millisecond registrations a total order). `revoked_at` is the
+   * real column — never fabricated `null` on revoked rows.
+   */
+  listDevices(orgId: string, limit: number): MaybePromise<{ id: string; org_id: string; label: string; revoked: number; revoked_at: number | null; created_at: number }[]>;
   revokeDevice(id: string, now: number): MaybePromise<void>;
 }
 
@@ -54,6 +63,22 @@ export interface PolicyRuleRepository {
   } | undefined>;
   addDomainRule(policyId: string, domain: string, action: RecipientDomainAction): MaybePromise<void>;
   listDomainRules(policyId: string): MaybePromise<{ domain: string; action: RecipientDomainAction }[]>;
+  /** Batched domain-rule lookup for a policy page (T-193/M7). */
+  listDomainRulesForPolicies(policyIds: string[]): MaybePromise<{ policy_id: string; domain: string; action: RecipientDomainAction }[]>;
+  /**
+   * Atomic policy + rules insert (T-193/M3): the whole set commits or
+   * nothing does — callers pre-validate, the transaction guarantees it.
+   */
+  createPolicyWithRules(
+    id: string,
+    orgId: string,
+    name: string,
+    enabled: boolean,
+    minTls: string | null,
+    externalRecipients: ExternalRecipientBehavior,
+    now: number,
+    rules: { domain: string; action: RecipientDomainAction }[],
+  ): MaybePromise<void>;
   /** All policies of an org (T-108 send-path bridge evaluates the enabled ones). */
   listPoliciesForOrg(orgId: string): MaybePromise<{
     id: string;
@@ -72,6 +97,23 @@ export interface MailflowRepository {
 
 export interface AuditRepository {
   append(input: AuditEventInput, prevHash: string, entryHash: string, seq: number, ts: number): MaybePromise<AuditRecord>;
+  /**
+   * Atomic chained append — the ONLY production write path (T-193/H6).
+   *
+   * Reads the current tail, assigns `seq = max+1`, computes the hash link,
+   * and inserts, all inside ONE driver transaction (SQLite: synchronous
+   * transaction; Postgres: transaction-scoped `pg_advisory_xact_lock`). No
+   * caller-supplied `seq`, so two concurrent appends — same process or two
+   * processes against one Postgres — cannot compute the same `seq` and
+   * collide on the primary key. Gapless by construction (unlike a DB
+   * sequence/nextval, which would leave holes on rollback and break the
+   * contiguity property `verify()` relies on).
+   *
+   * The explicit-seq `append` above remains as the low-level primitive for
+   * tests that construct chains by hand; services must never call it with a
+   * client-computed `seq`.
+   */
+  appendChained(input: AuditEventInput, ts: number): MaybePromise<AuditRecord>;
   readAt(seq: number): MaybePromise<AuditRecord | undefined>;
   last(): MaybePromise<AuditRecord | undefined>;
   /**

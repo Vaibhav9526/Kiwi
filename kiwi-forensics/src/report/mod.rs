@@ -59,6 +59,38 @@ impl Limitation {
     }
 }
 
+/// Evidence-marker codes a session substantiates (contract §8).
+///
+/// Pure over the record: a code means the *observation* could not show the
+/// thing — resumed sessions, missing handshakes, invisible auth — never that
+/// the peer failed at it. Aggregation paths (capture pipeline, live report)
+/// count these per session and emit one limitation per code.
+pub fn session_limitation_codes(
+    session: &crate::model::ConnectionSecurityEvent,
+) -> Vec<&'static str> {
+    let mut codes = Vec::with_capacity(3);
+    if session.transport == crate::model::TransportSecurity::Unknown {
+        codes.push(limitation_codes::TRANSPORT_UNKNOWN);
+    }
+    // Resumed/partial handshake, or a STARTTLS upgrade the server accepted
+    // whose handshake bytes the capture never showed.
+    let kex_unobserved = session
+        .tls
+        .as_ref()
+        .is_some_and(|t| t.session_resumed || !t.handshake_complete)
+        || session
+            .starttls
+            .as_ref()
+            .is_some_and(|s| s.server_reply_ok == Some(true) && !s.handshake_completed);
+    if kex_unobserved {
+        codes.push(limitation_codes::KEX_UNOBSERVED);
+    }
+    if session.is_encrypted() && session.auth.as_ref().is_none_or(|a| a.attempts == 0) {
+        codes.push(limitation_codes::AUTH_UNOBSERVED);
+    }
+    codes
+}
+
 /// AI-authored text grounded in deterministic findings.
 ///
 /// Never authoritative: consumers must render it alongside the cited
@@ -93,9 +125,9 @@ impl AiEnrichment {
 /// Top-level forensic report.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Report {
-    /// Finding/evidence/report contract version (`kiwi.forensics/1`).
+    /// Finding/evidence/report contract version (`kiwi.forensics/2`).
     pub contract_version: String,
-    /// Scoring model version (`kiwi-score-1`).
+    /// Scoring model version (`kiwi-score-2`).
     pub scoring_model_version: String,
     /// Rule catalog version the findings were produced with.
     pub rule_catalog_version: u16,
@@ -226,7 +258,10 @@ mod tests {
     use crate::findings::{
         Confidence, Evidence, EvidenceKind, EvidenceValue, FindingCategory, Severity,
     };
-    use crate::model::{ConnectionSecurityEvent, Endpoint, Protocol, SessionId, SourceRef};
+    use crate::model::{
+        AuthMechanism, AuthObservation, ConnectionSecurityEvent, Endpoint, Protocol, SessionId,
+        SourceRef, StartTlsObservation, TlsObservation, TlsVersion, TransportSecurity,
+    };
 
     fn session() -> ConnectionSecurityEvent {
         ConnectionSecurityEvent::new(
@@ -298,6 +333,80 @@ mod tests {
                 .iter()
                 .any(|l| l.code == limitation_codes::AI_UNCITED_KEYS),
             "drop recorded as limitation"
+        );
+    }
+
+    // FOR-10: the promised evidence markers must classify real session
+    // states and must not fire where the fact was observed.
+    #[test]
+    fn limitation_codes_classify_unobserved_facts() {
+        let base = session();
+        // Default fixture: transport Unknown, no tls, no auth → only the
+        // transport marker applies (unprotected, so auth-unobserved cannot).
+        assert_eq!(
+            session_limitation_codes(&base),
+            vec![limitation_codes::TRANSPORT_UNKNOWN]
+        );
+
+        // Resumed session: TLS observed, no fresh key exchange.
+        let resumed = {
+            let mut s = session().with_transport(TransportSecurity::ImplicitTls);
+            let mut tls = TlsObservation::from_wire(TlsVersion::Tls13, 0x1301);
+            tls.session_resumed = true;
+            s = s.with_tls(tls);
+            s
+        };
+        let codes = session_limitation_codes(&resumed);
+        assert!(codes.contains(&limitation_codes::KEX_UNOBSERVED));
+        assert!(codes.contains(&limitation_codes::AUTH_UNOBSERVED));
+
+        // Incomplete handshake (capture dropped handshake bytes).
+        let partial = {
+            let mut s = session().with_transport(TransportSecurity::ImplicitTls);
+            let mut tls = TlsObservation::from_wire(TlsVersion::Tls12, 0xC02F);
+            tls.handshake_complete = false;
+            s = s.with_tls(tls);
+            s
+        };
+        assert!(
+            session_limitation_codes(&partial).contains(&limitation_codes::KEX_UNOBSERVED),
+            "missing handshake is unobserved key exchange"
+        );
+
+        // STARTTLS accepted but handshake never observed in the capture.
+        let upgrade_unseen = session()
+            .with_transport(TransportSecurity::Plaintext)
+            .with_starttls(StartTlsObservation {
+                handshake_completed: false,
+                ..StartTlsObservation::upgraded()
+            });
+        assert!(
+            session_limitation_codes(&upgrade_unseen).contains(&limitation_codes::KEX_UNOBSERVED),
+            "accepted upgrade without observed handshake"
+        );
+
+        // Healthy observed session: no markers at all.
+        let healthy = session()
+            .with_transport(TransportSecurity::ImplicitTls)
+            .with_tls(TlsObservation::from_wire(TlsVersion::Tls13, 0x1301))
+            .with_auth(AuthObservation::with_outcome(AuthMechanism::Plain, true));
+        assert!(
+            session_limitation_codes(&healthy).is_empty(),
+            "fully observed session emits nothing"
+        );
+
+        // Protected + zero-attempt auth exchange still counts as unobserved.
+        let zero_attempts = session()
+            .with_transport(TransportSecurity::ImplicitTls)
+            .with_tls(TlsObservation::from_wire(TlsVersion::Tls13, 0x1301))
+            .with_auth(AuthObservation {
+                mechanism: None,
+                succeeded: None,
+                attempts: 0,
+                failures: 0,
+            });
+        assert!(
+            session_limitation_codes(&zero_attempts).contains(&limitation_codes::AUTH_UNOBSERVED)
         );
     }
 }

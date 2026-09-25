@@ -18,6 +18,14 @@ kiwi-mail = { path = "../../kiwi-mail" }
 kiwi-core = { path = "../../kiwi-core" }
 kiwi-forensics = { path = "../../kiwi-forensics" }
 kiwi-contacts = { path = "../../kiwi-contacts" }
+kiwi-integrations = { path = "../../kiwi-integrations" }
+kiwi-sandbox = { path = "../../kiwi-sandbox" }
+kiwi-autoconfig = { path = "../../kiwi-autoconfig" }
+kiwi-mailauth = { path = "../../kiwi-mailauth" }
+kiwi-pair = { path = "../../kiwi-pair" }
+# DNS MX lookups for autoconfig discovery (same pin kiwi-mailauth uses).
+hickory-resolver = { version = "0.26", features = ["tokio"] }
+async-trait.workspace = true
 tauri = { version = "2", features = [] }
 serde.workspace = true
 serde_json.workspace = true
@@ -40,6 +48,11 @@ ammonia = "4"
 # Same mail-parser version kiwi-mail uses — attachment byte extraction for
 # the download command reads the stored MIME directly.
 mail-parser.workspace = true
+url = "2"
+
+# Test-only: scripted transcript-replay seam (loopback E2E, T-257).
+[dev-dependencies]
+kiwi-mail = { path = "../../kiwi-mail", features = ["e2e-fixtures"] }
 
 [lints]
 workspace = true

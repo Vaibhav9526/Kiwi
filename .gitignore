@@ -35,3 +35,11 @@ artifacts/
 
 # Tauri generated
 kiwi-app/src-tauri/gen/
+reference/
+*.log
+nul
+auth-test-out.txt
+# Repository-hygiene scratch files
+/chk*.txt
+__*probe*
+

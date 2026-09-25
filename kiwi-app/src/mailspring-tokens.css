@@ -1,0 +1,231 @@
+/* KIWI Mailspring-faithful tokens (T-190b) — clean-room, STUDY ONLY.
+ * Observed behavior/values from reference/mailspring (GPL-3.0) paraphrased
+ * into our own variable names. Zero Mailspring code copied.
+ * Opt-in companion to theme.css (flagship stays default). T-191 imports this
+ * file and maps components onto these tokens; flagship dark remains.
+ * Full rationale: docs/ui-mailspring-map.md */
+
+:root,
+[data-theme="light"][data-shell="mailspring"],
+[data-shell="mailspring"] {
+  color-scheme: light;
+
+  /* ---- surfaces (light) ---- */
+  --kiwi-ms-bg: #fdfdfd;
+  --kiwi-ms-surface: #ffffff;
+  --kiwi-ms-surface-2: #f6f6f6;
+  --kiwi-ms-surface-3: #eceef1;
+  --kiwi-ms-sidebar: #eeeeef;
+  --kiwi-ms-toolbar: #d9dce0;
+  --kiwi-ms-list-bg: #ffffff;
+  --kiwi-ms-list-border: #dddddf;
+  --kiwi-ms-list-hover: #f2f4f6;
+
+  /* ---- text (light) ---- */
+  --kiwi-ms-text: #231f20;
+  --kiwi-ms-text-heading: #434648;
+  --kiwi-ms-text-secondary: #5b6470;
+  --kiwi-ms-text-muted: #8a94a0;
+  --kiwi-ms-link: #419bf9;
+
+  /* ---- borders (light) ---- */
+  --kiwi-ms-border: #d5d8dc;
+  --kiwi-ms-border-strong: #b9bec5;
+  --kiwi-ms-divider: #e3e5e8;
+  --kiwi-ms-hairline: rgba(0, 0, 0, 0.12);
+
+  /* ---- accent + status (light) ---- */
+  --kiwi-ms-accent: #419bf9;
+  --kiwi-ms-accent-active: #3187e1;
+  --kiwi-ms-accent-emphasis: #5b90fb;
+  /* T-268: primary-action token (eM "+New" = orange) — distinct from the
+   * selection accent; theme packages override. */
+  --kiwi-ms-primary: #e8781e;
+  --kiwi-ms-primary-text: #ffffff;
+  --kiwi-ms-icon-muted: #919191;
+  --kiwi-ms-info: #3187e1;
+  --kiwi-ms-success: #5cb346;
+  --kiwi-ms-warning: #f0ad4e;
+  --kiwi-ms-danger: #d9534f;
+  --kiwi-ms-toast-info: #009ec4;
+  --kiwi-ms-toast-success: #00ac6f;
+  --kiwi-ms-toast-warning: #ff4800;
+  --kiwi-ms-toast-error: #ca2541;
+  --kiwi-ms-toast-pending: #b4babd;
+  --kiwi-ms-search-match: #fff000;
+  --kiwi-ms-search-current: #ff8b1a;
+
+  /* ---- type ---- */
+  --kiwi-ms-font-sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --kiwi-ms-font-serif: Georgia, "Times New Roman", serif;
+  --kiwi-ms-font-mono: ui-monospace, "DejaVu Sans Mono", Menlo, Consolas, monospace;
+  --kiwi-ms-text-tiny: 10.5px;
+  --kiwi-ms-text-smaller: 12px;
+  --kiwi-ms-text-small: 13px;
+  --kiwi-ms-text-base: 14px;
+  --kiwi-ms-text-large: 16px;
+  --kiwi-ms-text-larger: 18px;
+  --kiwi-ms-h1: 24px;
+  --kiwi-ms-h3: 20px;
+  --kiwi-ms-h4: 18px;
+  --kiwi-ms-weight-thin: 200;
+  --kiwi-ms-weight-light: 300;
+  --kiwi-ms-weight-normal: 400;
+  --kiwi-ms-weight-medium: 500;
+  --kiwi-ms-weight-semibold: 600;
+  --kiwi-ms-leading-base: 1.5;
+  --kiwi-ms-leading-heading: 1.1;
+  --kiwi-ms-leading-lead: 1.4;
+
+  /* ---- spacing ---- */
+  --kiwi-ms-space-unit: 14px;
+  --kiwi-ms-space-quarter: 3.5px;
+  --kiwi-ms-space-half: 7px;
+  --kiwi-ms-space-three-quarter: 10.5px;
+  --kiwi-ms-space-double: 28px;
+  --kiwi-ms-sidebar-margin: 15px;
+  --kiwi-ms-component-pad: 10px;
+  --kiwi-ms-icon-pad: 5px;
+  --kiwi-ms-icon-size: 16px;
+  --kiwi-ms-component-line: 25px;
+  --kiwi-ms-btn-pad-y: 5px;
+  --kiwi-ms-btn-pad-x: 12px;
+  --kiwi-ms-btn-lg-pad: 9px 16px;
+  --kiwi-ms-btn-sm-pad: 4px 10px;
+  --kiwi-ms-btn-xs-pad: 1px 5px;
+
+  /* ---- layout widths ---- */
+  --kiwi-ms-sidebar-min: 165px;
+  --kiwi-ms-sidebar-max: 250px;
+  --kiwi-ms-thread-min: 100px;
+  --kiwi-ms-thread-max: 3000px;
+  --kiwi-ms-reader-min: 480px;
+  --kiwi-ms-row-compact: 36px;
+  --kiwi-ms-row-comfortable: 85px;
+  --kiwi-ms-narrow-breakpoint: 540px;
+  --kiwi-ms-badge-min: 15px;
+
+  /* ---- radii ---- */
+  --kiwi-ms-radius-base: 3px;
+  --kiwi-ms-radius-large: 5px;
+  --kiwi-ms-radius-small: 2px;
+  --kiwi-ms-radius-toolbar: 6px;
+  --kiwi-ms-radius-pill: 999px;
+  --kiwi-ms-radius-circle: 50%;
+
+  /* ---- shadows ---- */
+  --kiwi-ms-shadow-color: rgba(0, 0, 0, 0.15);
+  --kiwi-ms-shadow-standard: 0 1px 4px 0 rgba(0, 0, 0, 0.15);
+  --kiwi-ms-shadow-raised: 0 4px 14px 0 rgba(0, 0, 0, 0.18);
+  --kiwi-ms-shadow-popover: 0 8px 28px rgba(0, 0, 0, 0.22);
+  --kiwi-ms-shadow-modal: 0 24px 64px rgba(0, 0, 0, 0.35);
+  --kiwi-ms-focus-glow: 0 0 0 3px rgba(65, 155, 249, 0.25);
+
+  /* ---- motion ladder (own tokens, observed cadence) ---- */
+  --kiwi-ms-motion-instant: 50ms;
+  --kiwi-ms-motion-micro: 50ms;
+  --kiwi-ms-motion-twist: 90ms;
+  --kiwi-ms-motion-quick: 90ms;
+  --kiwi-ms-motion-fade: 100ms;
+  --kiwi-ms-motion-veil: 100ms;
+  --kiwi-ms-motion-row: 120ms;
+  --kiwi-ms-motion-nav: 125ms;
+  --kiwi-ms-motion-hover: 150ms;
+  --kiwi-ms-motion-switch: 150ms;
+  --kiwi-ms-motion-toast-in: 150ms;
+  --kiwi-ms-motion-toast-out: 150ms;
+  --kiwi-ms-motion-panel: 200ms;
+  --kiwi-ms-motion-defer: 220ms;
+  --kiwi-ms-motion-pop: 240ms;
+  --kiwi-ms-motion-scroll: 300ms;
+  --kiwi-ms-motion-modal: 360ms;
+  --kiwi-ms-motion-spinner-loop: 1.1s;
+  --kiwi-ms-motion-undo-ring: 10s;
+  --kiwi-ms-ease-in: ease-in;
+  --kiwi-ms-ease-out: ease-out;
+  --kiwi-ms-ease-in-out: ease-in-out;
+  --kiwi-ms-ease-pop: cubic-bezier(0.56, 0.25, 0.25, 1.56);
+  --kiwi-ms-ease-switch: cubic-bezier(0.22, 0.61, 0.36, 1);
+  --kiwi-ms-ease-spinner: cubic-bezier(0.45, 0.05, 0.55, 0.95);
+  --kiwi-ms-ease-wizard: cubic-bezier(0.65, 0.05, 0.36, 1);
+  --kiwi-ms-ease-expand: cubic-bezier(0, 1, 0.5, 1);
+}
+
+/* ---- dark: flagship deep-black depth (owner-approved T-145) with the
+ * Mailspring-idiom structure (sidebar/list/reader separation, accent
+ * selection system). The dark default stays flagship. ---- */
+[data-theme="dark"][data-shell="mailspring"],
+[data-shell="mailspring"].kiwi-ms-dark {
+  color-scheme: dark;
+
+  --kiwi-ms-bg: #0e0e12;
+  --kiwi-ms-surface: #15151c;
+  --kiwi-ms-surface-2: #17171f;
+  --kiwi-ms-surface-3: #1d1d25;
+  --kiwi-ms-sidebar: #0a0a0e;
+  --kiwi-ms-toolbar: #15151c;
+  --kiwi-ms-list-bg: #101016;
+  --kiwi-ms-list-border: #2a2a35;
+  --kiwi-ms-list-hover: #1a1a22;
+
+  --kiwi-ms-text: #f4f2f9;
+  --kiwi-ms-text-heading: #ffffff;
+  --kiwi-ms-text-secondary: #a9a7bd;
+  --kiwi-ms-text-muted: #5e5c72;
+  --kiwi-ms-link: #f2c063;
+
+  --kiwi-ms-border: #2a2a35;
+  --kiwi-ms-border-strong: #3a3a46;
+  --kiwi-ms-divider: #1d1d25;
+  --kiwi-ms-hairline: rgba(255, 255, 255, 0.08);
+
+  --kiwi-ms-accent: #eaa132;
+  --kiwi-ms-accent-active: #cf8a26;
+  --kiwi-ms-accent-emphasis: #f2c063;
+  --kiwi-ms-primary: #e8781e;
+  --kiwi-ms-primary-text: #ffffff;
+  --kiwi-ms-icon-muted: #8e8ca3;
+  --kiwi-ms-info: #58b660;
+  --kiwi-ms-success: #34d399;
+  --kiwi-ms-warning: #eaa132;
+  --kiwi-ms-danger: #f26d6d;
+  --kiwi-ms-toast-info: #3ec6e0;
+  --kiwi-ms-toast-success: #2bd99a;
+  --kiwi-ms-toast-warning: #ff7a33;
+  --kiwi-ms-toast-error: #e0526e;
+  --kiwi-ms-toast-pending: #9aa0a6;
+  --kiwi-ms-search-match: #fff000;
+  --kiwi-ms-search-current: #ff8b1a;
+
+  --kiwi-ms-shadow-color: rgba(0, 0, 0, 0.55);
+  --kiwi-ms-shadow-standard: 0 1px 4px 0 rgba(0, 0, 0, 0.5);
+  --kiwi-ms-shadow-raised: 0 4px 14px 0 rgba(0, 0, 0, 0.55);
+  --kiwi-ms-shadow-popover: 0 8px 28px rgba(0, 0, 0, 0.6);
+  --kiwi-ms-shadow-modal: 0 24px 64px rgba(0, 0, 0, 0.65);
+  --kiwi-ms-focus-glow: 0 0 0 3px rgba(234, 161, 50, 0.25);
+}
+
+/* ---- selection / unread / badge conventions ---- */
+[data-shell="mailspring"] {
+  --kiwi-ms-select-tint: color-mix(in srgb, var(--kiwi-ms-accent) 17%, var(--kiwi-ms-list-bg));
+  --kiwi-ms-select-border: color-mix(in srgb, var(--kiwi-ms-accent) 50%, var(--kiwi-ms-list-bg));
+  --kiwi-ms-select-solid: var(--kiwi-ms-accent-active);
+  --kiwi-ms-unread-weight: 700;
+  --kiwi-ms-badge-filled-bg: var(--kiwi-ms-accent-active);
+  --kiwi-ms-badge-filled-text: #ffffff;
+  --kiwi-ms-swipe-danger: #ff5f56;
+  --kiwi-ms-swipe-snooze: #fbd852;
+  --kiwi-ms-swipe-archive: #8dd07d;
+  --kiwi-ms-reminder-bg: #312856;
+  --kiwi-ms-reminder-text: #7d5bef;
+  --kiwi-ms-reminder-border: #4d3b8a;
+}
+
+/* ---- reduced motion: full kill-switch (Mailspring has none; KIWI does) ---- */
+@media (prefers-reduced-motion: reduce) {
+  [data-shell="mailspring"],
+  [data-shell="mailspring"] * {
+    animation: none !important;
+    transition: none !important;
+  }
+}

@@ -21,12 +21,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
-use kiwi_core::challenge::ChallengeBook;
-use kiwi_core::device::DeviceRegistry;
+use kiwi_autoconfig::net::DiscoveryNet;
+use kiwi_autoconfig::oauth2::{OAuthError, PendingGrant, ProviderConfig, TokenSet};
 use kiwi_core::policy::TrustPolicy;
 use kiwi_core::session::SecuritySession;
-use kiwi_core::trust::{TrustMachine, TrustSignal};
+use kiwi_core::trust::{SignalKind, TrustMachine, TrustSignal};
 use kiwi_forensics::findings::Finding;
+use kiwi_integrations::deliverability::TestReservation;
+use kiwi_integrations::http::HttpClient;
+use kiwi_integrations::tempmail::GuerrillaMail;
 use kiwi_mail::account::CredentialStore;
 use kiwi_mail::smtp::SendQueue;
 use kiwi_mail::store::MailStore;
@@ -39,6 +42,40 @@ use crate::error::{CmdResult, IpcError};
 pub const MAX_SESSIONS: usize = 512;
 /// Bound on retained findings (deduped by finding id, latest wins).
 pub const MAX_FINDINGS: usize = 4096;
+/// Bound on retained sandbox-open sessions.
+pub const MAX_SANDBOX_SESSIONS: usize = 128;
+
+#[derive(Clone)]
+pub struct SandboxSessionRecord {
+    pub session_id: String,
+    pub target: String,
+    pub evidence_reasons: Vec<String>,
+    pub report: kiwi_sandbox::AnalysisReport,
+}
+
+/// Backend-provisioned pairing-channel identity (ipc.md §9d.2). The
+/// renderer can never supply or override either field — the endpoint comes
+/// from `pairing-channel.json`/`KIWI_PAIR_ENDPOINT` and the key from the
+/// OS credential store; `pair_begin` fails closed when this is `None`.
+#[derive(Debug, Clone)]
+pub struct PairChannel {
+    /// The endpoint the phone dials (e.g. `wss://192.168.1.20:49310/pair`).
+    pub desktop_endpoint: String,
+    /// `ed25519:<canonical padded std Base64 of the 32-byte verify key>`.
+    pub desktop_public_key_b64: String,
+}
+
+/// A backend-owned active pairing flow (ipc.md §9d.7). Created only by
+/// `pair_begin` (or a future trusted pairing-channel handler); bound to
+/// the issued ticket; dead once `expires_unix` passes. While this is
+/// alive, `pair_begin`/`pair_status` are exempt from the lock gate.
+#[derive(Debug, Clone)]
+pub struct PairFlow {
+    /// The bearer ticket this flow issued — `pair_status` while locked is
+    /// bound to exactly this value.
+    pub ticket: String,
+    pub expires_unix: i64,
+}
 
 /// One observed mail connection and everything it produced.
 #[derive(Clone)]
@@ -70,6 +107,11 @@ pub struct AccountMeta {
     /// Org binding for the send-path policy bridge (admin-api §10).
     #[serde(default)]
     pub org_id: Option<String>,
+    /// POP3 delete-after-download (T-295): `false` = keep-on-server, the
+    /// default and only safe-on-resume posture; `true` = `sync_pop3` issues
+    /// DELE per ingested drop. Recorded + audited, never implied.
+    #[serde(default)]
+    pub pop3_delete_after_download: bool,
 }
 
 /// Folder the account is known to have (id is the mail-store row id).
@@ -94,6 +136,12 @@ pub struct OutboxMeta {
     pub not_before_unix: i64,
     pub undo_window_until_unix: i64,
     pub attempts: u32,
+    /// Sanitized reason for the most recent failed attempt (T-298).
+    /// `None` until the first failure. Mirrored to the `outbox` row so
+    /// the reason survives restart; legacy per-item files simply lack
+    /// the field.
+    #[serde(default)]
+    pub last_error: Option<String>,
 }
 
 /// Local admin-service binding (kiwi-admin, localhost only).
@@ -101,6 +149,104 @@ pub struct OutboxMeta {
 pub struct OrgBinding {
     pub org_id: String,
     pub base_url: String,
+}
+
+/// Bound on concurrent deliverability reservations (single-use addresses,
+/// ~1h TTL server-side — 32 is headroom, not a promise).
+pub const MAX_DELIVERABILITY_SESSIONS: usize = 32;
+
+/// Bound on concurrent OAuth2 grants (wizard sessions die with the
+/// process). Each loopback grant additionally holds a bound OS socket
+/// until its deadline — the bound keeps a flood of abandoned wizard
+/// openings from leaking listeners.
+pub const MAX_OAUTH2_SESSIONS: usize = 32;
+
+/// Loopback auth-code grant lifetime: the redirect listener stays bound
+/// this long waiting for the browser return (Google auth codes live
+/// ~10 min). Device grants carry their own server-side `expires_in`.
+pub const OAUTH2_LOOPBACK_TIMEOUT_SECS: u64 = 600;
+
+/// One in-flight OAuth2 grant (T-230). Holds transient grant secrets —
+/// the PKCE verifier rides inside the loopback grant (moved to the waiter
+/// thread), the device code inside the device grant — plus, for deferred
+/// binds, a completed `TokenSet`. In-memory only: never serialized, never
+/// persisted, never logged, never audited (audit sees provider + email
+/// only).
+pub struct OAuth2Session {
+    /// Provider config the grant was begun with (deployment client_id
+    /// included — a public id, not a secret).
+    pub provider: ProviderConfig,
+    /// Account email the grant is for — `None` when the wizard started
+    /// before the address was known; bound at `kiwi_add_account` consume.
+    pub email: Option<String>,
+    /// Creation time (unix seconds) — drives bounded-map eviction.
+    pub created_unix: i64,
+    /// Grant-state machine.
+    pub state: OAuth2SessionState,
+}
+
+/// Grant lifecycle behind a `ticket_id`.
+pub enum OAuth2SessionState {
+    /// Device-code grant awaiting user approval; `oauth2_poll` drives it.
+    /// `grant` is always `PendingGrant::Device`.
+    Device {
+        /// The pending grant (holds the device code — a poll credential).
+        grant: PendingGrant,
+        /// Current cadence hint for the UI poll loop; `slow_down` bumps it.
+        interval_secs: u64,
+        /// Provider-grant deadline (from the device-code response).
+        expires_at_unix: Option<i64>,
+    },
+    /// Loopback grant — the listener + verifier moved to the waiter
+    /// thread at `begin`; `result` gains the exchange outcome exactly
+    /// once (`Err` becomes `Failed` on the next poll).
+    Loopback {
+        /// Waiter-thread output slot: `Some` once redirect-wait + code
+        /// exchange have settled.
+        result: std::sync::Arc<std::sync::Mutex<Option<Result<TokenSet, OAuthError>>>>,
+    },
+    /// Grant completed and tokens persisted under `credential_key`
+    /// (`oauth2/<provider>/<email>`) — the email was known at completion.
+    Completed {
+        /// Credential-store key the `TokenSet` blob lives under.
+        credential_key: String,
+    },
+    /// Grant completed but not yet persisted — `begin` had no email, so
+    /// `kiwi_add_account` supplies it and persists on consume.
+    CompletedDeferred {
+        /// The acquired token set (held in memory only).
+        tokens: TokenSet,
+    },
+    /// Terminal failure — next `oauth2_poll` reports `status:"error"`.
+    /// `code` is the sanitized IPC error code; `message` carries no
+    /// secret material (OAuthError is secret-free by construction).
+    Failed { code: &'static str, message: String },
+}
+
+/// One in-flight deliverability test (T-227). `reservation.slug` is a
+/// capability secret; `consent_token` is the single-use capability
+/// `kiwi_integrations_deliverability_send` must present — minted by
+/// `..._begin`, consumed on first valid send. Never serialized, never
+/// persisted, never audited.
+pub struct DeliverabilitySession {
+    pub reservation: TestReservation,
+    /// `Some` until `deliverability_send` consumes it.
+    pub consent_token: Option<String>,
+    /// Consent consumed and a send enqueued for this test.
+    pub sent: bool,
+}
+
+impl std::fmt::Debug for DeliverabilitySession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeliverabilitySession")
+            .field("address", &self.reservation.address)
+            .field(
+                "consent_token",
+                &self.consent_token.as_ref().map(|_| "[redacted]"),
+            )
+            .field("sent", &self.sent)
+            .finish()
+    }
 }
 
 /// Live-sync worker status (T-157) — one entry per account the supervisor
@@ -169,10 +315,6 @@ pub struct AppIndex {
     /// account_id → known folders (populated by sync / manual creation).
     #[serde(default)]
     pub folders: BTreeMap<String, Vec<FolderEntry>>,
-    /// Registered authenticator device ids (DeviceRegistry has no
-    /// enumeration API — the index keeps the id list).
-    #[serde(default)]
-    pub device_ids: Vec<String>,
     #[serde(default)]
     pub org: Option<OrgBinding>,
     /// Threading header cache (T-169): `"f<folderId>:u<uid>"` →
@@ -193,7 +335,6 @@ impl Default for AppIndex {
             account_ids: Vec::new(),
             account_meta: BTreeMap::new(),
             folders: BTreeMap::new(),
-            device_ids: Vec::new(),
             org: None,
             thread_headers: BTreeMap::new(),
             prefs: BTreeMap::new(),
@@ -292,6 +433,7 @@ pub fn outbox_row_of(
         not_before_unix: meta.not_before_unix,
         undo_window_until_unix: meta.undo_window_until_unix,
         attempts: meta.attempts,
+        last_error: meta.last_error.clone(),
         created_unix,
     }
 }
@@ -385,8 +527,21 @@ pub struct AppState {
     pub credentials: Arc<dyn CredentialStore>,
     pub trust: Mutex<TrustMachine>,
     pub policy: TrustPolicy,
-    pub devices: Mutex<DeviceRegistry>,
-    pub challenges: Mutex<ChallengeBook>,
+    /// THE device/challenge authority (T-269): the persisted kiwi-pair
+    /// engine over `pair.db` — devices, tickets, challenges, and the nonce
+    /// replay ledger all live there and survive restarts. The old kiwi-core
+    /// in-memory `DeviceRegistry`/`ChallengeBook` stand-ins are gone.
+    pub pair: Mutex<kiwi_pair::PairEngine>,
+    /// Trusted pairing-channel identity (§9d.2): provisioned endpoint +
+    /// this desktop's `ed25519:` public key. `None` when unprovisioned —
+    /// `pair_begin` then fails closed rather than inventing an identity.
+    /// Never renderer-writable.
+    pub pair_channel: Option<PairChannel>,
+    /// The backend-owned active pairing flow (§9d.7): bound to the ticket
+    /// `pair_begin` issued, dying at ticket expiry. Its existence is what
+    /// unlocks the flow-scoped exemption for pair_begin/pair_status while
+    /// the endpoint is locked. Renderers can never set or extend it.
+    pub pair_flow: Mutex<Option<PairFlow>>,
     pub send_queue: Mutex<SendQueue>,
     /// queue_id → send metadata (SendQueue exposes no item iterator).
     pub outbox_meta: Mutex<BTreeMap<String, OutboxMeta>>,
@@ -412,6 +567,29 @@ pub struct AppState {
     /// Local address book (T-175) — `contacts.db` under `data_dir`,
     /// owned by `kiwi-contacts` (never shares mail.db's tables).
     pub contacts: Mutex<kiwi_contacts::ContactStore>,
+    /// Shared transport for every kiwi-integrations provider (T-227) —
+    /// `ReqwestClient` in production, `ScriptedHttp` in tests. Providers
+    /// are constructed per command against this; the seam is what makes
+    /// integration flows testable offline.
+    pub integrations_http: Arc<dyn HttpClient>,
+    /// The one live disposable-inbox session (GuerrillaMail sessions are
+    /// single-mailbox). Session state (PHPSESSID, sid_token, address)
+    /// lives inside the provider, in memory only — nothing persists.
+    pub tempmail: Mutex<Option<GuerrillaMail>>,
+    /// In-flight deliverability tests keyed by opaque `test_id`. Bounded
+    /// at [`MAX_DELIVERABILITY_SESSIONS`]; sessions die with the process.
+    pub deliverability: Mutex<BTreeMap<String, DeliverabilitySession>>,
+    /// In-flight OAuth2 grants keyed by opaque `ticket_id` (T-230).
+    /// Bounded at [`MAX_OAUTH2_SESSIONS`]; sessions die with the process.
+    pub oauth2_sessions: Mutex<BTreeMap<String, OAuth2Session>>,
+    /// Discovery seam for `kiwi_discover_account`: live HTTPS fetch +
+    /// MX lookup in production, `MockNet` in tests.
+    pub autoconfig_net: Arc<dyn DiscoveryNet>,
+    /// Sandboxed hostile-content boundary. WSL2 when provisioned, otherwise
+    /// the always-unavailable NullProvider — never a host execution fallback.
+    pub sandbox: Arc<dyn kiwi_sandbox::SandboxProvider>,
+    /// Bounded sandbox-open session records for forensic report evidence.
+    pub sandbox_sessions: Mutex<VecDeque<SandboxSessionRecord>>,
     pub index: Mutex<AppIndex>,
     pub audit: Mutex<AuditLog>,
     /// Per-boot session id — challenges bind to it, so issued challenges die
@@ -428,12 +606,17 @@ impl AppState {
         let store = MailStore::open(&data_dir)?;
         let index = AppIndex::load(&data_dir)?;
         let audit = AuditLog::open(&data_dir)?;
+        let http = integrations_transport()?;
+        let sandbox = configured_sandbox(&data_dir);
         let mut s = Self::assemble(
             data_dir,
             store,
             index,
             audit,
             Arc::new(OsCredentialStore::new()),
+            http.clone(),
+            Arc::new(crate::discovery_net::LiveDiscoveryNet::new(http)),
+            sandbox,
         )?;
         s.reload_outbox();
         Ok(s)
@@ -443,6 +626,53 @@ impl AppState {
     /// exercised) + in-memory credentials; index + audit real files.
     #[cfg(test)]
     pub fn open_test(data_dir: PathBuf) -> CmdResult<Self> {
+        Self::open_test_with_http(data_dir, integrations_transport()?)
+    }
+
+    /// Test open with an injected integration transport — `ScriptedHttp`
+    /// replays recorded exchanges, so integration commands run offline.
+    /// Discovery gets an empty `MockNet` (ISPDB fixtures still resolve).
+    #[cfg(test)]
+    pub fn open_test_with_http(
+        data_dir: PathBuf,
+        integrations_http: Arc<dyn HttpClient>,
+    ) -> CmdResult<Self> {
+        Self::open_test_with_net(
+            data_dir,
+            integrations_http,
+            Arc::new(kiwi_autoconfig::net::MockNet::new()),
+        )
+    }
+
+    /// Test open with a deterministic sandbox provider (offline command tests).
+    #[cfg(test)]
+    pub fn open_test_with_sandbox(
+        data_dir: PathBuf,
+        sandbox: Arc<dyn kiwi_sandbox::SandboxProvider>,
+    ) -> CmdResult<Self> {
+        let mut state = Self::open_test(data_dir)?;
+        state.sandbox = sandbox;
+        Ok(state)
+    }
+
+    /// Provision a pairing channel for tests without env/file plumbing —
+    /// endpoint injected directly, key minted into the memory credstore.
+    /// `None` endpoint models the unprovisioned (fail-closed) posture.
+    #[cfg(test)]
+    pub fn provision_test_pair_channel(&mut self, endpoint: &str) {
+        self.pair_channel = desktop_pair_key_b64(self.credentials.as_ref()).map(|k| PairChannel {
+            desktop_endpoint: endpoint.to_string(),
+            desktop_public_key_b64: k,
+        });
+    }
+
+    /// Test open with injected integration transport AND discovery net.
+    #[cfg(test)]
+    pub fn open_test_with_net(
+        data_dir: PathBuf,
+        integrations_http: Arc<dyn HttpClient>,
+        autoconfig_net: Arc<dyn DiscoveryNet>,
+    ) -> CmdResult<Self> {
         std::fs::create_dir_all(&data_dir)?;
         let store = MailStore::open(&data_dir)?;
         let index = AppIndex::load(&data_dir)?;
@@ -453,6 +683,11 @@ impl AppState {
             index,
             audit,
             Arc::new(kiwi_mail::account::MemoryCredentialStore::new()),
+            integrations_http,
+            autoconfig_net,
+            Arc::new(kiwi_sandbox::NullProvider::new(
+                "sandbox provider not injected in tests",
+            )),
         )?;
         s.reload_outbox();
         Ok(s)
@@ -503,30 +738,36 @@ impl AppState {
                     not_before_unix: row.not_before_unix,
                     undo_window_until_unix: row.undo_window_until_unix,
                     attempts: row.attempts,
+                    last_error: row.last_error,
                 },
             );
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn assemble(
         data_dir: PathBuf,
         store: MailStore,
         index: AppIndex,
         audit: AuditLog,
         credentials: Arc<dyn CredentialStore>,
+        integrations_http: Arc<dyn HttpClient>,
+        autoconfig_net: Arc<dyn DiscoveryNet>,
+        sandbox: Arc<dyn kiwi_sandbox::SandboxProvider>,
     ) -> CmdResult<Self> {
         Ok(Self {
             contacts: Mutex::new(
                 kiwi_contacts::ContactStore::open(&data_dir, now_unix())
                     .map_err(|e| IpcError::new("contacts", format!("open contacts.db: {e}")))?,
             ),
+            pair: Mutex::new(kiwi_pair::PairEngine::open(&data_dir).map_err(IpcError::from)?),
+            pair_channel: provision_pair_channel(&data_dir, credentials.as_ref()),
+            pair_flow: Mutex::new(None),
             data_dir,
             store: Mutex::new(store),
             credentials,
             trust: Mutex::new(TrustMachine::new()),
             policy: TrustPolicy::default(),
-            devices: Mutex::new(DeviceRegistry::new()),
-            challenges: Mutex::new(ChallengeBook::new()),
             send_queue: Mutex::new(SendQueue::new()),
             outbox_meta: Mutex::new(BTreeMap::new()),
             sessions: Mutex::new(VecDeque::new()),
@@ -537,6 +778,13 @@ impl AppState {
             sync_wakeup: tokio::sync::Notify::new(),
             policy_warned: std::sync::atomic::AtomicBool::new(false),
             no_org_warned: std::sync::atomic::AtomicBool::new(false),
+            integrations_http,
+            tempmail: Mutex::new(None),
+            deliverability: Mutex::new(BTreeMap::new()),
+            oauth2_sessions: Mutex::new(BTreeMap::new()),
+            autoconfig_net,
+            sandbox,
+            sandbox_sessions: Mutex::new(VecDeque::new()),
             index: Mutex::new(index),
             audit: Mutex::new(audit),
             boot_session_id: new_id("boot"),
@@ -556,15 +804,35 @@ impl AppState {
         format!("app:{proto}:{n}")
     }
 
+    pub fn next_sandbox_session_id(&self) -> String {
+        let n = self.session_counter.fetch_add(1, Ordering::Relaxed);
+        format!("sandbox:{n}")
+    }
+
     /// Recompute the trust decision from every live signal source:
-    /// endpoint indicators + device-registry status + all retained session
-    /// signals. `Locked` is sticky inside `TrustMachine`.
+    /// endpoint indicators + the pair.db device record for this endpoint's
+    /// own id + all retained session signals. `Locked` is sticky inside
+    /// `TrustMachine`.
     ///
-    /// Locks are taken sequentially (never nested): index → devices →
+    /// Locks are taken sequentially (never nested): index → pair →
     /// endpoint → sessions → trust. Keep that order everywhere.
     pub async fn refresh_trust(&self) -> kiwi_core::trust::TrustEvaluation {
         let device_id = self.index.lock().await.device_id.clone();
-        let device_kinds = self.devices.lock().await.device_signals(&device_id);
+        // PairEngine is the device authority (T-269): a revoked/suspended
+        // record for THIS endpoint's id feeds the same hard-lock/medium
+        // signals the in-memory registry used to produce.
+        let device_kinds: Vec<SignalKind> = {
+            let pair = self.pair.lock().await;
+            match pair.store().get_device(&device_id) {
+                Ok(Some(d)) => match d.status.as_str() {
+                    "pending" => vec![SignalKind::NewDeviceUnverified],
+                    "suspended" => vec![SignalKind::DeviceSuspended],
+                    "revoked" => vec![SignalKind::DeviceRevoked],
+                    _ => Vec::new(),
+                },
+                _ => Vec::new(),
+            }
+        };
         let mut signals = self.endpoint_signals.lock().await.clone();
         for kind in device_kinds {
             signals.push(crate::observe::device_signal(&device_id, kind));
@@ -574,6 +842,96 @@ impl AppState {
         }
         self.trust.lock().await.evaluate(&self.policy, signals)
     }
+}
+
+/// Load-or-generate this desktop's Ed25519 pairing key. The 32-byte seed
+/// lives ONLY in the OS credential store (`kiwi.pair.desktop-key`); the
+/// value returned is the public half as `ed25519:<std b64>`. `None` when
+/// the keystore is unavailable — provisioning then fails closed.
+fn desktop_pair_key_b64(credentials: &dyn CredentialStore) -> Option<String> {
+    use base64::Engine as _;
+    const KEY_ID: &str = "kiwi.pair.desktop-key";
+    let seed_b64 = match credentials.get(KEY_ID) {
+        Ok(Some(s)) => s.to_string(),
+        _ => {
+            let mut seed = [0u8; 32];
+            getrandom::fill(&mut seed).ok()?;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(seed);
+            credentials.set(KEY_ID, &b64).ok()?;
+            b64
+        }
+    };
+    let seed: [u8; 32] = base64::engine::general_purpose::STANDARD
+        .decode(seed_b64.as_bytes())
+        .ok()?
+        .try_into()
+        .ok()?;
+    let vk = ed25519_dalek::SigningKey::from_bytes(&seed).verifying_key();
+    Some(format!(
+        "ed25519:{}",
+        base64::engine::general_purpose::STANDARD.encode(vk.to_bytes())
+    ))
+}
+
+/// Provision the trusted pairing-channel identity (ipc.md §9d.2). Endpoint
+/// source order: `KIWI_PAIR_ENDPOINT` env, then
+/// `<data_dir>/pairing-channel.json` (`{"desktopEndpoint": "…"}`) — both
+/// backend-controlled, never IPC-writable. Returns `None` when either half
+/// is absent/unusable; `pair_begin` then fails closed.
+fn provision_pair_channel(
+    data_dir: &Path,
+    credentials: &dyn CredentialStore,
+) -> Option<PairChannel> {
+    let endpoint = std::env::var("KIWI_PAIR_ENDPOINT")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            let text = std::fs::read_to_string(data_dir.join("pairing-channel.json")).ok()?;
+            serde_json::from_str::<serde_json::Value>(&text)
+                .ok()?
+                .get("desktopEndpoint")?
+                .as_str()
+                .map(str::to_string)
+        })?;
+    // §9d.8 bound — provisioning must not invent or smuggle a bad value.
+    if endpoint.is_empty()
+        || endpoint.len() > 256
+        || endpoint.bytes().any(|b| b < 0x20 || b == 0x7f)
+    {
+        return None;
+    }
+    Some(PairChannel {
+        desktop_endpoint: endpoint,
+        desktop_public_key_b64: desktop_pair_key_b64(credentials)?,
+    })
+}
+
+fn configured_sandbox(data_dir: &Path) -> Arc<dyn kiwi_sandbox::SandboxProvider> {
+    let rootfs = data_dir.join("sandbox").join("rootfs.tar");
+    let config = kiwi_sandbox::Wsl2Config {
+        rootfs,
+        work_dir: data_dir.join("sandbox").join("work"),
+        ..Default::default()
+    };
+    match kiwi_sandbox::Wsl2Provider::new(config) {
+        Ok(provider) => Arc::new(provider),
+        Err(_) => Arc::new(kiwi_sandbox::NullProvider::new(
+            "sandbox provider configuration is invalid",
+        )),
+    }
+}
+
+/// Build the production integration transport: reqwest+rustls, HTTPS-only,
+/// redirects never followed. Body cap covers a fetched temp-mail body
+/// embedded in provider JSON (`MAX_MAIL_BODY` + envelope slack).
+/// `pub(crate)` for tests that need a real transport-shaped arg into
+/// `open_test_with_net` (they never call it — MockNet answers).
+pub(crate) fn integrations_transport() -> CmdResult<Arc<dyn HttpClient>> {
+    let client =
+        kiwi_integrations::http::ReqwestClient::new(kiwi_integrations::http::DEFAULT_TIMEOUT_MS)
+            .map_err(IpcError::from)?
+            .with_body_cap(kiwi_integrations::tempmail::MAX_MAIL_BODY + 2 * 1024 * 1024);
+    Ok(Arc::new(client))
 }
 
 #[cfg(test)]

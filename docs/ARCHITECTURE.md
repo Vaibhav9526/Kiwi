@@ -9,6 +9,20 @@
 
 ## 1. System overview
 
+**Product identity (owner-confirmed):** KIWI = full-featured desktop mail
+client + security platform in one. Mailspring-grade UI polish, MailFlow-complete
+feature set (via MPL-clean adaptation), and the security spine nobody else
+ships — deterministic transport evidence, endpoint trust + native lock,
+independent authenticator, PCAP forensics, org policy, tamper-evident audit.
+Working tagline: *"Email that proves its security"* — every claim is
+evidence-backed; AI explains but never asserts.
+
+**Positioning guardrail (applies to every spec and surface):** feature parity
+never compromises the deterministic-security rules — no remote lookups without
+explicit opt-in, no plaintext secrets, `unsafe_code` stays forbidden, and every
+surface honors the lock state. Copy language is evidence-first: findings cite
+evidence, no fear-mongering, degradation states are described honestly.
+
 KIWI is a security-first desktop email platform: a native mail client
 (SMTP/IMAP/POP3, inbox, folders, compose, search, contacts, attachments,
 account management) plus a serious security platform: deterministic transport

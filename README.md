@@ -5,9 +5,11 @@
 <h1 align="center">KIWI</h1>
 
 <p align="center">
-  <strong>A security-first desktop email client.</strong><br/>
-  Real mail — SMTP, IMAP, POP3 — with deterministic transport-security analysis,<br/>
-  endpoint trust, forensic evidence, and organization controls built in.
+  <strong>Email that proves its security.</strong><br/>
+  A full-featured desktop mail client + security platform — real SMTP, IMAP, POP3<br/>
+  with deterministic transport evidence, endpoint trust, forensic analysis,<br/>
+  an independent authenticator, and organization controls built in.<br/>
+  <em>Every claim is evidence-backed; AI explains but never asserts.</em>
 </p>
 
 <p align="center">

@@ -17,6 +17,8 @@ export const DEMO_MESSAGES: MessageEnvelope[] = [
     from: "billing@provider.test", subject: "Your invoice is ready", date: "2026-09-19T08:12:00Z",
     unread: true, starred: false, hasAttachments: true, trust: "secure",
     snippet: "Invoice #1042 for September is attached…",
+    category: "primary",
+    unsub: { url: null, mailto: null, oneClick: false },
   },
   {
     id: "msg-2", accountId: "acc-demo-1", accountEmail: "ava@example.test", folder: "inbox",
@@ -24,6 +26,8 @@ export const DEMO_MESSAGES: MessageEnvelope[] = [
     from: "team@project.test", subject: "Re: launch checklist", date: "2026-09-18T17:40:00Z",
     unread: true, starred: true, hasAttachments: false, trust: "secure",
     snippet: "All blockers cleared except the installer signing…",
+    category: "primary",
+    unsub: { url: null, mailto: null, oneClick: false },
   },
   {
     id: "msg-3", accountId: "acc-demo-2", accountEmail: "ava.oldmail.test", folder: "inbox",
@@ -31,6 +35,8 @@ export const DEMO_MESSAGES: MessageEnvelope[] = [
     from: "newsletter@retro.test", subject: "Weekly digest", date: "2026-09-15T09:00:00Z",
     unread: true, starred: false, hasAttachments: false, trust: "warning",
     snippet: "This server negotiated TLS 1.0 — consider migrating…",
+    category: "newsletters",
+    unsub: { url: "https://retro.test/newsletter/unsubscribe", mailto: "leave@retro.test", oneClick: false },
   },
   {
     id: "msg-4", accountId: "acc-demo-1", accountEmail: "ava@example.test", folder: "sent",
@@ -38,6 +44,17 @@ export const DEMO_MESSAGES: MessageEnvelope[] = [
     from: "ava@example.test", subject: "Re: launch checklist", date: "2026-09-18T18:02:00Z",
     unread: false, starred: false, hasAttachments: false, trust: "secure",
     snippet: "Sounds good — shipping Friday…",
+    category: "primary",
+    unsub: { url: null, mailto: null, oneClick: false },
+  },
+  {
+    id: "msg-5", accountId: "acc-demo-1", accountEmail: "ava@example.test", folder: "inbox",
+    folderId: 1, uid: 105,
+    from: "ops@project.test", subject: "Fwd: launch checklist", date: "2026-09-19T07:55:00Z",
+    unread: true, starred: false, hasAttachments: false, trust: "secure",
+    snippet: "Forwarding the checklist for the on-call rotation…",
+    category: "primary",
+    unsub: { url: null, mailto: null, oneClick: false },
   },
   {
     id: "msg-5", accountId: "acc-demo-1", accountEmail: "ava@example.test", folder: "inbox",

@@ -14,14 +14,15 @@
  * the contract's uniform error shape.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { createServiceContainer, type ServiceContainer } from "./services.js";
 import { AuthorizationDeniedError, type Actor } from "./rbac/rbac.js";
-import { RequestValidationError, isRecord } from "./util/validate.js";
+import { ConflictError, NotFoundError, RequestValidationError, isRecord } from "./util/validate.js";
 import { ALL_ORG_ROLES, TLS_VERSION_ALIASES, type ExternalRecipientBehavior, type OrgRole } from "./types.js";
 import { AUDIT_EXPORT_CONTENT_TYPE } from "./audit/export.js";
 
-const HOST = "127.0.0.1";
+const HOST = (process.env["KIWI_ADMIN_HOST"] ?? "").trim() || "127.0.0.1";
 const DEFAULT_PORT = 8471;
 const MAX_BODY_BYTES = 1024 * 1024;
 
@@ -87,6 +88,13 @@ function actorFromHeaders(req: IncomingMessage): Actor {
 }
 
 function readJson(req: IncomingMessage): Promise<unknown> {
+  // Content-type gate (T-193/L3): bodies are JSON, full stop. A form-encoded
+  // or text body that happens to parse is not an API call — say so plainly
+  // instead of guessing the caller's intent.
+  const contentType = req.headers["content-type"];
+  if (typeof contentType !== "string" || !contentType.split(";")[0]?.trim().toLowerCase().includes("application/json")) {
+    throw new RequestValidationError("content-type", "expected application/json");
+  }
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
@@ -163,6 +171,10 @@ function parsePolicyBody(body: unknown): {
 function numParam(url: URL, name: string, fallback: number): number {
   const raw = url.searchParams.get(name);
   if (raw === null) return fallback;
+  // Strict decimal grammar (T-193/L2): `Number()` coerces hex, exponents
+  // and whitespace (`0x10`, `1e3`, `" 12"`). The wire contract is decimal
+  // digits with an optional leading minus — nothing else.
+  if (!/^-?\d+$/.test(raw)) throw new RequestValidationError(name, "expected decimal integer");
   const n = Number(raw);
   if (!Number.isSafeInteger(n)) throw new RequestValidationError(name, "expected integer");
   return n;
@@ -188,10 +200,19 @@ export function createHttpServer(container: ServiceContainer, opts: HttpServerOp
         send(res, 403, errBody("auth.denied", err.message, { permission: err.permission }));
       } else if (err instanceof RequestValidationError) {
         send(res, 400, errBody("validation.failed", err.message));
-      } else if (err instanceof Error && /not found/.test(err.message)) {
+      } else if (err instanceof NotFoundError) {
         send(res, 404, errBody("not.found", err.message));
+      } else if (err instanceof ConflictError) {
+        send(res, 409, errBody("conflict", err.message));
       } else {
-        send(res, 500, errBody("internal", err instanceof Error ? err.message : "unexpected error"));
+        // Generic 500 (T-193/M4): the full error goes to the server log with
+        // a correlation id; the wire carries nothing internal — no driver
+        // constraint names, no relation names, no DSN fragments. Typed
+        // errors above are the only path to a specific message.
+        // eslint-disable-next-line no-console
+        const ref = randomUUID().slice(0, 8);
+        console.error(`[kiwi-admin] request failed ref=${ref}`, err);
+        send(res, 500, errBody("internal", `unexpected error (ref ${ref})`));
       }
     }
   });
@@ -207,10 +228,15 @@ async function route(
   const method = (req.method ?? "GET").toUpperCase();
   const seg = url.pathname.split("/").filter((s) => s.length > 0);
   const actor = actorFromHeaders(req);
-  const now = Math.floor(Date.now() / 1000);
+  // Single clock unit (T-193/M1): Unix milliseconds, matching Date.now()
+  // everywhere else service-stamped timestamps are produced (audit rows,
+  // policy created_at, received_at, the export's own audit row). A previous
+  // revision used seconds here, so org/user/role/device created_at lived in
+  // a different unit than every other timestamp in the same database.
+  const now = Date.now();
 
   if (method === "GET" && seg.length === 1 && seg[0] === "healthz") {
-    send(res, 200, { status: "ok", service: "kiwi-admin", version: "0.1.0", contract: "admin-api/1.3-pending" });
+    send(res, 200, { status: "ok", service: "kiwi-admin", version: "0.1.0", contract: "admin-api/1.3" });
     return;
   }
 
@@ -238,9 +264,25 @@ async function route(
         return;
       }
       if (method === "GET") {
-        send(res, 200, { items: await container.orgs.listUsers(actor, orgId) });
+        // Bounded listing (T-193/M7): default 50, hard cap 500.
+        send(res, 200, { items: await container.orgs.listUsers(actor, orgId, numParam(url, "limit", 50)) });
         return;
       }
+    }
+    // GET /devices — §14 inventory (T-253): bounded, org-scoped, audited
+    // denials. Same `{items}` envelope as /users.
+    if (rest[2] === "devices" && rest.length === 3 && method === "GET") {
+      send(res, 200, { items: await container.orgs.listDevices(actor, orgId, numParam(url, "limit", 50)) });
+      return;
+    }
+    // GET /audit/export — §13.6 org-scoped artifact (T-259): only the path
+    // org's rows, `scope_state` trailer (never a whole-chain claim), signed
+    // like the global export. `audit.export` on the path org — i.e. the
+    // caller's own org only; the global chain is system-admin's surface.
+    if (rest[2] === "audit" && rest[3] === "export" && rest.length === 4 && method === "GET") {
+      const exported = await container.audit.exportOrg(actor, orgId, { now, key: exportKey });
+      sendNdjson(res, 200, exported.ndjson);
+      return;
     }
     // PUT /users/:user/role
     if (rest[2] === "users" && typeof rest[3] === "string" && rest[4] === "role" && rest.length === 5 && method === "PUT") {
@@ -256,7 +298,8 @@ async function route(
     // GET|POST /policies
     if (rest[2] === "policies" && rest.length === 3) {
       if (method === "GET") {
-        send(res, 200, { items: await container.policies.listPolicies(actor, orgId) });
+        // Bounded listing (T-193/M7): default 50, hard cap 500.
+        send(res, 200, { items: await container.policies.listPolicies(actor, orgId, numParam(url, "limit", 50)) });
         return;
       }
       if (method === "POST") {
@@ -298,31 +341,34 @@ async function route(
     return;
   }
 
-  // POST /api/v1/policies/:policy/evaluate
-  if (method === "POST" && rest[0] === "policies" && typeof rest[1] === "string" && rest[2] === "evaluate" && rest.length === 3) {
-    const body = (await readJson(req)) as Record<string, unknown>;
-    const direction = body["direction"];
-    if (direction !== "inbound" && direction !== "outbound") throw new RequestValidationError("direction", "must be inbound|outbound");
-    const tlsRaw = body["tlsVersion"] ?? body["tls_version"] ?? null;
-    let tlsVersion: string | null = null;
-    if (tlsRaw !== null) {
-      if (typeof tlsRaw !== "string") throw new RequestValidationError("tlsVersion", "expected string");
-      const normalized = TLS_VERSION_ALIASES[tlsRaw.trim().toLowerCase()];
-      if (!normalized) throw new RequestValidationError("tlsVersion", "unrecognized TLS version");
-      tlsVersion = normalized;
+    // POST /api/v1/policies/:policy/evaluate
+    if (method === "POST" && rest[0] === "policies" && typeof rest[1] === "string" && rest[2] === "evaluate" && rest.length === 3) {
+      const body = (await readJson(req)) as Record<string, unknown>;
+      const direction = body["direction"];
+      if (direction !== "inbound" && direction !== "outbound") throw new RequestValidationError("direction", "must be inbound|outbound");
+      const tlsRaw = body["tlsVersion"] ?? body["tls_version"] ?? null;
+      let tlsVersion: string | null = null;
+      if (tlsRaw !== null) {
+        if (typeof tlsRaw !== "string") throw new RequestValidationError("tlsVersion", "expected string");
+        const normalized = TLS_VERSION_ALIASES[tlsRaw.trim().toLowerCase()];
+        if (!normalized) throw new RequestValidationError("tlsVersion", "unrecognized TLS version");
+        tlsVersion = normalized;
+      }
+      // Authenticated evaluation (T-193/H1): the actor travels with the
+      // call so the service can check `policy.read` on the owning org and
+      // audit the outcome. Previously the identity was parsed and dropped.
+      send(
+        res,
+        200,
+        await container.policies.evaluate(actor, rest[1], {
+          direction,
+          sender: strField(body, "sender", 254),
+          recipient: strField(body, "recipient", 254),
+          tlsVersion,
+        }),
+      );
+      return;
     }
-    send(
-      res,
-      200,
-      await container.policies.evaluate(rest[1], {
-        direction,
-        sender: strField(body, "sender", 254),
-        recipient: strField(body, "recipient", 254),
-        tlsVersion,
-      }),
-    );
-    return;
-  }
 
   // POST|GET /api/v1/mailflow/events
   if (rest[0] === "mailflow" && rest[1] === "events" && rest.length === 2) {
@@ -399,7 +445,15 @@ export interface ServerHandle {
   container: ServiceContainer;
 }
 
-/** Starts the localhost-only server. Never binds anything but 127.0.0.1. */
+/** Starts the server. Binds 127.0.0.1 unless KIWI_ADMIN_HOST says otherwise.
+ *
+ * The ONLY supported override is the containerized deployment, where compose
+ * publishes the port on the host loopback (`127.0.0.1:...:3001`) and the
+ * process must bind 0.0.0.0 to receive it — traffic arriving on a published
+ * port lands on the container's eth0, never its loopback, so a 127.0.0.1
+ * bind inside the container is unreachable from the host. The publish
+ * binding is the loopback guard there; a native run keeps the 127.0.0.1
+ * default and must never set this to a LAN address. */
 export async function startServer(
   opts: {
     // `| undefined` is required on the forwarded options, not decorative: this

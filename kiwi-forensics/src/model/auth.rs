@@ -16,22 +16,32 @@ pub enum AuthMechanism {
     /// `AUTH LOGIN`.
     Login,
     /// `AUTH CRAM-MD5` (HMAC-MD5 challenge-response).
+    #[serde(alias = "cram-md5")]
     CramMd5,
     /// `AUTH DIGEST-MD5`.
+    #[serde(alias = "digest-md5")]
     DigestMd5,
     /// `AUTH NTLM`.
     Ntlm,
     /// `AUTH XOAUTH2` (Google/Microsoft style bearer token).
+    #[serde(alias = "xoauth2")]
     XOAuth2,
-    /// `AUTH OAUTHBEARER` (RFC 7628).
+    /// `AUTH OAUTHBEARER` (RFC 7628). Canonical tag is `o_auth_bearer`
+    /// (serde snake_case of the variant); both the `as_str()` spelling and
+    /// the tidier `oauth_bearer` are read-only legacy aliases.
+    #[serde(alias = "oauthbearer", alias = "oauth_bearer")]
     OAuthBearer,
     /// `SCRAM-SHA-1`.
+    #[serde(alias = "scram-sha-1")]
     ScramSha1,
     /// `SCRAM-SHA-256`.
+    #[serde(alias = "scram-sha-256")]
     ScramSha256,
     /// `SCRAM-SHA-256-PLUS` (channel binding).
+    #[serde(alias = "scram-sha-256-plus")]
     ScramSha256Plus,
     /// `SCRAM-SHA-512-PLUS`.
+    #[serde(alias = "scram-sha-512-plus")]
     ScramSha512Plus,
     /// `AUTH ANONYMOUS`.
     Anonymous,

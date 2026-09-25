@@ -102,13 +102,24 @@ impl SecurityPolicy {
         }
     }
 
+    /// The floor rules actually enforce: `require_tls13` is a shorthand for
+    /// a TLS 1.3 minimum and wins over `min_tls_version` when set.
+    /// `strict()` sets both; a custom policy may raise the flag alone.
+    pub fn effective_min_tls_version(&self) -> TlsVersion {
+        if self.require_tls13 {
+            TlsVersion::Tls13
+        } else {
+            self.min_tls_version
+        }
+    }
+
     /// `true` when a negotiated version satisfies the version floor.
     ///
     /// An unrecognized version is **not** treated as acceptable: it is reported
     /// separately so the operator sees "we could not tell" instead of a pass.
     pub fn version_acceptable(&self, version: TlsVersion) -> bool {
         matches!(
-            version.compare_to(self.min_tls_version),
+            version.compare_to(self.effective_min_tls_version()),
             VersionComparison::Equal | VersionComparison::Above
         )
     }

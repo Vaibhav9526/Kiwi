@@ -4,9 +4,10 @@
  * Any mutation of a historical row (or deletion) breaks the chain and is
  * detected by verify().
  *
- * Concurrency note: this implementation serializes appends with a simple
- * synchronous loop (single-process). Multi-process access requires a file
- * lock — tracked in docs/contracts/admin-api.md §7.
+ * Concurrency note: this in-memory implementation serializes appends with a
+ * simple synchronous loop (single-process). The DB-backed appends serialize
+ * in the repository transaction instead (`AuditRepository.appendChained` —
+ * T-193/H6), so no caller computes `seq` outside one.
  */
 import { createHash } from "node:crypto";
 import type { AuditRepository } from "../db/interfaces.js";

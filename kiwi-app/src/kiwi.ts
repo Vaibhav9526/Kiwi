@@ -48,6 +48,76 @@ export interface MessageEnvelope {
   hasAttachments: boolean;
   trust: Severity;
   snippet: string;
+  /** F2 inbox tab (backend `MessageView.category` slug; unknown → primary). */
+  category: MessageCategory;
+  /**
+   * T-267 "Unreplied" smart folder: `true` when the envelope carries the
+   * IMAP `\Answered` flag. `undefined` = unknown (demo fixtures, backends
+   * that don't report flags) — the smart filter treats unknown as
+   * unreplied, matching eM Client's pessimistic count.
+   */
+  answered?: boolean;
+  /** T-202 unsubscribe endpoints (dormant until the backend classifies). */
+  unsub: UnsubscribeInfo;
+  /**
+   * T-284 per-message evidence hints (T-232 auth / T-254 attach / T-261 link).
+   * All three are `undefined`/`null` until the body has been fetched and
+   * evaluated — "not evaluated" is deliberately distinct from clean.
+   */
+  auth?: AuthResultsView | null;
+  attachRisk?: AttachRiskView | null;
+  linkRisk?: LinkRiskView | null;
+}
+
+/** F2 inbox tabs — slugs match kiwi-mail `Category::as_str` (stable API). */
+export type MessageCategory = "primary" | "newsletters" | "social" | "notifications" | "other";
+
+export const CATEGORY_TABS: { slug: MessageCategory; label: string }[] = [
+  { slug: "primary", label: "Primary" },
+  { slug: "newsletters", label: "Newsletters" },
+  { slug: "social", label: "Social" },
+  { slug: "notifications", label: "Notifications" },
+  { slug: "other", label: "Other" },
+];
+
+/** Unknown/empty slugs fall back to Primary (mirrors `from_slug` callers). */
+export function normalizeCategory(v: unknown): MessageCategory {
+  const s = typeof v === "string" ? v.trim().toLowerCase() : "";
+  return s === "newsletters" || s === "social" || s === "notifications" || s === "other" ? s : "primary";
+}
+
+/** T-202 unsubscribe endpoints (tolerant; absent until the backend exposes them). */
+export interface UnsubscribeInfo {
+  url: string | null;
+  mailto: string | null;
+  oneClick: boolean;
+}
+
+function cleanStr(v: unknown): string | null {
+  return typeof v === "string" && v.trim() ? v.trim() : null;
+}
+
+/** HTTPS-only: list-unsubscribe URLs must never be http/javascript/data. */
+export function parseUnsubscribe(raw: unknown): UnsubscribeInfo {
+  const out: UnsubscribeInfo = { url: null, mailto: null, oneClick: false };
+  if (typeof raw !== "object" || raw === null) return out;
+  const r = raw as Record<string, unknown>;
+  const url = cleanStr(r["unsubscribeUrl"]) ?? cleanStr(r["unsubscribe_url"]);
+  if (url) {
+    try {
+      const u = new URL(url);
+      if (u.protocol === "https:") out.url = u.toString();
+    } catch {
+      // Unusable — stays null, chip stays hidden.
+    }
+  }
+  const mailto = cleanStr(r["unsubscribeMailto"]) ?? cleanStr(r["unsubscribe_mailto"]);
+  if (mailto) {
+    const addr = mailto.toLowerCase().startsWith("mailto:") ? mailto.slice("mailto:".length) : mailto;
+    if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(addr.split("?")[0] ?? "")) out.mailto = addr;
+  }
+  out.oneClick = r["unsubscribeOneClick"] === true || r["unsubscribe_one_click"] === true;
+  return out;
 }
 
 export interface FindingInfo {
@@ -92,13 +162,14 @@ export interface SignalView {
 }
 
 export interface SecurityStatusView {
+  trust: string;
   state: string;
   score: number | null;
   locked: boolean;
   requiredAction: string;
   signals: SignalView[];
-  endpointSignals: string[];
-  knownDevices: number;
+  sessionsObserved: number;
+  deviceId: string;
 }
 
 export interface AccountView {
@@ -116,10 +187,16 @@ export interface AccountView {
 
 export interface FolderView {
   id: number;
+  accountId: string;
   name: string;
+  /** null until a sync has selected the folder. */
+  uidValidity: number | null;
+  uidNext: number | null;
+  highestUid: number;
+  /** Total stored rows (T-264) — includes snoozed/parked mail. */
   exists: number;
+  /** Rows without \Seen — the unread badge source. Parked mail counts. */
   unseen: number;
-  uidValidity: number;
 }
 
 export interface MessageView {
@@ -127,18 +204,142 @@ export interface MessageView {
   folderId: number;
   uid: number;
   messageId: string | null;
-  subject: string;
-  fromAddr: string;
-  toAddrs: string;
-  dateUnix: number;
-  size: number;
+  subject: string | null;
+  fromAddr: string | null;
+  toAddrs: string | null;
+  dateUnix: number | null;
+  size: number | null;
   flags: string[];
+  unread: boolean;
+  starred: boolean;
   hasAttachments: boolean;
-  snippet: string;
+  snippet: string | null;
+  /** Whether the full body is already stored locally. */
+  bodyStored: boolean;
+  /** T-169 header-chain threading; null/[] means "unknown". */
+  inReplyTo: string | null;
+  references: string[];
+  /** F2 tab slug (primary/…); absent on old rows → normalizeCategory. */
+  category?: unknown;
+  /** T-202 endpoints (camelCase wire keys; null until the sender advertises). */
+  unsubscribeUrl?: string | null;
+  unsubscribeMailto?: string | null;
+  unsubscribeOneClick?: boolean;
+  unsubscribeRequiresConsent?: boolean;
+  /**
+   * T-232 Authentication-Results. Absent until the body has been fetched and
+   * evaluated — "not evaluated" is deliberately distinct from a `none`
+   * verdict, so the security pill must render unknown rather than safe.
+   */
+  auth?: AuthResultsView | null;
+  /** Bounded attachment evidence hint (T-254); absent until body parse. */
+  attachRisk?: AttachRiskView | null;
+  /** Bounded URL evidence hint (T-261); absent until body parse. */
+  linkRisk?: LinkRiskView | null;
+}
+
+/**
+ * `kiwi://mail-changed` event payload (ipc.md §6; T-157 emitter, T-271
+ * consumer). `folder`/`folderId` are null on the connect-time full pass;
+ * `reason` is "sync" | "idle" | "poll".
+ */
+export interface MailChangedEvent {
+  accountId: string;
+  folder: string | null;
+  folderId: number | null;
+  reason: string;
+  newMessages: number;
+  flagUpdates: number;
+  expunged: number;
+  atUnix: number;
+}
+
+/**
+ * SPF/DKIM/DMARC verdicts (T-232). Vocabulary is `kiwi.mailauth/1`:
+ * `pass` | `fail` | `softfail` | `neutral` | `none` | `temperror` | `permerror`.
+ *
+ * SECURITY.md rules 1–2: `none` means no record was published and `temperror`
+ * means the check could not complete. Both are *absence of evidence* — never
+ * render them as a pass, and never as a finding.
+ */
+export type AuthRisk = "clean" | "noted" | "failed";
+export type AttachRisk = "clean" | "noted" | "failed";
+
+export type AttachRiskReason =
+  | "dangerousExtension"
+  | "doubleExtension"
+  | "dangerousContentType"
+  | "macroEnabledOffice"
+  | "vbaProjectContainer"
+  | "archiveNotInspectable"
+  | "encryptedOrOpaqueContainer"
+  | "unicodeConfusable";
+
+export interface AttachRiskView {
+  risk: AttachRisk;
+  reasons: AttachRiskReason[];
+}
+
+export type LinkRisk = "clean" | "noted" | "failed";
+export type LinkRiskReason =
+  | "ipLiteralHost"
+  | "displayDomainMismatch"
+  | "insecureHttp"
+  | "knownShortener"
+  | "excessiveSubdomains"
+  | "excessiveHyphens"
+  | "punycodeHost"
+  | "unicodeHost"
+  | "credentialsInUrl";
+
+export interface LinkRiskView {
+  risk: LinkRisk;
+  reasons: LinkRiskReason[];
+}
+
+export interface AuthResultsView {
+  /** Bounded deterministic hint for the frontend pill; never a finding. */
+  authRisk: AuthRisk;
+  spf: string;
+  dkim: string;
+  dmarc: string;
+  dmarcPolicy: string;
+  dkimDomain?: string | null;
+  headerValue?: string | null;
+  evidence?: unknown;
+  /** Upstream MTA evidence; untrustedRelay is a provenance limitation. */
+  upstream: UpstreamAuthView;
+  /** Exact pass/fail contradiction evidence flag — never a finding by itself. */
+  discrepancy: boolean;
+}
+
+export interface UpstreamAuthVerdictView {
+  authservId: string;
+  verdict: string;
+}
+
+export interface AuthVerdictComparisonView {
+  method: "spf" | "dkim" | "dmarc";
+  upstreamVerdict: string;
+  localVerdict: string;
+  discrepancy: boolean;
+}
+
+export interface UpstreamAuthView {
+  present: boolean;
+  untrustedRelay: boolean;
+  malformedHeaders: number;
+  authservIds: string[];
+  spf: UpstreamAuthVerdictView[];
+  dkim: UpstreamAuthVerdictView[];
+  dmarc: UpstreamAuthVerdictView[];
+  /** Evidence rows carrying both upstream and local verdicts. */
+  comparisons: AuthVerdictComparisonView[];
 }
 
 export interface MessageAttachmentView {
-  filename: string;
+  /** `null` when the MIME part carries no filename — never empty string. */
+  filename: string | null;
   contentType: string;
   size: number;
 }
@@ -154,6 +355,23 @@ export interface MessageUpdateView {
   uid: number;
   flags: string[];
   movedToFolderId: number | null;
+}
+
+export type LinkClickAction = "allow" | "requireConfirm" | "requireSandbox" | "deny";
+
+export interface LinkClickVerdict {
+  action: LinkClickAction;
+  /** Bounded deterministic evidence reason codes; never URL/body text. */
+  reasons: string[];
+}
+
+export interface SandboxOpenView {
+  sessionId: string;
+  /** Sanitized URL or attachment coordinate; never raw attachment bytes. */
+  target: string;
+  /** Stable link/attachment risk reason codes carried into the session. */
+  evidenceReasons: string[];
+  report: Record<string, unknown> & { evidenceReasons?: string[] };
 }
 
 export interface AttachmentSavedView {
@@ -174,12 +392,53 @@ export interface RemoteContentView {
   remoteContentAllowed: boolean;
 }
 
+/**
+ * `kiwi_message_source` (T-295) — verbatim RFC822 for "view source".
+ * `source` is lossy-decoded UTF-8 capped at 8 MiB; `truncated` marks the
+ * cap fired and `bytes` is the stored total ("first 8 MiB of N").
+ */
+export interface MessageSourceView {
+  folderId: number;
+  uid: number;
+  source: string;
+  bytes: number;
+  truncated: boolean;
+}
+
+/**
+ * `kiwi_set_pop3_policy` (T-295) — per-account POP3 server-side deletion.
+ * Default `false` keeps drops on the server; `true` sends DELE per ingest.
+ */
+export interface Pop3PolicyView {
+  accountId: string;
+  deleteAfterDownload: boolean;
+}
+
+/** `kiwi_message_unsubscribe` action selector (T-234). */
+export type UnsubscribeAction = "http" | "mailto";
+
+/**
+ * `kiwi_message_unsubscribe` result. `executed` means the request left
+ * the process (http: a response was received; mailto: queued). For http,
+ * `httpStatus` <400 means the endpoint accepted the unsubscribe.
+ */
+export interface UnsubscribeResultView {
+  action: UnsubscribeAction;
+  executed: boolean;
+  httpStatus: number | null;
+  queueId: string | null;
+  undoWindowUntilUnix: number | null;
+}
+
 /** `kiwi_delete_messages` result (T-163) — counts tell which path ran. */
 export interface DeleteResultView {
   folderId: number;
   movedToTrash: number;
   deleted: number;
+  /** `null` when nothing moved (hard delete / empty selection). */
   trashFolderId: number | null;
+  /** src uid → Trash uid for moved messages (uids are folder-scoped). */
+  uidMap: Record<string, number>;
 }
 
 /** `kiwi_move_messages` result (T-163). */
@@ -187,6 +446,218 @@ export interface MoveResultView {
   srcFolderId: number;
   dstFolderId: number;
   moved: number;
+}
+
+/**
+ * One `{folderId, uid}` message coordinate — snooze/unsnooze refs (T-255).
+ * Unlike `folderId + uids[]` commands, snooze refs may span folders (the
+ * Snoozed view is account-wide).
+ */
+export interface MessageRef {
+  folderId: number;
+  uid: number;
+}
+
+/**
+ * `kiwi_message_snooze` deadline preset — resolved server-side to a fixed
+ * offset so every client agrees (see docs/contracts/ipc.md §6e). Pass
+ * `preset` XOR `untilUnix`.
+ */
+export type SnoozePreset = "later_today" | "tomorrow" | "next_week";
+
+/** `kiwi_message_snooze` result. */
+export interface SnoozeResultView {
+  snoozed: number;
+  untilUnix: number;
+}
+
+/** `kiwi_message_unsnooze` result. */
+export interface UnsnoozeResultView {
+  unsnoozed: number;
+}
+
+/**
+ * One parked message (`kiwi_list_snoozed`, T-255). The row still lives in
+ * `folder` — snooze hides it from folder lists, it is never moved.
+ * `snoozedFromFolderId` is where it was parked (survives moves).
+ */
+export interface SnoozedMessageView {
+  folderId: number;
+  uid: number;
+  folder: string;
+  snoozedFromFolderId: number;
+  snoozedUntil: number;
+  snoozedAt: number;
+  subject: string | null;
+  fromAddr: string | null;
+  messageId: string | null;
+  dateUnix: number | null;
+}
+
+/**
+ * One relocated ref from `kiwi_message_set_junk` (T-263) — moves remap
+ * uids and refs may span folders, so each leg records its source.
+ */
+export interface SetJunkMoveView {
+  fromFolderId: number;
+  fromUid: number;
+  /** Fresh uid in the destination folder (uids are folder-scoped). */
+  toUid: number;
+}
+
+/**
+ * `kiwi_message_set_junk` result. `targetFolderId` is the Junk folder
+ * when `junk` and INBOX when un-junking out of Junk; `null` when the
+ * call only flipped flags (already-in-Junk / un-junk elsewhere).
+ */
+export interface SetJunkView {
+  junk: boolean;
+  flagged: number;
+  moved: number;
+  targetFolderId: number | null;
+  moves: SetJunkMoveView[];
+}
+
+/* ---------------- inbox rules DSL (T-228/T-233/T-244) ---------------- */
+
+/** Field comparison operator — `domain` is a post-`@` dot-boundary suffix. */
+export type RuleMatchOp = "contains" | "is" | "ends_with" | "domain";
+
+/**
+ * Predicate tree — `{"kind": "…"}` serde shape from the backend's
+ * rules DSL (docs/contracts/ipc.md §6d). `sender`/`recipient` match the
+ * email address only, never the display name.
+ */
+export type RulePredicate =
+  | { kind: "sender" | "recipient" | "subject" | "attachment_name"; op: RuleMatchOp; value: string }
+  | { kind: "header"; name: string; op: RuleMatchOp; value: string }
+  | { kind: "body_contains"; value: string }
+  | { kind: "all" | "any"; children: RulePredicate[] }
+  | { kind: "not"; child: RulePredicate }
+  | { kind: "always" };
+
+/**
+ * `{"do": "…"}` actions — folder dispositions (`move`/`archive`/`delete`)
+ * relocate the message (first wins); `delete` is Trash semantics, never
+ * a hard expunge.
+ */
+export type RuleAction =
+  | { do: "move"; folder: string }
+  | { do: "archive" | "delete" | "mark_read" | "star" };
+
+/**
+ * A rule as the renderer sees it — one shape serves both directions:
+ * `kiwi_rules_list` emits it, `kiwi_rules_upsert` consumes it (ids are
+ * caller-assigned — upsert is create-or-replace). `accountId` absent/
+ * null = applies to every account; `isBlock` marks the block-list class
+ * (evaluated before regular rules, terminal on match, verdict = Trash).
+ */
+export interface RuleView {
+  id: string;
+  accountId?: string | null;
+  name: string;
+  enabled: boolean;
+  position: number;
+  isBlock: boolean;
+  when: RulePredicate;
+  then: RuleAction[];
+  /** Store-owned cumulative sync-time apply failures; badge broken rules when > 0. */
+  failureCount: number;
+  /** Most recent bounded diagnostic, or null before any failure. */
+  lastError: string | null;
+  /** Unix seconds of the most recent failure, or null. */
+  lastFailureUnix: number | null;
+}
+
+/** One audit row — which rule fired on which stored message, when. */
+export interface RuleHitView {
+  folderId: number;
+  uid: number;
+  ruleId: string;
+  messageId: string | null;
+  appliedUnix: number;
+}
+
+/** `kiwi_rules_apply_now` receipt — the re-run's aggregate effect. */
+export interface RulesApplyView {
+  scanned: number;
+  matched: number;
+  moved: number;
+  /** Block-list verdicts applied (each trashed the message). */
+  blocked: number;
+  flagsChanged: number;
+  /** Messages skipped — no parseable body stored yet. */
+  skippedNoBody: number;
+}
+
+/** One candidate-rule match in `kiwi_rules_preview`. */
+export interface PreviewHitView {
+  folderId: number;
+  uid: number;
+  /** Folder name (not id) — this is a display list. */
+  folder: string;
+  subject: string | null;
+  messageId: string | null;
+  /** True predicate leaves with stable AST paths; no body/header values. */
+  conditionHits: PreviewConditionHitView[];
+}
+
+export interface PreviewConditionHitView {
+  path: string;
+  kind: "sender" | "recipient" | "subject" | "header" | "body_contains" | "attachment_name" | "always";
+}
+
+/**
+ * `kiwi_rules_preview` receipt — a pure read: nothing was moved,
+ * flagged, hit-logged, or watermarked. `matched` = `hits.length`.
+ */
+export interface RulePreviewView {
+  scanned: number;
+  skippedNoBody: number;
+  matched: number;
+  hits: PreviewHitView[];
+}
+
+/* ---------------- message templates (gated, T-288, ipc.md §6i) ------- */
+
+/**
+ * Stored composer template — a flat named list (content, not policy;
+ * no account scoping). Stored rows keep `{{name}}` placeholders
+ * verbatim; substitution happens only via `templatesRender`.
+ */
+export interface TemplateView {
+  /** `tpl-N`, assigned by the store on create. */
+  id: string;
+  name: string;
+  /** Subject line; `{{var}}` placeholders allowed, resolved at render. */
+  subject: string;
+  /** Plain-text body — always present (may be empty). */
+  bodyText: string;
+  /** Optional HTML body — omitted (not null) when absent. */
+  bodyHtml?: string;
+  createdUnix: number;
+  updatedUnix: number;
+}
+
+/** `kiwi_templates_create` payload — id/timestamps are store-assigned. */
+export interface TemplateInput {
+  name: string;
+  subject?: string;
+  bodyText?: string;
+  bodyHtml?: string;
+}
+
+/**
+ * `kiwi_templates_render` result — fields with `{{var}}` resolved
+ * (single non-recursive pass; unknown names left verbatim) plus the
+ * well-formed placeholders that had no supplied value.
+ */
+export interface RenderedTemplateView {
+  subject: string;
+  bodyText: string;
+  bodyHtml?: string;
+  /** Sorted, deduped placeholder names with no supplied value — flag these. */
+  missingVars: string[];
 }
 
 /**
@@ -228,6 +699,29 @@ export interface ContactView {
   phones: ContactPhoneView[];
   createdUnix: number | null;
   updatedUnix: number | null;
+}
+
+/** `kiwi_contact_tags` row — `{tag, count}`, most-used first (contacts.md §5.2). */
+export interface TagCountView {
+  tag: string;
+  count: number;
+}
+
+/** `kiwi_import_vcards` issue row — one per card that failed to import. */
+export interface ImportIssueView {
+  cardIndex: number;
+  detail: string;
+}
+
+/** `kiwi_import_vcards` result (contacts.md §5.2): imported contacts + issues. */
+export interface VCardImportView {
+  contacts: ContactView[];
+  issues: ImportIssueView[];
+}
+
+/** `kiwi_export_vcards` result — a single concatenated vCard payload. */
+export interface VCardExportView {
+  vcard: string;
 }
 
 /** Writable subset (ContactInput): everything minus store-owned fields. */
@@ -361,6 +855,12 @@ export interface AutoconfigSuggestion {
   outSec: string;
   username: string;
   authKind: string;
+  /**
+   * ipc.md §5 `suggestion.oauth2` — present iff the suggestion is XOAUTH2
+   * on a shipped-provider host (IMAP only). `provider` feeds
+   * `kiwi_oauth2_begin`; `grant` tells the wizard which UX to render.
+   */
+  oauth2?: { provider: string; grant: string };
 }
 
 function secToken(v: unknown): string {
@@ -370,23 +870,39 @@ function secToken(v: unknown): string {
   return "tls";
 }
 
-/** Tolerant parse of a future `kiwi_lookup_autoconfig` response; null when unusable. */
+/** Tolerant parse of a `kiwi_discover_account` response (ipc.md §5); null when unusable. */
 export function parseAutoconfigSuggestion(raw: unknown): AutoconfigSuggestion | null {
   if (typeof raw !== "object" || raw === null) return null;
-  const r = raw as Record<string, unknown>;
+  const envelope = raw as Record<string, unknown>;
   const str = (v: unknown) => (typeof v === "string" ? v : "");
   const num = (v: unknown, fb: number) => (typeof v === "number" && Number.isSafeInteger(v) && v > 0 && v < 65536 ? v : fb);
-  // Accept both the flat wizard shape and the nested Rust
-  // AccountSuggestion shape ({ incoming: { kind, host, port, … }, … }).
+  // The wire shape is a DiscoveryOutcomeView — the suggestion lives under
+  // `suggestion`. Accept that envelope, a bare suggestion, or the flat
+  // wizard stub shape.
+  const nested =
+    typeof envelope["suggestion"] === "object" && envelope["suggestion"] !== null
+      ? (envelope["suggestion"] as Record<string, unknown>)
+      : null;
+  const r = nested ?? envelope;
   const inc = (r["incoming"] ?? {}) as Record<string, unknown>;
   const out = (r["outgoing"] ?? {}) as Record<string, unknown>;
-  const pick = (flat: unknown, nested: unknown, fb: string) => str(flat) || str(nested) || fb;
+  const pick = (flat: unknown, nestedV: unknown, fb: string) => str(flat) || str(nestedV) || fb;
   const inHost = pick(r["inHost"], inc["host"], "");
   const outHost = pick(r["outHost"], out["host"], "");
   if (!inHost || !outHost) return null;
   const protoRaw = (str(r["protocol"]) || str(inc["kind"])).toLowerCase();
+  const oauthRaw = r["oauth2"];
+  const oauth2 =
+    typeof oauthRaw === "object" && oauthRaw !== null
+      ? (() => {
+          const o = oauthRaw as Record<string, unknown>;
+          const provider = str(o["provider"]);
+          const grant = str(o["grant"]);
+          return provider && grant ? { provider, grant } : undefined;
+        })()
+      : undefined;
   return {
-    source: str(r["source"]) || "manual",
+    source: str(envelope["source"]) || str(r["source"]) || "manual",
     protocol: protoRaw === "pop3" ? "pop3" : "imap",
     inHost,
     inPort: num(r["inPort"] ?? inc["port"], 993),
@@ -396,6 +912,108 @@ export function parseAutoconfigSuggestion(raw: unknown): AutoconfigSuggestion | 
     outSec: secToken(r["outSec"] ?? out["security"]),
     username: str(r["username"]) || str(inc["username"]),
     authKind: str(r["authKind"]) || str(inc["auth"]) || "password",
+    oauth2,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// OAuth2 acquisition views (ipc.md §9f; kiwi.oauth2/1) — no token material
+// ever crosses IPC: ticket ids, credential-key names, and posture only.
+// ---------------------------------------------------------------------------
+
+export type OAuth2GrantKind = "loopback_code" | "device_code" | string;
+
+/** `kiwi_oauth2_begin` result — the ticket plus whatever the user must see. */
+export interface OAuth2BeginView {
+  ticketId: string;
+  kind: OAuth2GrantKind;
+  authorizeUrl?: string;
+  userCode?: string;
+  verificationUri?: string;
+  verificationUriComplete?: string;
+  expiresAtUnix?: number;
+  pollIntervalSecs?: number;
+}
+
+/** `kiwi_oauth2_poll` result — terminal failures arrive as `status:"error"`. */
+export interface OAuth2PollView {
+  status: "pending" | "complete" | "error";
+  ticketId: string;
+  retryAfterSecs?: number;
+  provider?: string;
+  email?: string;
+  credentialKey?: string;
+  errorCode?: string;
+  errorMessage?: string;
+}
+
+/** `kiwi_oauth2_status` result — stored-account grant posture, no secrets. */
+export interface OAuth2StatusView {
+  accountId: string;
+  authMethod: string;
+  provider?: string;
+  email?: string;
+  credentialPresent: boolean;
+  expiresAtUnix?: number;
+  needsRefresh?: boolean;
+  hasRefreshToken?: boolean;
+}
+
+const optStr = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+const optNum = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+
+export function parseOAuth2Begin(raw: unknown): OAuth2BeginView | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const ticketId = optStr(r["ticketId"]);
+  const kind = optStr(r["kind"]);
+  if (!ticketId || !kind) return null;
+  return {
+    ticketId,
+    kind,
+    authorizeUrl: optStr(r["authorizeUrl"]),
+    userCode: optStr(r["userCode"]),
+    verificationUri: optStr(r["verificationUri"]),
+    verificationUriComplete: optStr(r["verificationUriComplete"]),
+    expiresAtUnix: optNum(r["expiresAtUnix"]),
+    pollIntervalSecs: optNum(r["pollIntervalSecs"]),
+  };
+}
+
+export function parseOAuth2Poll(raw: unknown): OAuth2PollView | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const status = optStr(r["status"]);
+  const ticketId = optStr(r["ticketId"]);
+  if (!ticketId || (status !== "pending" && status !== "complete" && status !== "error")) return null;
+  return {
+    status,
+    ticketId,
+    retryAfterSecs: optNum(r["retryAfterSecs"]),
+    provider: optStr(r["provider"]),
+    email: optStr(r["email"]),
+    credentialKey: optStr(r["credentialKey"]),
+    errorCode: optStr(r["errorCode"]),
+    errorMessage: optStr(r["errorMessage"]),
+  };
+}
+
+export function parseOAuth2Status(raw: unknown): OAuth2StatusView | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const accountId = optStr(r["accountId"]);
+  const authMethod = optStr(r["authMethod"]);
+  if (!accountId || !authMethod) return null;
+  return {
+    accountId,
+    authMethod,
+    provider: optStr(r["provider"]),
+    email: optStr(r["email"]),
+    credentialPresent: r["credentialPresent"] === true,
+    expiresAtUnix: optNum(r["expiresAtUnix"]),
+    needsRefresh: r["needsRefresh"] === true ? true : r["needsRefresh"] === false ? false : undefined,
+    hasRefreshToken:
+      r["hasRefreshToken"] === true ? true : r["hasRefreshToken"] === false ? false : undefined,
   };
 }
 
@@ -403,15 +1021,18 @@ export interface MessageBodyView {
   folderId: number;
   uid: number;
   messageId: string | null;
-  subject: string;
+  subject: string | null;
   from: string[];
   to: string[];
   cc: string[];
-  dateUnix: number;
-  textBody: string;
+  dateUnix: number | null;
+  /** `null` = no text/plain alternative or body not yet parsed. */
+  textBody: string | null;
   htmlBody: string | null;
   attachments: MessageAttachmentView[];
   bodyPresent: boolean;
+  inReplyTo: string | null;
+  references: string[];
 }
 
 /** kiwi.forensics/1 finding — exact fields vary; parsed tolerantly. */
@@ -456,11 +1077,63 @@ export interface DeviceView {
   status: string;
   registeredUnix: number;
   lastSeenUnix: number;
+  /** Last 8 hex of SHA-256 over the raw public key — display only. */
+  keyFingerprintTail: string;
+  /** Full lowercase-hex SHA-256 fingerprint of the public key. */
+  fingerprint: string;
+  /** Credential-store key reference, when the device key is held backend-side. */
+  keystoreRef: string | null;
+  /** Revocation timestamp; `null` while the device is live (§9d.6). */
+  revokedUnix: number | null;
+}
+
+/* ---------------- pairing flow (ipc.md §9d) ---------------- */
+
+/** `pair_begin` — the backend owns the ticket + expiry; the renderer only
+ *  displays `qrPayload` for the phone to claim. */
+export interface PairBeginView {
+  ticket: string;
+  expiresUnix: number;
+  qrPayload: string;
+}
+
+/** `pair_status` — read-only ticket poll; never consumes (§9d.4). */
+export interface PairStatusView {
+  state: "awaiting-phone" | "claimed" | "expired";
+  device: DeviceView | null;
+  expiresUnix: number;
+}
+
+/**
+ * `kiwi_schedule_send`/`kiwi_send_message` receipt — queue identity plus
+ * dispatch/undo deadlines (unix seconds).
+ */
+export interface SendReceipt {
+  queueId: string;
+  /** Earliest dispatch time (unix seconds). */
+  notBeforeUnix: number;
+  /** Undo-send cancel deadline (unix seconds). */
+  undoWindowUntilUnix: number;
+}
+
+/** `kiwi_sync_status` row — one per configured account (ipc.md §6). */
+export interface SyncStatusView {
+  accountId: string;
+  /** "pending" | "connecting" | "syncing" | "idle" | "polling" |
+   *  "backoff" | "paused-locked" | "stopped" */
+  state: string;
+  lastSyncUnix: number | null;
+  lastError: string | null;
+  nextRetryUnix: number | null;
+  foldersSynced: number;
+  newMessages: number;
+  attempts: number;
 }
 
 export interface OutboxItem {
   queueId: string;
-  accountId: string;
+  /** Always set by kiwi_list_outbox today; `null` = unbound queue row. */
+  accountId: string | null;
   from: string;
   to: string[];
   subject: string;
@@ -468,6 +1141,16 @@ export interface OutboxItem {
   undoWindowUntilUnix: number;
   attempts: number;
   cancelable: boolean;
+  /**
+   * Lifecycle state (T-298, ipc.md §7). The list only ever emits
+   * `queued` (attempts==0 — incl. send-later/undo-grace) and `held`
+   * (attempts>0 — a prior attempt failed, retry pending). `sending` is
+   * a sub-second transient; `sent`/`cancelled` drop the row — observe
+   * terminal transitions via the kiwi://outbox event, not the list.
+   */
+  state: "queued" | "sending" | "held" | "cancelled" | "sent";
+  /** Sanitized `code: message` of the last failed attempt; `null` until the first. */
+  lastError: string | null;
 }
 
 export interface VerifyStep {
@@ -482,6 +1165,133 @@ export interface VerifyResult {
   session: Record<string, unknown> | null;
   findings: BackendFinding[];
   trust: SecurityStatusView;
+}
+
+/* ---------------- integrations (T-227, ipc.md §9e) ---------------- */
+
+/**
+ * The public-inbox disclosure, verbatim from
+ * `kiwi-integrations::tempmail::PUBLIC_INBOX_NOTICE`. Shown BEFORE the
+ * user enables a temp inbox — the backend also echoes it on every
+ * temp-mail response (`publicInboxNotice`), which the UI renders as
+ * received (never paraphrased).
+ */
+export const PUBLIC_INBOX_NOTICE =
+  "Temporary inboxes are PUBLIC: anyone who knows the address can read its mail, and messages pass through a third-party server. Never receive personal or sensitive mail here.";
+
+/** Every temp-mail response carries the mandated public-inbox disclosure. */
+export interface PublicInboxNotice {
+  publicInboxNotice: string;
+}
+
+export interface TempMailboxView extends PublicInboxNotice {
+  address: string;
+  addressCreatedUnix?: number;
+}
+
+export interface TempMessageSummaryView {
+  mailId: string;
+  from: string;
+  subject: string;
+  excerpt: string;
+  timestampUnix?: number;
+  date: string;
+  read: boolean;
+}
+
+export interface TempPollView extends PublicInboxNotice {
+  messages: TempMessageSummaryView[];
+  totalNew: number;
+  address?: string;
+}
+
+/** Fetched temp message — html is pre-sanitized backend-side, remote
+ * resources always stripped; raw MIME never crosses IPC. */
+export interface TempMessageView extends PublicInboxNotice {
+  mailId: string;
+  from: string;
+  subject: string;
+  date: string;
+  contentType?: string;
+  html?: string;
+  text?: string;
+  remoteImagesStripped: number;
+}
+
+export interface TempDiscardView extends PublicInboxNotice {
+  discarded: boolean;
+  remoteForgotten: boolean;
+}
+
+export interface TempExtendView extends PublicInboxNotice {
+  extended: boolean;
+  expired: boolean;
+  addressCreatedUnix?: number;
+}
+
+export interface DeliverabilityBeginView {
+  testId: string;
+  address: string;
+  expiresAtUnix?: number;
+  expiresAtRaw?: string;
+  /** Single-use consent capability — hand back verbatim to send. */
+  consentToken: string;
+  consentNotice: string;
+}
+
+export interface DeliverabilitySendView {
+  testId: string;
+  queueId: string;
+  notBeforeUnix: number;
+}
+
+export interface DeliverabilityStatusView {
+  testId: string;
+  /** "pending" | "received" | "analyzing" | "checks_ready" | "failed" | unknown string */
+  analysisStatus: string;
+  checksDone: number;
+  checksTotal: number;
+  ready: boolean;
+  sent: boolean;
+  retryAfterMs?: number;
+}
+
+export interface DeliverabilityCitationView {
+  kind: string;
+  title: string;
+  url: string;
+}
+
+export interface DeliverabilityCheckView {
+  id: string;
+  category: string;
+  categoryRaw: string;
+  status: string;
+  title: string;
+  summary: string;
+  citations: DeliverabilityCitationView[];
+}
+
+export interface DeliverabilityCategoryTally {
+  pass: number;
+  warn: number;
+  fail: number;
+  skip: number;
+  other: number;
+}
+
+export interface DeliverabilityReportView {
+  testId: string;
+  scoreOursMilli?: number;
+  scoreCompatMilli?: number;
+  complete: boolean;
+  reportUrl?: string;
+  subscores: Record<string, number>;
+  tallies: Record<string, DeliverabilityCategoryTally>;
+  checks: DeliverabilityCheckView[];
+  /** ids of failed `auth` checks — the gate set. */
+  authFailureIds: string[];
+  authGate: "pass" | "fail" | "unknown";
 }
 
 /* ---------------- mappers (backend → UI, never throw) ---------------- */

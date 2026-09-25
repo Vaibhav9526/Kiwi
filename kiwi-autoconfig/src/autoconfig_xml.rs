@@ -67,12 +67,12 @@ pub(crate) fn parse_root(input: &str) -> Result<Element, Error> {
         }
     }
     let mut p = Parser { s: input, pos: 0 };
-    p.skip_misc()?;
+    p.skip_misc(true)?;
     if p.peek() != Some('<') {
         return Err(Error::MalformedXml("no root element"));
     }
     let root = p.parse_element(0)?;
-    p.skip_misc()?;
+    p.skip_misc(false)?;
     if p.pos != input.len() {
         return Err(Error::MalformedXml("trailing content"));
     }
@@ -99,14 +99,35 @@ impl Parser<'_> {
                 .len();
         self.pos += n;
     }
-    /// Skip comments, XML declarations and processing instructions.
-    fn skip_misc(&mut self) -> Result<(), Error> {
+    /// Skip whitespace and comments. A single XML declaration
+    /// (`<?xml …?>`) is additionally permitted in the prolog
+    /// (`prolog == true`) — every other processing instruction is a hard
+    /// `MalformedXml` (contract §5 prohibits PIs outright; the
+    /// declaration exception is documented there).
+    fn skip_misc(&mut self, prolog: bool) -> Result<(), Error> {
+        let mut decl_seen = !prolog;
         loop {
             self.skip_ws();
             let r = self.rest();
-            if r.starts_with("<?") {
-                let end = r.find("?>").ok_or(Error::MalformedXml("unterminated PI"))?;
-                self.pos += end + 2;
+            if let Some(pi) = r.strip_prefix("<?") {
+                let end = pi
+                    .find("?>")
+                    .ok_or(Error::MalformedXml("unterminated PI"))?;
+                // `body` is everything between `<?` and `?>`; the XML
+                // declaration's target is exactly `xml` followed by
+                // whitespace (or nothing) — `<?xml-stylesheet?>` and
+                // `<?xmlfoo?>` are ordinary PIs and prohibited.
+                let body = &pi[..end];
+                let is_decl = !decl_seen
+                    && (body == "xml"
+                        || body
+                            .strip_prefix("xml")
+                            .is_some_and(|t| t.starts_with(|c: char| c.is_ascii_whitespace())));
+                if !is_decl {
+                    return Err(Error::MalformedXml("processing instruction prohibited"));
+                }
+                decl_seen = true;
+                self.pos += end + 4;
             } else if r.starts_with("<!--") {
                 let end = r
                     .find("-->")
@@ -259,7 +280,7 @@ impl Parser<'_> {
                 return Ok(el);
             }
             if self.rest().starts_with("<!--") {
-                self.skip_misc()?;
+                self.skip_misc(false)?;
                 continue;
             }
             if self.rest().starts_with("<![CDATA[") {
@@ -345,8 +366,16 @@ pub struct ClientConfig {
 }
 
 impl ClientConfig {
-    /// Parse a document and select the provider best matching `domain`
-    /// (exact `<domain>` match, else `id` match, else first provider).
+    /// Parse a document and select the provider best matching `domain`.
+    ///
+    /// The root must be `clientConfig` (contract §5) — a bare
+    /// `emailProvider` document is rejected. Provider selection checks
+    /// the queried domain: an exact `<domain>` match wins; a provider
+    /// `id` equal to the queried domain is an accepted second source
+    /// (documented compat exception — Mozilla-format documents carry the
+    /// served domain in `id`). There is no first-provider fallback: a
+    /// document that names neither is malformed *for this query*, so
+    /// discovery falls through instead of suggesting a foreign provider.
     pub fn parse(xml: &str, domain: &DomainName) -> Result<Self, Error> {
         let root = parse_root(xml)?;
         let (version, providers): (Option<String>, Vec<&Element>) =
@@ -355,8 +384,6 @@ impl ClientConfig {
                     root.attr("version").map(|v| v.chars().take(16).collect()),
                     root.children_named("emailProvider").collect(),
                 )
-            } else if root.name.eq_ignore_ascii_case("emailProvider") {
-                (None, vec![&root])
             } else {
                 return Err(Error::MalformedXml("not a clientConfig document"));
             };
@@ -373,8 +400,7 @@ impl ClientConfig {
             .iter()
             .find(|p| matches_domain(p, true))
             .or_else(|| providers.iter().find(|p| matches_domain(p, false)))
-            .or_else(|| providers.first())
-            .ok_or(Error::MalformedXml("no emailProvider"))?;
+            .ok_or(Error::MalformedXml("no emailProvider for queried domain"))?;
 
         let servers = |tag: &str| -> Vec<ServerSpec> {
             chosen
@@ -817,5 +843,92 @@ mod tests {
         assert!(parse_root("<html><body/></html>").is_ok());
         let d = DomainName::parse("x.test").unwrap();
         assert!(ClientConfig::parse("<html/>", &d).is_err());
+    }
+
+    #[test]
+    fn processing_instructions_rejected_except_xml_decl() {
+        // ACFG-7: PIs are prohibited constructs; the sole exception is
+        // one XML declaration in the prolog.
+        for bad in [
+            "<?xml version=\"1.0\"?><?php echo 1?><a/>",
+            "<?xml-stylesheet href=\"x\"?><a/>", // xml-prefixed target ≠ decl
+            "<?xmlfoo?><a/>",
+            "<?xml version=\"1.0\"?><?xml version=\"1.1\"?><a/>", // second decl
+            "<a/><?foo bar?>",                                    // epilog PI
+            "<?xml version=\"1.0\"?>\n<a/>\n<?php?>",
+        ] {
+            assert!(
+                matches!(
+                    parse_root(bad),
+                    Err(Error::MalformedXml("processing instruction prohibited"))
+                ),
+                "{bad:?} must be rejected"
+            );
+        }
+        // Declaration + comments stay legal.
+        assert!(parse_root("<?xml version=\"1.0\"?><!-- c --><a/><!-- c -->").is_ok());
+        assert!(parse_root("<a/>").is_ok());
+        // Unterminated PI keeps its own error.
+        assert!(matches!(
+            parse_root("<?foo"),
+            Err(Error::MalformedXml("unterminated PI"))
+        ));
+    }
+
+    #[test]
+    fn bare_emailprovider_root_rejected() {
+        // ACFG-8: the root must be clientConfig — a bare provider
+        // document is not an accepted compat format.
+        let d = DomainName::parse("x.test").unwrap();
+        let xml = r#"<emailProvider id="x.test"><domain>x.test</domain>
+            <incomingServer type="imap"><hostname>imap.x.test</hostname>
+            <port>993</port><socketType>SSL</socketType></incomingServer>
+            </emailProvider>"#;
+        assert!(matches!(
+            ClientConfig::parse(xml, &d),
+            Err(Error::MalformedXml("not a clientConfig document"))
+        ));
+    }
+
+    #[test]
+    fn no_first_provider_fallback() {
+        // ACFG-9: when neither <domain> nor id names the queried domain
+        // the document is malformed *for this query* — never the first
+        // provider's config for a foreign domain.
+        let xml = r#"<clientConfig>
+          <emailProvider id="a.test"><domain>a.test</domain><displayName>A</displayName></emailProvider>
+          <emailProvider id="b.test"><domain>b.test</domain><displayName>B</displayName></emailProvider>
+        </clientConfig>"#;
+        let d = DomainName::parse("c.test").unwrap();
+        assert!(matches!(
+            ClientConfig::parse(xml, &d),
+            Err(Error::MalformedXml("no emailProvider for queried domain"))
+        ));
+    }
+
+    #[test]
+    fn provider_id_match_is_second_source() {
+        // Documented compat exception (contract §5): a provider `id`
+        // equal to the queried domain selects when no <domain> matches.
+        let xml = r#"<clientConfig>
+          <emailProvider id="q.test"><domain>other.test</domain><displayName>Q</displayName></emailProvider>
+        </clientConfig>"#;
+        let d = DomainName::parse("q.test").unwrap();
+        let cfg = ClientConfig::parse(xml, &d).unwrap();
+        assert_eq!(cfg.display_name.as_deref(), Some("Q"));
+        assert_eq!(cfg.provider_id.as_deref(), Some("q.test"));
+    }
+
+    #[test]
+    fn exact_domain_beats_provider_id() {
+        // The <domain> element claim outranks an id attribute claim —
+        // order of checks, not document order, decides.
+        let xml = r#"<clientConfig>
+          <emailProvider id="b.test"><domain>a.test</domain><displayName>id-claims-b</displayName></emailProvider>
+          <emailProvider><domain>b.test</domain><displayName>domain-b</displayName></emailProvider>
+        </clientConfig>"#;
+        let d = DomainName::parse("b.test").unwrap();
+        let cfg = ClientConfig::parse(xml, &d).unwrap();
+        assert_eq!(cfg.display_name.as_deref(), Some("domain-b"));
     }
 }

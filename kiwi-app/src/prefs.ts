@@ -3,8 +3,8 @@
  * display and behavior settings. Never stores credentials, tokens, or
  * message content (signatures/drafts are user-authored UI text).
  *
- * Backend prefs (`kiwi_get_prefs` / `kiwi_set_prefs`) do not exist yet —
- * `api.getPrefs/setPrefs` throw until they land. The sync policy then is:
+ * Backend prefs sync rides the ipc.md §9c key/value store (`kiwi_prefs_*`,
+ * wired T-175/T-237 via `api.getPrefs/setPrefs`). The sync policy is:
  * localStorage is the source of truth offline; on load the backend bag (if
  * any) overwrites local keys; every local change is pushed best-effort.
  * All keys are namespaced `kiwi.*`.
@@ -33,6 +33,11 @@ export const PREF_KEYS = [
   "kiwi.theme",
   "kiwi.accent",
   "kiwi.density",
+  "kiwi.rail",
+  "kiwi.agenda",
+  "kiwi.pane.folders",
+  "kiwi.pane.list",
+  "kiwi.pane.rail",
   "kiwi.grace",
   "kiwi.minTls",
   "kiwi.templates",
@@ -42,6 +47,7 @@ export const PREF_KEYS = [
   "kiwi.sound",
   "kiwi.muted",
   "kiwi.defaultAccount",
+  "kiwi.filterRules",
 ] as const;
 
 /** Per-account prefs live under suffixed keys (never secrets). */
@@ -80,6 +86,15 @@ export function applyPrefsBag(bag: Record<string, unknown>): void {
     if (typeof k === "string" && k.startsWith("kiwi.") && v !== undefined) savePref(k, v);
   }
   applyUiPrefs();
+  // T-275: theme is owned by src/themes (useTheme) — notify it so a
+  // bag-carried `kiwi.theme` (incl. installed theme ids) applies live.
+  if (typeof bag["kiwi.theme"] === "string") {
+    try {
+      window.dispatchEvent(new CustomEvent("kiwi-theme", { detail: bag["kiwi.theme"] }));
+    } catch {
+      // No DOM.
+    }
+  }
 }
 
 /** Muted account ids (`kiwi.muted`, string array). */
@@ -88,19 +103,17 @@ export function loadMuted(): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
 }
 
-/** Apply theme + accent + density attributes to the document root. */
+/** Apply accent + density attributes to the document root. T-275:
+ * `data-theme` is owned solely by src/themes (`initThemes`/`useTheme` →
+ * `applyThemeToRoot`) so installed-package ids and uninstalled-id fallback
+ * resolve through the registry — this function no longer writes it. */
 export function applyUiPrefs(): void {
   try {
     const root = document.documentElement;
-    const theme = loadPref<string>("kiwi.theme", "dark");
-    if (theme === "system") {
-      const dark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-      root.setAttribute("data-theme", dark ? "dark" : "light");
-    } else {
-      root.setAttribute("data-theme", theme);
-    }
     root.setAttribute("data-accent", loadPref<string>("kiwi.accent", "standard"));
     root.setAttribute("data-density", loadPref<string>("kiwi.density", "comfortable"));
+    // T-191: the Mailspring-idiom shell is the active theme foundation.
+    root.setAttribute("data-shell", "mailspring");
   } catch {
     // DOM unavailable (tests) — nothing to apply.
   }

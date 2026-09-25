@@ -1,0 +1,166 @@
+//! Scripted server side of a transcript — `Wire` over plain or
+//! TLS-upgraded duplex streams, `serve` (drives + asserts the
+//! script), `spawn_script`, and a self-signed `tls_acceptor` for
+//! TLS-boundary fixtures.
+
+use std::io;
+use std::time::Duration;
+
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio_rustls::TlsAcceptor;
+
+use crate::lines::read_line;
+
+use super::script::*;
+
+/// A transcript step must make progress. This is deliberately generous for
+/// loaded Windows builders, but finite so a missing client command fails the
+/// fixture instead of hanging the entire test process forever.
+pub const TRANSCRIPT_STEP_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn timeout_error(what: &str) -> String {
+    format!(
+        "transcript {what} timed out after {:?}",
+        TRANSCRIPT_STEP_TIMEOUT
+    )
+}
+
+enum Wire<S> {
+    Plain(S),
+    Tls(Box<tokio_rustls::server::TlsStream<S>>),
+}
+
+impl<S: AsyncRead + AsyncWrite + Unpin> Wire<S> {
+    async fn rl(&mut self, scratch: &mut Vec<u8>) -> crate::error::Result<Vec<u8>> {
+        match self {
+            Wire::Plain(s) => read_line(s, scratch, "fixture").await,
+            Wire::Tls(s) => read_line(&mut **s, scratch, "fixture").await,
+        }
+    }
+    async fn wl(&mut self, b: &[u8]) -> io::Result<()> {
+        match self {
+            Wire::Plain(s) => s.write_all(b).await,
+            Wire::Tls(s) => s.write_all(b).await,
+        }
+    }
+}
+
+/// Drive the server side of a transcript. Asserts each `C:` line
+/// (protocol-aware matching); returns Err describing the first divergence.
+/// Generic over the stream — `DuplexStream` for in-process pairs, a real
+/// `TcpStream` when the client under test owns its socket setup (loopback
+/// E2E).
+pub async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
+    end: S,
+    steps: &[Step],
+    proto: Proto,
+    tls: Option<TlsAcceptor>,
+) -> Result<(), String> {
+    let mut wire = Wire::Plain(end);
+    let mut scratch = Vec::new();
+    let mut last_tag = String::new();
+    for step in steps {
+        match step {
+            Step::Server(bytes) => {
+                let bytes = if proto == Proto::Imap && !last_tag.is_empty() {
+                    rewrite_tag(bytes, &last_tag)
+                } else {
+                    bytes.clone()
+                };
+                tokio::time::timeout(TRANSCRIPT_STEP_TIMEOUT, wire.wl(&bytes))
+                    .await
+                    .map_err(|_| timeout_error("server write"))?
+                    .map_err(|e| e.to_string())?;
+            }
+            Step::ExpectEof => {
+                // Silence is the pass: the client either closes (read
+                // error/EOF) or simply never writes within the window.
+                if let Ok(Ok(line)) =
+                    tokio::time::timeout(TRANSCRIPT_STEP_TIMEOUT, wire.rl(&mut scratch)).await
+                {
+                    return Err(format!(
+                        "expected client silence, got {:?}",
+                        String::from_utf8_lossy(&line)
+                    ));
+                }
+            }
+            Step::TlsBoundary => {
+                let acc = tls
+                    .as_ref()
+                    .ok_or("transcript marks a TLS boundary but no acceptor was given")?;
+                let plain = match wire {
+                    Wire::Plain(s) => s,
+                    Wire::Tls(_) => return Err("second TLS boundary".into()),
+                };
+                let t = tokio::time::timeout(TRANSCRIPT_STEP_TIMEOUT, acc.accept(plain))
+                    .await
+                    .map_err(|_| timeout_error("TLS handshake"))?
+                    .map_err(|e| format!("tls accept: {e}"))?;
+                wire = Wire::Tls(Box::new(t));
+            }
+            Step::Client(expected) => loop {
+                let line = tokio::time::timeout(TRANSCRIPT_STEP_TIMEOUT, wire.rl(&mut scratch))
+                    .await
+                    .map_err(|_| timeout_error("client read"))?
+                    .map_err(|e| e.to_string())?;
+                let actual = String::from_utf8_lossy(&line).into_owned();
+                if proto == Proto::Imap {
+                    // Track the client's tag — but only real tag-shaped
+                    // tokens (letters+digits), never payload lines like
+                    // APPEND bodies or DONE.
+                    let tok = actual.split_whitespace().next().unwrap_or("");
+                    if tok.len() > 1
+                        && tok.bytes().next().is_some_and(|b| b.is_ascii_alphabetic())
+                        && tok.bytes().any(|b| b.is_ascii_digit())
+                    {
+                        last_tag = tok.to_string();
+                    }
+                }
+                if client_matches(proto, expected, &actual) {
+                    break;
+                }
+                match offscript_reply(proto, &actual) {
+                    Some(reply) => tokio::time::timeout(TRANSCRIPT_STEP_TIMEOUT, wire.wl(&reply))
+                        .await
+                        .map_err(|_| timeout_error("off-script server write"))?
+                        .map_err(|e| e.to_string())?,
+                    None => {
+                        return Err(format!(
+                            "transcript divergence: expected {expected:?}, client sent {actual:?}"
+                        ));
+                    }
+                }
+            },
+        }
+    }
+    Ok(())
+}
+
+/// Spawn a scripted server from an inline `S:`/`C:` transcript string.
+pub fn spawn_script<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
+    end: S,
+    proto: Proto,
+    script: &str,
+    tls: Option<TlsAcceptor>,
+) -> tokio::task::JoinHandle<Result<(), String>> {
+    let steps = parse(script);
+    tokio::spawn(async move { serve(end, &steps, proto, tls).await })
+}
+
+/// Self-signed TLS acceptor + DER for transcript tests that cross a
+/// TLS boundary. `names` must cover the client's server_name.
+pub fn tls_acceptor(names: &[&str]) -> (TlsAcceptor, Vec<u8>) {
+    let certified =
+        rcgen::generate_simple_self_signed(names.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+            .unwrap();
+    let der = certified.cert.der().clone();
+    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(certified.key_pair.serialize_der().into());
+    let cfg = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(vec![der.clone()], key)
+        .unwrap();
+    (
+        TlsAcceptor::from(std::sync::Arc::new(cfg)),
+        der.as_ref().to_vec(),
+    )
+}

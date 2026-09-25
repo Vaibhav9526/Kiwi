@@ -1,0 +1,26 @@
+{
+    "list": [
+        {
+            "mail_id": "9002",
+            "mail_from": "verify@example-service.test",
+            "mail_subject": "Confirm your sign-up &lt;kiwi&gt;",
+            "mail_excerpt": "Click to confirm &amp; activate",
+            "mail_timestamp": "1758300900",
+            "mail_read": "0",
+            "mail_date": "2026-09-19 20:15:00"
+        },
+        {
+            "mail_id": "9001",
+            "mail_from": "noreply@guerrillamail.com",
+            "mail_subject": "Welcome to Guerrilla Mail",
+            "mail_excerpt": "Your temporary inbox",
+            "mail_timestamp": "1758300001",
+            "mail_read": "1",
+            "mail_date": "2026-09-19 20:00:01"
+        }
+    ],
+    "count": "2",
+    "email": "kctest02@sharklasers.com",
+    "ts": "1758300000",
+    "s_active": "N"
+}

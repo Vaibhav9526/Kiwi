@@ -2,7 +2,7 @@
 //!
 //! Contacts arrive from three untrusted-ish directions: user typing, vCard
 //! import, and IPC (webview). All three funnel through [`Contact::normalize`]
-//! + [`Contact::validate`], so the caps below are the single place a limit is
+//! and [`Contact::validate`], so the caps below are the single place a limit is
 //! defined. Over-limit input is rejected, never silently truncated — a dropped
 //! contact is recoverable, a silently mangled one is not.
 
@@ -221,31 +221,31 @@ impl Contact {
             ("name_prefix", self.name_prefix.as_deref()),
             ("name_suffix", self.name_suffix.as_deref()),
         ] {
-            if let Some(v) = value {
-                if v.len() > MAX_NAME_LEN {
-                    return bad(format!("{field} exceeds {MAX_NAME_LEN} bytes"));
-                }
+            if let Some(v) = value
+                && v.len() > MAX_NAME_LEN
+            {
+                return bad(format!("{field} exceeds {MAX_NAME_LEN} bytes"));
             }
         }
-        if let Some(o) = &self.org {
-            if o.len() > MAX_ORG_LEN {
-                return bad(format!("org exceeds {MAX_ORG_LEN} bytes"));
-            }
+        if let Some(o) = &self.org
+            && o.len() > MAX_ORG_LEN
+        {
+            return bad(format!("org exceeds {MAX_ORG_LEN} bytes"));
         }
-        if let Some(t) = &self.title {
-            if t.len() > MAX_TITLE_LEN {
-                return bad(format!("title exceeds {MAX_TITLE_LEN} bytes"));
-            }
+        if let Some(t) = &self.title
+            && t.len() > MAX_TITLE_LEN
+        {
+            return bad(format!("title exceeds {MAX_TITLE_LEN} bytes"));
         }
-        if let Some(n) = &self.notes {
-            if n.len() > MAX_NOTE_LEN {
-                return bad(format!("notes exceeds {MAX_NOTE_LEN} bytes"));
-            }
+        if let Some(n) = &self.notes
+            && n.len() > MAX_NOTE_LEN
+        {
+            return bad(format!("notes exceeds {MAX_NOTE_LEN} bytes"));
         }
-        if let Some(u) = &self.source_uid {
-            if u.len() > MAX_NAME_LEN {
-                return bad(format!("source_uid exceeds {MAX_NAME_LEN} bytes"));
-            }
+        if let Some(u) = &self.source_uid
+            && u.len() > MAX_NAME_LEN
+        {
+            return bad(format!("source_uid exceeds {MAX_NAME_LEN} bytes"));
         }
         if self.tags.len() > MAX_TAGS {
             return bad(format!("more than {MAX_TAGS} tags"));
@@ -309,18 +309,18 @@ impl Contact {
             ("title", self.title.as_deref()),
             ("source_uid", self.source_uid.as_deref()),
         ] {
-            if let Some(v) = value {
-                if v.chars().any(char::is_control) {
-                    return bad(format!("{field} contains control characters"));
-                }
+            if let Some(v) = value
+                && v.chars().any(char::is_control)
+            {
+                return bad(format!("{field} contains control characters"));
             }
         }
         // `notes` is the one multi-line field; other control characters are
         // still refused.
-        if let Some(n) = &self.notes {
-            if n.chars().any(|c| c.is_control() && c != '\n' && c != '\t') {
-                return bad("notes contains control characters".into());
-            }
+        if let Some(n) = &self.notes
+            && n.chars().any(|c| c.is_control() && c != '\n' && c != '\t')
+        {
+            return bad("notes contains control characters".into());
         }
         Ok(())
     }

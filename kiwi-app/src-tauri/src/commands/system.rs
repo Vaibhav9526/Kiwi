@@ -4,19 +4,14 @@
 
 use std::sync::Arc;
 
-use base64::Engine;
 use tauri::State;
 
-use kiwi_core::challenge::{ChallengeResponse, ChallengeSpec};
-use kiwi_core::device::DeviceStatus;
-
-use super::{bounded, status_view};
+use super::status_view;
 use crate::error::{CmdResult, IpcError};
-use crate::state::{AppState, new_id, now_unix};
+use crate::state::{AppState, now_unix};
 use crate::types::{
     AppInfoView, ChallengeResponseInput, ChallengeView, OrgBindingView, SecurityStatusView,
 };
-use crate::verifier::Ed25519Verifier;
 
 #[tauri::command]
 pub async fn kiwi_ping() -> String {
@@ -69,12 +64,10 @@ pub async fn kiwi_lock(state: State<'_, Arc<AppState>>) -> CmdResult<SecuritySta
     Ok(status_view(state).await)
 }
 
-/// Issue a bound challenge (unlock / device-pairing / recovery / elevated
-/// action). Exempt — this is step 1 of the unlock flow.
-///
-/// The challenge binds device + app boot session + event; its canonical
-/// bytes are returned base64-encoded for the authenticator to sign
-/// (contract security-session.md §6).
+/// Compat alias over the canonical §9d path — accepts the legacy `event`
+/// arg, but issues through `PairEngine` (persisted challenge + nonce
+/// ledger) like `unlock_challenge`. Exempt — this is step 1 of the
+/// unlock flow.
 #[tauri::command]
 pub async fn kiwi_request_challenge(
     state: State<'_, Arc<AppState>>,
@@ -89,156 +82,23 @@ pub(crate) async fn request_challenge(
     device_id: &str,
     event: &str,
 ) -> CmdResult<ChallengeView> {
-    bounded("deviceId", device_id, 128)?;
     let event = crate::types::parse_challenge_event(event)
         .ok_or_else(|| IpcError::invalid("unknown challenge event"))?;
-
-    // The device must be registered; pairing challenges additionally require
-    // the device to still be Pending (an Active device can't re-pair under
-    // the same id — revocation is terminal).
-    {
-        let devices = state.devices.lock().await;
-        let dev = devices
-            .get(device_id)
-            .ok_or_else(|| IpcError::not_found("unknown device"))?;
-        if event == kiwi_core::challenge::ChallengeEvent::DevicePairing
-            && dev.status != DeviceStatus::Pending
-        {
-            return Err(IpcError::invalid(
-                "device-pairing challenge requires a pending device",
-            ));
-        }
-        if matches!(
-            event,
-            kiwi_core::challenge::ChallengeEvent::Unlock
-                | kiwi_core::challenge::ChallengeEvent::Recovery
-        ) && dev.status != DeviceStatus::Active
-        {
-            return Err(IpcError::new(
-                "device-not-active",
-                "unlock/recovery requires an active registered device",
-            ));
-        }
-    }
-
-    let mut nonce = [0u8; 32];
-    getrandom::fill(&mut nonce).map_err(|_| IpcError::new("internal", "CSPRNG failure"))?;
-    let session_id = state.boot_session_id.clone();
-    let challenge = state
-        .challenges
-        .lock()
-        .await
-        .issue(
-            ChallengeSpec {
-                challenge_id: new_id("chal"),
-                device_id: device_id.to_string(),
-                session_id,
-                event,
-                nonce,
-            },
-            now_unix(),
-            state.policy.challenge_ttl_secs,
-        )
-        .ok_or_else(|| {
-            // Duplicate nonce from the CSPRNG is a replay indicator, not a
-            // retry-able error — surface it as one (contract §6).
-            IpcError::new("replay-detected", "challenge nonce collision")
-        })?;
-    Ok(ChallengeView::from(&challenge))
+    super::pair::issue_challenge_impl(state, device_id, event).await
 }
 
 /// Submit a signed challenge response — step 2 of unlock/pairing.
 /// Exempt from the gate by definition (it *is* the unlock path).
 ///
-/// Verification: `ChallengeBook::verify` (expiry, single-use, binding) +
-/// `Ed25519Verifier` over the registered device public key. On success the
-/// bound action runs: `unlock` → `TrustMachine::attempt_unlock`;
-/// `device-pairing` → device `Pending → Active`. Other events verify but
-/// report `unsupported-event` until their flows land.
+/// Compat alias: verification is `PairEngine::verify_response` (persistent
+/// consume+activate, atomic); the bound post-actions live in
+/// `pair::submit_challenge_impl`.
 #[tauri::command]
 pub async fn kiwi_submit_challenge(
     state: State<'_, Arc<AppState>>,
     response: ChallengeResponseInput,
 ) -> CmdResult<SecurityStatusView> {
-    submit_challenge(state.inner(), response).await
-}
-
-pub(crate) async fn submit_challenge(
-    state: &AppState,
-    input: ChallengeResponseInput,
-) -> CmdResult<SecurityStatusView> {
-    bounded("challengeId", &input.challenge_id, 128)?;
-    bounded("deviceId", &input.device_id, 128)?;
-    bounded("sessionId", &input.session_id, 128)?;
-    let event = crate::types::parse_challenge_event(&input.event)
-        .ok_or_else(|| IpcError::invalid("unknown challenge event"))?;
-    let signature = base64::engine::general_purpose::STANDARD
-        .decode(input.signature_b64.as_bytes())
-        .map_err(|_| IpcError::invalid("signatureB64 is not valid base64"))?;
-    if signature.len() > 4096 {
-        return Err(IpcError::invalid("signature too large"));
-    }
-
-    let (public_key, algorithm) = {
-        let devices = state.devices.lock().await;
-        let dev = devices
-            .get(&input.device_id)
-            .ok_or_else(|| IpcError::not_found("unknown device"))?;
-        (dev.public_key.key.clone(), dev.public_key.algorithm)
-    };
-    if !crate::verifier::algorithm_supported(algorithm) {
-        return Err(IpcError::new(
-            "unsupported-algorithm",
-            "device key algorithm has no verifier yet",
-        ));
-    }
-
-    let resp = ChallengeResponse {
-        challenge_id: input.challenge_id.clone(),
-        device_id: input.device_id.clone(),
-        session_id: input.session_id.clone(),
-        event,
-        signature,
-    };
-    state
-        .challenges
-        .lock()
-        .await
-        .verify(&resp, &public_key, &Ed25519Verifier, now_unix())?;
-
-    // Verified — perform the bound action.
-    let audit_detail = match event {
-        kiwi_core::challenge::ChallengeEvent::Unlock => {
-            state
-                .trust
-                .lock()
-                .await
-                .attempt_unlock(&state.policy, true)?;
-            "authenticator-approved unlock".to_string()
-        }
-        kiwi_core::challenge::ChallengeEvent::DevicePairing => {
-            state
-                .devices
-                .lock()
-                .await
-                .activate(&input.device_id)
-                .map_err(|e| IpcError::new("device-error", format!("activate: {e:?}")))?;
-            format!("device paired: {}", input.device_id)
-        }
-        kiwi_core::challenge::ChallengeEvent::Recovery
-        | kiwi_core::challenge::ChallengeEvent::ElevatedAction => {
-            return Err(IpcError::new(
-                "unsupported-event",
-                "challenge verified but this event's flow is not wired yet",
-            ));
-        }
-    };
-    state
-        .audit
-        .lock()
-        .await
-        .record("challenge-verified", &audit_detail, now_unix())?;
-    Ok(status_view(state).await)
+    super::pair::submit_challenge_impl(state.inner(), response).await
 }
 
 // ---------------------------------------------------------------------------
@@ -248,6 +108,7 @@ pub(crate) async fn submit_challenge(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
 
     fn test_state() -> AppState {
         let dir = std::env::temp_dir().join(format!(
@@ -263,7 +124,7 @@ mod tests {
 
     /// Register an Ed25519 device; returns the generated device_id.
     fn register_ed25519_device(state: &AppState, pk: &[u8; 32]) -> String {
-        futures_block(super::super::devices::register_device_impl(
+        futures_block(super::super::pair::register_device_impl(
             state,
             crate::types::RegisterDeviceInput {
                 label: "auth".into(),
@@ -325,7 +186,7 @@ mod tests {
                 .decode(&chal.canonical_bytes_b64)
                 .unwrap();
             let sig = ed25519_dalek::Signer::<ed25519_dalek::Signature>::sign(&signing, &canonical);
-            let r = submit_challenge(
+            let r = super::super::pair::submit_challenge_impl(
                 &state,
                 ChallengeResponseInput {
                     challenge_id: chal.challenge_id.clone(),
@@ -345,7 +206,7 @@ mod tests {
                 .decode(&chal.canonical_bytes_b64)
                 .unwrap();
             let sig = ed25519_dalek::Signer::<ed25519_dalek::Signature>::sign(&signing, &canonical);
-            let status = submit_challenge(
+            let status = super::super::pair::submit_challenge_impl(
                 &state,
                 ChallengeResponseInput {
                     challenge_id: chal.challenge_id,
@@ -374,7 +235,7 @@ mod tests {
             let chal = request_challenge(&state, &dev_id, "device-pairing")
                 .await
                 .unwrap();
-            let r = submit_challenge(
+            let r = super::super::pair::submit_challenge_impl(
                 &state,
                 ChallengeResponseInput {
                     challenge_id: chal.challenge_id.clone(),
@@ -392,7 +253,7 @@ mod tests {
                 .decode(&chal.canonical_bytes_b64)
                 .unwrap();
             let sig = ed25519_dalek::Signer::<ed25519_dalek::Signature>::sign(&signing, &canonical);
-            let ok = submit_challenge(
+            let ok = super::super::pair::submit_challenge_impl(
                 &state,
                 ChallengeResponseInput {
                     challenge_id: chal.challenge_id,

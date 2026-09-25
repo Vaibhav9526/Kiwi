@@ -99,7 +99,7 @@ class KiwiServiceContainer implements ServiceContainer {
     this.db = wiring.db;
     this.audit = new AuditService({ audit: wiring.repos.audit });
     this.orgs = new OrgService({ orgs: wiring.repos.orgs }, this);
-    this.policies = new PolicyService({ policies: wiring.repos.policies }, this);
+    this.policies = new PolicyService({ policies: wiring.repos.policies, orgs: wiring.repos.orgs }, this);
     this.mailflow = new MailflowService({ mailflow: wiring.repos.mailflow }, this);
   }
 
@@ -135,9 +135,22 @@ class KiwiServiceContainer implements ServiceContainer {
       }
       throw err;
     }
-    const result = await work();
-    await this.auditAppend(actor, orgId, action, resource, "allowed", null, {}, Date.now());
-    return result;
+    // Error outcome (T-193/M3): a `work()` throw previously propagated with
+    // no trace, so a half-applied mutation was invisible. The `error` row
+    // records it; the original error still propagates to the caller.
+    // (The append itself is best-effort here — it must never mask `err`.)
+    try {
+      const result = await work();
+      await this.auditAppend(actor, orgId, action, resource, "allowed", null, {}, Date.now());
+      return result;
+    } catch (err) {
+      try {
+        await this.auditAppend(actor, orgId, action, resource, "error", null, {}, Date.now());
+      } catch {
+        // fall through to the original error below
+      }
+      throw err;
+    }
   }
 
   async close(): Promise<void> {

@@ -16,6 +16,16 @@
 //!
 //! All network access goes through the [`DiscoveryNet`] trait so the entire
 //! suite runs offline with [`MockNet`] + fixture XML.
+//!
+//! [`oauth2`] (T-195) is the exception to "never opens connections": it is
+//! the grant-acquisition half of account setup. It keeps the same seam
+//! discipline — every endpoint call goes through `oauth2::OAuthTransport`
+//! (a narrow form-POST contract over the `kiwi-integrations` HTTPS seam).
+//! Its secrets invariant: no token material in the DB, in plaintext files,
+//! or in logs — the OS credential store
+//! (`kiwi_mail::account::CredentialStore`) is the *sanctioned persistence
+//! sink* for `TokenSet` blobs, and every `Debug` surface is redacted. No
+//! test touches the live network.
 
 #![warn(missing_docs)]
 
@@ -25,6 +35,7 @@ pub mod heuristics;
 pub mod ispdb;
 pub mod manual;
 pub mod net;
+pub mod oauth2;
 pub mod suggest;
 
 pub use autoconfig_xml::{ClientConfig, OAuth2Spec, ServerSpec};

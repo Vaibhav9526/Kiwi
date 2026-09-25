@@ -1,10 +1,15 @@
 /**
  * Contacts view (T-173): list/search/detail/edit panels over the address
- * book (`kiwi.contacts/1`, docs/contracts/contacts.md §3). No backend
- * command exists yet (Agent 7) — the view tries `kiwi_list_contacts` first
- * and falls back to the labeled localStorage book (`src/contacts.ts`),
- * which also seeds two demo cards. Writes try the IPC then the local book
- * with an honest note. Same wrappers either way: zero view changes on land.
+ * book (`kiwi.contacts/1`, docs/contracts/contacts.md §3), live-wired to
+ * the contacts IPC commands (T-231). Live mode is IPC-only — a backend
+ * failure surfaces as an error banner, never as local/demo data. The
+ * labeled localStorage book (`src/contacts.ts`, with seeded demo cards)
+ * is reachable only when `demo` is set — a live account never sees it.
+ * The search box filters the loaded list client-side (bounded at 500);
+ * `kiwi_search_contacts` remains for larger books. Import keeps a
+ * client-side parse only for the preview table — the write itself goes
+ * through `kiwi_import_vcards` (server-side dedupe + issue report);
+ * export uses `kiwi_export_vcards`.
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -12,6 +17,7 @@ import type { CSSProperties } from "react";
 import type { ContactInput, ContactView } from "../kiwi";
 import { contactLabel, contactPrimaryEmail, parseContact } from "../kiwi";
 import { api } from "../ipc";
+import { Icon } from "../components/icons/index";
 import {
   deleteLocal,
   filterContacts,
@@ -92,22 +98,35 @@ export function ContactsView({
   const [showIO, setShowIO] = useState(false);
   const [preview, setPreview] = useState<VCardParse | null>(null);
   const [previewName, setPreviewName] = useState("");
+  const [previewText, setPreviewText] = useState("");
   const [ioNote, setIoNote] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     void (async () => {
+      if (demo) {
+        // Demo mode owns the seeded localStorage book — no IPC at all.
+        if (!cancelled) {
+          setContacts(loadLocalBook());
+          setSource("local");
+          setLoading(false);
+        }
+        return;
+      }
       try {
         const list = await api.listContacts(500);
         if (!cancelled) {
           setContacts(list);
           setSource("server");
         }
-      } catch {
+      } catch (e) {
+        // Live mode never falls back to local/demo fixtures — surface
+        // the failure and show an empty book.
         if (!cancelled) {
-          setContacts(loadLocalBook());
-          setSource("local");
+          setContacts([]);
+          setSource("server");
+          setError(`Address book unavailable: ${e instanceof Error ? e.message : String(e)}`);
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -116,7 +135,7 @@ export function ContactsView({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [demo]);
 
   const filtered = useMemo(() => filterContacts(contacts, query), [contacts, query]);
   const selected = contacts.find((c) => c.id === selectedId) ?? null;
@@ -159,35 +178,43 @@ export function ContactsView({
     setError(null);
     try {
       if (creating) {
-        try {
-          const created = parseContact(await api.createContact(input));
-          const list = await api.listContacts(500);
-          setContacts(list);
-          setSource("server");
-          if (created) setSelectedId(created.id);
-          setCreating(false);
-          onNotify("ok", "Contact created.");
-        } catch {
+        if (demo) {
           const next = upsertLocal(loadLocalBook(), input);
-          persistLocal(next, "Saved locally — contacts IPC not in the backend yet.");
+          persistLocal(next, "Saved to the demo book.");
           setCreating(false);
           const last = next[next.length - 1];
           if (last) setSelectedId(last.id);
+        } else {
+          try {
+            const created = parseContact(await api.createContact(input));
+            const list = await api.listContacts(500);
+            setContacts(list);
+            setSource("server");
+            if (created) setSelectedId(created.id);
+            setCreating(false);
+            onNotify("ok", "Contact created.");
+          } catch (e) {
+            setError(`Create failed: ${e instanceof Error ? e.message : String(e)}`);
+          }
         }
       } else if (selected) {
-        try {
-          await api.updateContact(selected.id, input);
-          const list = await api.listContacts(500);
-          setContacts(list);
-          setSource("server");
-          setEditing(false);
-          onNotify("ok", "Contact updated.");
-        } catch {
+        if (demo) {
           persistLocal(
             upsertLocal(loadLocalBook(), input, selected.id),
-            "Updated locally — contacts IPC not in the backend yet.",
+            "Updated in the demo book.",
           );
           setEditing(false);
+        } else {
+          try {
+            await api.updateContact(selected.id, input);
+            const list = await api.listContacts(500);
+            setContacts(list);
+            setSource("server");
+            setEditing(false);
+            onNotify("ok", "Contact updated.");
+          } catch (e) {
+            setError(`Update failed: ${e instanceof Error ? e.message : String(e)}`);
+          }
         }
       }
     } finally {
@@ -200,12 +227,17 @@ export function ContactsView({
     setBusy(true);
     setError(null);
     try {
-      try {
-        await api.deleteContact(selected.id);
-        setContacts(await api.listContacts(500));
-        onNotify("ok", "Contact deleted.");
-      } catch {
-        persistLocal(deleteLocal(loadLocalBook(), selected.id), "Deleted locally — contacts IPC not in the backend yet.");
+      if (demo) {
+        persistLocal(deleteLocal(loadLocalBook(), selected.id), "Deleted from the demo book.");
+      } else {
+        try {
+          await api.deleteContact(selected.id);
+          setContacts(await api.listContacts(500));
+          onNotify("ok", "Contact deleted.");
+        } catch (e) {
+          setError(`Delete failed: ${e instanceof Error ? e.message : String(e)}`);
+          return;
+        }
       }
       setSelectedId(null);
       setConfirmDelete(false);
@@ -219,11 +251,13 @@ export function ContactsView({
   const set = (k: keyof FormState) => (e: { target: { value: string } }) =>
     setForm((f) => ({ ...f, [k]: e.target.value }));
 
-  /** .vcf picker (T-176): typed path via the platform file input, 1 MiB cap,
-    * parsed client-side (no import IPC exists yet) into a preview table. */
+  /** .vcf picker (T-176): platform file input, 1 MiB cap. Parsed
+    * client-side into a preview table; the raw text is kept so live
+    * import can hand the backend the original payload unchanged. */
   const pickFile = (files: FileList | null) => {
     setIoNote(null);
     setPreview(null);
+    setPreviewText("");
     const file = files?.[0];
     if (!file) return;
     if (file.size > MAX_VCARD_BYTES) {
@@ -234,7 +268,9 @@ export function ContactsView({
     const reader = new FileReader();
     reader.onload = () => {
       try {
-        setPreview(parseVCard(typeof reader.result === "string" ? reader.result : ""));
+        const text = typeof reader.result === "string" ? reader.result : "";
+        setPreview(parseVCard(text));
+        setPreviewText(text);
       } catch {
         setIoNote(`Could not read "${file.name}" as text.`);
       }
@@ -243,59 +279,74 @@ export function ContactsView({
     reader.readAsText(file);
   };
 
-  /** Import previewed cards: server first, local book fallback. Re-imports
-    * match on primary email (case-insensitive) so the same file twice does
-    * not duplicate — imports update the matched card wholesale. */
+  /** Import previewed cards: live mode writes the server book only
+    * (per-card failures are counted, not silently diverted); demo mode
+    * upserts the local book, matching on primary email (case-insensitive)
+    * so the same file twice does not duplicate. */
   const importPreview = async () => {
     if (!preview || preview.contacts.length === 0) return;
     setBusy(true);
     setIoNote(null);
-    let added = 0;
-    let updated = 0;
-    let local = 0;
     try {
-      const book = loadLocalBook();
-      let next = book;
-      for (const input of preview.contacts) {
-        const primary = (input.emails[0]?.address ?? "").toLowerCase();
-        try {
-          await api.createContact(input);
-          added++;
-          continue;
-        } catch {
-          // Local path below.
+      if (demo) {
+        let next = loadLocalBook();
+        let added = 0;
+        let updated = 0;
+        for (const input of preview.contacts) {
+          const primary = (input.emails[0]?.address ?? "").toLowerCase();
+          const match = next.find((c) => c.emails.some((e) => e.address.toLowerCase() === primary) && primary);
+          if (match) {
+            next = upsertLocal(next, input, match.id);
+            updated++;
+          } else {
+            next = upsertLocal(next, input);
+            added++;
+          }
         }
-        const match = next.find((c) => c.emails.some((e) => e.address.toLowerCase() === primary) && primary);
-        if (match) {
-          next = upsertLocal(next, input, match.id);
-          updated++;
-        } else {
-          next = upsertLocal(next, input);
-          local++;
-        }
+        saveLocalBook(next);
+        setContacts(next);
+        const msg = `Demo import: ${added} added, ${updated} updated.`;
+        setIoNote(msg);
+        onNotify("ok", msg);
+        setPreview(null);
+        return;
       }
-      saveLocalBook(next);
-      // Prefer the server list when it answers; the local book otherwise
-      // (it already contains every locally-saved card).
-      let shown = next;
-      try {
-        shown = await api.listContacts(500);
-        setSource("server");
-      } catch {
-        setSource("local");
-      }
-      setContacts(shown);
-      const msg = `Import done: ${added} server, ${local} new + ${updated} updated locally.`;
+      // Live import — kiwi_import_vcards re-parses the original payload
+      // server-side (dedupe + per-card issues come from the contract).
+      const r = await api.importVcards(previewText);
+      setContacts(await api.listContacts(500));
+      const msg = r.issues.length
+        ? `Import done: ${r.contacts.length} contact(s) imported, ${r.issues.length} issue(s) — ${r.issues
+            .slice(0, 2)
+            .map((i) => `card ${i.cardIndex >= 0 ? i.cardIndex + 1 : "—"}: ${i.detail}`)
+            .join("; ")}.`
+        : `Import done: ${r.contacts.length} contact(s) imported.`;
       setIoNote(msg);
-      onNotify("ok", msg);
+      onNotify(r.issues.length ? "warn" : "ok", msg);
       setPreview(null);
+      setPreviewText("");
+    } catch (e) {
+      setIoNote(`Import failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setBusy(false);
     }
   };
 
-  const exportAll = () => {
-    const text = exportVCard(contacts);
+  /** Export: live mode pulls the canonical server serialization
+    * (kiwi_export_vcards); demo serializes the local book client-side. */
+  const exportAll = async () => {
+    setIoNote(null);
+    let text: string;
+    if (demo) {
+      text = exportVCard(contacts);
+    } else {
+      try {
+        text = (await api.exportVcards()).vcard;
+      } catch (e) {
+        setIoNote(`Export failed: ${e instanceof Error ? e.message : String(e)}`);
+        return;
+      }
+    }
     if (!text) {
       setIoNote("Nothing to export — the book is empty.");
       return;
@@ -317,7 +368,7 @@ export function ContactsView({
           Contacts{" "}
           <small style={{ color: "var(--kiwi-text-secondary)" }}>
             ({filtered.length}
-            {source === "server" ? "" : demo ? " · demo" : " · local"})
+            {source === "server" ? "" : " · demo"})
           </small>
         </h1>
         <p>
@@ -341,7 +392,7 @@ export function ContactsView({
         {loading && <p role="status"><small>Loading…</small></p>}
         {filtered.length === 0 && !loading && (
           <div className="kiwi-empty">
-            <span className="kiwi-empty-icon" aria-hidden="true">👥</span>
+            <span className="kiwi-empty-icon em-empty-icon" aria-hidden="true"><Icon name="accounts" size={28} /></span>
             <strong>No contacts</strong>
             <br />
             <small>{query ? "No matches — clear the search." : "Create the first card."}</small>
@@ -384,7 +435,7 @@ export function ContactsView({
           <small>
             {source === "server"
               ? "Live address book (kiwi.contacts/1)."
-              : "Local address book — contacts IPC not in the backend yet; cards sync when it lands."}
+              : "Demo address book — localStorage fixture, no IPC."}
           </small>
         </p>
         <p>
@@ -464,7 +515,7 @@ export function ContactsView({
               </>
             )}
             <p>
-              <button type="button" onClick={exportAll} disabled={contacts.length === 0}>
+              <button type="button" onClick={() => void exportAll()} disabled={contacts.length === 0}>
                 Export all ({contacts.length}) as .vcf
               </button>{" "}
               <small style={{ color: "var(--kiwi-text-secondary)" }}>

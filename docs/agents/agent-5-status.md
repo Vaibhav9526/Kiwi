@@ -865,3 +865,68 @@
 - **Next:** drop fallbacks as each IPC lands; otherwise idle until review
   feedback.
 
+## 2026-09-20 — T-186 mail filters UI (branch release/v0.1.0)
+
+- **Status:** Thunderbird-style rules delivered, fully client-side (no
+  backend filter store exists — verified). Run applies enabled rules in
+  order to loaded messages through the real bulk commands with the bulk
+  layer's demo fallbacks. `npm run build` green (tsc strict + vite, 50→52
+  modules; one interim red was TS union-narrowing across JSX siblings —
+  label hoisted to a memo-adjacent const). `src-tauri/` untouched. No
+  commits made.
+- **Files changed — kiwi-app/src (new):**
+  - `filters.ts` — rule engine: from/to/subject contains (AND, account
+    scope, case-insensitive), mark-read/star/archive/delete actions,
+    `matchRule`/`describeRule`/`validateRule`/`newRule`.
+  - `views/filters.tsx` — `#/filters`: list (enable checkbox, ↑/↓
+    reorder, per-rule loaded-match counts), inline editor (name, account
+    scope, condition rows, action checkboxes, validation), delete, Run on
+    loaded list (reads/stars → archives → deletes per rule, one summary
+    toast); persists to `kiwi.filterRules`.
+- **Files changed — kiwi-app/src (edited):**
+  - `prefs.ts` — `kiwi.filterRules` in `PREF_KEYS` (backend push on land).
+  - `router.ts` — `filters` route; `chrome.tsx` sidebar button; App
+    palette action + render (accounts + baseMessages + bulk handlers).
+- **Commands run:** `npm run build` in kiwi-app (green, 52 modules, no
+  new deps).
+- **Assumptions/limits:** `to` matches the account address (no per-message
+  recipients on the wire — stated in-view). Run scope is the loaded list
+  only, honestly labeled (folder vs last-loaded). No backend rule store
+  proposed yet — rules are prefs by design until tasked otherwise.
+- **Next:** T-182 partial split below; T-190 archaeology after that.
+
+## 2026-09-20 — T-182 SUPERSEDED by owner directive (split halted green)
+
+- **Status:** Partial split left in place and green: `src/state/toasts.ts`
+  (`useToasts`), `src/state/session.ts` (`useSession` + `DEMO_TRUST`),
+  `src/state/accounts.ts` (`useAccountModel`) extracted from App.tsx with
+  zero logic changes (3 green builds, one per step). `useMailbox`/
+  `useCompose`/`useSecurity` NOT extracted — App.tsx stands at ~1150
+  lines, fully functional. No commits made.
+- **Files changed:** `kiwi-app/src/state/{toasts,session,accounts}.ts`
+  (new), `kiwi-app/src/App.tsx` (composition + theme/route/query/palette).
+- **Note for T-191:** the rebuild will move views/components anyway — do
+  NOT resume the split; treat remaining App.tsx as legacy to dissolve
+  into the new shell.
+
+## 2026-09-20 — T-190 Thunderbird archaeology done
+
+- **Status:** Read-only survey of `source/comm/mail` (+ mailnews hooks)
+  via 3 parallel surveyors; no code touched. Delivered
+  `docs/ui-thunderbird-map.md` (16 sections): shell stack, full menu
+  tree, shortcut map, folder rows, all 22 thread columns, quick-filter
+  chips, header block + attachment bar, multimessage summary, status bar,
+  compose layout, Account Hub steps, address-book files, density tokens
+  (compact 18px / normal 26px / touch 32px rows), system-font rule, full
+  light/dark token tables, and a T-191 worklist with KIWI deltas.
+- **Key findings for T-191:** (1) bare `j` = Junk — no Gmail j/k nav
+  (nav is n/p/f/b + arrows); (2) **Ctrl+K conflict** — TB uses it for
+  quick-filter focus, ours opens the palette (recommendation in map §16);
+  (3) default sort Date-desc, Correspondents-not-From column;
+  (4) encryption pill lives in the message header, not the top bar;
+  (5) our deep-black flagship vs TB `#1a202c` dark needs an owner call
+  (recommend keep flagship dark + adopt TB light/structure).
+- **Commands run:** `npm run build` (green, confirms read-only phase
+  touched nothing). No commits made.
+- **Next:** T-191 rebuild per the map.
+

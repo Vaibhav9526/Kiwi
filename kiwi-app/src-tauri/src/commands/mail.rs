@@ -12,17 +12,21 @@ use tauri::State;
 
 use kiwi_core::session::{AuthMechanism, Protocol};
 use kiwi_mail::account::{AuthRef, IncomingProtocol, MailAccount};
+use kiwi_mail::authstamp::AuthSealer;
 use kiwi_mail::imap::{ImapAuth, ImapClient};
 use kiwi_mail::mime::parse_message;
 use kiwi_mail::pop3::Pop3Auth;
-use kiwi_mail::sync::{sync_folder, sync_pop3};
+use kiwi_mail::sync::{sync_folder, sync_pop3_with_auth};
 use kiwi_mail::transport::{TlsSettings, Transport};
+use kiwi_mailauth::dns::HickoryResolver;
 
 use super::{bounded, gate, resolve_secret, run_mail_io};
 use crate::error::{CmdResult, IpcError};
 use crate::observe::{self, ObservationContext};
 use crate::state::{AppState, now_unix};
-use crate::types::{AttachmentView, FolderView, MessageBodyView, MessageView, SyncReportView};
+use crate::types::{
+    AttachmentView, FolderView, MessageBodyView, MessageView, SearchHitView, SyncReportView,
+};
 
 /// `kiwi_list_folders { accountId }` → folders known for the account
 /// (sync populates them; `INBOX` is auto-registered on first sync).
@@ -35,7 +39,10 @@ pub async fn kiwi_list_folders(
     list_folders_impl(state.inner(), &account_id).await
 }
 
-async fn list_folders_impl(state: &AppState, account_id: &str) -> CmdResult<Vec<FolderView>> {
+pub(crate) async fn list_folders_impl(
+    state: &AppState,
+    account_id: &str,
+) -> CmdResult<Vec<FolderView>> {
     bounded("accountId", account_id, 128)?;
     let entries = state
         .index
@@ -49,7 +56,8 @@ async fn list_folders_impl(state: &AppState, account_id: &str) -> CmdResult<Vec<
     let mut out = Vec::new();
     for e in entries {
         if let Some(meta) = store.folder_meta(e.id)? {
-            out.push(FolderView::from(&meta));
+            let stats = store.folder_stats(e.id)?;
+            out.push(FolderView::from_meta(&meta, stats));
         }
     }
     Ok(out)
@@ -145,6 +153,68 @@ pub(crate) async fn list_messages_impl(
     Ok(msgs)
 }
 
+/// `kiwi_search_messages { query, folderId?, limit? }` → FTS hits,
+/// newest first. Grammar lives in `kiwi_mail::search` (terms, `subject:`/
+/// `from:`/`to:`/`body:` scopes, `"phrases"`, `-negation`). `folderId`
+/// scopes the search to one folder; absent → every folder. The owning
+/// `accountId` is resolved server-side per hit from the folder row —
+/// the caller never guesses it. `has:`/`folder:` tokens are UI-side
+/// post-filters and never reach this command.
+#[tauri::command]
+pub async fn kiwi_search_messages(
+    state: State<'_, Arc<AppState>>,
+    query: String,
+    folder_id: Option<i64>,
+    limit: Option<u32>,
+) -> CmdResult<Vec<SearchHitView>> {
+    gate(state.inner()).await?;
+    search_messages_impl(state.inner(), &query, folder_id, limit).await
+}
+
+pub(crate) async fn search_messages_impl(
+    state: &AppState,
+    query: &str,
+    folder_id: Option<i64>,
+    limit: Option<u32>,
+) -> CmdResult<Vec<SearchHitView>> {
+    bounded("query", query, 512)?;
+    if let Some(fid) = folder_id
+        && fid < 0
+    {
+        return Err(IpcError::invalid("folderId must be >= 0"));
+    }
+    let limit = super::clamp_u32(limit, 50, 500);
+    let store = state.store.lock().await;
+    let metas = store.search(query, folder_id, limit)?;
+    // folder → owning-account resolution, once per unique folder.
+    let mut owners: std::collections::BTreeMap<i64, String> = std::collections::BTreeMap::new();
+    let mut out = Vec::with_capacity(metas.len());
+    for m in metas {
+        let account_id = match owners.get(&m.folder_id) {
+            Some(a) => a.clone(),
+            None => {
+                let a = store
+                    .folder_meta(m.folder_id)?
+                    .map(|f| f.account_id)
+                    .unwrap_or_default();
+                owners.insert(m.folder_id, a.clone());
+                a
+            }
+        };
+        out.push(SearchHitView {
+            account_id,
+            folder_id: m.folder_id,
+            uid: m.uid,
+            subject: m.subject.unwrap_or_default(),
+            from_addr: m.from_addr.unwrap_or_default(),
+            snippet: m.snippet.unwrap_or_default(),
+            date_unix: m.date_unix,
+            has_attachments: m.has_attachments,
+        });
+    }
+    Ok(out)
+}
+
 /// `kiwi_get_message { accountId, folderId, uid }` → parsed body view.
 /// If the body isn't stored locally and the account is IMAP, fetches
 /// `BODY[]` on demand and stores it first.
@@ -188,6 +258,58 @@ pub(crate) async fn get_message_impl(
             in_reply_to: None,
             references: vec![],
         }),
+    }
+}
+
+/// `kiwi_message_source { accountId, folderId, uid }` → verbatim RFC822
+/// source (T-295 — the T-292 "view source" wire). Same fetch semantics as
+/// `kiwi_get_message` (stored body, IMAP on-demand fetch recorded). A body
+/// that is absent locally AND unfetchable is `not-found` — never an empty
+/// string. Source is lossy-decoded and capped at 8 MiB (char-boundary
+/// walk-back, same rule as `kiwi_render_body`).
+#[tauri::command]
+pub async fn kiwi_message_source(
+    state: State<'_, Arc<AppState>>,
+    account_id: String,
+    folder_id: i64,
+    uid: i64,
+) -> CmdResult<crate::types::MessageSourceView> {
+    gate(state.inner()).await?;
+    let st = state.inner().clone();
+    run_mail_io(st, move |s| {
+        message_source_impl(s, account_id, folder_id, uid)
+    })
+    .await
+}
+
+/// 8 MiB wire cap — same bound `kiwi_render_body` documents (ipc.md §6b).
+const MAX_SOURCE_BYTES: usize = 8 * 1024 * 1024;
+
+pub(crate) async fn message_source_impl(
+    state: Arc<AppState>,
+    account_id: String,
+    folder_id: i64,
+    uid: i64,
+) -> CmdResult<crate::types::MessageSourceView> {
+    bounded("accountId", &account_id, 128)?;
+    if uid < 0 {
+        return Err(IpcError::invalid("uid must be >= 0"));
+    }
+    match load_body_raw(&state, &account_id, folder_id, uid as u64).await? {
+        Some(raw) => {
+            let bytes = raw.len() as u64;
+            let text = String::from_utf8_lossy(&raw).into_owned();
+            let capped =
+                crate::commands::message::render::truncate_to_byte_cap(text, MAX_SOURCE_BYTES);
+            Ok(crate::types::MessageSourceView {
+                folder_id,
+                uid: uid as u64,
+                source: capped,
+                bytes,
+                truncated: bytes > MAX_SOURCE_BYTES as u64,
+            })
+        }
+        None => Err(IpcError::not_found("message source not available")),
     }
 }
 
@@ -267,8 +389,27 @@ pub(crate) async fn load_body_raw(
         return Ok(None);
     };
     state.store.lock().await.store_body(folder_id, uid, &raw)?;
+    // T-279: Authentication-Results on lazy body ingest — the same
+    // evidence path `fetch_missing_bodies_with_auth` uses. IMAP carries
+    // no SMTP receipt, so `receipt` is `None` and SPF records `none`
+    // rather than a fabricated verdict. Stamp failures degrade to "not
+    // evaluated" — they must not fail the read.
+    if let Ok(parsed) = parse_message(&raw) {
+        let stamp = auth_sealer().evaluate_and_stamp(&parsed, &raw, now_unix(), None);
+        let _ = state.store.lock().await.set_auth(folder_id, uid, &stamp);
+    }
     remember_threading(state, folder_id, uid, &raw).await;
     Ok(Some(raw))
+}
+
+/// The production DNS resolver for Authentication-Results stamping
+/// (T-279, `mailauth.md` §6). Built lazily on first lookup so startup
+/// never blocks on DNS, and shared so hickory's answer cache stays warm
+/// across syncs. A host with no working DNS memoizes the failed build —
+/// lookups then return `Temp` instead of panicking or retrying forever.
+fn auth_sealer() -> &'static HickoryResolver {
+    static SEALER: std::sync::OnceLock<HickoryResolver> = std::sync::OnceLock::new();
+    SEALER.get_or_init(HickoryResolver::system)
 }
 
 /// Cache a body-bearing message's threading headers into the sidecar
@@ -608,6 +749,7 @@ async fn imap_sync(
             expunged: report.expunged,
             remote_exists: report.remote_exists,
             uid_validity_reset: report.uid_validity_reset,
+            rule_failures: report.rule_failures,
             ..Default::default()
         });
     }
@@ -651,14 +793,14 @@ pub(crate) async fn pop3_sync(
     state: &AppState,
     acct: &MailAccount,
 ) -> CmdResult<Vec<SyncReportView>> {
-    let accept_invalid = state
+    let (accept_invalid, delete_after_download) = state
         .index
         .lock()
         .await
         .account_meta
         .get(&acct.account_id)
-        .map(|m| m.accept_invalid_certs)
-        .unwrap_or(false);
+        .map(|m| (m.accept_invalid_certs, m.pop3_delete_after_download))
+        .unwrap_or((false, false));
     let t = Transport::connect(
         &acct.incoming.server.host,
         acct.incoming.server.port,
@@ -693,13 +835,20 @@ pub(crate) async fn pop3_sync(
         let folder_id = store.ensure_folder(&acct.account_id, "INBOX")?;
         let before: std::collections::BTreeSet<u64> =
             store.folder_uids(folder_id)?.into_iter().collect();
-        let r = sync_pop3(
+        // T-279: stamp Authentication-Results at ingest. POP3 carries no
+        // SMTP receipt context, so `receipt` stays `None` (SPF records
+        // `none` with an explicit comment — never a guessed verdict).
+        // T-295: `delete_after_download` is the per-account opt-in flag
+        // (AccountMeta, default keep-on-server).
+        let r = sync_pop3_with_auth(
             &mut client,
             &store,
             &acct.account_id,
             "INBOX",
-            false,
+            delete_after_download,
             now_unix(),
+            auth_sealer(),
+            None,
         )
         .await
         .map_err(IpcError::from)?;
@@ -753,8 +902,67 @@ pub(crate) async fn pop3_sync(
         downloaded: report.downloaded,
         deleted_remote: report.deleted_remote,
         remote_exists: report.remote_drops,
+        rule_failures: report.rule_failures,
         ..Default::default()
     }])
+}
+
+/// `kiwi_set_pop3_policy { accountId, deleteAfterDownload }` — per-account
+/// POP3 server-side deletion (T-295). Default off (keep-on-server); setting
+/// `true` makes every later sync issue DELE per ingested drop — the email
+/// then exists only locally. POP3-only, recorded + audited; never implied.
+#[tauri::command]
+pub async fn kiwi_set_pop3_policy(
+    state: State<'_, Arc<AppState>>,
+    account_id: String,
+    delete_after_download: bool,
+) -> CmdResult<crate::types::Pop3PolicyView> {
+    gate(state.inner()).await?;
+    set_pop3_policy_impl(state.inner(), account_id, delete_after_download).await
+}
+
+pub(crate) async fn set_pop3_policy_impl(
+    state: &AppState,
+    account_id: String,
+    delete_after_download: bool,
+) -> CmdResult<crate::types::Pop3PolicyView> {
+    bounded("accountId", &account_id, 128)?;
+    let acct = state
+        .store
+        .lock()
+        .await
+        .get_account(&account_id)?
+        .ok_or_else(|| IpcError::not_found("unknown account"))?;
+    if acct.incoming.protocol != IncomingProtocol::Pop3 {
+        return Err(IpcError::invalid(
+            "pop3 policy applies to POP3 accounts only",
+        ));
+    }
+    {
+        let mut index = state.index.lock().await;
+        index
+            .account_meta
+            .entry(account_id.clone())
+            .or_default()
+            .pop3_delete_after_download = delete_after_download;
+        index.save(&state.data_dir)?;
+    }
+    state.audit.lock().await.record(
+        "pop3-delete-policy",
+        &format!(
+            "{account_id}: {}",
+            if delete_after_download {
+                "delete after download"
+            } else {
+                "keep on server"
+            }
+        ),
+        now_unix(),
+    )?;
+    Ok(crate::types::Pop3PolicyView {
+        account_id,
+        delete_after_download,
+    })
 }
 
 /// `kiwi_sync_status { accountId? }` → per-account live-sync worker status
@@ -862,6 +1070,10 @@ mod tests {
                         flags: vec![],
                         has_attachments: false,
                         snippet: None,
+                        category: Default::default(),
+                        unsub_http: None,
+                        unsub_mailto: None,
+                        unsub_oneclick: false,
                     },
                     now_unix(),
                 )
@@ -923,6 +1135,480 @@ mod tests {
                 .await
                 .thread_headers
                 .contains_key(&crate::state::thread_key(1, 10))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-231: `kiwi_search_messages` — FTS hits carry the owning
+    /// `accountId` resolved server-side; folderId scopes the search;
+    /// bounds are enforced.
+    async fn seed_searchable(state: &AppState) -> (i64, i64) {
+        let acct = |id: &str| MailAccount {
+            account_id: id.into(),
+            display_name: "A".into(),
+            email: format!("{id}@x.test"),
+            incoming: kiwi_mail::account::IncomingAccount {
+                protocol: IncomingProtocol::Pop3,
+                server: kiwi_mail::account::ServerConfig {
+                    host: "pop.x.test".into(),
+                    port: 995,
+                    security: kiwi_mail::transport::SocketSecurity::ImplicitTls,
+                },
+                username: "a".into(),
+                auth: kiwi_mail::account::AuthRef::None,
+            },
+            outgoing: kiwi_mail::account::OutgoingAccount {
+                server: kiwi_mail::account::ServerConfig {
+                    host: "smtp.x.test".into(),
+                    port: 465,
+                    security: kiwi_mail::transport::SocketSecurity::ImplicitTls,
+                },
+                username: "a".into(),
+                auth: kiwi_mail::account::AuthRef::None,
+            },
+        };
+        let store = state.store.lock().await;
+        store.upsert_account(&acct("a1")).unwrap();
+        store.upsert_account(&acct("a2")).unwrap();
+        let f1 = store.ensure_folder("a1", "INBOX").unwrap();
+        let f2 = store.ensure_folder("a2", "INBOX").unwrap();
+        for (fid, uid, subject) in [
+            (f1, 1, "Quarterly invoice draft"),
+            (f1, 2, "Lunch plans"),
+            (f2, 1, "Invoice for a2"),
+        ] {
+            store
+                .upsert_message(
+                    fid,
+                    &NewMessageMeta {
+                        uid,
+                        message_id: Some(format!("<s{uid}-{fid}@x>")),
+                        subject: Some(subject.into()),
+                        from_addr: Some("b@y.test".into()),
+                        to_addrs: None,
+                        date_unix: Some(1_700_000_000 + uid as i64),
+                        size: None,
+                        flags: vec![],
+                        has_attachments: uid == 1,
+                        snippet: Some(format!("snippet about {subject}")),
+                        category: Default::default(),
+                        unsub_http: None,
+                        unsub_mailto: None,
+                        unsub_oneclick: false,
+                    },
+                    now_unix(),
+                )
+                .unwrap();
+        }
+        (f1, f2)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn search_messages_returns_account_and_scopes() {
+        let dir = std::env::temp_dir().join(format!(
+            "kiwi-search-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let state = AppState::open_test(dir.clone()).unwrap();
+        let (f1, _f2) = seed_searchable(&state).await;
+
+        // Cross-account search: hits carry the resolved owner.
+        let hits = search_messages_impl(&state, "invoice", None, None)
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 2);
+        let mut owners: Vec<&str> = hits.iter().map(|h| h.account_id.as_str()).collect();
+        owners.sort_unstable();
+        assert_eq!(owners, ["a1", "a2"]);
+        assert!(hits.iter().all(|h| !h.subject.is_empty()));
+
+        // Folder scope narrows to one account's folder.
+        let scoped = search_messages_impl(&state, "invoice", Some(f1), None)
+            .await
+            .unwrap();
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].account_id, "a1");
+        assert_eq!(scoped[0].folder_id, f1);
+        assert!(scoped[0].has_attachments);
+
+        // Scoped grammar + negation pass through to the FTS layer.
+        let from = search_messages_impl(&state, "subject:invoice", Some(f1), None)
+            .await
+            .unwrap();
+        assert_eq!(from.len(), 1);
+        let neg = search_messages_impl(&state, "invoice -draft", None, None)
+            .await
+            .unwrap();
+        assert_eq!(neg.len(), 1);
+        assert_eq!(neg[0].account_id, "a2");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn search_messages_enforces_bounds() {
+        let dir = std::env::temp_dir().join(format!(
+            "kiwi-search2-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let state = AppState::open_test(dir.clone()).unwrap();
+
+        // Over-long query → invalid-input.
+        let long = "x".repeat(600);
+        let err = search_messages_impl(&state, &long, None, None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "invalid-input");
+        // Negative folder id → invalid-input.
+        let err = search_messages_impl(&state, "a", Some(-3), None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "invalid-input");
+        // Empty store → empty hits, no error.
+        assert!(
+            search_messages_impl(&state, "anything", None, None)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-264: `kiwi_list_folders` emits real store counts — `exists` is the
+    /// row total and `unseen` counts rows without `\Seen`; both travel with
+    /// moves and survive flag ops (never fabricated zeros).
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_folders_reports_exists_and_unseen() {
+        let dir = std::env::temp_dir().join(format!(
+            "kiwi-foldstats-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let state = AppState::open_test(dir.clone()).unwrap();
+        let acct = MailAccount {
+            account_id: "a1".into(),
+            display_name: "A".into(),
+            email: "a@x.test".into(),
+            incoming: kiwi_mail::account::IncomingAccount {
+                protocol: IncomingProtocol::Pop3,
+                server: kiwi_mail::account::ServerConfig {
+                    host: "pop.x.test".into(),
+                    port: 995,
+                    security: kiwi_mail::transport::SocketSecurity::ImplicitTls,
+                },
+                username: "a".into(),
+                auth: kiwi_mail::account::AuthRef::None,
+            },
+            outgoing: kiwi_mail::account::OutgoingAccount {
+                server: kiwi_mail::account::ServerConfig {
+                    host: "smtp.x.test".into(),
+                    port: 465,
+                    security: kiwi_mail::transport::SocketSecurity::ImplicitTls,
+                },
+                username: "a".into(),
+                auth: kiwi_mail::account::AuthRef::None,
+            },
+        };
+        let meta = |uid: u64, seen: bool| NewMessageMeta {
+            uid,
+            message_id: Some(format!("<f{uid}@x>")),
+            subject: Some("s".into()),
+            from_addr: Some("b@y.test".into()),
+            to_addrs: None,
+            date_unix: Some(1_700_000_000),
+            size: None,
+            flags: if seen { vec!["\\Seen".into()] } else { vec![] },
+            has_attachments: false,
+            snippet: None,
+            category: Default::default(),
+            unsub_http: None,
+            unsub_mailto: None,
+            unsub_oneclick: false,
+        };
+        let fid = {
+            let store = state.store.lock().await;
+            store.upsert_account(&acct).unwrap();
+            let fid = store.ensure_folder("a1", "INBOX").unwrap();
+            let junk = store.ensure_folder("a1", "Junk").unwrap();
+            store
+                .upsert_message(fid, &meta(1, true), now_unix())
+                .unwrap();
+            store
+                .upsert_message(fid, &meta(2, false), now_unix())
+                .unwrap();
+            store
+                .upsert_message(fid, &meta(3, false), now_unix())
+                .unwrap();
+            store.mark_junk(fid, &[3]).unwrap(); // junk ≠ unseen change
+            drop(store);
+            let mut index = state.index.lock().await;
+            index.remember_folder("a1", fid, "INBOX");
+            index.remember_folder("a1", junk, "Junk");
+            index.save(&state.data_dir).unwrap();
+            fid
+        };
+        let folders = list_folders_impl(&state, "a1").await.unwrap();
+        let inbox = folders.iter().find(|f| f.name == "INBOX").unwrap();
+        assert_eq!((inbox.exists, inbox.unseen), (3, 2));
+        let junk = folders.iter().find(|f| f.name == "Junk").unwrap();
+        assert_eq!((junk.exists, junk.unseen), (0, 0), "no rows yet");
+
+        // Read one → unseen drops; exists unchanged.
+        {
+            let store = state.store.lock().await;
+            store.set_flag(fid, &[2], "\\Seen", true).unwrap();
+        }
+        let folders = list_folders_impl(&state, "a1").await.unwrap();
+        let inbox = folders.iter().find(|f| f.name == "INBOX").unwrap();
+        assert_eq!((inbox.exists, inbox.unseen), (3, 1));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -------------------------------------------------------------------
+    // T-295 — kiwi_message_source + POP3 delete-after-download policy
+    // -------------------------------------------------------------------
+
+    fn test_acct(id: &str, pop3: bool) -> MailAccount {
+        MailAccount {
+            account_id: id.into(),
+            display_name: "A".into(),
+            email: format!("{id}@x.test"),
+            incoming: kiwi_mail::account::IncomingAccount {
+                protocol: if pop3 {
+                    IncomingProtocol::Pop3
+                } else {
+                    IncomingProtocol::Imap
+                },
+                server: kiwi_mail::account::ServerConfig {
+                    host: "in.x.test".into(),
+                    port: 995,
+                    security: kiwi_mail::transport::SocketSecurity::ImplicitTls,
+                },
+                username: "a".into(),
+                auth: kiwi_mail::account::AuthRef::None,
+            },
+            outgoing: kiwi_mail::account::OutgoingAccount {
+                server: kiwi_mail::account::ServerConfig {
+                    host: "smtp.x.test".into(),
+                    port: 465,
+                    security: kiwi_mail::transport::SocketSecurity::ImplicitTls,
+                },
+                username: "a".into(),
+                auth: kiwi_mail::account::AuthRef::None,
+            },
+        }
+    }
+
+    fn test_dir(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "kiwi-t295-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ))
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn message_source_roundtrips_stored_rfc822() {
+        let dir = test_dir("src");
+        let state = Arc::new(AppState::open_test(dir.clone()).unwrap());
+        let fid = {
+            let store = state.store.lock().await;
+            store.upsert_account(&test_acct("a1", true)).unwrap();
+            let fid = store.ensure_folder("a1", "INBOX").unwrap();
+            // store_body sets body_path on the message row — it must exist.
+            store
+                .upsert_message(
+                    fid,
+                    &NewMessageMeta {
+                        uid: 7,
+                        message_id: Some("<src1@x>".into()),
+                        subject: Some("raw hello".into()),
+                        from_addr: Some("a@x.test".into()),
+                        to_addrs: None,
+                        date_unix: Some(100),
+                        size: None,
+                        flags: vec![],
+                        has_attachments: false,
+                        snippet: None,
+                        category: Default::default(),
+                        unsub_http: None,
+                        unsub_mailto: None,
+                        unsub_oneclick: false,
+                    },
+                    now_unix(),
+                )
+                .unwrap();
+            store
+                .store_body(
+                    fid,
+                    7,
+                    b"Subject: raw hello\r\nX-Custom: kept\r\n\r\nbody bytes\r\n",
+                )
+                .unwrap();
+            fid
+        };
+        let v = message_source_impl(state.clone(), "a1".into(), fid, 7)
+            .await
+            .expect("source");
+        assert_eq!(v.folder_id, fid);
+        assert_eq!(v.uid, 7);
+        assert_eq!(
+            v.source, "Subject: raw hello\r\nX-Custom: kept\r\n\r\nbody bytes\r\n",
+            "verbatim RFC822 — no parse/normalization"
+        );
+        assert_eq!(v.bytes, 50);
+        assert!(!v.truncated);
+
+        // Absent body (POP3 — nothing fetchable) → honest not-found.
+        let err = message_source_impl(state.clone(), "a1".into(), fid, 99)
+            .await
+            .expect_err("absent body must error");
+        assert_eq!(err.code, "not-found");
+        // uid bounds + unknown folder/account stay honest too.
+        assert_eq!(
+            message_source_impl(state.clone(), "a1".into(), fid, -1)
+                .await
+                .unwrap_err()
+                .code,
+            "invalid-input"
+        );
+        assert_eq!(
+            message_source_impl(state.clone(), "ghost".into(), fid, 1)
+                .await
+                .unwrap_err()
+                .code,
+            "not-found"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn message_source_byte_cap_is_honest() {
+        let dir = test_dir("cap");
+        let state = Arc::new(AppState::open_test(dir.clone()).unwrap());
+        let fid = {
+            let store = state.store.lock().await;
+            store.upsert_account(&test_acct("a1", true)).unwrap();
+            let fid = store.ensure_folder("a1", "INBOX").unwrap();
+            // Just over the 8 MiB wire cap, multi-byte char at the
+            // boundary proves the walk-back never splits a code point.
+            let mut raw = vec![b'x'; MAX_SOURCE_BYTES - 1];
+            raw.extend_from_slice("€".as_bytes()); // 3 bytes, straddles cap
+            raw.extend_from_slice(b"tail");
+            store
+                .upsert_message(
+                    fid,
+                    &NewMessageMeta {
+                        uid: 1,
+                        message_id: Some("<big@x>".into()),
+                        subject: None,
+                        from_addr: None,
+                        to_addrs: None,
+                        date_unix: None,
+                        size: Some(raw.len() as u64),
+                        flags: vec![],
+                        has_attachments: false,
+                        snippet: None,
+                        category: Default::default(),
+                        unsub_http: None,
+                        unsub_mailto: None,
+                        unsub_oneclick: false,
+                    },
+                    now_unix(),
+                )
+                .unwrap();
+            store.store_body(fid, 1, &raw).unwrap();
+            fid
+        };
+        let v = message_source_impl(state.clone(), "a1".into(), fid, 1)
+            .await
+            .expect("capped source");
+        assert!(v.truncated);
+        assert_eq!(v.bytes, (MAX_SOURCE_BYTES + 3 + 4 - 1) as u64);
+        assert_eq!(v.source.len(), MAX_SOURCE_BYTES - 1);
+        assert!(
+            !v.source.ends_with('\u{fffd}'),
+            "boundary walk-back must not fabricate a replacement char"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pop3_policy_toggle_persists_and_is_pop3_only() {
+        let dir = test_dir("pol");
+        let state = AppState::open_test(dir.clone()).unwrap();
+        {
+            let store = state.store.lock().await;
+            store.upsert_account(&test_acct("p1", true)).unwrap();
+            store.upsert_account(&test_acct("i1", false)).unwrap();
+        }
+        // Default: keep-on-server.
+        assert!(
+            !state
+                .index
+                .lock()
+                .await
+                .account_meta
+                .get("p1")
+                .map(|m| m.pop3_delete_after_download)
+                .unwrap_or(false)
+        );
+        let v = set_pop3_policy_impl(&state, "p1".into(), true)
+            .await
+            .expect("toggle on");
+        assert_eq!(v.account_id, "p1");
+        assert!(v.delete_after_download);
+        assert!(
+            state
+                .index
+                .lock()
+                .await
+                .account_meta
+                .get("p1")
+                .unwrap()
+                .pop3_delete_after_download
+        );
+        // Toggle back off persists (resume safety = keep).
+        set_pop3_policy_impl(&state, "p1".into(), false)
+            .await
+            .expect("toggle off");
+        assert!(
+            !state
+                .index
+                .lock()
+                .await
+                .account_meta
+                .get("p1")
+                .unwrap()
+                .pop3_delete_after_download
+        );
+        // IMAP account → invalid-input; unknown → not-found.
+        assert_eq!(
+            set_pop3_policy_impl(&state, "i1".into(), true)
+                .await
+                .unwrap_err()
+                .code,
+            "invalid-input"
+        );
+        assert_eq!(
+            set_pop3_policy_impl(&state, "ghost".into(), true)
+                .await
+                .unwrap_err()
+                .code,
+            "not-found"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

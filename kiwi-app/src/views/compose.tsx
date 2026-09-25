@@ -7,18 +7,24 @@
  * markers (the send path is text-only; no HTML is generated). Drafts
  * autosave to this device's localStorage (no draft command in kiwi.ipc/1 —
  * attachments are never part of the autosave). Demo mode keeps the labeled
- * local simulation from T-112.
+ * local simulation from T-112. T-294: files attach via picker, drag-drop
+ * (DOM drop — the Tauri window sets dragDropEnabled:false so OS drops reach
+ * the DOM as File objects), or clipboard paste; chips show per-file read
+ * progress and the 25 MiB cap is enforced before the send IPC runs.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { PolicyBannerVerdict } from "../kiwi";
+import type { ClipboardEvent, DragEvent } from "react";
+import type { PolicyBannerVerdict, TemplateView } from "../kiwi";
 import type { ContactView } from "../kiwi";
 import { contactLabel, contactPrimaryEmail } from "../kiwi";
 import { accountPref, loadPref } from "../prefs";
 import { api, IpcError } from "../ipc";
 import { filterContacts, loadLocalBook } from "../contacts";
 import { PolicyBanner } from "../components/security";
+import { Icon, isIconName } from "../components/icons/index";
+import { navigate } from "../router";
+import { fireComposerAction, useComposerActions } from "../plugins";
 
-const TEMPLATES = ["Status update", "Meeting request", "Out of office"];
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
 interface Attachment {
@@ -26,6 +32,10 @@ interface Attachment {
   size: number;
   contentType: string;
   dataB64: string;
+  /** true while FileReader is streaming the dropped/pasted file into b64. */
+  pending?: boolean;
+  /** 0..1 read progress — only meaningful while pending. */
+  progress?: number;
 }
 
 function demoEvaluate(recipients: string[]): { verdict: PolicyBannerVerdict; offenders: string[] } {
@@ -39,13 +49,16 @@ function demoEvaluate(recipients: string[]): { verdict: PolicyBannerVerdict; off
   return { verdict: "none", offenders: [] };
 }
 
-function fileToB64(file: File): Promise<string> {
+function fileToB64(file: File, onProgress?: (fraction: number) => void): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
       const url = typeof reader.result === "string" ? reader.result : "";
       const comma = url.indexOf(",");
       resolve(comma >= 0 ? url.slice(comma + 1) : url);
+    };
+    reader.onprogress = (e) => {
+      if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total);
     };
     reader.onerror = () => reject(new Error(`could not read ${file.name}`));
     reader.readAsDataURL(file);
@@ -194,6 +207,8 @@ export function ComposeView({
   const [body, setBody] = useState("");
   const [recipients, setRecipients] = useState<string[]>([]);
   const [ccRecipients, setCcRecipients] = useState<string[]>([]);
+  // T-302: plugin-registered composer actions (composer-action capability).
+  const pluginActions = useComposerActions();
   const [book, setBook] = useState<ContactView[]>([]);
   const [bookSource, setBookSource] = useState<"server" | "local">("local");
   const [scheduled, setScheduled] = useState<string | null>(null);
@@ -206,7 +221,16 @@ export function ComposeView({
   const [showSchedule, setShowSchedule] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [attachError, setAttachError] = useState<string | null>(null);
-  const [readingFiles, setReadingFiles] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const dragDepth = useRef(0);
+  // T-301: real template store (kiwi_templates_*). Rows load lazily on first
+  // picker open; render is server-side so {{var}} semantics stay tested once.
+  const [tplRows, setTplRows] = useState<TemplateView[] | null>(null);
+  const [tplBusy, setTplBusy] = useState(false);
+  const [tplError, setTplError] = useState<string | null>(null);
+  const [tplNote, setTplNote] = useState<string | null>(null);
+  const [saveTplOpen, setSaveTplOpen] = useState(false);
+  const [saveTplName, setSaveTplName] = useState("");
   const [draftNote, setDraftNote] = useState<string | null>(null);
   const [includeSig, setIncludeSig] = useState(true);
   const bodyRef = useRef<HTMLTextAreaElement | null>(null);
@@ -216,11 +240,19 @@ export function ComposeView({
   });
   const timer = useRef<number | null>(null);
 
-  // Address book for autocomplete (T-173): server list once, else the
-  // local book. Filtered client-side per keystroke either way.
+  // Address book for autocomplete (T-173, live-wired T-231): live mode is
+  // IPC-only — a backend failure leaves autocomplete empty rather than
+  // surfacing demo fixtures. Demo mode owns the seeded local book.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
+      if (mode === "demo") {
+        if (!cancelled) {
+          setBook(loadLocalBook());
+          setBookSource("local");
+        }
+        return;
+      }
       try {
         const list = await api.searchContacts("", 500);
         if (!cancelled) {
@@ -229,15 +261,15 @@ export function ComposeView({
         }
       } catch {
         if (!cancelled) {
-          setBook(loadLocalBook());
-          setBookSource("local");
+          setBook([]);
+          setBookSource("server");
         }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [mode]);
 
   // Per-account signature (T-167): stored in prefs (Settings → Accounts),
   // appended at send time only — drafts and the outbox never gain it silently.
@@ -412,6 +444,10 @@ export function ComposeView({
       setSendError("Add at least one recipient (To or Cc).");
       return;
     }
+    if (attachments.some((a) => a.pending)) {
+      setSendError("Attachments are still being read — wait a moment and retry.");
+      return;
+    }
     // Send-later validation: the backend treats sendAtUnix as not-before.
     let sendAtUnix: number | null = null;
     if (scheduled) {
@@ -504,31 +540,152 @@ export function ComposeView({
     }
   };
 
-  const addFiles = async (files: FileList | null) => {
-    if (!files) return;
+  // Attach via File objects (input picker, DOM drop, clipboard paste — Tauri
+  // window has dragDropEnabled:false so OS drops reach the DOM). The send IPC
+  // contract takes dataB64 payloads, so each file streams through FileReader;
+  // chips render immediately as pending and flip when the read completes.
+  const addFiles = (files: Iterable<File> | FileList | null) => {
+    const list = files ? [...files] : [];
+    if (list.length === 0) return;
     setAttachError(null);
-    setReadingFiles(true);
-    try {
-      const current = attachments.reduce((n, a) => n + a.size, 0);
-      const list = [...files];
-      const total = current + list.reduce((n, f) => n + f.size, 0);
-      if (total > MAX_ATTACHMENT_BYTES) {
-        setAttachError(`Attachments exceed the 25 MB total cap (${(total / 1048576).toFixed(1)} MB).`);
-        return;
-      }
-      const read = await Promise.all(
-        list.map(async (f) => ({ name: f.name, size: f.size, contentType: f.type || "application/octet-stream", dataB64: await fileToB64(f) })),
+    const current = attachments.reduce((n, a) => n + a.size, 0);
+    const total = current + list.reduce((n, f) => n + f.size, 0);
+    if (total > MAX_ATTACHMENT_BYTES) {
+      const over = list.filter((f) => f.size > MAX_ATTACHMENT_BYTES);
+      setAttachError(
+        over.length > 0
+          ? `${over.map((f) => f.name).join(", ")} exceed${over.length > 1 ? "" : "s"} the 25 MiB per-message attachment cap — not attached.`
+          : `Attachments exceed the 25 MiB total cap (${(total / 1048576).toFixed(1)} MiB) — not attached.`,
       );
-      setAttachments((a) => [...a, ...read]);
+      return;
+    }
+    const entries: Attachment[] = list.map((f) => ({
+      name: f.name,
+      size: f.size,
+      contentType: f.type || "application/octet-stream",
+      dataB64: "",
+      pending: true,
+      progress: 0,
+    }));
+    setAttachments((a) => [...a, ...entries]);
+    entries.forEach((entry, i) => {
+      void fileToB64(list[i], (p) =>
+        setAttachments((xs) => xs.map((x) => (x === entry ? { ...x, progress: p } : x))),
+      )
+        .then((dataB64) =>
+          setAttachments((xs) => xs.map((x) => (x === entry ? { ...x, dataB64, pending: false, progress: 1 } : x))),
+        )
+        .catch(() => {
+          setAttachments((xs) => xs.filter((x) => x !== entry));
+          setAttachError(`Could not read ${entry.name} — attachment removed.`);
+        });
+    });
+  };
+
+  /* ---- T-301 templates (kiwi_templates_*). The picker loads lazily; render
+   * is server-side — the composer supplies honest context vars (from_*,
+   * to, date) and surfaces `missingVars` verbatim rather than guessing. ---- */
+  const templateVars = (): Record<string, string> => {
+    const acc = accounts.find((a) => a.id === accountId);
+    const vars: Record<string, string> = { date: new Date().toISOString().slice(0, 10) };
+    if (acc) {
+      vars.from_name = acc.displayName;
+      vars.from_email = acc.email;
+    }
+    if (recipients[0]) vars.to = recipients[0];
+    return vars;
+  };
+
+  const loadTemplates = async () => {
+    setTplBusy(true);
+    setTplError(null);
+    try {
+      setTplRows(await api.templatesList());
     } catch (e) {
-      setAttachError(e instanceof Error ? e.message : String(e));
+      setTplError(e instanceof Error ? e.message : String(e));
     } finally {
-      setReadingFiles(false);
+      setTplBusy(false);
     }
   };
 
+  const applyTemplate = async (id: string) => {
+    setTplBusy(true);
+    setTplError(null);
+    setTplNote(null);
+    try {
+      const r = await api.templatesRender(id, templateVars());
+      if (r.subject) setSubject(r.subject);
+      setBody((b) => (b ? `${b.replace(/\s+$/, "")}\n\n${r.bodyText}` : r.bodyText));
+      setTplNote(
+        r.missingVars.length > 0
+          ? `Template inserted — fill these placeholders before sending: ${r.missingVars.map((v) => `{{${v}}}`).join(", ")}.`
+          : "Template inserted.",
+      );
+    } catch (e) {
+      setTplError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTplBusy(false);
+    }
+  };
+
+  const saveAsTemplate = async () => {
+    const name = saveTplName.trim();
+    if (!name) return;
+    setTplBusy(true);
+    setTplError(null);
+    try {
+      const created = await api.templatesCreate({ name, subject: subject || undefined, bodyText: body || undefined });
+      setTplNote(`Saved template “${created.name}”.`);
+      setSaveTplOpen(false);
+      setSaveTplName("");
+      setTplRows(null); // lazily reload on next picker open
+    } catch (e) {
+      setTplError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTplBusy(false);
+    }
+  };
+
+  // DOM drop target (T-294): dragDepth tracks nested enter/leave so the veil
+  // doesn't flicker over children. Paste attaches clipboard files too.
+  const dragHandlers = {
+    onDragEnter: (e: DragEvent) => {
+      if (!e.dataTransfer.types.includes("Files")) return;
+      e.preventDefault();
+      dragDepth.current += 1;
+      setDragOver(true);
+    },
+    onDragOver: (e: DragEvent) => {
+      if (e.dataTransfer.types.includes("Files")) e.preventDefault();
+    },
+    onDragLeave: (e: DragEvent) => {
+      if (!e.dataTransfer.types.includes("Files")) return;
+      dragDepth.current = Math.max(0, dragDepth.current - 1);
+      if (dragDepth.current === 0) setDragOver(false);
+    },
+    onDrop: (e: DragEvent) => {
+      dragDepth.current = 0;
+      setDragOver(false);
+      if (e.dataTransfer.files.length === 0) return;
+      e.preventDefault();
+      addFiles(e.dataTransfer.files);
+    },
+    onPaste: (e: ClipboardEvent) => {
+      if (e.clipboardData.files.length > 0) {
+        e.preventDefault();
+        addFiles(e.clipboardData.files);
+      }
+    },
+  };
+
   return (
-    <section aria-label="Compose message" style={{ maxWidth: "46rem" }}>
+    <section aria-label="Compose message" style={{ maxWidth: "46rem", position: "relative" }} {...dragHandlers}>
+      {dragOver && (
+        <div className="em-drop-veil" role="status">
+          <Icon name="file" size={28} />
+          <p>Drop files to attach</p>
+        </div>
+      )}
       <h1>Compose {mode === "demo" && <small style={{ color: "var(--kiwi-text-secondary)" }}>(demo)</small>}</h1>
       {mode === "demo" && demoResult && demoResult.verdict !== "none" && (
         <PolicyBanner verdict={demoResult.verdict} offenders={demoResult.offenders} onRemove={removeAddress} />
@@ -576,7 +733,7 @@ export function ComposeView({
           Add
         </button>{" "}
         <small style={{ color: "var(--kiwi-text-secondary)" }}>
-          Contacts: {bookSource === "server" ? "address book" : "local book (contacts IPC pending)"}.
+          Contacts: {bookSource === "server" ? "address book" : "demo book (localStorage fixture)"}.
         </small>
       </p>
       <p aria-label="Recipients">
@@ -584,7 +741,7 @@ export function ComposeView({
           <span key={`to-${r}`} className="kiwi-pill unknown" style={{ marginRight: "0.3rem" }}>
             To: {r}{" "}
             <button type="button" onClick={() => removeAddress(r)} aria-label={`Remove ${r}`}>
-              ✕
+              <Icon name="close" size={10} />
             </button>
           </span>
         ))}
@@ -592,7 +749,7 @@ export function ComposeView({
           <span key={`cc-${r}`} className="kiwi-pill unknown" style={{ marginRight: "0.3rem" }}>
             Cc: {r}{" "}
             <button type="button" onClick={() => removeAddress(r)} aria-label={`Remove ${r}`}>
-              ✕
+              <Icon name="close" size={10} />
             </button>
           </span>
         ))}
@@ -610,21 +767,98 @@ export function ComposeView({
           Template:{" "}
           <select
             aria-label="Insert template"
+            disabled={mode !== "live" || tplBusy}
+            title={mode !== "live" ? "Templates need the Tauri backend" : undefined}
             defaultValue=""
+            onFocus={() => {
+              if (tplRows === null && !tplBusy) void loadTemplates();
+            }}
             onChange={(e) => {
-              if (e.target.value) setBody((b) => `${b}\n[${e.target.value} template inserted]`);
+              if (e.target.value) void applyTemplate(e.target.value);
               e.target.value = "";
             }}
           >
-            <option value="">Insert template…</option>
-            {TEMPLATES.map((t) => (
-              <option key={t} value={t}>
-                {t}
+            <option value="">
+              {tplBusy ? "Loading…" : tplRows === null ? "Insert template…" : tplRows.length === 0 ? "No saved templates" : "Insert template…"}
+            </option>
+            {(tplRows ?? []).map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
               </option>
             ))}
           </select>
-        </label>
+        </label>{" "}
+        <button
+          type="button"
+          disabled={mode !== "live"}
+          title={mode !== "live" ? "Templates need the Tauri backend" : "Save the current subject + body as a template"}
+          onClick={() => {
+            setSaveTplOpen((o) => !o);
+            setTplError(null);
+          }}
+          aria-expanded={saveTplOpen}
+        >
+          Save as template…
+        </button>{" "}
+        <button type="button" onClick={() => navigate({ name: "settings" })} title="Manage templates in Settings → Appearance">
+          Manage…
+        </button>
       </p>
+      {saveTplOpen && (
+        <p role="group" aria-label="Save as template">
+          <label>
+            Template name:{" "}
+            <input
+              type="text"
+              value={saveTplName}
+              maxLength={128}
+              onChange={(e) => setSaveTplName(e.target.value)}
+              placeholder="e.g. Status update"
+              autoFocus
+            />
+          </label>{" "}
+          <button type="button" className="kiwi-btn-primary" disabled={!saveTplName.trim() || tplBusy} onClick={() => void saveAsTemplate()}>
+            Save
+          </button>{" "}
+          <button type="button" onClick={() => setSaveTplOpen(false)}>
+            Cancel
+          </button>{" "}
+          <small style={{ color: "var(--kiwi-text-secondary)" }}>
+            saves the current subject + body verbatim (placeholders like {"{{name}}"} included)
+          </small>
+        </p>
+      )}
+      {/* T-302: plugin composer actions (composer-action capability). Click
+          posts `composer.action` to the owning plugin with bounded draft
+          metadata (subject + recipient addresses — never body bytes). */}
+      {pluginActions.length > 0 && (
+        <p role="toolbar" aria-label="Plugin actions" style={{ display: "flex", gap: "0.3rem", flexWrap: "wrap", alignItems: "center" }}>
+          <small style={{ color: "var(--kiwi-text-secondary)" }}>Plugins:</small>
+          {pluginActions.map((a) => (
+            <button
+              key={`${a.pluginId}/${a.actionId}`}
+              type="button"
+              title={a.title ?? `${a.label} — provided by ${a.pluginName}`}
+              onClick={() => {
+                const ok = fireComposerAction(a, { subject, to: recipients, cc: ccRecipients });
+                if (!ok) onNotify("warn", `[${a.pluginId}] plugin is not running — action not delivered.`);
+              }}
+            >
+              <Icon name={a.icon && isIconName(a.icon) ? a.icon : "puzzle"} size={11} /> {a.label}
+            </button>
+          ))}
+        </p>
+      )}
+      {tplError && (
+        <div className="kiwi-banner error" role="alert">
+          <small>{tplError}</small>
+        </div>
+      )}
+      {tplNote && (
+        <p className="em-note" role="status">
+          <small>{tplNote}</small>
+        </p>
+      )}
       <p>
         <label htmlFor="compose-body">Body</label>{" "}
         <small style={{ color: "var(--kiwi-text-secondary)" }}>
@@ -648,7 +882,7 @@ export function ComposeView({
             “”
           </button>
           <button type="button" title="Bulleted list" aria-label="Bulleted list" onClick={() => wrapSelection("", "", "- ")}>
-            ☰
+            <Icon name="list" size={13} />
           </button>
         </span>
         <textarea
@@ -692,14 +926,10 @@ export function ComposeView({
       </div>
       <p>
         <label>
-          Attachments (25 MB total cap): <input type="file" multiple onChange={(e) => void addFiles(e.target.files)} />
-        </label>
-        {readingFiles && (
-          <span role="status">
-            <br />
-            <small>Reading files…</small>
-          </span>
-        )}
+          Attachments (25 MiB total cap):{" "}
+          <input type="file" multiple onChange={(e) => addFiles(e.target.files)} aria-label="Choose files to attach" />
+        </label>{" "}
+        <small style={{ color: "var(--kiwi-text-secondary)" }}>or drop files anywhere in this window / paste an image</small>
         {attachError && (
           <span role="alert">
             <br />
@@ -709,9 +939,14 @@ export function ComposeView({
       </p>
       {attachments.length > 0 && (
         <ul aria-label="Attachments">
-          {attachments.map((a) => (
-            <li key={`${a.name}-${a.size}`}>
-              {a.name} <small>({(a.size / 1024).toFixed(1)} KB)</small>{" "}
+          {attachments.map((a, i) => (
+            <li key={`${a.name}-${a.size}-${i}`}>
+              {a.name} <small>({a.size >= 1048576 ? `${(a.size / 1048576).toFixed(1)} MB` : `${(a.size / 1024).toFixed(1)} KB`})</small>{" "}
+              {a.pending && (
+                <small role="status" style={{ color: "var(--kiwi-text-secondary)" }}>
+                  {a.progress ? `reading ${(a.progress * 100).toFixed(0)}%…` : "reading…"}
+                </small>
+              )}{" "}
               <button
                 type="button"
                 onClick={() => setAttachments((x) => x.filter((y) => y !== a))}

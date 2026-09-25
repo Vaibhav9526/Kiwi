@@ -361,3 +361,119 @@ fn garbage_bytes_are_rejected_not_guessed() {
         "unsupported magic: {error}"
     );
 }
+
+#[test]
+fn starttls_accepted_without_handshake_yields_kex_limitation() {
+    // FOR-10: the server accepted STARTTLS, then the flow carried TLS record
+    // bytes the capture layer cannot decode — the key exchange was never
+    // observed. The promised marker must fire (not be read as clean).
+    let segments = vec![
+        Segment {
+            from_client: false,
+            seq: 0,
+            payload: b"220 fake ESMTP\r\n",
+        },
+        Segment {
+            from_client: true,
+            seq: 0,
+            payload: b"EHLO client\r\n",
+        },
+        Segment {
+            from_client: false,
+            seq: 0,
+            payload: b"250-fake\r\n250-STARTTLS\r\n",
+        },
+        Segment {
+            from_client: true,
+            seq: 0,
+            payload: b"STARTTLS\r\n",
+        },
+        Segment {
+            from_client: false,
+            seq: 0,
+            payload: b"220 2.0.0 ready\r\n",
+        },
+        // TLS ClientHello record bytes — unreadable as protocol lines.
+        Segment {
+            from_client: true,
+            seq: 0,
+            payload: b"\x16\x03\x01\x00\x2e\x01\x00\x00\x2a\x03\x03",
+        },
+    ];
+    let bytes = capture(&segments);
+    let options = CaptureOptions::default().with_source_tag("test-kex");
+    let result = analyze_capture(&bytes, &options).expect("pipeline runs");
+    assert!(
+        result
+            .report
+            .limitations
+            .iter()
+            .any(|limitation| limitation.code == limitation_codes::KEX_UNOBSERVED),
+        "kex-unobserved limitation present: {:?}",
+        result.report.limitations
+    );
+}
+
+#[test]
+fn whitespace_only_flow_yields_transport_unknown() {
+    // FOR-10: bytes were captured but nothing decodable — the transport
+    // question is unanswerable and must be reported as a limitation.
+    let segments = vec![Segment {
+        from_client: true,
+        seq: 0,
+        payload: b"\r\n  \r\n",
+    }];
+    let bytes = capture(&segments);
+    let options = CaptureOptions::default().with_source_tag("test-tunk");
+    let result = analyze_capture(&bytes, &options).expect("pipeline runs");
+    assert!(
+        result
+            .report
+            .limitations
+            .iter()
+            .any(|limitation| limitation.code == limitation_codes::TRANSPORT_UNKNOWN),
+        "transport-unknown limitation present: {:?}",
+        result.report.limitations
+    );
+}
+
+#[test]
+fn healthy_plaintext_session_emits_no_for10_limitations() {
+    // A readable plaintext session must not carry unobserved-fact markers.
+    let segments = vec![
+        Segment {
+            from_client: false,
+            seq: 0,
+            payload: b"220 fake ESMTP\r\n",
+        },
+        Segment {
+            from_client: true,
+            seq: 0,
+            payload: b"EHLO client\r\n",
+        },
+        Segment {
+            from_client: false,
+            seq: 0,
+            payload: b"250-fake\r\n250 OK\r\n",
+        },
+        Segment {
+            from_client: true,
+            seq: 0,
+            payload: b"QUIT\r\n",
+        },
+    ];
+    let bytes = capture(&segments);
+    let options = CaptureOptions::default().with_source_tag("test-clean");
+    let result = analyze_capture(&bytes, &options).expect("pipeline runs");
+    for code in [
+        limitation_codes::TRANSPORT_UNKNOWN,
+        limitation_codes::KEX_UNOBSERVED,
+        limitation_codes::AUTH_UNOBSERVED,
+    ] {
+        assert!(
+            !result.report.limitations.iter().any(|l| l.code == code),
+            "unexpected limitation {code}: {:?}",
+            result.report.limitations
+        );
+    }
+}

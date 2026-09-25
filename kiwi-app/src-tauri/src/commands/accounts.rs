@@ -37,7 +37,7 @@ pub async fn kiwi_list_accounts(state: State<'_, Arc<AppState>>) -> CmdResult<Ve
     list_accounts_impl(state.inner()).await
 }
 
-async fn list_accounts_impl(state: &AppState) -> CmdResult<Vec<AccountView>> {
+pub(crate) async fn list_accounts_impl(state: &AppState) -> CmdResult<Vec<AccountView>> {
     // Snapshot inputs first — locks never nest (refresh_trust's order:
     // index → devices → endpoint → sessions → trust).
     let (ids, folder_map) = {
@@ -128,6 +128,12 @@ pub(crate) async fn add_account_impl(
         }
     };
 
+    // OAuth2 wizard seam (T-230): when an `oauth2Ticket` is referenced the
+    // completed grant's `oauth2/<provider>/<email>` key replaces the
+    // generated per-account key on BOTH directions — token material was
+    // already persisted at poll-complete, so `store_secret` skips it.
+    let oauth2_key = super::oauth2::oauth2_ticket_key(state, &input).await?;
+
     let account_id = new_id("acct");
     let username = input
         .username
@@ -143,8 +149,15 @@ pub(crate) async fn add_account_impl(
         "in",
         input.incoming_auth.as_ref(),
         protocol == IncomingProtocol::Pop3,
+        oauth2_key.as_deref(),
     )?;
-    let out_auth = auth_ref(&account_id, "out", input.outgoing_auth.as_ref(), false)?;
+    let out_auth = auth_ref(
+        &account_id,
+        "out",
+        input.outgoing_auth.as_ref(),
+        false, // SMTP has no POP3-only auth classes
+        oauth2_key.as_deref(),
+    )?;
 
     // Secrets into the OS store BEFORE the account row exists.
     store_secret(state, &in_auth, input.incoming_auth.as_ref())?;
@@ -175,6 +188,16 @@ pub(crate) async fn add_account_impl(
         },
     };
     state.store.lock().await.upsert_account(&acct)?;
+    // Grant consumed only once the account row exists — a failed add leaves
+    // the ticket usable for a retry.
+    if let Some(ticket) = input
+        .incoming_auth
+        .as_ref()
+        .or(input.outgoing_auth.as_ref())
+        .and_then(|a| a.oauth2_ticket.as_deref())
+    {
+        super::oauth2::consume_oauth2_ticket(state, ticket).await;
+    }
     {
         let mut index = state.index.lock().await;
         if !index.account_ids.contains(&account_id) {
@@ -186,6 +209,7 @@ pub(crate) async fn add_account_impl(
                 accept_invalid_certs: input.accept_invalid_certs,
                 remote_content_allowed: false,
                 org_id: None,
+                pop3_delete_after_download: false,
             },
         );
         index.save(&state.data_dir)?;
@@ -202,12 +226,18 @@ pub(crate) async fn add_account_impl(
 }
 
 /// Build the `AuthRef` (key names are generated here — the renderer never
-/// picks credential-store keys).
+/// picks credential-store keys). `oauth2_key` is the completed grant's
+/// `oauth2/<provider>/<email>` key when the wizard bound a ticket — one
+/// grant covers both directions, so both AuthRefs carry it. `is_pop3` is
+/// the incoming-protocol check: `apop` requires it, `xoauth2` forbids it
+/// (ipc.md §5 / audit IPC-10 — a POP3+XOAuth2 account would be unusable,
+/// so it is rejected at add time, not discovered at connect).
 fn auth_ref(
     account_id: &str,
     direction: &str,
     input: Option<&AuthInput>,
-    allow_apop: bool,
+    is_pop3: bool,
+    oauth2_key: Option<&str>,
 ) -> CmdResult<AuthRef> {
     let key = format!("kiwi/{account_id}/{direction}");
     match input.map(|a| a.kind.as_str()).unwrap_or("none") {
@@ -215,10 +245,11 @@ fn auth_ref(
         "password" => Ok(AuthRef::Password {
             credential_key: key,
         }),
+        "xoauth2" if is_pop3 => Err(IpcError::invalid("xoauth2 not supported on POP3")),
         "xoauth2" => Ok(AuthRef::XOAuth2 {
-            credential_key: key,
+            credential_key: oauth2_key.map(str::to_string).unwrap_or(key),
         }),
-        "apop" if allow_apop => Ok(AuthRef::Apop {
+        "apop" if is_pop3 => Ok(AuthRef::Apop {
             credential_key: key,
         }),
         "apop" => Err(IpcError::invalid("apop applies to POP3 only")),
@@ -233,6 +264,12 @@ fn store_secret(state: &AppState, auth: &AuthRef, input: Option<&AuthInput>) -> 
         | AuthRef::XOAuth2 { credential_key }
         | AuthRef::Apop { credential_key } => credential_key,
     };
+    // Ticket-bound grants already live under `oauth2/<provider>/<email>` —
+    // nothing to store; an inline secret, if sent, is ignored rather than
+    // written under a key nobody will read.
+    if key.starts_with("oauth2/") {
+        return Ok(());
+    }
     let secret = input
         .and_then(|a| a.secret.as_deref())
         .ok_or_else(|| IpcError::invalid("auth kind requires a secret"))?;
@@ -437,6 +474,7 @@ fn auth_input_from(auth: &AuthRef) -> Option<AuthInput> {
     Some(AuthInput {
         kind: kind.to_string(),
         secret: Option::None,
+        oauth2_ticket: None,
     })
 }
 
@@ -781,10 +819,12 @@ mod tests {
             incoming_auth: Some(AuthInput {
                 kind: "password".into(),
                 secret: Some("s".into()),
+                oauth2_ticket: None,
             }),
             outgoing_auth: Some(AuthInput {
                 kind: "password".into(),
                 secret: Some("s".into()),
+                oauth2_ticket: None,
             }),
             accept_invalid_certs: false,
         }
@@ -809,6 +849,29 @@ mod tests {
         tokio::time::timeout(Duration::from_millis(50), state.sync_wakeup.notified())
             .await
             .expect("add_account_impl must kick the sync supervisor");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ipc.md §5 / audit IPC-10: xoauth2 is not a valid POP3 auth kind —
+    /// rejected at add time so an unusable account never persists.
+    #[tokio::test(flavor = "current_thread")]
+    async fn xoauth2_rejected_for_pop3_at_add_time() {
+        let dir = std::env::temp_dir().join(format!(
+            "kiwi-acct-pop3xo-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let state = AppState::open_test(dir.clone()).unwrap();
+        let mut input = acct_input();
+        input.incoming_protocol = "pop3".into();
+        input.incoming_auth.as_mut().unwrap().kind = "xoauth2".into();
+        let err = add_account_impl(&state, input).await.unwrap_err();
+        assert_eq!(err.code, "invalid-input");
+        assert!(err.message.contains("POP3"), "{err:?}");
+        assert!(state.index.lock().await.account_ids.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

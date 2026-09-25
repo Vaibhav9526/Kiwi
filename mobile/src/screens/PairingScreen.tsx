@@ -9,11 +9,11 @@
  * SECURITY.md rule 9: the pasted string is attacker-controlled; every field
  * is validated/bounded before display, and the raw string is never logged.
  */
-import React, { useCallback, useMemo, useState } from "react";
-import { Alert, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
+import React, { useCallback, useMemo, useState } from 'react';
+import { Alert, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
-import { parseQrPayload, safeDeviceLabel, isQrPayloadCurrent } from "../protocol/qr";
-import { UnavailableKeystore, KeystoreError } from "../keystore/keystore";
+import { parseQrPayload, safeDeviceLabel, isQrPayloadCurrent } from '../protocol/qr';
+import { UnavailableKeystore, KeystoreError } from '../keystore/keystore';
 
 export interface PairedIdentity {
   deviceId: string;
@@ -22,13 +22,13 @@ export interface PairedIdentity {
 }
 
 /** Phase 4 will assign the real device id from the pairing-registered reply. */
-const SCAFFOLD_DEVICE_ID_PREFIX = "dev-scaffold-";
+const SCAFFOLD_DEVICE_ID_PREFIX = 'dev-scaffold-';
 
 export function PairingScreen(props: {
   onPaired?: (identity: PairedIdentity) => void;
 }): React.JSX.Element {
-  const [qrText, setQrText] = useState("");
-  const [status, setStatus] = useState<string>("Paste a pairing QR payload to begin.");
+  const [qrText, setQrText] = useState('');
+  const [status, setStatus] = useState<string>('Paste a pairing QR payload to begin.');
   const [pairedLabel, setPairedLabel] = useState<string | null>(null);
   const keystore = useMemo(() => new UnavailableKeystore(), []);
 
@@ -39,22 +39,22 @@ export function PairingScreen(props: {
     try {
       const payload = parseQrPayload(qrText, nowUnix);
       if (!isQrPayloadCurrent(payload, nowUnix)) {
-        setStatus("Pairing QR expired — generate a new one on the desktop.");
+        setStatus('Pairing QR expired — generate a new one on the desktop.');
         return;
       }
       // Scaffold: key generation is fail-closed until the native keystore
       // module lands (contract §5). Surface the honest error.
       try {
         await keystore.generateKey(`kiwi-auth-${payload.pairing_ticket.slice(0, 8)}`);
-        setStatus("Keystore unexpectedly available — re-run review (Phase 4).");
+        setStatus('Keystore unexpectedly available — re-run review (Phase 4).');
         return;
       } catch (err) {
         const expected =
           err instanceof KeystoreError &&
-          (err.code === "not-implemented" || err.code === "keystore-unavailable");
+          (err.code === 'not-implemented' || err.code === 'keystore-unavailable');
         if (!expected) {
           // Any other keystore failure must stop pairing (fail closed).
-          setStatus("Keystore error — pairing aborted.");
+          setStatus('Keystore error — pairing aborted.');
           return;
         }
       }
@@ -68,15 +68,15 @@ export function PairingScreen(props: {
       setPairedLabel(label);
       setStatus(
         `Validated pairing for "${label}" → ${payload.desktop_endpoint}.\n` +
-          "Scaffold stops here: the pinned pairing channel (Phase 4) would " +
-          "now send kiwi-pairing-hello and activate the device.",
+          'Scaffold stops here: the pinned pairing channel (Phase 4) would ' +
+          'now send kiwi-pairing-hello and activate the device.',
       );
       props.onPaired?.(identity);
     } catch (err) {
       // Bounded, non-echoing error surface (rule 6: no raw payload in logs).
-      const msg = err instanceof Error ? err.message : "invalid QR payload";
+      const msg = err instanceof Error ? err.message : 'invalid QR payload';
       setStatus(`Rejected QR: ${msg}`);
-      Alert.alert("Invalid pairing QR", "The scanned payload failed validation.");
+      Alert.alert('Invalid pairing QR', 'The scanned payload failed validation.');
     }
   }, [qrText, keystore, props]);
 
@@ -110,20 +110,20 @@ export function PairingScreen(props: {
 }
 
 const styles = StyleSheet.create({
-  h2: { color: "#e8edf2", fontSize: 17, fontWeight: "600", marginBottom: 8 },
-  p: { color: "#aebccb", fontSize: 13, marginBottom: 12 },
+  h2: { color: '#e8edf2', fontSize: 17, fontWeight: '600', marginBottom: 8 },
+  p: { color: '#aebccb', fontSize: 13, marginBottom: 12 },
   input: {
     minHeight: 90,
-    borderColor: "#2c3945",
+    borderColor: '#2c3945',
     borderWidth: 1,
     borderRadius: 8,
-    color: "#e8edf2",
+    color: '#e8edf2',
     padding: 10,
     marginBottom: 12,
     fontSize: 12,
   },
-  button: { backgroundColor: "#2c7a4b", borderRadius: 8, padding: 12, alignItems: "center" },
-  buttonText: { color: "#ffffff", fontWeight: "600" },
-  ok: { color: "#6fd29a", marginTop: 12, fontSize: 13 },
-  status: { color: "#aebccb", marginTop: 8, fontSize: 12 },
+  button: { backgroundColor: '#2c7a4b', borderRadius: 8, padding: 12, alignItems: 'center' },
+  buttonText: { color: '#ffffff', fontWeight: '600' },
+  ok: { color: '#6fd29a', marginTop: 12, fontSize: 13 },
+  status: { color: '#aebccb', marginTop: 8, fontSize: 12 },
 });

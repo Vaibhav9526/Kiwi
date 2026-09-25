@@ -23,7 +23,7 @@
     "@types/pg": "^8.15.6",
     "drizzle-kit": "^0.31.4",
     "typescript": "5.7.3",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.7"
   },
   "dependencies": {
     "better-sqlite3": "^12.4.1",

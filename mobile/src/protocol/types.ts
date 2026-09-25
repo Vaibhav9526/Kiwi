@@ -3,7 +3,7 @@
  * Rust-side shapes live in kiwi-core (`Challenge`, `ChallengeResponse`);
  * the desktop IPC layer (`kiwi-app/src-tauri`, T-120) encodes between.
  */
-import type { ChallengeEvent } from "./event";
+import type { ChallengeEvent } from './event';
 
 /** Wire tag carried in every payload (JSON) — integer. */
 export const SCHEMA_VERSION = 1;
@@ -43,13 +43,13 @@ export interface ChallengeResponseData {
   /** Ed25519 signature over canonicalChallengeBytes(challenge). */
   signature_b64: string;
   /** Optional explicit denial marker; absent = approve (see contract §6.3). */
-  decision?: "approve" | "deny";
+  decision?: 'approve' | 'deny';
 }
 
-export type Decision = "approve" | "deny";
+export type Decision = 'approve' | 'deny';
 
 export type DeliveryResult =
-  | { kind: "delivered"; requestId: string }
-  | { kind: "offline"; reason: string };
+  | { kind: 'delivered'; requestId: string }
+  | { kind: 'offline'; reason: string };
 
-export type DeliveryOutcome = DeliveryResult | { kind: "skipped"; reason: string };
+export type DeliveryOutcome = DeliveryResult | { kind: 'skipped'; reason: string };

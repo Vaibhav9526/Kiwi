@@ -15,7 +15,11 @@ use super::cipher_table;
 ///
 /// `Unknown(u16)` preserves the raw value so unrecognized or nonsense values
 /// remain reportable — a capture is untrusted input.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// Wire form (FSV-1): unit variants are snake_case strings (`"tls12"`);
+/// `Unknown` is externally tagged `{"unknown": <u16>}` — never the bare
+/// string, which would lose the raw value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TlsVersion {
     /// SSL 2.0 (`0x0002`) — broken, never acceptable.
@@ -32,6 +36,53 @@ pub enum TlsVersion {
     Tls13,
     /// Unrecognized version; raw 16-bit wire value retained.
     Unknown(u16),
+}
+
+/// Sentinel `Unknown` payload for the legacy bare string `"unknown"`. The
+/// old contract form carried no raw wire value; `0xFFFF` marks "raw lost in
+/// migration" without inventing a version — it is outside the assigned
+/// 0x03xx TLS range and the GREASE `0x?A?A` set, so no real observation can
+/// legitimately carry it. Never fabricate any other value into `Unknown`.
+pub const LEGACY_UNKNOWN_WIRE: u16 = 0xFFFF;
+
+const TLS_VERSION_TAGS: &[&str] = &[
+    "ssl2",
+    "ssl3",
+    "tls10",
+    "tls11",
+    "tls12",
+    "tls13",
+    "{\"unknown\":u16}",
+];
+
+/// FSV-1 read path: canonical snake_case tags plus the `{"unknown":N}`
+/// object, and the legacy `as_str()` spellings (`"tls1.2"`, `"ssl3.0"`,
+/// bare `"unknown"`) accepted — normalized, never re-emitted.
+impl<'de> Deserialize<'de> for TlsVersion {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            Tag(String),
+            Unknown { unknown: u16 },
+        }
+        match Repr::deserialize(deserializer)? {
+            Repr::Unknown { unknown } => Ok(TlsVersion::Unknown(unknown)),
+            Repr::Tag(s) => match s.as_str() {
+                "ssl2" | "ssl2.0" => Ok(TlsVersion::Ssl2),
+                "ssl3" | "ssl3.0" => Ok(TlsVersion::Ssl3),
+                "tls10" | "tls1.0" => Ok(TlsVersion::Tls10),
+                "tls11" | "tls1.1" => Ok(TlsVersion::Tls11),
+                "tls12" | "tls1.2" => Ok(TlsVersion::Tls12),
+                "tls13" | "tls1.3" => Ok(TlsVersion::Tls13),
+                "unknown" => Ok(TlsVersion::Unknown(LEGACY_UNKNOWN_WIRE)),
+                other => Err(serde::de::Error::unknown_variant(other, TLS_VERSION_TAGS)),
+            },
+        }
+    }
 }
 
 /// Result of ordering two [`TlsVersion`] values.
@@ -260,7 +311,9 @@ pub enum BulkCipher {
     Des,
     /// Single DES with a 40-bit key (EXPORT).
     Des40,
-    /// Triple DES (2-key/3-key EDE).
+    /// Triple DES (2-key/3-key EDE). Legacy `as_str()` spelling `3des`
+    /// accepted on read (FSV-1 migration).
+    #[serde(alias = "3des")]
     TripleDes,
     /// IDEA in CBC mode.
     Idea,
@@ -279,6 +332,7 @@ pub enum BulkCipher {
     /// AES-128-CCM (AEAD).
     Aes128Ccm,
     /// ChaCha20-Poly1305 (AEAD).
+    #[serde(alias = "chacha20_poly1305")]
     ChaCha20Poly1305,
     /// Algorithm not recognized.
     Unknown,

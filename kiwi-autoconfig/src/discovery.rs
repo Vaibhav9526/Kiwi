@@ -506,14 +506,17 @@ mod tests {
             ("zoho.com", "Zoho", "imap.zoho.com"),
             ("fastmail.com", "Fastmail", "imap.fastmail.com"),
         ] {
-            let out = discover(&format!("u@{domain}"), &net).unwrap_or_else(|| {
-                panic!("{provider} chain failed")
-            });
+            let out = discover(&format!("u@{domain}"), &net)
+                .unwrap_or_else(|_| panic!("{provider} chain failed"));
             assert_eq!(out.source, SuggestionSource::Ispdb, "{provider} source");
             assert_eq!(out.suggestion.display_name, provider, "{provider} name");
             assert_eq!(out.suggestion.incoming.host, imap_host, "{provider} host");
             assert!(!out.needs_manual_review, "{provider} must not be flagged");
-            assert_eq!(out.attempts.len(), 1, "{provider}: later stages must not run");
+            assert_eq!(
+                out.attempts.len(),
+                1,
+                "{provider}: later stages must not run"
+            );
             assert_eq!(out.attempts[0].source, SuggestionSource::Ispdb);
             assert_eq!(out.attempts[0].outcome, StageOutcome::Hit);
         }
@@ -553,10 +556,8 @@ mod tests {
     fn chain_fixture_beats_published_document() {
         // T-178 integration: when both a fixture and a published document
         // exist, stage order wins (fixture first, network never touched).
-        let net = MockNet::new().with_https(
-            "https://autoconfig.gmail.com/mail/config-v1.1.xml",
-            XML_PUB,
-        );
+        let net =
+            MockNet::new().with_https("https://autoconfig.gmail.com/mail/config-v1.1.xml", XML_PUB);
         let out = discover("u@gmail.com", &net).unwrap();
         assert_eq!(out.source, SuggestionSource::Ispdb);
         assert_eq!(out.suggestion.display_name, "Google");

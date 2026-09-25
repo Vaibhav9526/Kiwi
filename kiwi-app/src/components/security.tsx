@@ -7,7 +7,9 @@
  */
 import { useEffect, useRef } from "react";
 import type { FindingDetailView, FindingInfo, PolicyBannerVerdict, Severity } from "../kiwi";
-import { severityGlyph, severityLabel } from "../kiwi";
+import { severityLabel } from "../kiwi";
+import { Icon, SEVERITY_ICON } from "./icons/index";
+import { PairQrFlow } from "./pair";
 
 export function SecurityPill({
   level,
@@ -21,12 +23,12 @@ export function SecurityPill({
   return (
     <button
       type="button"
-      className={`kiwi-pill ${level}`}
+      className={`kiwi-pill ${level} ms-secbadge`}
       onClick={onOpen}
       aria-label={`Connection security: ${severityLabel(level)}. ${summary} Activate for details.`}
       title={summary}
     >
-      {severityGlyph(level)} {severityLabel(level)}
+      <Icon name={SEVERITY_ICON[level]} size={13} /> {severityLabel(level)}
     </button>
   );
 }
@@ -43,7 +45,7 @@ export function PolicyBanner({
   if (verdict === "none") return null;
   const blocking = verdict === "block";
   return (
-    <div className={`kiwi-banner ${blocking ? "block" : "warn"}`} role={blocking ? "alert" : "status"}>
+    <div className={`ms-policy-strip ${blocking ? "block" : "warn"}`} role={blocking ? "alert" : "status"}>
       <strong>{blocking ? "Blocked" : "Warning"}:</strong>{" "}
       {blocking
         ? "sending is disabled until the flagged recipients are removed."
@@ -55,7 +57,7 @@ export function PolicyBanner({
         {offenders.map((o) => (
           <li key={o}>
             <code>{o}</code>{" "}
-            <button type="button" onClick={() => onRemove(o)} aria-label={`Remove recipient ${o}`}>
+            <button type="button" className="ms-btn" onClick={() => onRemove(o)} aria-label={`Remove recipient ${o}`}>
               Remove
             </button>
           </li>
@@ -109,17 +111,17 @@ export function FindingDialog({
     return parts.length > 0 ? parts.join(" · ") : str(s["sessionId"]) || null;
   })();
   return (
-    <div className="kiwi-dialog-backdrop" onClick={onClose}>
+    <div className="ms-popover-veil" onClick={onClose}>
       <div
-        className="kiwi-dialog"
+        className="ms-finding-popover ms-pop"
         role="dialog"
-        aria-modal="true"
+        aria-modal="false"
         aria-labelledby="finding-title"
         onClick={(e) => e.stopPropagation()}
       >
         <p>
           <span className={`kiwi-pill ${finding.severity}` as string}>
-            {severityGlyph(finding.severity)} {severityLabel(finding.severity)}
+            <Icon name={SEVERITY_ICON[finding.severity]} size={13} /> {severityLabel(finding.severity)}
           </span>{" "}
           <small>
             {position} of {total} · {finding.id} · engine {finding.engineVersion}
@@ -182,13 +184,13 @@ export function FindingDialog({
           </>
         )}
         <div style={{ display: "flex", gap: "0.4rem", marginTop: "0.8rem" }}>
-          <button type="button" onClick={onPrev} disabled={position <= 1}>
-            ← Prev
+          <button type="button" className="ms-btn" onClick={onPrev} disabled={position <= 1}>
+            <Icon name="arrow-left" size={13} /> Prev
           </button>
-          <button type="button" onClick={onNext} disabled={position >= total}>
-            Next →
+          <button type="button" className="ms-btn" onClick={onNext} disabled={position >= total}>
+            Next <Icon name="arrow-right" size={13} />
           </button>
-          <button type="button" onClick={onClose} ref={closeRef}>
+          <button type="button" className="ms-btn" onClick={onClose} ref={closeRef}>
             Close (Esc)
           </button>
         </div>
@@ -202,7 +204,9 @@ export function LockOverlay({
   busy,
   trustLines,
   deviceLabel,
+  fpTail,
   challengeId,
+  live,
   onVerify,
   onRetry,
 }: {
@@ -212,8 +216,12 @@ export function LockOverlay({
   trustLines: string[];
   /** Paired device label for the mobile-approve hint (null when none). */
   deviceLabel: string | null;
+  /** Device key fingerprint tail for the badge (null when unknown). */
+  fpTail: string | null;
   /** Active challenge id, shown once Verify issues one. */
   challengeId: string | null;
+  /** Live backend — the pair QR only renders when IPC is reachable. */
+  live: boolean;
   onVerify: () => void;
   onRetry: () => void;
 }) {
@@ -223,7 +231,7 @@ export function LockOverlay({
     <div className="kiwi-lock-overlay" role="alertdialog" aria-modal="true" aria-labelledby="lock-title">
       <div style={{ maxWidth: "30rem", padding: "0 1rem" }}>
         <div className="kiwi-lock-mark" aria-hidden="true">
-          🔒
+          <Icon name="lock" size={40} strokeWidth={1.1} />
         </div>
         <h1 id="lock-title">Mailbox locked</h1>
         <p>{reason}</p>
@@ -239,47 +247,29 @@ export function LockOverlay({
         <p>
           <small>Message bodies, attachments, and sending are unavailable while locked.</small>
         </p>
-        <div
-          style={{
-            border: "1px dashed var(--kiwi-border)",
-            borderRadius: "10px",
-            padding: "0.7rem",
-            marginBottom: "0.8rem",
-          }}
-          aria-label="Mobile approval"
-        >
+        <div className="ms-approve-box" aria-label="Mobile approval">
           <p style={{ margin: "0 0 0.3rem" }}>
-            <strong>Approve on mobile</strong>
+            <strong>Approve on device</strong>{" "}
+            {fpTail && (
+              <span className="ms-badge ms-badge-alt ms-fp-badge" title="Paired device key fingerprint (last 4)">
+                ····{fpTail}
+              </span>
+            )}
           </p>
-          <p style={{ margin: 0, color: "var(--kiwi-text-secondary)" }}>
+          <p style={{ margin: 0, color: "var(--kiwi-ms-text-secondary)" }}>
             <small>
               {deviceLabel
-                ? `Open the KIWI authenticator on ${deviceLabel} and approve the unlock request.`
-                : "No authenticator device registered — pair one in Settings → KIWI Security once unlocked."}
+                ? `Open the KIWI authenticator on ${deviceLabel} and approve the unlock request — this screen cannot approve on your behalf.`
+                : "No authenticator device registered — pair one in Settings → Identity once unlocked."}
             </small>
           </p>
-          <div
-            role="img"
-            aria-label="QR code placeholder for mobile approval"
-            title="QR placeholder — real codes arrive with the device-pairing flow"
-            style={{
-              width: "96px",
-              height: "96px",
-              margin: "0.5rem auto 0",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              border: "1px solid var(--kiwi-border)",
-              borderRadius: "8px",
-              color: "var(--kiwi-text-secondary)",
-              fontSize: "0.7rem",
-              textAlign: "center",
-            }}
-          >
-            QR
-            <br />
-            placeholder
-          </div>
+          {/* T-303: with no paired device the only QR that can exist is a
+              real pairing ticket (§9d) — PairQrFlow begins one and renders
+              the backend's qrPayload. It reports honestly when the lock
+              gate denies begin (no backend-owned flow live) or when the
+              renderer is in demo mode; a paired device approves over the
+              channel, so no QR is needed then. */}
+          {live && !deviceLabel && <PairQrFlow />}
           {challengeId && (
             <p style={{ margin: "0.4rem 0 0", color: "var(--kiwi-text-secondary)" }}>
               <small>
@@ -289,10 +279,10 @@ export function LockOverlay({
           )}
         </div>
         <div style={{ display: "flex", gap: "0.5rem", justifyContent: "center" }}>
-          <button type="button" onClick={onVerify} disabled={busy} ref={verifyRef}>
+          <button type="button" className="ms-btn ms-btn-primary" onClick={onVerify} disabled={busy} ref={verifyRef}>
             {busy ? "Working…" : "Verify with authenticator"}
           </button>
-          <button type="button" onClick={onRetry} disabled={busy}>
+          <button type="button" className="ms-btn" onClick={onRetry} disabled={busy}>
             Retry trust check
           </button>
         </div>

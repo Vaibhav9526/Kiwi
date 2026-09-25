@@ -7,13 +7,13 @@
  * fail-closed `UnavailableKeystore` until Phase 4 lands the native module.
  * Any production key handling re-triggers the SECURITY.md §6 review gate.
  */
-export type KeyAlgorithmName = "ed25519";
+export type KeyAlgorithmName = 'ed25519';
 
 export type KeystoreErrorCode =
-  | "not-implemented"
-  | "keystore-unavailable"
-  | "key-not-found"
-  | "fail-closed";
+  | 'not-implemented'
+  | 'keystore-unavailable'
+  | 'key-not-found'
+  | 'fail-closed';
 
 export class KeystoreError extends Error {
   constructor(
@@ -21,7 +21,7 @@ export class KeystoreError extends Error {
     message: string,
   ) {
     super(message);
-    this.name = "KeystoreError";
+    this.name = 'KeystoreError';
   }
 }
 
@@ -48,15 +48,15 @@ export interface DeviceKeystore {
 export class UnavailableKeystore implements DeviceKeystore {
   async generateKey(_alias: string): Promise<KeystoreKeyHandle> {
     throw new KeystoreError(
-      "not-implemented",
-      "platform keystore module lands in Phase 4 (contract §5)",
+      'not-implemented',
+      'platform keystore module lands in Phase 4 (contract §5)',
     );
   }
   async sign(_keystoreRef: string, _message: Uint8Array): Promise<Uint8Array> {
-    throw new KeystoreError("not-implemented", "platform keystore module lands in Phase 4");
+    throw new KeystoreError('not-implemented', 'platform keystore module lands in Phase 4');
   }
   async deleteKey(_keystoreRef: string): Promise<void> {
-    throw new KeystoreError("not-implemented", "platform keystore module lands in Phase 4");
+    throw new KeystoreError('not-implemented', 'platform keystore module lands in Phase 4');
   }
   async hasKey(_keystoreRef: string): Promise<boolean> {
     return false;

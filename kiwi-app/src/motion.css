@@ -1,0 +1,331 @@
+/* KIWI motion catalog (T-191) — clean-room implementation of the observed
+ * Mailspring cadence (docs/ui-mailspring-map.md §3, items A1–A24).
+ * Every duration/easing below references a motion or ease token
+ * (mailspring-tokens.css) — never approximated inline.
+ * Deferred with no DOM hook yet: A7 swipe spring (phase 2), A11 composer
+ * wipe, A15 countdown ring element (undo uses ttlMs timing instead),
+ * A20–A23 package-specific loops. All covered hooks honor reduced-motion. */
+
+/* A1 sheet push/pop — route views slide + fade on mount */
+@keyframes ms-sheet-in {
+  from {
+    opacity: 0;
+    transform: translateX(30px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.ms-view-enter {
+  animation: ms-sheet-in var(--kiwi-ms-motion-nav) var(--kiwi-ms-ease-out);
+}
+
+/* A2 generic view swap — quick fade */
+@keyframes ms-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.ms-fade-enter {
+  animation: ms-fade-in var(--kiwi-ms-motion-nav) var(--kiwi-ms-ease-out);
+}
+
+/* A3 deferred content */
+.ms-defer-enter {
+  animation: ms-fade-in var(--kiwi-ms-motion-defer) linear;
+}
+
+/* A4 toolbar/menu button hover-press tint */
+.ms-btn,
+.ms-menu-button,
+.ms-tab,
+.ms-tree-item {
+  transition:
+    background-color var(--kiwi-ms-motion-hover) var(--kiwi-ms-ease-out),
+    border-color var(--kiwi-ms-motion-hover) var(--kiwi-ms-ease-out),
+    color var(--kiwi-ms-motion-hover) var(--kiwi-ms-ease-out);
+}
+
+/* A5 list rows glide (insert/remove) + hover tint */
+.ms-row,
+.ms-thread-head {
+  transition:
+    background-color var(--kiwi-ms-motion-row) var(--kiwi-ms-ease-out),
+    border-color var(--kiwi-ms-motion-row) var(--kiwi-ms-ease-out);
+}
+
+/* A6 multiselect bar drops from the toolbar */
+@keyframes ms-actionbar-drop {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.kiwi-actionbar {
+  animation: ms-actionbar-drop var(--kiwi-ms-motion-panel) var(--kiwi-ms-ease-in-out);
+}
+
+/* A8 message open/ready — reader fades in on selection change */
+@keyframes ms-ready-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.ms-ready {
+  animation: ms-ready-fade var(--kiwi-ms-motion-fade) linear;
+}
+
+/* A6 policy strip drops like the selection bar */
+.ms-policy-strip {
+  animation: ms-actionbar-drop var(--kiwi-ms-motion-panel) var(--kiwi-ms-ease-in-out);
+}
+
+/* A2 popover veil fades */
+.ms-popover-veil {
+  animation: ms-fade-in var(--kiwi-ms-motion-nav) var(--kiwi-ms-ease-out);
+}
+
+/* A8 thread expand — collapsed children reveal (fade + rise, same
+ * 100ms envelope as the height tween; measured-height tweens need a
+ * single-wrapper child, which multi-row threads don't have). */
+@keyframes ms-thread-expand {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.ms-thread-expand {
+  animation: ms-thread-expand var(--kiwi-ms-motion-fade) var(--kiwi-ms-ease-in-out);
+}
+
+/* A9 message hover actions reveal */
+.ms-quick-actions {
+  transition: opacity var(--kiwi-ms-motion-fade) var(--kiwi-ms-ease-in);
+}
+
+.ms-row .ms-row-check,
+.ms-row .ms-star {
+  transition: opacity var(--kiwi-ms-motion-fade) var(--kiwi-ms-ease-in);
+}
+
+/* A10 sidebar cards */
+.ms-account {
+  transition: background-color var(--kiwi-ms-motion-fade) var(--kiwi-ms-ease-out);
+}
+
+/* A12 popover spring-pop */
+@keyframes ms-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.87);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.ms-pop {
+  transform-origin: top left;
+  animation: ms-pop-in var(--kiwi-ms-motion-pop) var(--kiwi-ms-ease-pop);
+}
+
+/* A13 modal veil + dialog rise/untilt */
+@keyframes ms-veil-in {
+  from {
+    background-color: rgba(0, 0, 0, 0);
+  }
+  to {
+    background-color: rgba(4, 4, 8, 0.6);
+  }
+}
+
+@keyframes ms-dialog-rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px) perspective(800px) rotateX(-7deg);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.kiwi-dialog-backdrop {
+  animation: ms-veil-in var(--kiwi-ms-motion-veil) var(--kiwi-ms-ease-out);
+}
+
+.kiwi-dialog,
+.ms-composer-modal {
+  animation: ms-dialog-rise var(--kiwi-ms-motion-modal) var(--kiwi-ms-ease-out);
+}
+
+.ms-composer-backdrop {
+  animation: ms-veil-in var(--kiwi-ms-motion-veil) var(--kiwi-ms-ease-out);
+}
+
+/* A14 toast lift + fade */
+@keyframes ms-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.kiwi-toast {
+  animation:
+    ms-toast-in var(--kiwi-ms-motion-toast-in) var(--kiwi-ms-ease-out),
+    ms-fade-in var(--kiwi-ms-motion-toast-out) var(--kiwi-ms-ease-in);
+  animation-delay: 0s, 0s;
+}
+
+/* A16 disclosure twist */
+.ms-disclosure {
+  transition: transform var(--kiwi-ms-motion-twist) linear;
+  display: inline-block;
+}
+
+/* A17 switch knob slide + track recolor */
+.ms-switch-track {
+  transition: background-color var(--kiwi-ms-motion-switch) var(--kiwi-ms-ease-switch);
+}
+
+.ms-switch-knob {
+  transition: left var(--kiwi-ms-motion-switch) var(--kiwi-ms-ease-switch);
+}
+
+/* A18 spinner dots pulse + loop freeze on hidden */
+@keyframes ms-dot-pulse {
+  0%,
+  100% {
+    transform: scale(0.6);
+    opacity: 0.35;
+  }
+  50% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.ms-spinner i {
+  animation: ms-dot-pulse var(--kiwi-ms-motion-spinner-loop) var(--kiwi-ms-ease-spinner) infinite;
+}
+
+.ms-spinner i:nth-child(2) {
+  animation-delay: -0.34s;
+}
+
+.ms-spinner i:nth-child(3) {
+  animation-delay: -0.22s;
+}
+
+/* A19 scrollbar auto-hide ghost */
+.ms-sidebar,
+.ms-rows,
+.ms-reader,
+.ms-content {
+  scrollbar-width: thin;
+  scrollbar-color: var(--kiwi-ms-border-strong) transparent;
+}
+
+/* A24 micro: attachment/download fills use the linear micro token */
+.ms-meter-fill {
+  transition: width var(--kiwi-ms-motion-micro) linear;
+}
+
+/* Palette rows keep the flagship treatment + quick fade */
+.kiwi-palette-row {
+  animation: ms-fade-in var(--kiwi-ms-motion-quick) var(--kiwi-ms-ease-out);
+}
+
+/* T-268: theme switch — brief surface/text color cross-fade on the big
+ * chrome surfaces when data-theme flips (cheap, no layout properties).
+ * Uses the panel cadence; killed by the reduced-motion block below. */
+html,
+body,
+.ms-chrome,
+.ms-sidebar,
+.ms-content,
+.ms-statusbar,
+.ms-toolbar,
+.ms-list,
+.ms-reader,
+.kiwi-card,
+.kiwi-reader {
+  transition:
+    background-color var(--kiwi-ms-motion-panel) var(--kiwi-ms-ease-out),
+    color var(--kiwi-ms-motion-panel) var(--kiwi-ms-ease-out),
+    border-color var(--kiwi-ms-motion-panel) var(--kiwi-ms-ease-out);
+}
+
+/* Reduced motion: full kill-switch (Mailspring has none; KIWI does) */
+@media (prefers-reduced-motion: reduce) {
+  .ms-view-enter,
+  .ms-fade-enter,
+  .ms-defer-enter,
+  .ms-pop,
+  .kiwi-dialog-backdrop,
+  .kiwi-dialog,
+  .ms-composer-backdrop,
+  .ms-composer-modal,
+  .kiwi-toast,
+  .kiwi-actionbar,
+  .kiwi-palette-row,
+  .ms-ready,
+  .ms-thread-expand,
+  .ms-policy-strip,
+  .ms-popover-veil,
+  .ms-spinner i {
+    animation: none !important;
+  }
+
+  .ms-btn,
+  .ms-menu-button,
+  .ms-tab,
+  .ms-tree-item,
+  .ms-row,
+  .ms-thread-head,
+  .ms-quick-actions,
+  .ms-account,
+  .ms-disclosure,
+  .ms-switch-track,
+  .ms-switch-knob,
+  .ms-meter-fill,
+  html,
+  body,
+  .ms-chrome,
+  .ms-sidebar,
+  .ms-content,
+  .ms-statusbar,
+  .ms-toolbar,
+  .ms-list,
+  .ms-reader,
+  .kiwi-card,
+  .kiwi-reader {
+    transition: none !important;
+  }
+}

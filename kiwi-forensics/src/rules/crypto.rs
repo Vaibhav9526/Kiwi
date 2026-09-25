@@ -114,10 +114,9 @@ fn rule_version_below_floor(ctx: &RuleContext<'_>) -> Vec<Finding> {
     let Some(tls) = &ctx.session.tls else {
         return Vec::new();
     };
-    if !matches!(
-        tls.version.compare_to(ctx.policy.min_tls_version),
-        VersionComparison::Below
-    ) {
+    // `require_tls13` raises the effective floor over `min_tls_version`.
+    let floor = ctx.policy.effective_min_tls_version();
+    if !matches!(tls.version.compare_to(floor), VersionComparison::Below) {
         return Vec::new();
     }
     vec![
@@ -132,8 +131,7 @@ fn rule_version_below_floor(ctx: &RuleContext<'_>) -> Vec<Finding> {
         .title("Negotiated TLS version below the policy floor")
         .description(&format!(
             "The session negotiated {}, below the required minimum {}.",
-            tls.version,
-            ctx.policy.min_tls_version,
+            tls.version, floor,
         ))
         .impact("Older protocol versions lack modern handshake integrity and AEAD-only negotiation; known downgrade and truncation attacks apply.")
         .remediation(
@@ -156,7 +154,7 @@ fn rule_version_below_floor(ctx: &RuleContext<'_>) -> Vec<Finding> {
         .evidence(tls_evidence(
             ctx,
             "policy minimum TLS version",
-            EvidenceValue::text(ctx.policy.min_tls_version.as_str()),
+            EvidenceValue::text(floor.as_str()),
         ))
         .build(),
     ]
@@ -328,6 +326,12 @@ fn suite_label(ctx: &RuleContext<'_>) -> Option<String> {
 }
 
 fn rule_cipher_broken(ctx: &RuleContext<'_>) -> Vec<Finding> {
+    // `reject_broken_ciphers` gates reporting like its weak/legacy
+    // siblings — the suite is still classified and the evidence recorded;
+    // only the finding is suppressed.
+    if !ctx.policy.reject_broken_ciphers {
+        return Vec::new();
+    }
     let Some(tls) = &ctx.session.tls else {
         return Vec::new();
     };
@@ -743,6 +747,35 @@ mod tests {
             .expect("broken finding present");
         assert_eq!(broken.severity, Severity::Critical);
         assert!(broken.has_evidence());
+    }
+
+    #[test]
+    fn permissive_suppresses_broken_cipher_like_its_siblings() {
+        // FOR-4/T-247: `reject_broken_ciphers` gates KIWI-CIPHER-001 the
+        // same way `reject_weak_ciphers`/`report_legacy_ciphers` gate
+        // CIPHER-002/003 — the suite is still classified upstream.
+        let s = session().with_tls(TlsObservation::from_wire(TlsVersion::Tls12, 0x0000));
+        let findings =
+            super::super::RuleEngine::new(SecurityPolicy::permissive()).evaluate_session(&s);
+        assert!(!rule_ids(&findings).contains(&ids::CIPHER_BROKEN));
+    }
+
+    #[test]
+    fn require_tls13_raises_the_effective_floor() {
+        // FOR-4/T-247: `require_tls13` is a shorthand floor — a TLS 1.2
+        // session is below it even when `min_tls_version` stays at 1.2,
+        // and the evidence reports the effective floor.
+        let s = session().with_tls(TlsObservation::from_wire(TlsVersion::Tls12, 0xC02F));
+        let policy = SecurityPolicy {
+            require_tls13: true,
+            ..SecurityPolicy::default()
+        };
+        let findings = super::super::RuleEngine::new(policy).evaluate_session(&s);
+        let floor = findings
+            .iter()
+            .find(|f| f.rule_id == ids::TLS_VERSION_BELOW_FLOOR)
+            .expect("TLS 1.2 must be below the raised floor");
+        assert!(floor.description.contains("tls1.3"));
     }
 
     #[test]

@@ -1,0 +1,99 @@
+/* KIWI High Contrast — stock theme package (T-290). WCAG-AA-or-better:
+ * body text ≥ 7:1, secondary ≥ 4.5:1, borders/focus ≥ 3:1 against their
+ * surfaces, selection text ≥ 4.5:1 on its background. Single light
+ * variant — high contrast reads clearest dark-on-white. Dogfoods the
+ * T-268 package format as the third stock theme. */
+
+:root[data-theme="high-contrast"],
+[data-theme="high-contrast"] {
+  color-scheme: light;
+
+  /* ---- surfaces: white content, distinctly separated gray panes ---- */
+  --kiwi-ms-bg: #e8e8e8;
+  --kiwi-ms-surface: #ffffff;
+  --kiwi-ms-surface-2: #f5f5f5;
+  --kiwi-ms-surface-3: #dedede;
+  --kiwi-ms-sidebar: #e8e8e8;
+  --kiwi-ms-toolbar: #f0f0f0;
+  --kiwi-ms-list-bg: #ffffff;
+  --kiwi-ms-list-border: #595959;
+  --kiwi-ms-list-hover: #e3ecfa;
+
+  /* ---- text: black → 21:1 on white; muted stays ≥ 7:1 ---- */
+  --kiwi-ms-text: #000000;
+  --kiwi-ms-text-heading: #000000;
+  --kiwi-ms-text-secondary: #333333;
+  --kiwi-ms-text-muted: #4d4d4d;
+  --kiwi-ms-link: #0b4db3;
+
+  /* ---- borders: ≥ 3:1 non-text contrast vs surfaces ---- */
+  --kiwi-ms-border: #595959;
+  --kiwi-ms-border-strong: #3c3c3c;
+  --kiwi-ms-divider: #6e6e6e;
+  --kiwi-ms-hairline: rgba(0, 0, 0, 0.35);
+
+  /* ---- accent: deep blue (7.2:1 on white). Primary keeps the orange
+   * identity darkened to 5.9:1 so its white label stays AA. ---- */
+  --kiwi-ms-accent: #0b4db3;
+  --kiwi-ms-accent-active: #083d8f;
+  --kiwi-ms-accent-emphasis: #1565d8;
+  --kiwi-ms-primary: #b34700;
+  --kiwi-ms-primary-text: #ffffff;
+  --kiwi-ms-icon-muted: #4d4d4d;
+  --kiwi-ms-info: #0b4db3;
+  --kiwi-ms-success: #006b26;
+  --kiwi-ms-warning: #8a4f00;
+  --kiwi-ms-danger: #b00020;
+  --kiwi-ms-toast-info: #0b4db3;
+  --kiwi-ms-toast-success: #006b26;
+  --kiwi-ms-toast-warning: #8a4f00;
+  --kiwi-ms-toast-error: #b00020;
+  --kiwi-ms-toast-pending: #4d4d4d;
+
+  /* ---- shadows / focus: hard ring, no reliance on soft glow alone ---- */
+  --kiwi-ms-shadow-color: rgba(0, 0, 0, 0.4);
+  --kiwi-ms-shadow-standard: 0 1px 3px 0 rgba(0, 0, 0, 0.4);
+  --kiwi-ms-shadow-raised: 0 4px 12px 0 rgba(0, 0, 0, 0.45);
+  --kiwi-ms-shadow-popover: 0 8px 24px rgba(0, 0, 0, 0.5);
+  --kiwi-ms-shadow-modal: 0 24px 64px rgba(0, 0, 0, 0.55);
+  --kiwi-ms-focus-glow: 0 0 0 3px rgba(11, 77, 179, 0.5);
+
+  /* ---- selection: strong tint + solid accent border; black text keeps
+   * ~13:1 on the tint; solid selection is accent-active + white (9.4:1) ---- */
+  --kiwi-ms-select-tint: #c2d9f9;
+  --kiwi-ms-select-border: #0b4db3;
+  --kiwi-ms-select-solid: var(--kiwi-ms-accent-active);
+
+  /* ---- legacy --kiwi-* tokens (pre-token surfaces follow the theme) ---- */
+  --kiwi-bg: #e8e8e8;
+  --kiwi-surface: #ffffff;
+  --kiwi-sidebar: #e8e8e8;
+  --kiwi-card: #ffffff;
+  --kiwi-input: #ffffff;
+  --kiwi-border: #595959;
+  --kiwi-border-soft: #6e6e6e;
+  --kiwi-text: #000000;
+  --kiwi-text-secondary: #333333;
+  --kiwi-text-disabled: #595959;
+  --kiwi-brand: #b34700;
+  --kiwi-brand-ink: #7a3200;
+  --kiwi-focus: #0b4db3;
+  --kiwi-focus-ring: rgba(11, 77, 179, 0.5);
+  --kiwi-secure: #006b26;
+  --kiwi-secure-bg: #d8efdf;
+  --kiwi-secure-border: rgba(0, 107, 38, 0.6);
+  --kiwi-warning: #8a4f00;
+  --kiwi-warning-bg: #f9ecd2;
+  --kiwi-warning-border: rgba(138, 79, 0, 0.6);
+  --kiwi-danger: #b00020;
+  --kiwi-danger-bg: #fadfe3;
+  --kiwi-danger-border: rgba(176, 0, 32, 0.55);
+  --kiwi-unknown: #3c3c3c;
+  --kiwi-unknown-bg: #dedede;
+  --kiwi-unknown-border: rgba(60, 60, 60, 0.6);
+  --kiwi-lock: #7a3200;
+  --kiwi-lock-bg: #f6e3c2;
+  --kiwi-hover-bg: rgba(11, 77, 179, 0.08);
+  --kiwi-shadow: 0 18px 48px rgba(0, 0, 0, 0.3);
+  --kiwi-shimmer: rgba(11, 77, 179, 0.08);
+}

@@ -1,7 +1,10 @@
 /**
- * Search view (T-160, T-176): results over `kiwi_search_messages` (Agent 8's
- * `MailStore::search` is in; the Tauri IPC is still pending) with a labeled
- * client-side fallback over already-loaded messages.
+ * Search view (T-160, T-176, live-wired T-231): results over the real
+ * `kiwi_search_messages` IPC (lock-gated FTS over the local store,
+ * `accountId` resolved server-side per hit). A labeled client-side
+ * fallback over already-loaded real messages applies only when the IPC
+ * is unreachable or errors — it never reads mock fixtures; demo mode
+ * searches the fixtures directly.
  *
  * Query grammar mirrors `kiwi-mail/src/search.rs` exactly: plain tokens,
  * `subject:`/`from:`/`to:`/`body:` scopes, `"quoted phrases"`, `-negation`
@@ -15,6 +18,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { MessageEnvelope, SearchHit } from "../kiwi";
 import { unixToIso } from "../kiwi";
 import { api, BackendUnavailableError } from "../ipc";
+import { Icon } from "../components/icons/index";
 
 export interface ParsedQuery {
   /** Verbatim backend string (real grammar; UI-only tokens removed). */
@@ -216,7 +220,7 @@ function localMatches(m: MessageEnvelope, serverQuery: string): boolean {
   return true;
 }
 
-const SYNTAX_CHIPS = ["from:", "to:", "subject:", "body:", "-", '"phrase"'];
+const SYNTAX_CHIPS = ["from:", "to:", "subject:", "body:", "-", '"phrase"', "has:attachment", "folder:"];
 
 export function SearchView({
   query,
@@ -338,7 +342,17 @@ export function SearchView({
             key={chip}
             type="button"
             onClick={() => insertChip(chip)}
-            title={chip === "-" ? "Negation prefix (e.g. invoice -unpaid)" : chip === '"phrase"' ? "Exact phrase" : `Scope: ${chip}value`}
+            title={
+              chip === "-"
+                ? "Negation prefix (e.g. invoice -unpaid)"
+                : chip === '"phrase"'
+                  ? "Exact phrase"
+                  : chip === "has:attachment"
+                    ? "Post-filter: only messages with attachments"
+                    : chip === "folder:"
+                      ? "Post-filter: folder/account substring"
+                      : `Scope: ${chip}value`
+            }
             style={{ fontSize: "0.8rem" }}
           >
             <code>{chip}</code>
@@ -368,7 +382,7 @@ export function SearchView({
           onClick={() => onQuery(setToken(query, "has:", parsed.hasAttachment ? null : "attachment"))}
           title="UI-side filter (never sent to the server)"
         >
-          {parsed.hasAttachment ? "✓ " : ""}has:attachment
+          {parsed.hasAttachment && <Icon name="check" size={11} />} has:attachment
         </button>
         <label>
           <small>folder: </small>
@@ -401,7 +415,7 @@ export function SearchView({
               ? `Server results (${rows.length}) — FTS grammar ran in the backend.`
               : demo
                 ? `Local demo results (${rows.length}) — fixtures only.`
-                : `Local results (${rows.length}) — search IPC not yet in the backend; grammar mirrored over loaded messages${parsed.hasToScope ? "; to: is server-only here" : ""}.`}
+                : `Local results (${rows.length}) — search IPC unavailable; grammar mirrored over already-loaded messages${parsed.hasToScope ? "; to: is server-only here" : ""}.`}
         </small>
       </p>
       {searchError && (
@@ -413,7 +427,7 @@ export function SearchView({
       )}
       {query.trim() && rows.length === 0 && !searching && (
         <div className="kiwi-empty">
-          <span className="kiwi-empty-icon" aria-hidden="true">🔍</span>
+          <span className="kiwi-empty-icon em-empty-icon" aria-hidden="true"><Icon name="search" size={28} /></span>
           <strong>No matches</strong>
           <br />
           <small>Try fewer terms, or clear the filter chips.</small>
@@ -435,7 +449,7 @@ export function SearchView({
             <div style={{ display: "flex", justifyContent: "space-between", gap: "0.4rem" }}>
               <span>
                 <Highlight text={r.from} terms={parsed.highlight} />
-                {r.hasAttachments && <span aria-label="has attachments"> 📎</span>}
+                {r.hasAttachments && <Icon name="paperclip" size={12} label="has attachments" />}
               </span>
               <span style={{ color: "var(--kiwi-text-secondary)", fontSize: "0.8rem" }}>
                 {r.date ? new Date(r.date).toLocaleString() : "—"}

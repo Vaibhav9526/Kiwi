@@ -90,8 +90,14 @@ impl Availability {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SandboxSpec {
-    /// Host-side path; copied into the guest read-only.
+    /// Host-side path; copied into the guest read-only for artifact targets.
     pub artifact_path: PathBuf,
+    /// HTTP(S) target for providers that support isolated link analysis.
+    /// Mutually exclusive with `artifact_path` in practice.
+    pub link_url: Option<String>,
+    /// Stable evidence reason codes explaining why the user opened the target.
+    /// Never filenames, URLs, domains, or message content.
+    pub evidence_reasons: Vec<String>,
     /// Hard kill past this.
     pub timeout_secs: u64,
     pub max_memory_mb: u32,
@@ -152,6 +158,10 @@ pub struct EgressEvidence {
 /// obligations). All fields bounded to `MAX_*` constants.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AnalysisReport {
+    /// Stable reason codes supplied at open time — why KIWI asked the sandbox
+    /// to inspect this target. Evidence, never a finding or verdict.
+    #[serde(default)]
+    pub evidence_reasons: Vec<String>,
     pub exit_code: Option<i32>,
     pub timed_out: bool,
     /// Crash/kill/truncation → partial data; always honest.

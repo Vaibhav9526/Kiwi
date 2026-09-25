@@ -17,7 +17,7 @@ pub struct MxRecord {
 }
 
 /// What discovery needs from the network.
-pub trait DiscoveryNet {
+pub trait DiscoveryNet: Send + Sync {
     /// MX records for `domain`, preference order preserved. Empty = none.
     fn lookup_mx(&self, domain: &DomainName) -> Vec<MxRecord>;
     /// HTTPS GET body for `url`. `None` = unreachable / non-2xx / too big.

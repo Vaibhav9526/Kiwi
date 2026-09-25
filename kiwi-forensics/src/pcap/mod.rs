@@ -53,23 +53,35 @@ impl Default for CaptureLimits {
 }
 
 /// Capture container format, detected from magic.
+///
+/// Wire form (FSV-1): `{"classic_pcap":{"nanosecond":…}}` / `"pcap_ng"`;
+/// the pre-migration PascalCase tags are accepted on read only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CaptureFormat {
     /// Classic `.pcap` (libpcap savefile).
+    #[serde(alias = "ClassicPcap")]
     ClassicPcap {
         /// `true` when timestamps are nanoseconds (magic `a1b23c4d`).
         nanosecond: bool,
     },
     /// `.pcapng` (sectioned file format).
+    #[serde(alias = "PcapNg")]
     PcapNg,
 }
 
 /// Link-layer type of captured frames.
+///
+/// Wire form (FSV-1): `"ethernet"` / `{"other": <u16>}`; the pre-migration
+/// PascalCase tags are accepted on read only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LinkType {
     /// IEEE 802.3 Ethernet (linktype 1).
+    #[serde(alias = "Ethernet")]
     Ethernet,
     /// Any other linktype value, preserved raw.
+    #[serde(alias = "Other")]
     Other(u16),
 }
 

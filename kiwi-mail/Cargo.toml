@@ -12,6 +12,10 @@ publish = false
 #   * no unsafe code
 [dependencies]
 kiwi-core = { path = "../kiwi-core" }
+# T-232: deterministic SPF/DKIM/DMARC evaluation at ingest. The DNS seam
+# (`kiwi_mailauth::dns::DnsResolver`) is injected by the caller, so kiwi-mail
+# itself never performs a live lookup — the live adapter stays in the app.
+kiwi-mailauth = { path = "../kiwi-mailauth" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -22,12 +26,22 @@ webpki-roots = "0.26"
 tracing.workspace = true
 base64.workspace = true
 mail-parser.workspace = true
+url = "2"
 rusqlite.workspace = true
 async-trait.workspace = true
 bytes.workspace = true
 zeroize.workspace = true
 md5 = "0.8"
 time.workspace = true
+# Self-signed cert generation for `testutil::tls_acceptor` — optional so
+# the harness only ships when a test build asks for it (in-crate tests via
+# the dev-dep below; cross-crate E2E via the `e2e-fixtures` feature).
+rcgen = { version = "0.13", optional = true }
+
+[features]
+# Cross-crate scripted-fixture seam: exposes `testutil` (transcript
+# replay + TLS acceptor) to dependent crates' test builds.
+e2e-fixtures = ["dep:rcgen"]
 
 [dev-dependencies]
 rcgen = "0.13"

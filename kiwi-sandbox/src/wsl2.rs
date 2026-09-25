@@ -135,6 +135,11 @@ impl Wsl2Provider {
     /// inspect the distro name; the trait impl boxes it.
     async fn create_instance(&self, spec: SandboxSpec) -> Result<Wsl2Sandbox> {
         // Spec validation first — deterministic regardless of host state.
+        if spec.link_url.is_some() {
+            return Err(SandboxError::Unavailable(
+                "WSL2 tier blocks egress and cannot open links".into(),
+            ));
+        }
         if spec.allow_egress {
             return Err(SandboxError::Create(
                 "allow_egress refused: WSL2 tier has no per-instance egress \
@@ -384,7 +389,10 @@ impl Sandbox for Wsl2Sandbox {
         if !self.alive {
             return Err(SandboxError::Create("instance not alive".into()));
         }
-        let mut report = AnalysisReport::default();
+        let mut report = AnalysisReport {
+            evidence_reasons: self.spec.evidence_reasons.clone(),
+            ..AnalysisReport::default()
+        };
 
         // Host-side FS baseline — fallback evidence if the agent never
         // produces a report (agent push failure, guest crash mid-run).
@@ -928,6 +936,8 @@ mod tests {
         let err = p
             .create_instance(SandboxSpec {
                 artifact_path: artifact.clone(),
+                link_url: None,
+                evidence_reasons: Vec::new(),
                 timeout_secs: 30,
                 max_memory_mb: 256,
                 allow_egress: true,
@@ -941,6 +951,8 @@ mod tests {
         let err = p
             .create_instance(SandboxSpec {
                 artifact_path: artifact.clone(),
+                link_url: None,
+                evidence_reasons: Vec::new(),
                 timeout_secs: 0,
                 max_memory_mb: 256,
                 allow_egress: false,
@@ -954,6 +966,8 @@ mod tests {
         let err = p
             .create_instance(SandboxSpec {
                 artifact_path: PathBuf::from("nope.bin"),
+                link_url: None,
+                evidence_reasons: Vec::new(),
                 timeout_secs: 30,
                 max_memory_mb: 256,
                 allow_egress: false,
@@ -1058,6 +1072,8 @@ mod tests {
         let mut sbx = provider
             .create_instance(SandboxSpec {
                 artifact_path: artifact,
+                link_url: None,
+                evidence_reasons: Vec::new(),
                 timeout_secs: 60,
                 max_memory_mb: 256,
                 allow_egress: false,

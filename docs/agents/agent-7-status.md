@@ -2,6 +2,49 @@
 
 > Append dated entries: status, files changed, commands run, tests, assumptions, risks.
 
+## 2026-09-20 — T-181: Phase C2 src-tauri file split
+
+**Status:** done. `cargo test -p kiwi-app` → 51/51 green, clippy
+`--all-targets --no-deps` clean, `cargo fmt --check` clean. Freeze
+announced to Lead before starting (quiet window); zero functional
+change — `git mv` + mechanical carve, every wire shape and call site
+unchanged.
+
+### Layout
+
+- `types.rs` (1157L) → `types/` — domain files mirroring `commands/`:
+  `system` (status/challenge/app-info), `security` (session/cert/
+  finding/session-detail), `accounts` (account/probe payloads +
+  `account_view`/`account_trust_token`), `mail` (folder/message/body/
+  sync), `message` (patch/delete/move/attachment/render results),
+  `send` (compose/receipt/outbox), `devices` (device + endpoint),
+  `contacts`, `prefs`. `mod.rs` keeps the shared enum→wire-string maps
+  (`signal_kind`, `severity`, `trust_*`, `protocol`, `transport`,
+  `tls_version`, `auth_mechanism`, `challenge_event`, …) — one spelling,
+  one home — plus flat `pub use domain::*` re-exports so every
+  `crate::types::X` path is untouched.
+- `commands/message.rs` (1238L) → `commands/message/` — `update`
+  (flags/archive), `delete` (batch delete + move), `attachment`,
+  `render` (sanitize + remote-content); `mod.rs` holds the shared
+  folder/uid-set helpers (TRASH_NAMES, `bounded_uids`, `owned_folder`,
+  `resolve_trash`, …) + all existing tests.
+- `commands/send.rs` (1013L) → `commands/send/` — `enqueue` (send /
+  cancel / schedule / list-outbox), `dispatch` (`outbox_loop`, `deliver`,
+  `transmit`, §10/§11 bridge hooks); `mod.rs` holds `drop_outbox`
+  (shared terminal-removal) + tests.
+- Remaining >800L: `commands/mail.rs` (929) and `commands/accounts.rs`
+  (814) — the task named only message.rs + send.rs for splitting; noted
+  for a follow-up pass if Lead wants the same treatment.
+
+### Notes
+
+- kiwi-mail churned mid-task (Agent 2 ran the same C2 split on
+  `imap.rs`/`smtp.rs` — transient `MAX_RESPONSE` / dangling-doc errors
+  resolved as their edits landed; no edits of mine needed on their
+  side this time).
+- All renames are `git mv`-tracked; the new leaf files are `git add`able
+  as moves-with-carve (rename detection will approximate).
+
 ## 2026-09-20 — T-175: contacts + prefs IPC
 
 **Status:** implemented + verified. `cargo test -p kiwi-app` → 51/51

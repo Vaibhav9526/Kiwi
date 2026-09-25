@@ -3,7 +3,7 @@
  * query builder. Return shapes are IDENTICAL to the retired raw-SQL layer
  * (callers/services/tests unchanged). Boolean-ish columns stay 0/1 integers.
  */
-import { and, asc, desc, eq, gte, like, lte } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import * as s from "./schema.sqlite.js";
 import type { SqliteDrizzle } from "./sqlite.js";
 import type {
@@ -15,6 +15,40 @@ import type {
 import type { ExternalRecipientBehavior, OrgRole, RecipientDomainAction } from "../types.js";
 import type { MailflowIngest } from "../mailflow/model.js";
 import type { AuditEventInput, AuditRecord } from "../audit/model.js";
+import { canonicalEventJson, computeEntryHash } from "../audit/chain.js";
+import { ConflictError } from "../util/validate.js";
+
+/**
+ * Escape a caller-supplied value for use inside a LIKE pattern (T-193/L1):
+ * without this, `%` matches everything and `_` matches any character,
+ * silently widening the filter beyond what was asked. Used with an explicit
+ * `ESCAPE '\'` clause — the escape character itself is escaped first.
+ */
+export function escapeLikePattern(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+}
+
+/**
+ * True for SQLite unique-violation failures (duplicate email, dup policy id).
+ * Cause-aware like the Postgres mirror: a wrapped driver error must not
+ * slip through as a 500 (T-193/M5).
+ */
+export function isUniqueViolation(err: unknown): boolean {
+  let cur: unknown = err;
+  for (let depth = 0; cur !== null && typeof cur === "object" && depth < 3; depth++) {
+    const code = (cur as { code?: unknown }).code;
+    const message = cur instanceof Error ? cur.message : "";
+    if (
+      code === "SQLITE_CONSTRAINT_UNIQUE" ||
+      code === "SQLITE_CONSTRAINT_PRIMARYKEY" ||
+      /UNIQUE constraint failed/i.test(message)
+    ) {
+      return true;
+    }
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return false;
+}
 
 export class DrizzleOrgRepository implements OrgRepository {
   constructor(private readonly db: SqliteDrizzle) {}
@@ -53,7 +87,15 @@ export class DrizzleOrgRepository implements OrgRepository {
     email: string,
     now: number,
   ): { id: string; org_id: string; email: string; created_at: number } {
-    this.db.insert(s.users).values({ id, orgId, email, createdAt: now }).run();
+    // Duplicate email → typed 409 (T-193/M5), not a 500 with a driver
+    // constraint name. The UNIQUE(org_id, email) index is the backstop;
+    // callers cannot reliably pre-check it without racing it.
+    try {
+      this.db.insert(s.users).values({ id, orgId, email, createdAt: now }).run();
+    } catch (err) {
+      if (isUniqueViolation(err)) throw new ConflictError("email", "address already registered in this org");
+      throw err;
+    }
     return { id, org_id: orgId, email, created_at: now };
   }
 
@@ -92,6 +134,16 @@ export class DrizzleOrgRepository implements OrgRepository {
       .map((r) => r.role as OrgRole);
   }
 
+  listRolesForUsers(userIds: string[]): { user_id: string; role: OrgRole }[] {
+    if (userIds.length === 0) return [];
+    return this.db
+      .select({ user_id: s.userOrgRoles.userId, role: s.userOrgRoles.role })
+      .from(s.userOrgRoles)
+      .where(inArray(s.userOrgRoles.userId, userIds))
+      .all()
+      .map((r) => ({ user_id: r.user_id, role: r.role as OrgRole }));
+  }
+
   createDevice(
     id: string,
     orgId: string,
@@ -107,6 +159,28 @@ export class DrizzleOrgRepository implements OrgRepository {
   ): { id: string; org_id: string; label: string; revoked: number; created_at: number } | undefined {
     const row = this.db.select().from(s.devices).where(eq(s.devices.id, id)).get();
     return row ? { id: row.id, org_id: row.orgId, label: row.label, revoked: row.revoked, created_at: row.createdAt } : undefined;
+  }
+
+  listDevices(
+    orgId: string,
+    limit: number,
+  ): { id: string; org_id: string; label: string; revoked: number; revoked_at: number | null; created_at: number }[] {
+    return this.db
+      .select()
+      .from(s.devices)
+      .where(eq(s.devices.orgId, orgId))
+      // §14.1: total order — created_at then id; never merge dup labels.
+      .orderBy(asc(s.devices.createdAt), asc(s.devices.id))
+      .limit(limit)
+      .all()
+      .map((row) => ({
+        id: row.id,
+        org_id: row.orgId,
+        label: row.label,
+        revoked: row.revoked,
+        revoked_at: row.revokedAt,
+        created_at: row.createdAt,
+      }));
   }
 
   revokeDevice(id: string, now: number): void {
@@ -174,6 +248,46 @@ export class DrizzlePolicyRuleRepository implements PolicyRuleRepository {
       .map((r) => ({ domain: r.domain, action: r.action as RecipientDomainAction }));
   }
 
+  listDomainRulesForPolicies(
+    policyIds: string[],
+  ): { policy_id: string; domain: string; action: RecipientDomainAction }[] {
+    if (policyIds.length === 0) return [];
+    return this.db
+      .select({
+        policy_id: s.policyDomainRules.policyId,
+        domain: s.policyDomainRules.domain,
+        action: s.policyDomainRules.action,
+      })
+      .from(s.policyDomainRules)
+      .where(inArray(s.policyDomainRules.policyId, policyIds))
+      .orderBy(s.policyDomainRules.domain)
+      .all()
+      .map((r) => ({ policy_id: r.policy_id, domain: r.domain, action: r.action as RecipientDomainAction }));
+  }
+
+  createPolicyWithRules(
+    id: string,
+    orgId: string,
+    name: string,
+    enabled: boolean,
+    minTls: string | null,
+    externalRecipients: ExternalRecipientBehavior,
+    now: number,
+    rules: { domain: string; action: RecipientDomainAction }[],
+  ): void {
+    // One transaction (T-193/M3): policy + rules commit together or not at
+    // all. The service pre-validates duplicates, the transaction guarantees
+    // it — either layer alone would leave a hole the other closes.
+    this.db.transaction((tx) => {
+      tx.insert(s.policies)
+        .values({ id, orgId, name, enabled: enabled ? 1 : 0, minTls, externalRecipients, createdAt: now, updatedAt: now })
+        .run();
+      for (const rule of rules) {
+        tx.insert(s.policyDomainRules).values({ policyId: id, domain: rule.domain, action: rule.action }).run();
+      }
+    });
+  }
+
   listPoliciesForOrg(orgId: string): {
     id: string;
     org_id: string;
@@ -237,7 +351,11 @@ export class DrizzleMailflowRepository implements MailflowRepository {
   }[] {
     const conditions = [];
     if (filter.orgId) conditions.push(eq(s.mailflowEvents.orgId, filter.orgId));
-    if (filter.recipientDomain) conditions.push(like(s.mailflowEvents.recipient, `%@${filter.recipientDomain}`));
+    if (filter.recipientDomain) {
+      conditions.push(
+        sql`${s.mailflowEvents.recipient} LIKE ${`%@${escapeLikePattern(filter.recipientDomain)}`} ESCAPE '\\'`,
+      );
+    }
     if (typeof filter.sinceTs === "number") conditions.push(gte(s.mailflowEvents.ts, filter.sinceTs));
     if (typeof filter.untilTs === "number") conditions.push(lte(s.mailflowEvents.ts, filter.untilTs));
     const rows = this.db
@@ -265,6 +383,49 @@ export class DrizzleMailflowRepository implements MailflowRepository {
 
 export class DrizzleAuditRepository implements AuditRepository {
   constructor(private readonly db: SqliteDrizzle) {}
+
+  appendChained(input: AuditEventInput, ts: number): AuditRecord {
+    // Atomic chained append (T-193/H6): better-sqlite3 is synchronous, so
+    // wrapping tail-read → hash → insert in one transaction makes the whole
+    // step indivisible. No client max+1 outside the transaction — the `seq`
+    // is assigned from the tail row read INSIDE it.
+    return this.db.transaction((tx) => {
+      const last = tx.select().from(s.auditLog).orderBy(desc(s.auditLog.seq)).limit(1).get();
+      const prevHash = last?.entryHash ?? "genesis";
+      const seq = (last?.seq ?? 0) + 1;
+      const entryHash = computeEntryHash(canonicalEventJson(input), prevHash);
+      tx.insert(s.auditLog)
+        .values({
+          seq,
+          ts,
+          actorSubject: input.actor.subject,
+          actorRoles: JSON.stringify(input.actor.roles),
+          orgId: input.orgId,
+          action: input.action,
+          resource: input.resource,
+          outcome: input.outcome,
+          requestId: input.requestId,
+          details: JSON.stringify(input.details),
+          prevHash,
+          entryHash,
+        })
+        .run();
+      return {
+        seq,
+        ts,
+        actor_subject: input.actor.subject,
+        actor_roles: JSON.stringify(input.actor.roles),
+        org_id: input.orgId,
+        action: input.action,
+        resource: input.resource,
+        outcome: input.outcome,
+        request_id: input.requestId,
+        details: JSON.stringify(input.details),
+        prev_hash: prevHash,
+        entry_hash: entryHash,
+      };
+    });
+  }
 
   append(input: AuditEventInput, prevHash: string, entryHash: string, seq: number, ts: number): AuditRecord {
     this.db

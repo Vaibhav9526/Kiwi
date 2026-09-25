@@ -3,17 +3,33 @@
  * test/remove/reconfigure/set-default, re-probe, sync frequency, signature),
  * devices, org binding, endpoint signals, Appearance (theme/accent/density),
  * Notifications (toasts/sound/mute), Privacy (remote-content + receipts),
- * Advanced. Live prefs sync through kiwi_get/set_prefs where present with
- * localStorage fallback (T-167). Secrets never appear here.
+ * Advanced. Live prefs sync through the kiwi_prefs_* key/value store
+ * (T-175/T-237) with localStorage fallback (T-167). Secrets never appear here.
  */
 import { useEffect, useRef, useState } from "react";
+import type { ComponentProps } from "react";
 import { accountPref, applyPrefsBag, applyUiPrefs, collectPrefs, loadMuted, loadPref, savePref } from "../prefs";
 import { api, BackendUnavailableError, IpcError } from "../ipc";
-import type { AccountView, DeviceView, VerifyResult } from "../kiwi";
+import type { AccountView, DeviceView, FolderView, OAuth2StatusView, VerifyResult } from "../kiwi";
+import { OAuth2SignIn, oauth2ProviderLabel } from "../components/oauth2";
 import { navigate } from "../router";
 import { EDIT_HANDOFF_KEY, localAutoconfigGuess } from "./setup";
+import { FiltersView } from "./filters";
+import { IntegrationsView } from "./integrations";
+import { RulesView } from "./rules";
+import { TemplatesManager } from "./templates";
+import { SHORTCUT_ROWS } from "../components/shortcuts";
+import { Icon, isIconName } from "../components/icons/index";
+import { PairQrFlow } from "../components/pair";
+import { ThemePicker, useTheme } from "../themes";
+import { emitToPlugin, removePlugin, setPluginEnabled, useInstalledPlugins, usePluginPanes } from "../plugins";
 
-const SECTIONS = ["General", "Accounts", "Appearance", "KIWI Security", "Templates", "Notifications", "Privacy", "Advanced"] as const;
+// T-191 tabbed preferences (Mailspring idiom): the eight legacy sections
+// fold into seven tabs — General (general + notifications + privacy +
+// advanced), Accounts, Identity (KIWI Security), Appearance (appearance +
+// templates), Shortcuts, Mail Rules (embedded filters), Integrations
+// (temp mail + deliverability, T-242).
+const SECTIONS = ["General", "Accounts", "Identity", "Appearance", "Shortcuts", "Mail Rules", "Integrations", "Plugins"] as const;
 type Section = (typeof SECTIONS)[number];
 
 function errText(e: unknown): string {
@@ -28,6 +44,8 @@ export function SettingsView({
   onStatusChanged,
   onOrgChanged,
   onLock,
+  filters,
+  folderLists,
 }: {
   mode: "live" | "demo";
   accounts: AccountView[];
@@ -36,15 +54,25 @@ export function SettingsView({
   onStatusChanged: () => void;
   onOrgChanged: () => void;
   onLock: () => void;
+  /** Mail Rules tab embeds the filters surface (same props as the route). */
+  filters?: ComponentProps<typeof FiltersView>;
+  /** Real folder list per account — the rules editor's move-folder picker. */
+  folderLists?: Record<string, FolderView[]>;
 }) {
   const [section, setSection] = useState<Section>("General");
-  const [themeDefault, setThemeDefault] = useState(() => loadPref("kiwi.theme", "dark"));
+  // T-275: theme is owned by useTheme() — the ThemePicker (Appearance tab)
+  // and TopBar select write through it; backend bag merges dispatch
+  // kiwi-theme via applyPrefsBag, so no manual pref re-read is needed.
+  const { theme: themeDefault } = useTheme();
+  // T-280: plugin surface — installed records + registered panes (live via
+  // the kiwi-plugins-changed / pane-store subscriptions).
+  const installedPlugins = useInstalledPlugins();
+  const pluginPanes = usePluginPanes();
   const [grace, setGrace] = useState(() => loadPref("kiwi.grace", "10"));
   const [minTls, setMinTls] = useState(() => loadPref("kiwi.minTls", "tls1.2"));
-  const [templates, setTemplates] = useState<string[]>(() => loadPref("kiwi.templates", ["Status update", "Meeting request"]));
-  const [newTemplate, setNewTemplate] = useState("");
   const [devices, setDevices] = useState<DeviceView[]>([]);
   const [devicesError, setDevicesError] = useState<string | null>(null);
+  const [pairOpen, setPairOpen] = useState(false);
   const [testResults, setTestResults] = useState<Record<string, VerifyResult[]>>({});
   const [actionError, setActionError] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
@@ -56,6 +84,10 @@ export function SettingsView({
   const [remoteState, setRemoteState] = useState<Record<string, boolean>>({});
   const [remoteBusy, setRemoteBusy] = useState<string | null>(null);
   const [draftCount, setDraftCount] = useState(0);
+  // OAuth2 posture per account (T-243): `kiwi_oauth2_status` drives the
+  // needs-refresh badge + inline re-auth on Accounts cards.
+  const [oauth2Status, setOauth2Status] = useState<Record<string, OAuth2StatusView | null>>({});
+  const [reauthFor, setReauthFor] = useState<string | null>(null);
   const [defaultId, setDefaultId] = useState(() => loadPref("kiwi.defaultAccount", ""));
   const [accent, setAccent] = useState(() => loadPref("kiwi.accent", "standard"));
   const [density, setDensity] = useState(() => loadPref("kiwi.density", "comfortable"));
@@ -69,10 +101,8 @@ export function SettingsView({
   const [prefsSync, setPrefsSync] = useState<"local" | "synced" | "unavailable">("local");
   const pushTimer = useRef<number | null>(null);
 
-  useEffect(() => savePref("kiwi.theme", themeDefault), [themeDefault]);
   useEffect(() => savePref("kiwi.grace", grace), [grace]);
   useEffect(() => savePref("kiwi.minTls", minTls), [minTls]);
-  useEffect(() => savePref("kiwi.templates", templates), [templates]);
   useEffect(() => savePref("kiwi.poll", poll), [poll]);
   useEffect(() => savePref("kiwi.defaultAccount", defaultId), [defaultId]);
   useEffect(() => {
@@ -87,8 +117,8 @@ export function SettingsView({
   useEffect(() => savePref("kiwi.sound", sound), [sound]);
   useEffect(() => savePref("kiwi.muted", mutedIds), [mutedIds]);
 
-  // Backend prefs push (T-167): best-effort, debounced; the commands don't
-  // exist yet so this stays "local"/"unavailable" until they land.
+  // Backend prefs push (T-167/T-237): best-effort, debounced; any failure
+  // leaves the badge at "unavailable" while localStorage stays the truth.
   const schedulePush = () => {
     if (mode !== "live") {
       setPrefsSync("local");
@@ -106,7 +136,7 @@ export function SettingsView({
       })();
     }, 600);
   };
-  useEffect(() => schedulePush(), [themeDefault, grace, minTls, templates, poll, defaultId, accent, density, toasts, sound, mutedIds, syncFreq, signatures, mode]);
+  useEffect(() => schedulePush(), [themeDefault, grace, minTls, poll, defaultId, accent, density, toasts, sound, mutedIds, syncFreq, signatures, mode]);
   useEffect(() => () => {
     if (pushTimer.current !== null) window.clearTimeout(pushTimer.current);
   }, []);
@@ -119,10 +149,9 @@ export function SettingsView({
       try {
         const bag = await api.getPrefs();
         applyPrefsBag(bag);
-        setThemeDefault(loadPref("kiwi.theme", "dark"));
+        // theme state re-syncs via the kiwi-theme event applyPrefsBag emits.
         setGrace(loadPref("kiwi.grace", "10"));
         setMinTls(loadPref("kiwi.minTls", "tls1.2"));
-        setTemplates(loadPref("kiwi.templates", ["Status update", "Meeting request"]));
         setPoll(loadPref("kiwi.poll", "manual"));
         setDefaultId(loadPref("kiwi.defaultAccount", ""));
         setAccent(loadPref("kiwi.accent", "standard"));
@@ -152,6 +181,45 @@ export function SettingsView({
       return n;
     });
   }, [accounts]);
+
+  // OAuth2 posture per account (T-243): non-secret grant posture only —
+  // authMethod/needsRefresh/credentialPresent. Failures leave null (no
+  // badge rendered); the command is absent in demo mode.
+  useEffect(() => {
+    if (mode !== "live") return;
+    let alive = true;
+    void (async () => {
+      const rows = await Promise.all(
+        accounts.map(async (a) => {
+          try {
+            return [a.id, await api.oauth2Status(a.id)] as const;
+          } catch {
+            return [a.id, null] as const;
+          }
+        }),
+      );
+      if (alive) setOauth2Status(Object.fromEntries(rows));
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [accounts, mode]);
+
+  const refreshOauth2Status = async (accountId: string) => {
+    try {
+      const st = await api.oauth2Status(accountId);
+      setOauth2Status((m) => ({ ...m, [accountId]: st }));
+    } catch {
+      // Posture refresh is best-effort; the badge simply stays.
+    }
+  };
+
+  /** Provider id fallback when status omits it — host-derived. */
+  const oauth2ProviderFor = (a: AccountView): string => {
+    const h = a.incoming.host.toLowerCase();
+    if (h.includes("office365") || h.includes("outlook")) return "microsoft";
+    return "google";
+  };
   useEffect(() => {
     for (const [id, v] of Object.entries(syncFreq)) savePref(accountPref("kiwi.syncFreq", id), v);
   }, [syncFreq]);
@@ -219,7 +287,7 @@ export function SettingsView({
   };
 
   useEffect(() => {
-    if (section === "KIWI Security") void loadDevices();
+    if (section === "Identity") void loadDevices();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [section, mode]);
 
@@ -342,7 +410,7 @@ export function SettingsView({
   };
 
   useEffect(() => {
-    if (section === "Advanced") countDrafts();
+    if (section === "General") countDrafts();
   }, [section]);
 
   const clearDrafts = () => {
@@ -360,21 +428,44 @@ export function SettingsView({
   };
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "200px 1fr", gap: "0.8rem" }}>
-      <nav aria-label="Settings sections">
+    <div className="ms-prefs ms-view-enter">
+      <div
+        className="ms-tabs"
+        role="tablist"
+        aria-label="Preferences"
+        onKeyDown={(e) => {
+          const tabs = Array.from(
+            (e.currentTarget as HTMLElement).querySelectorAll<HTMLElement>('[role="tab"]'),
+          );
+          const i = tabs.indexOf(e.target as HTMLElement);
+          if (i < 0) return;
+          let n: number | null = null;
+          if (e.key === "ArrowRight" || e.key === "ArrowDown") n = (i + 1) % tabs.length;
+          else if (e.key === "ArrowLeft" || e.key === "ArrowUp") n = (i - 1 + tabs.length) % tabs.length;
+          else if (e.key === "Home") n = 0;
+          else if (e.key === "End") n = tabs.length - 1;
+          if (n !== null) {
+            e.preventDefault();
+            setSection(SECTIONS[n]);
+            tabs[n]?.focus();
+          }
+        }}
+      >
         {SECTIONS.map((s) => (
           <button
             key={s}
             type="button"
-            aria-current={s === section ? "page" : undefined}
+            role="tab"
+            aria-selected={s === section}
+            className="ms-tab"
+            tabIndex={s === section ? 0 : -1}
             onClick={() => setSection(s)}
-            style={{ display: "block", width: "100%", textAlign: "left", marginBottom: "0.25rem", fontWeight: s === section ? 700 : 400 }}
           >
             {s}
           </button>
         ))}
-      </nav>
-      <section aria-label={`${section} settings`}>
+      </div>
+      <section aria-label={`${section} settings`} role="tabpanel">
         <h1>{section}</h1>
         {actionError && (
           <div className="kiwi-banner error" role="alert">
@@ -405,27 +496,9 @@ export function SettingsView({
 
         {section === "Appearance" && (
           <>
-            <p>
-              <label>
-                Theme:{" "}
-                <select
-                  value={themeDefault}
-                  onChange={(e) => {
-                    setThemeDefault(e.target.value);
-                    // App owns the live theme state; mirror here for next launch.
-                    try {
-                      window.dispatchEvent(new CustomEvent("kiwi-theme", { detail: e.target.value }));
-                    } catch {
-                      // Non-fatal — next launch picks it up.
-                    }
-                  }}
-                >
-                  <option value="system">System</option>
-                  <option value="light">Light</option>
-                  <option value="dark">Dark</option>
-                </select>
-              </label>
-            </p>
+            {/* T-268 picker (T-275 landed): stock + sideloaded theme packages,
+                System option, instant apply via data-theme on root. */}
+            <ThemePicker />
             <p>
               <label>
                 Accent intensity:{" "}
@@ -464,7 +537,7 @@ export function SettingsView({
                   {a.displayName} <small style={{ color: "var(--kiwi-text-secondary)" }}>{a.email}</small>{" "}
                   {defaultId === a.id && (
                     <span className="kiwi-pill secure" title="Default sending account">
-                      ✓ default
+                      <Icon name="check" size={10} /> default
                     </span>
                   )}
                   {mutedIds.includes(a.id) && (
@@ -472,6 +545,20 @@ export function SettingsView({
                       muted
                     </span>
                   )}
+                  {(() => {
+                    const st = oauth2Status[a.id];
+                    if (!st || st.authMethod !== "xoauth2") return null;
+                    const stale = !st.credentialPresent || st.needsRefresh === true;
+                    return (
+                      <span
+                        className={`kiwi-pill ${stale ? "warning" : "secure"}`}
+                        title={`OAuth2 grant posture (kiwi_oauth2_status) — token material stays in the OS credential store.${st.credentialPresent === false ? " No credential stored at the account's key." : ""}${st.needsRefresh === true ? " Token is at/past its refresh window." : ""}`}
+                      >
+                        OAuth2{st.provider ? ` · ${oauth2ProviderLabel(st.provider)}` : ""}
+                        {stale ? " — re-auth needed" : ""}
+                      </span>
+                    );
+                  })()}
                 </h2>
                 <p>
                   <small>
@@ -485,6 +572,36 @@ export function SettingsView({
                     command in kiwi.ipc/1; saving creates a new entry, then remove this one).
                   </small>
                 </p>
+                {(() => {
+                  const st = oauth2Status[a.id];
+                  if (!st || st.authMethod !== "xoauth2") return null;
+                  const stale = !st.credentialPresent || st.needsRefresh === true;
+                  if (reauthFor === a.id) {
+                    const provider = st.provider ?? oauth2ProviderFor(a);
+                    return (
+                      <OAuth2SignIn
+                        provider={provider}
+                        email={st.email ?? a.email}
+                        buttonLabel={`Sign in with ${oauth2ProviderLabel(provider)} again`}
+                        onDone={() => {
+                          // Completing the grant re-wrote the token at the
+                          // same credential-store key — no re-add needed.
+                          setReauthFor(null);
+                          void refreshOauth2Status(a.id);
+                        }}
+                        onCancel={() => setReauthFor(null)}
+                      />
+                    );
+                  }
+                  if (!stale) return null;
+                  return (
+                    <p>
+                      <button type="button" onClick={() => setReauthFor(a.id)}>
+                        Re-authorize {st.provider ? oauth2ProviderLabel(st.provider) : "OAuth2"} sign-in
+                      </button>
+                    </p>
+                  );
+                })()}
                 <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap" }}>
                   <button type="button" onClick={() => void testAccount(a.id)}>
                     Test connection
@@ -527,7 +644,7 @@ export function SettingsView({
                 {(testResults[a.id] ?? []).map((r, i) => (
                   <p key={i}>
                     <small>
-                      Verify {i === 0 ? "incoming" : "outgoing"}: {r.ok ? "✓ ok" : "✕ failed"} —{" "}
+                      Verify {i === 0 ? "incoming" : "outgoing"}: <Icon name={r.ok ? "check" : "close"} size={10} /> {r.ok ? "ok" : "failed"} —{" "}
                       {r.steps.map((s) => `${s.stage}:${s.ok ? "ok" : "FAIL"}`).join(", ")}
                     </small>
                   </p>
@@ -591,7 +708,7 @@ export function SettingsView({
           </>
         )}
 
-        {section === "KIWI Security" && (
+        {section === "Identity" && (
           <>
             <p>
               <label>
@@ -623,19 +740,52 @@ export function SettingsView({
                 <small>{devicesError}</small>
               </p>
             )}
-            {devices.length === 0 && (
+            {devices.length === 0 && !pairOpen && (
               <p style={{ color: "var(--kiwi-text-secondary)" }}>
                 <small>
                   {mode === "live"
-                    ? "No devices registered. Pairing completes on the authenticator (Phase 4 flow)."
+                    ? "No devices registered."
                     : "Device management needs the backend."}
                 </small>
+              </p>
+            )}
+            {/* T-303: real pairing — begin issues a backend-owned ticket and
+                renders its qrPayload as a scannable QR; pair_status polls to
+                claimed/expired (§9d). Demo keeps an honest disabled state. */}
+            {pairOpen ? (
+              <div className="em-card" style={{ padding: "0.8rem", marginBottom: "0.6rem" }}>
+                <PairQrFlow
+                  onClaimed={() => {
+                    void loadDevices();
+                  }}
+                />
+                <p style={{ textAlign: "center", margin: "0.5rem 0 0" }}>
+                  <button type="button" className="ms-btn" onClick={() => setPairOpen(false)}>
+                    Close
+                  </button>
+                </p>
+              </div>
+            ) : (
+              <p>
+                <button
+                  type="button"
+                  className="ms-btn"
+                  onClick={() => setPairOpen(true)}
+                  disabled={mode !== "live"}
+                  title={mode !== "live" ? "Device pairing needs the Tauri backend" : undefined}
+                >
+                  Pair new device…
+                </button>
               </p>
             )}
             <ul>
               {devices.map((d) => (
                 <li key={d.deviceId}>
-                  {d.label} <small>({d.deviceId}, {d.algorithm}, {d.status})</small>{" "}
+                  {d.label}{" "}
+                  <small>
+                    ({d.deviceId}, {d.algorithm}, {d.status}, fp …{d.keyFingerprintTail}
+                    {d.revokedUnix != null && `, revoked ${new Date(d.revokedUnix * 1000).toLocaleDateString()}`})
+                  </small>{" "}
                   {confirmRevoke === d.deviceId ? (
                     <>
                       <button type="button" onClick={() => void revokeDevice(d.deviceId)}>
@@ -686,38 +836,16 @@ export function SettingsView({
           </>
         )}
 
-        {section === "Templates" && (
+        {section === "Appearance" && (
           <>
-            <ul>
-              {templates.map((t) => (
-                <li key={t}>
-                  {t}{" "}
-                  <button type="button" onClick={() => setTemplates((x) => x.filter((y) => y !== t))} aria-label={`Delete template ${t}`}>
-                    Delete
-                  </button>
-                </li>
-              ))}
-            </ul>
-            <p>
-              <label>
-                New template: <input type="text" value={newTemplate} onChange={(e) => setNewTemplate(e.target.value)} />{" "}
-                <button
-                  type="button"
-                  disabled={!newTemplate.trim()}
-                  onClick={() => {
-                    setTemplates((x) => [...x, newTemplate.trim()]);
-                    setNewTemplate("");
-                  }}
-                >
-                  Add
-                </button>
-              </label>
-            </p>
+            <h2>Message templates</h2>
+            <TemplatesManager live={mode === "live"} />
           </>
         )}
 
-        {section === "Privacy" && (
+        {section === "General" && (
           <>
+            <h2>Privacy</h2>
             <p>
               <small>
                 Default for every account: <strong>blocked</strong> (backend-enforced; tracking surface). Opt in
@@ -771,8 +899,9 @@ export function SettingsView({
           </>
         )}
 
-        {section === "Notifications" && (
+        {section === "General" && (
           <>
+            <h2>Notifications</h2>
             <p>
               <label>
                 Toast popups:{" "}
@@ -833,8 +962,9 @@ export function SettingsView({
           </>
         )}
 
-        {section === "Advanced" && (
+        {section === "General" && (
           <>
+            <h2>Advanced</h2>
             <p>
               <small>
                 Contract: <code>kiwi.ipc/1</code> · local prefs under <code>kiwi.*</code> keys in this device's
@@ -854,7 +984,140 @@ export function SettingsView({
             </p>
           </>
         )}
+
+        {section === "Shortcuts" && (
+          <>
+            <p style={{ color: "var(--kiwi-text-secondary)" }}>
+              <small>
+                List shortcuts (j/k/s/e/r/u) are inactive while typing in a text field — press Esc first. The full
+                overlay opens with <code>?</code>, the palette with <code>Ctrl+K</code>.
+              </small>
+            </p>
+            <table style={{ borderCollapse: "collapse", width: "100%" }}>
+              <tbody>
+                {SHORTCUT_ROWS.map(([keys, what]) => (
+                  <tr key={keys}>
+                    <td style={{ padding: "0.3rem 0.6rem 0.3rem 0", whiteSpace: "nowrap" }}>
+                      <code>{keys}</code>
+                    </td>
+                    <td style={{ padding: "0.3rem 0" }}>{what}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        )}
+
+        {section === "Mail Rules" && (
+          <>
+            {/* T-281: server-side ruleset (kiwi_rules_*) — authoritative
+                management surface. The localFilters block below is the
+                older prefs-backed draft engine, kept separate. */}
+            <RulesView demo={mode === "demo"} accounts={accounts} folderLists={folderLists ?? {}} />
+            <hr style={{ border: 0, borderTop: "1px solid var(--kiwi-border)", margin: "1rem 0" }} />
+            <h3>
+              Draft filters{" "}
+              <small style={{ color: "var(--kiwi-text-secondary)", fontWeight: "normal" }}>
+                — local prefs engine (kiwi.filterRules), run-on-list only
+              </small>
+            </h3>
+            {filters ? (
+              <FiltersView {...filters} />
+            ) : (
+              <p>
+                <small>
+                  Mail rules need the mailbox context —{" "}
+                  <button type="button" onClick={() => navigate({ name: "filters" })}>
+                    open the Filters view
+                  </button>
+                  .
+                </small>
+              </p>
+            )}
+          </>
+        )}
+
+        {section === "Integrations" && <IntegrationsView accounts={accounts} mode={mode} />}
+
+        {section === "Plugins" && (
+          <>
+            {installedPlugins.length === 0 ? (
+              <p style={{ color: "var(--kiwi-text-secondary)" }}>
+                <small>
+                  No plugins installed. Sideload-only v1 — see <code>src/plugins/GETTING-STARTED.md</code>
+                  ("alpha: plugins run as trusted code").
+                </small>
+              </p>
+            ) : (
+              installedPlugins.map((p) => (
+                <div className="kiwi-card" key={p.manifest.id}>
+                  <h2>
+                    {p.manifest.name ?? p.manifest.id}{" "}
+                    <small style={{ color: "var(--kiwi-text-secondary)" }}>
+                      v{p.manifest.version} · {p.manifest.id}
+                    </small>
+                  </h2>
+                  <p>
+                    <small>
+                      capabilities: {p.manifest.permissions.length ? p.manifest.permissions.join(", ") : "none"}
+                    </small>
+                  </p>
+                  <p>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={p.enabled}
+                        onChange={(e) => setPluginEnabled(p.manifest.id, e.target.checked)}
+                      />{" "}
+                      Enabled
+                    </label>{" "}
+                    <button type="button" className="ms-btn" onClick={() => removePlugin(p.manifest.id)}>
+                      Remove
+                    </button>
+                  </p>
+                </div>
+              ))
+            )}
+            {pluginPanes.length > 0 && (
+              <>
+                <h2>Plugin panes</h2>
+                {pluginPanes.map((pane) => (
+                  <PluginPaneCard key={`${pane.pluginId}/${pane.paneId}`} pane={pane} />
+                ))}
+              </>
+            )}
+          </>
+        )}
       </section>
+    </div>
+  );
+}
+
+/**
+ * Plugin-supplied Settings pane (T-280). Mount notifies the plugin via the
+ * bridge (`pane.mount`); the plugin pushes body markup back through
+ * `settings.renderPane`. ALPHA: markup renders verbatim — plugins are
+ * trusted code (THREAT-MODEL RR-11); CSP still blocks inline script.
+ */
+function PluginPaneCard({ pane }: { pane: import("../plugins").PluginPane }) {
+  useEffect(() => {
+    emitToPlugin(pane.pluginId, "pane.mount", { paneId: pane.paneId });
+    return () => emitToPlugin(pane.pluginId, "pane.unmount", { paneId: pane.paneId });
+  }, [pane.pluginId, pane.paneId]);
+  const icon = pane.icon && isIconName(pane.icon) ? pane.icon : "puzzle";
+  return (
+    <div className="kiwi-card kiwi-plugin-pane" data-plugin={pane.pluginId} data-pane={pane.paneId}>
+      <h2>
+        <Icon name={icon} size={14} /> {pane.title}{" "}
+        <small style={{ color: "var(--kiwi-text-secondary)" }}>by {pane.pluginName}</small>
+      </h2>
+      {pane.body ? (
+        <div className="kiwi-plugin-pane-body" dangerouslySetInnerHTML={{ __html: pane.body }} />
+      ) : (
+        <p style={{ color: "var(--kiwi-text-secondary)" }}>
+          <small>Pane registered — plugin will render content on mount.</small>
+        </p>
+      )}
     </div>
   );
 }

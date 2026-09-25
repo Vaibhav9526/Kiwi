@@ -13,6 +13,30 @@ export class RequestValidationError extends Error {
   }
 }
 
+/**
+ * Typed 404 (T-193/M4): replaces message-regex classification (`/not found/`
+ * matched driver text like `relation "audit_log" not found`). Throw this for
+ * genuinely absent resources; the message is safe to return verbatim.
+ */
+export class NotFoundError extends Error {
+  constructor(what: string) {
+    super(`${what} not found`);
+    this.name = "NotFoundError";
+  }
+}
+
+/**
+ * Typed 409 (T-193/M5): a uniqueness or exclusivity violation the caller can
+ * resolve with different data (duplicate email, duplicate policy domain).
+ * Thrown at the repository boundary where the driver error is still visible.
+ */
+export class ConflictError extends Error {
+  constructor(field: string, reason: string) {
+    super(`conflict on ${field}: ${reason}`);
+    this.name = "ConflictError";
+  }
+}
+
 const MAX_STRING = 4096;
 const MAX_ID = 256;
 

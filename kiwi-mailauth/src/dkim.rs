@@ -322,9 +322,9 @@ fn decode_b64_ws(s: &str) -> Result<Vec<u8>, ()> {
 /// `temperror`; unparseable/unsupported gives `permerror`; bad crypto or
 /// tampered content gives `fail`.
 pub fn verify<R: DnsResolver>(dns: &R, input: &DkimInput) -> DkimOutput {
-    let field_value = match input.signature_header.split_once(':') {
+    let (field_name, field_value) = match input.signature_header.split_once(':') {
         Some((name, value)) if name.trim().eq_ignore_ascii_case("DKIM-Signature") => {
-            value.to_string()
+            (name.trim().to_string(), value.to_string())
         }
         _ => {
             return DkimOutput {
@@ -428,10 +428,11 @@ pub fn verify<R: DnsResolver>(dns: &R, input: &DkimInput) -> DkimOutput {
             };
         }
     };
-    let signed = signed_headers_bytes(
+    let signed = header_hash_input(
         sig.header_canon,
         &input.headers,
         &sig.signed_headers,
+        &field_name,
         &field_value,
     );
     let ok = match (sig.algorithm, key) {
@@ -467,9 +468,42 @@ fn sha256(data: &[u8]) -> Vec<u8> {
     h.finalize().to_vec()
 }
 
-/// Canonicalize the body: normalize to CRLF, apply `l=` truncation
-/// BEFORE canonicalization per RFC 6376 §3.5, then canon rules.
+/// Canonicalize the body and apply the `l=` (body length count) limit.
+///
+/// RFC 6376 §3.7 (normative): the body is "canonicalized using the body
+/// canonicalization algorithm specified in the `c=` tag **and then
+/// truncated** to the length specified in the `l=` tag"; §3.4.5 repeats
+/// that "the body length count MUST be calculated following the
+/// canonicalization algorithm; for example, any whitespace ignored by a
+/// canonicalization algorithm is not included as part of the body length
+/// count". Truncation therefore happens here, *after* canonicalization —
+/// `l=0` leaves a completely unsigned body (§3.4.5). Checked against the
+/// RFC 6376 errata list (2026-09-25): no verified erratum changes this
+/// ordering.
+///
+/// Canonicalization proper:
+/// - [`CanonBody::Simple`] (§3.4.3): trailing empty lines are removed and
+///   exactly one CRLF terminates the body — an empty body becomes a
+///   single CRLF (SHA-256 `frcCV1k9oG9oKj3dpUqdJg1PxRT2RSN/XKdLCPjaYaY=`).
+/// - [`CanonBody::Relaxed`] (§3.4.4): WSP runs collapse to a single SP,
+///   trailing WSP per line and trailing empty lines are removed, and a
+///   CRLF is added only when the result is non-empty — an empty body
+///   becomes the **null input** (SHA-256
+///   `47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=`).
+///
+/// Bare LF/CR line endings are normalized to CRLF first (total handling
+/// of non-conformant transports; see the module docs).
 fn canon_body_bytes(canon: CanonBody, body: &[u8], length: Option<u64>) -> Vec<u8> {
+    let mut out = canon_body_untruncated(canon, body);
+    if let Some(n) = length {
+        let n = (n as usize).min(out.len());
+        out.truncate(n);
+    }
+    out
+}
+
+/// Body canonicalization proper (RFC 6376 §3.4.3 / §3.4.4) without `l=`.
+fn canon_body_untruncated(canon: CanonBody, body: &[u8]) -> Vec<u8> {
     let mut capped: &[u8] = body;
     if capped.len() > MAX_CANON_BYTES {
         capped = &capped[..MAX_CANON_BYTES];
@@ -491,11 +525,6 @@ fn canon_body_bytes(canon: CanonBody, body: &[u8], length: Option<u64>) -> Vec<u
         }
     }
     let mut bytes = norm.into_bytes();
-    // l= truncates the (CRLF-normalized) body to N octets first.
-    if let Some(n) = length {
-        let n = (n as usize).min(bytes.len());
-        bytes.truncate(n);
-    }
     match canon {
         CanonBody::Simple => {
             // Strip trailing empty lines; ensure exactly one CRLF at end
@@ -545,118 +574,170 @@ fn canon_body_bytes(canon: CanonBody, body: &[u8], length: Option<u64>) -> Vec<u
     }
 }
 
-/// Canonicalize signed headers. For each name in `signed_headers` (in
-/// order), take the LAST unused occurrence (bottom-up signing, RFC 6376
-/// §3.5). The DKIM-Signature header itself is canonicalized with its `b=`
-/// value emptied. Missing headers are skipped (not an error).
-fn signed_headers_bytes(
+/// Canonicalize the hash-step-2 input (RFC 6376 §3.7).
+///
+/// The verifier MUST pass, **in this order**:
+///
+/// 1. the header fields named in `h=`, *in `h=` order*, each
+///    canonicalized and terminated with a single CRLF; a repeated name
+///    selects the **last unused** occurrence (bottom-up, §5.4.2) and a
+///    name with no occurrence contributes nothing (null input, §3.5 —
+///    "nonexistent header fields do not contribute to the signature
+///    computation");
+/// 2. the DKIM-Signature field **under verification** (`dkim_name` /
+///    `dkim_value`), `b=` value emptied, canonicalized and **without** a
+///    trailing CRLF.
+///
+/// The field under verification is never selected by step 1 — §3.5
+/// forbids listing it in its own `h=`, so an `h=` entry naming
+/// `dkim-signature` refers to *other* DKIM-Signature fields in the
+/// message (§3.5 "may include others").
+fn header_hash_input(
     canon: CanonHeader,
     headers: &[(String, String)],
     signed: &[String],
+    dkim_name: &str,
     dkim_value: &str,
 ) -> Vec<u8> {
-    // Index occurrences per lowercased name.
+    let self_value = dkim_value.trim();
     let mut used = vec![false; headers.len()];
     let mut out = Vec::new();
     for name in signed {
-        // DKIM-Signature self-reference: use the header under verification.
-        if name == "dkim-signature" {
-            let emptied = empty_b_value(dkim_value);
-            push_canon_header(&mut out, canon, "dkim-signature", &emptied);
-            continue;
-        }
-        // Last unused match, scanning from the bottom.
+        // Last unused match, scanning from the bottom (§5.4.2).
         let mut found: Option<usize> = None;
-        for (i, (hn, _)) in headers.iter().enumerate().rev() {
-            if hn.trim().eq_ignore_ascii_case(name) && !used[i] {
-                found = Some(i);
-                break;
+        for (i, (hn, hv)) in headers.iter().enumerate().rev() {
+            if used[i] || !hn.trim().eq_ignore_ascii_case(name) {
+                continue;
             }
+            // Never the DKIM-Signature field being verified (§3.7 step 2).
+            if hv.trim() == self_value {
+                continue;
+            }
+            found = Some(i);
+            break;
         }
         if let Some(i) = found {
             used[i] = true;
-            push_canon_header(&mut out, canon, &headers[i].0, &headers[i].1);
+            push_canon_header(&mut out, canon, &headers[i].0, &headers[i].1, true);
         }
     }
-    if out.len() > MAX_CANON_BYTES {
-        out.truncate(MAX_CANON_BYTES);
+    // Bound the accumulated `h=` part, then append the field under
+    // verification so the §3.7 tail can never be truncated away.
+    let cap = MAX_CANON_BYTES.saturating_sub(MAX_SIG_HEADER_LEN + 2);
+    if out.len() > cap {
+        out.truncate(cap);
     }
+    let emptied = empty_b_value(dkim_value);
+    push_canon_header(&mut out, canon, dkim_name, &emptied, false);
     out
 }
 
-fn push_canon_header(out: &mut Vec<u8>, canon: CanonHeader, name: &str, value: &str) {
+/// Append one canonicalized header field (RFC 6376 §3.4.1 / §3.4.2).
+///
+/// `value` is the raw text that followed the field-name colon as
+/// transmitted — internal folding (CRLF + WSP) included, any terminating
+/// CRLF excluded. `trailing_crlf` adds the field terminator: required for
+/// `h=`-listed fields (§3.7 step 1), forbidden for the DKIM-Signature
+/// field hashed in step 2.
+fn push_canon_header(
+    out: &mut Vec<u8>,
+    canon: CanonHeader,
+    name: &str,
+    value: &str,
+    trailing_crlf: bool,
+) {
     match canon {
         CanonHeader::Simple => {
-            // Unfold (replace CRLF WSP with nothing? RFC: header as-is
-            // except the DKIM b= emptying already done). We unfold FWS to a
-            // single space-free join to stay total on hostile folding, then
-            // keep name case as transmitted and require trailing CRLF.
-            let unfolded = unfold(name, value);
-            out.extend_from_slice(unfolded.as_bytes());
-            if !out.ends_with(b"\r\n") {
-                out.extend_from_slice(b"\r\n");
-            }
+            // §3.4.1: "does not change header fields in any way. Header
+            // fields MUST be presented ... exactly as they are in the
+            // message ... header field names MUST NOT be case folded and
+            // whitespace MUST NOT be changed" — so the field name (case and
+            // any WSP before the colon included), the colon and the value
+            // (including its folding) are copied verbatim; only the single
+            // terminating CRLF is normalized. See §3.4.5 Example 2, where
+            // the folded `B <SP> : <SP> Y <HTAB>` form is preserved.
+            out.extend_from_slice(name.as_bytes());
+            out.extend_from_slice(b":");
+            out.extend_from_slice(value.trim_end_matches(['\r', '\n']).as_bytes());
         }
         CanonHeader::Relaxed => {
-            let lname = name.trim().to_ascii_lowercase();
-            let unfolded = unfold(name, value);
-            // Value = after first colon, unfolded WSP compressed, trimmed.
-            let v = unfolded.split_once(':').map(|(_, v)| v).unwrap_or("");
-            let mut o = String::with_capacity(v.len());
+            // §3.4.2 in order: lowercase the field name; unfold (a CRLF
+            // followed by WSP is removed); collapse WSP runs — including
+            // those spanning a fold boundary — to a single SP; delete WSP
+            // at the end of the value and around the colon.
+            let mut o = String::with_capacity(value.len());
             let mut in_ws = false;
-            for c in v.chars() {
+            for c in value.chars() {
                 if c == ' ' || c == '\t' || c == '\r' || c == '\n' {
-                    if !in_ws {
-                        o.push(' ');
-                    }
                     in_ws = true;
                 } else {
+                    if in_ws {
+                        o.push(' ');
+                        in_ws = false;
+                    }
                     o.push(c);
-                    in_ws = false;
                 }
             }
-            let o = o.trim();
-            out.extend_from_slice(lname.as_bytes());
+            out.extend_from_slice(name.trim().to_ascii_lowercase().as_bytes());
             out.extend_from_slice(b":");
-            out.extend_from_slice(o.as_bytes());
-            out.extend_from_slice(b"\r\n");
+            out.extend_from_slice(o.trim().as_bytes());
         }
+    }
+    if trailing_crlf {
+        out.extend_from_slice(b"\r\n");
     }
 }
 
-fn unfold(name: &str, value: &str) -> String {
-    // Rebuild "name:value", unfolding any CRLF WSP in the value.
-    let mut v = value.replace("\r\n ", " ").replace("\r\n\t", " ");
-    v = v.replace(['\r', '\n'], " ");
-    format!("{}:{v}", name.trim())
-}
-
 /// Empty the `b=` tag value in a DKIM-Signature field value (for hashing).
+///
+/// RFC 6376 §3.7: the value of the `b=` tag "(including all surrounding
+/// whitespace) deleted (i.e., treated as the empty string)". The tag name,
+/// the optional FWS after it (`sig-b-tag = %x62 [FWS] "=" [FWS] …`) and
+/// the `=` are kept exactly as transmitted so that the hash covers the
+/// signature's own structure.
 fn empty_b_value(field_value: &str) -> String {
-    // Find 'b=' tag start (case-sensitive tag names are lowercase by
-    // construction of split_tag_list, but be liberal here).
     let bytes = field_value.as_bytes();
     let mut i = 0;
-    while i + 1 < bytes.len() {
-        if (bytes[i] == b'b' || bytes[i] == b'B') && bytes[i + 1] == b'=' {
-            // Tag start iff previous non-space char is ';' or start.
-            let mut j = i;
-            while j > 0 && (bytes[j - 1] == b' ' || bytes[j - 1] == b'\t') {
-                j -= 1;
-            }
-            if j == 0 || bytes[j - 1] == b';' {
-                // Value runs to the next ';' or end.
-                let mut end = i + 2;
-                while end < bytes.len() && bytes[end] != b';' {
-                    end += 1;
-                }
-                let mut o = String::with_capacity(field_value.len());
-                o.push_str(&field_value[..i + 2]);
-                o.push_str(&field_value[end..]);
-                return o;
-            }
+    while i < bytes.len() {
+        if bytes[i] != b'b' && bytes[i] != b'B' {
+            i += 1;
+            continue;
         }
-        i += 1;
+        // Tag start iff the previous non-WSP/non-CRLF char is ';' or the value start.
+        let mut j = i;
+        while j > 0
+            && (bytes[j - 1] == b' '
+                || bytes[j - 1] == b'\t'
+                || bytes[j - 1] == b'\r'
+                || bytes[j - 1] == b'\n')
+        {
+            j -= 1;
+        }
+        if j != 0 && bytes[j - 1] != b';' {
+            i += 1;
+            continue;
+        }
+        // Skip FWS between the tag name and '='. The `b` in `bh=` is not a
+        // tag start (the next non-WSP char is 'h', not '=').
+        let mut eq = i + 1;
+        while eq < bytes.len()
+            && (bytes[eq] == b' ' || bytes[eq] == b'\t' || bytes[eq] == b'\r' || bytes[eq] == b'\n')
+        {
+            eq += 1;
+        }
+        if eq >= bytes.len() || bytes[eq] != b'=' {
+            i += 1;
+            continue;
+        }
+        // Delete the value (and its surrounding WSP) through the tag end.
+        let mut end = eq + 1;
+        while end < bytes.len() && bytes[end] != b';' {
+            end += 1;
+        }
+        let mut o = String::with_capacity(field_value.len());
+        o.push_str(&field_value[..eq + 1]);
+        o.push_str(&field_value[end..]);
+        return o;
     }
     field_value.to_string()
 }
@@ -755,6 +836,25 @@ fn split_tag_list_key(s: &str) -> Result<Vec<(String, String)>, ()> {
     Ok(out)
 }
 
+fn verify_rsa_sha256(key: &rsa::RsaPublicKey, signed: &[u8], sig: &[u8]) -> bool {
+    use rsa::pkcs1v15::VerifyingKey;
+    use rsa::signature::Verifier;
+    let Ok(s) = rsa::pkcs1v15::Signature::try_from(sig) else {
+        return false;
+    };
+    let vk = VerifyingKey::<sha2::Sha256>::new(key.clone());
+    vk.verify(signed, &s).is_ok()
+}
+
+fn verify_ed25519(key: &ed25519_dalek::VerifyingKey, signed: &[u8], sig: &[u8]) -> bool {
+    use ed25519_dalek::Verifier;
+    let arr: &[u8] = sig;
+    let Ok(s) = ed25519_dalek::Signature::try_from(arr) else {
+        return false;
+    };
+    key.verify(signed, &s).is_ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -798,6 +898,218 @@ mod tests {
         assert_eq!(out, b"\r\n");
         let out = canon_body_bytes(CanonBody::Simple, b"Hi\r\n\r\n", None);
         assert_eq!(out, b"Hi\r\n");
+    }
+
+    /// RFC 6376 §3.4.3 / §3.4.4 published vectors: the canonicalized EMPTY
+    /// body is a single CRLF under `simple` and the **null input** under
+    /// `relaxed` (whose SHA-256 is the RFC's published "empty body" value).
+    #[test]
+    fn canon_body_empty_matches_rfc_vectors() {
+        use base64::Engine;
+        use sha2::Digest;
+        let b64 = |b: &[u8]| {
+            let mut h = sha2::Sha256::new();
+            h.update(b);
+            base64::engine::general_purpose::STANDARD.encode(h.finalize())
+        };
+        // §3.4.3: "a completely empty or missing body is canonicalized as a
+        // single 'CRLF'; that is, the canonicalized length will be 2 octets".
+        let simple = canon_body_bytes(CanonBody::Simple, b"", None);
+        assert_eq!(simple, b"\r\n");
+        assert_eq!(b64(&simple), "frcCV1k9oG9oKj3dpUqdJg1PxRT2RSN/XKdLCPjaYaY=");
+        // §3.4.4: an empty body is the null input (the RFC publishes its
+        // SHA-256 as 47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=).
+        let relaxed = canon_body_bytes(CanonBody::Relaxed, b"", None);
+        assert_eq!(relaxed, b"");
+        assert_eq!(
+            b64(&relaxed),
+            "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="
+        );
+    }
+
+    /// Empty-body / whitespace-only body variants (RFC 6376 §3.4.3, §3.4.4)
+    #[test]
+    fn canon_body_empty_variants() {
+        // simple: an empty body becomes exactly one CRLF.
+        assert_eq!(canon_body_bytes(CanonBody::Simple, b"", None), b"\r\n");
+        // relaxed: the null input — §3.4.4 adds a CRLF only when the body is
+        // *non-empty*.
+        assert_eq!(canon_body_bytes(CanonBody::Relaxed, b"", None), b"");
+        // Whitespace-only lines collapse: relaxed drops trailing WSP per line
+        // and then the trailing empty line, leaving nothing.
+        assert_eq!(
+            canon_body_bytes(CanonBody::Relaxed, b"   \t  \r\n", None),
+            b""
+        );
+        assert_eq!(
+            canon_body_bytes(CanonBody::Relaxed, b"\t\r\n \r\n", None),
+            b""
+        );
+        // simple changes nothing but trailing empty lines: WSP is data.
+        assert_eq!(
+            canon_body_bytes(CanonBody::Simple, b"   \t  \r\n", None),
+            b"   \t  \r\n"
+        );
+        // CRLF-only bodies.
+        assert_eq!(canon_body_bytes(CanonBody::Simple, b"\r\n", None), b"\r\n");
+        assert_eq!(canon_body_bytes(CanonBody::Relaxed, b"\r\n", None), b"");
+        assert_eq!(
+            canon_body_bytes(CanonBody::Simple, b"\r\n\r\n\r\n", None),
+            b"\r\n"
+        );
+        assert_eq!(
+            canon_body_bytes(CanonBody::Relaxed, b"\r\n\r\n\r\n", None),
+            b""
+        );
+        // Multiple trailing empty lines are stripped by both algorithms.
+        assert_eq!(
+            canon_body_bytes(CanonBody::Simple, b"Hi\r\n\r\n\r\n", None),
+            b"Hi\r\n"
+        );
+        assert_eq!(
+            canon_body_bytes(CanonBody::Relaxed, b"Hi\r\n\r\n\r\n", None),
+            b"Hi\r\n"
+        );
+    }
+
+    /// Trailing CRLF handling edge cases
+    #[test]
+    fn canon_body_trailing_crlf() {
+        // Simple: ensure exactly one trailing CRLF
+        assert_eq!(
+            canon_body_bytes(CanonBody::Simple, b"NoCRLF", None),
+            b"NoCRLF\r\n"
+        );
+        assert_eq!(
+            canon_body_bytes(CanonBody::Simple, b"HasCRLF\r\n", None),
+            b"HasCRLF\r\n"
+        );
+        assert_eq!(
+            canon_body_bytes(CanonBody::Simple, b"Multiple\r\n\r\n", None),
+            b"Multiple\r\n"
+        );
+
+        // Relaxed: exactly one trailing CRLF after WSP compression
+        assert_eq!(
+            canon_body_bytes(CanonBody::Relaxed, b"NoCRLF", None),
+            b"NoCRLF\r\n"
+        );
+        assert_eq!(
+            canon_body_bytes(CanonBody::Relaxed, b"HasCRLF\r\n", None),
+            b"HasCRLF\r\n"
+        );
+        assert_eq!(
+            canon_body_bytes(CanonBody::Relaxed, b"Multiple\r\n\r\n", None),
+            b"Multiple\r\n"
+        );
+
+        // Mixed line endings normalization
+        assert_eq!(
+            canon_body_bytes(CanonBody::Simple, b"LF\nonly", None),
+            b"LF\r\nonly\r\n"
+        );
+        assert_eq!(
+            canon_body_bytes(CanonBody::Simple, b"CR\ronly", None),
+            b"CR\r\nonly\r\n"
+        );
+        assert_eq!(
+            canon_body_bytes(CanonBody::Simple, b"CRLF\r\nonly", None),
+            b"CRLF\r\nonly\r\n"
+        );
+        assert_eq!(
+            canon_body_bytes(CanonBody::Relaxed, b"LF\nonly", None),
+            b"LF\r\nonly\r\n"
+        );
+        assert_eq!(
+            canon_body_bytes(CanonBody::Relaxed, b"CR\ronly", None),
+            b"CR\r\nonly\r\n"
+        );
+        assert_eq!(
+            canon_body_bytes(CanonBody::Relaxed, b"CRLF\r\nonly", None),
+            b"CRLF\r\nonly\r\n"
+        );
+    }
+
+    /// `l=` (body length count) — RFC 6376 §3.5, §3.4.5, §3.7: the count is
+    /// taken over the **canonicalized** body, so truncation happens after
+    /// canonicalization.
+    #[test]
+    fn canon_body_length_tag() {
+        let body = b"Hello World\r\n";
+        // l=0 -> "the body is completely unsigned" (§3.4.5): hash of "".
+        assert_eq!(canon_body_bytes(CanonBody::Simple, body, Some(0)), b"");
+        assert_eq!(canon_body_bytes(CanonBody::Relaxed, body, Some(0)), b"");
+        // l= exactly the canonicalized length -> the whole body (13 bytes: "Hello World\r\n").
+        assert_eq!(
+            canon_body_bytes(CanonBody::Simple, body, Some(13)),
+            b"Hello World\r\n"
+        );
+        assert_eq!(
+            canon_body_bytes(CanonBody::Relaxed, body, Some(13)),
+            b"Hello World\r\n"
+        );
+        // Mid-line truncation of the canonicalized body.
+        assert_eq!(
+            canon_body_bytes(CanonBody::Simple, body, Some(11)),
+            b"Hello World"
+        );
+        assert_eq!(
+            canon_body_bytes(CanonBody::Relaxed, body, Some(11)),
+            b"Hello World"
+        );
+        // l= larger than the body -> no effect.
+        assert_eq!(
+            canon_body_bytes(CanonBody::Simple, body, Some(100)),
+            b"Hello World\r\n"
+        );
+        assert_eq!(
+            canon_body_bytes(CanonBody::Relaxed, body, Some(100)),
+            b"Hello World\r\n"
+        );
+        // l= with a multi-line body: "Line1\r\nLi" is only 9 octets, so l=10
+        // reaches the first character of the second line.
+        let multi = b"Line1\r\nLine2\r\nLine3\r\n";
+        assert_eq!(
+            canon_body_bytes(CanonBody::Simple, multi, Some(10)),
+            b"Line1\r\nLin"
+        );
+        assert_eq!(
+            canon_body_bytes(CanonBody::Relaxed, multi, Some(10)),
+            b"Line1\r\nLin"
+        );
+    }
+
+    /// Ordering proof: at the same `l=` the two body algorithms yield
+    /// *different* bytes — only possible when the length count is measured
+    /// after canonicalization (§3.4.5: "any whitespace ignored by a
+    /// canonicalization algorithm is not included as part of the body
+    /// length count").
+    #[test]
+    fn canon_body_length_applies_after_canonicalization() {
+        let body = b"A  B\r\n";
+        // simple keeps the double SP (canonicalized length 6) ...
+        assert_eq!(canon_body_bytes(CanonBody::Simple, body, None), b"A  B\r\n");
+        // ... relaxed collapses it (canonicalized length 5) ...
+        assert_eq!(canon_body_bytes(CanonBody::Relaxed, body, None), b"A B\r\n");
+        // ... so l=3 truncates different octets.
+        assert_eq!(canon_body_bytes(CanonBody::Simple, body, Some(3)), b"A  ");
+        assert_eq!(canon_body_bytes(CanonBody::Relaxed, body, Some(3)), b"A B");
+    }
+
+    /// Combined header/body canonicalization modes (c= header/body)
+    #[test]
+    fn canon_header_body_combinations() {
+        let body = b"  Hello \t World  \r\n\r\n";
+
+        // relaxed/simple
+        let h = canon_body_bytes(CanonBody::Simple, body, None);
+        let h_relaxed = canon_body_bytes(CanonBody::Relaxed, body, None);
+        assert_ne!(h, h_relaxed);
+
+        // Verify simple preserves internal WSP
+        assert!(h.windows(2).any(|w| w == b"  "));
+        // Verify relaxed compresses WSP
+        assert!(!h_relaxed.windows(2).any(|w| w == b"  "));
     }
 
     #[test]
@@ -865,11 +1177,145 @@ mod tests {
         );
         assert_eq!(out.result, DkimResult::TempError);
     }
+
+    /// `t=` / `x=` semantics: `x=` is the explicit expiry (RFC 6376 §3.5);
+    /// without it, KIWI's documented 14-day freshness policy applies
+    /// (contract §4). Expiry runs before the body hash and before any DNS.
+    #[test]
+    fn timestamp_age_policy_and_expiry() {
+        use base64::Engine;
+        let empty_hash = base64::engine::general_purpose::STANDARD.encode(sha256(b"\r\n"));
+        let dns = MockResolver::new().with_temp_fail("sel._domainkey.example.com");
+        let run = |v: &str| {
+            verify(
+                &dns,
+                &DkimInput {
+                    signature_header: format!("DKIM-Signature: {v}"),
+                    headers: vec![("From".to_string(), "a@b.c".to_string())],
+                    body: vec![],
+                    now_unix: NOW,
+                },
+            )
+        };
+
+        // t= older than MAX_SIG_AGE_SECS -> fail, no DNS needed.
+        let old_t = NOW - MAX_SIG_AGE_SECS - 1;
+        let out = run(&format!(
+            "v=1; a=rsa-sha256; d=example.com; s=sel; h=from; t={old_t}; \
+             bh={empty_hash}; b=AAECAw=="
+        ));
+        assert_eq!(out.result, DkimResult::Fail);
+        assert!(out.explanation.contains("too old"), "{}", out.explanation);
+
+        // t= fresh -> age gate cleared; the next failure is the (injected)
+        // DNS error, which proves the check passed without touching the network.
+        let fresh_t = NOW - 60;
+        let out2 = run(&format!(
+            "v=1; a=rsa-sha256; d=example.com; s=sel; h=from; t={fresh_t}; \
+             bh={empty_hash}; b=AAECAw=="
+        ));
+        assert_eq!(out2.result, DkimResult::TempError, "{}", out2.explanation);
+
+        // x= in the future short-circuits the age policy entirely.
+        let out3 = run(&format!(
+            "v=1; a=rsa-sha256; d=example.com; s=sel; h=from; t={old_t}; x={}; \
+             bh={empty_hash}; b=AAECAw==",
+            NOW + 3600
+        ));
+        assert_eq!(out3.result, DkimResult::TempError, "{}", out3.explanation);
+
+        // x= in the past -> explicit expiry, decided before DNS.
+        let out4 = run(&format!(
+            "v=1; a=rsa-sha256; d=example.com; s=sel; h=from; t={}; x={}; \
+             bh={empty_hash}; b=AAECAw==",
+            NOW - 100,
+            NOW - 1
+        ));
+        assert_eq!(out4.result, DkimResult::Fail);
+        assert!(out4.explanation.contains("expired"), "{}", out4.explanation);
+    }
+
+    /// RFC 6376 §3.5: "The value of the `x=` tag MUST be greater than the
+    /// value of the `t=` tag if both are present."
+    #[test]
+    fn x_must_be_greater_than_t() {
+        assert!(
+            parse_signature(
+                "v=1; a=rsa-sha256; d=example.com; s=sel; h=from; t=1000; x=1000; \
+                 bh=eA==; b=AQ=="
+            )
+            .is_err()
+        );
+        assert!(
+            parse_signature(
+                "v=1; a=rsa-sha256; d=example.com; s=sel; h=from; t=2000; x=1000; \
+                 bh=eA==; b=AQ=="
+            )
+            .is_err()
+        );
+        // x= after t= parses.
+        assert!(
+            parse_signature(
+                "v=1; a=rsa-sha256; d=example.com; s=sel; h=from; t=1000; x=2000; \
+                 bh=eA==; b=AQ=="
+            )
+            .is_ok()
+        );
+    }
+
+    /// RFC 6376 §3.4.5: "A body length count of zero means that the body is
+    /// completely unsigned" — `l=0` hashes the empty canonicalized input even
+    /// when the transmitted body is not empty.
+    #[test]
+    fn l_zero_leaves_body_unsigned() {
+        use base64::Engine;
+        let bh = base64::engine::general_purpose::STANDARD.encode(sha256(b""));
+        let v = format!(
+            "v=1; a=rsa-sha256; c=relaxed/relaxed; d=example.com; s=sel; h=from; \
+             l=0; bh={bh}; b=AAECAw=="
+        );
+        let dns = MockResolver::new().with_temp_fail("sel._domainkey.example.com");
+        let out = verify(
+            &dns,
+            &DkimInput {
+                signature_header: format!("DKIM-Signature: {v}"),
+                headers: vec![("From".to_string(), "a@b.c".to_string())],
+                body: b"a body that is definitely longer than zero\r\n".to_vec(),
+                now_unix: NOW,
+            },
+        );
+        // Body hash matched (else "body hash mismatch"); the failure is DNS.
+        assert_eq!(out.result, DkimResult::TempError, "{}", out.explanation);
+    }
+
+    /// An `l=` longer than the canonicalized body is treated as no
+    /// truncation, so a signature made over the whole body still verifies.
+    #[test]
+    fn l_longer_than_body_is_no_truncation() {
+        use base64::Engine;
+        let body = b"Hello world\r\n";
+        let bh = base64::engine::general_purpose::STANDARD.encode(sha256(body));
+        let v = format!(
+            "v=1; a=rsa-sha256; c=simple/simple; d=example.com; s=sel; h=from; \
+             l=9999; bh={bh}; b=AAECAw=="
+        );
+        let dns = MockResolver::new().with_temp_fail("sel._domainkey.example.com");
+        let out = verify(
+            &dns,
+            &DkimInput {
+                signature_header: format!("DKIM-Signature: {v}"),
+                headers: vec![("From".to_string(), "a@b.c".to_string())],
+                body: body.to_vec(),
+                now_unix: NOW,
+            },
+        );
+        assert_eq!(out.result, DkimResult::TempError, "{}", out.explanation);
+    }
 }
 
 #[cfg(test)]
 mod roundtrip_tests {
-    use crate::dkim::{CanonHeader, DkimInput, DkimResult, sha256, signed_headers_bytes, verify};
+    use crate::dkim::{CanonHeader, DkimInput, DkimResult, header_hash_input, sha256, verify};
     use crate::dns::MockResolver;
 
     const NOW: i64 = 1_786_000_000;
@@ -895,11 +1341,15 @@ mod roundtrip_tests {
             ("From".to_string(), "alice@example.com".to_string()),
             ("Subject".to_string(), "hello".to_string()),
         ];
-        let signed = signed_headers_bytes(
+        // The field is transmitted as "DKIM-Signature: <tags>"; simple
+        // canonicalization must not change that space (§3.4.1), so sign over
+        // exactly the value `verify` will re-canonicalize from `signature_header`.
+        let signed = header_hash_input(
             CanonHeader::Simple,
             &hdrs,
             &["from".to_string(), "subject".to_string()],
-            &v_nosig,
+            "DKIM-Signature",
+            &format!(" {v_nosig}"),
         );
         use rsa::pkcs1v15::SigningKey;
         use rsa::signature::RandomizedSigner;
@@ -955,11 +1405,14 @@ mod roundtrip_tests {
             ("From".to_string(), "alice@example.com".to_string()),
             ("Subject".to_string(), "hello".to_string()),
         ];
-        let signed = signed_headers_bytes(
+        // Same transmitted-form note as the RSA test (relaxed happens to trim
+        // the leading WSP, but sign the value `verify` will canonicalize).
+        let signed = header_hash_input(
             CanonHeader::Relaxed,
             &hdrs,
             &["from".to_string(), "subject".to_string()],
-            &v_nosig,
+            "DKIM-Signature",
+            &format!(" {v_nosig}"),
         );
         let sig = signing.sign(&signed);
         let v = format!(
@@ -1009,23 +1462,204 @@ mod roundtrip_tests {
         }
     }
     impl rand_core::CryptoRng for SimpleRng {}
-}
 
-fn verify_rsa_sha256(key: &rsa::RsaPublicKey, signed: &[u8], sig: &[u8]) -> bool {
-    use rsa::pkcs1v15::VerifyingKey;
-    use rsa::signature::Verifier;
-    let Ok(s) = rsa::pkcs1v15::Signature::try_from(sig) else {
-        return false;
-    };
-    let vk = VerifyingKey::<sha2::Sha256>::new(key.clone());
-    vk.verify(signed, &s).is_ok()
-}
+    ///
+    /// Header canonicalization + hash-step-2 composition (RFC 6376 §3.4.1,
+    /// §3.4.2, §3.4.5, §3.5, §3.7, §5.4.2).
+    #[cfg(test)]
+    mod header_canon_tests {
+        use crate::dkim::{CanonHeader, empty_b_value, header_hash_input, push_canon_header};
 
-fn verify_ed25519(key: &ed25519_dalek::VerifyingKey, signed: &[u8], sig: &[u8]) -> bool {
-    use ed25519_dalek::Verifier;
-    let arr: &[u8] = sig;
-    let Ok(s) = ed25519_dalek::Signature::try_from(arr) else {
-        return false;
-    };
-    key.verify(signed, &s).is_ok()
+        /// RFC 6376 §3.4.5 Example 1: relaxed canonicalization of
+        /// `A: <SP> X`, `B <SP> : <SP> Y <HTAB><CRLF><HTAB> Z <SP><SP>`
+        /// is `a:X` and `b:Y <SP> Z`.
+        #[test]
+        fn rfc_6376_example1_relaxed_headers() {
+            let mut out = Vec::new();
+            push_canon_header(&mut out, CanonHeader::Relaxed, "A", " X ", true);
+            push_canon_header(
+                &mut out,
+                CanonHeader::Relaxed,
+                "B ",
+                " Y \t\r\n\t Z  ",
+                true,
+            );
+            assert_eq!(out, b"a:X\r\nb:Y Z\r\n");
+        }
+
+        /// RFC 6376 §3.4.5 Example 2: simple canonicalization leaves the field
+        /// name case, the WSP before the colon and the folding untouched.
+        #[test]
+        fn rfc_6376_example2_simple_headers() {
+            let mut out = Vec::new();
+            push_canon_header(&mut out, CanonHeader::Simple, "A", " X ", true);
+            push_canon_header(&mut out, CanonHeader::Simple, "B ", " Y \t\r\n\t Z  ", true);
+            assert_eq!(out, b"A: X \r\nB : Y \t\r\n\t Z  \r\n");
+        }
+
+        /// A trailing CRLF in the stored value is not duplicated, and the field
+        /// terminator can be suppressed (§3.7 step 2 hashes the DKIM-Signature
+        /// field *without* a trailing CRLF).
+        #[test]
+        fn trailing_crlf_is_normalized_and_optional() {
+            let mut out = Vec::new();
+            push_canon_header(&mut out, CanonHeader::Simple, "X", "v\r\n\r\n", true);
+            assert_eq!(out, b"X:v\r\n");
+            let mut out = Vec::new();
+            push_canon_header(&mut out, CanonHeader::Relaxed, "X", "  v  ", false);
+            assert_eq!(out, b"x:v");
+        }
+
+        /// §3.7 step 2: the DKIM-Signature field under verification is hashed
+        /// **after** the `h=` fields and **without** a trailing CRLF.
+        #[test]
+        fn sig_field_is_appended_last_without_crlf() {
+            let headers = vec![
+                ("From".to_string(), "alice@example.com".to_string()),
+                ("Subject".to_string(), "hello".to_string()),
+            ];
+            let out = header_hash_input(
+                CanonHeader::Relaxed,
+                &headers,
+                &["from".to_string(), "subject".to_string()],
+                "DKIM-Signature",
+                "v=1; d=example.com; b=AAECAw==",
+            );
+            assert_eq!(
+                out,
+                b"from:alice@example.com\r\nsubject:hello\r\ndkim-signature:v=1; d=example.com; b="
+            );
+            assert!(!out.ends_with(b"\r\n"));
+        }
+
+        /// §3.7 step 1: fields are hashed in `h=` order, not message order.
+        #[test]
+        fn h_order_wins_over_message_order() {
+            let headers = vec![
+                ("From".to_string(), "alice@example.com".to_string()),
+                ("Subject".to_string(), "hello".to_string()),
+            ];
+            let out = header_hash_input(
+                CanonHeader::Relaxed,
+                &headers,
+                &["subject".to_string(), "from".to_string()],
+                "DKIM-Signature",
+                "v=1; b=",
+            );
+            assert_eq!(
+                out,
+                b"subject:hello\r\nfrom:alice@example.com\r\ndkim-signature:v=1; b="
+            );
+        }
+
+        /// §3.5: names in `h=` that do not exist in the message contribute
+        /// nothing (the null input) — they are not an error.
+        #[test]
+        fn missing_h_entries_contribute_nothing() {
+            let headers = vec![("From".to_string(), "alice@example.com".to_string())];
+            let out = header_hash_input(
+                CanonHeader::Relaxed,
+                &headers,
+                &[
+                    "x-absent".to_string(),
+                    "from".to_string(),
+                    "x-also-absent".to_string(),
+                ],
+                "DKIM-Signature",
+                "v=1; b=",
+            );
+            assert_eq!(out, b"from:alice@example.com\r\ndkim-signature:v=1; b=");
+        }
+
+        /// §5.4.2: repeated `h=` names select the physically last unused
+        /// instances, bottom-up — the RFC's three-`Received` example signs
+        /// `<C>` then `<B>`.
+        #[test]
+        fn repeated_h_names_take_last_unused_bottom_up() {
+            let headers = vec![
+                ("Received".to_string(), "A".to_string()),
+                ("Received".to_string(), "B".to_string()),
+                ("Received".to_string(), "C".to_string()),
+            ];
+            let out = header_hash_input(
+                CanonHeader::Relaxed,
+                &headers,
+                &["received".to_string(), "received".to_string()],
+                "DKIM-Signature",
+                "v=1; b=",
+            );
+            assert_eq!(out, b"received:C\r\nreceived:B\r\ndkim-signature:v=1; b=");
+        }
+
+        /// More `h=` occurrences than instances: the extra ones are the null
+        /// input (this is what lets a signer detect added fields).
+        #[test]
+        fn more_h_occurrences_than_instances() {
+            let headers = vec![("Received".to_string(), "A".to_string())];
+            let out = header_hash_input(
+                CanonHeader::Relaxed,
+                &headers,
+                &["received".to_string(), "received".to_string()],
+                "DKIM-Signature",
+                "v=1; b=",
+            );
+            assert_eq!(out, b"received:A\r\ndkim-signature:v=1; b=");
+        }
+
+        /// §3.5: `h=dkim-signature` refers to *other* DKIM-Signature fields —
+        /// never the one under verification, which §3.7 appends separately.
+        #[test]
+        fn h_dkim_signature_selects_other_signatures() {
+            let headers = vec![
+                (
+                    "DKIM-Signature".to_string(),
+                    "v=1; d=example.com; b=ORIGINAL".to_string(),
+                ),
+                ("From".to_string(), "alice@example.com".to_string()),
+                (
+                    "DKIM-Signature".to_string(),
+                    "v=1; d=example.com; b=SELFTEST".to_string(),
+                ),
+            ];
+            let out = header_hash_input(
+                CanonHeader::Relaxed,
+                &headers,
+                &["dkim-signature".to_string(), "from".to_string()],
+                "DKIM-Signature",
+                "v=1; d=example.com; b=SELFTEST",
+            );
+            assert_eq!(
+                out,
+                b"dkim-signature:v=1; d=example.com; b=ORIGINAL\r\nfrom:alice@example.com\r\n\
+              dkim-signature:v=1; d=example.com; b="
+            );
+        }
+
+        /// §3.7: the `b=` value (with its surrounding whitespace) is the only
+        /// tag value removed, and the tag structure is preserved.
+        #[test]
+        fn b_value_emptying() {
+            assert_eq!(
+                empty_b_value("v=1; a=rsa-sha256; d=example.com; b=AAECAw=="),
+                "v=1; a=rsa-sha256; d=example.com; b="
+            );
+            assert_eq!(empty_b_value("v=1; b=AAECAw==; x=2000"), "v=1; b=; x=2000");
+            // `bh=` is not the signature tag.
+            assert_eq!(
+                empty_b_value("v=1; bh=AAECAw==; b=SIG"),
+                "v=1; bh=AAECAw==; b="
+            );
+            // FWS around the `=` (sig-b-tag = %x62 [FWS] "=" [FWS] data).
+            assert_eq!(empty_b_value("v=1; b = AAECAw=="), "v=1; b =");
+            // The `b=` value folded across lines goes away with its WSP.
+            assert_eq!(
+                empty_b_value("v=1;\r\n b=AAAA\r\n BBBB;\r\n d=example.com"),
+                "v=1;\r\n b=;\r\n d=example.com"
+            );
+            // No `b=` tag at all: unchanged (callers report it as a parse error).
+            assert_eq!(empty_b_value("v=1; d=example.com"), "v=1; d=example.com");
+            // A "b=" inside another tag's value is not a tag start.
+            assert_eq!(empty_b_value("v=1; d=b.com; b=SIG"), "v=1; d=b.com; b=");
+        }
+    }
 }

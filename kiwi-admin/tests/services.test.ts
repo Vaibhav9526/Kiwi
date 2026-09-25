@@ -2,6 +2,8 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { parseAuditEventInput } from "../src/audit/model.js";
 import { AuthorizationDeniedError } from "../src/rbac/rbac.js";
 import type { Actor } from "../src/rbac/rbac.js";
+import { ConflictError, NotFoundError, RequestValidationError } from "../src/util/validate.js";
+import { escapeLikePattern } from "../src/db/repositories.js";
 import { OrgService, PolicyService, MailflowService, AuditService, createServiceContainer } from "../src/services.js";
 import type { ServiceContainer } from "../src/services.js";
 import { makeTempDbPath } from "./helpers/db.js";
@@ -82,8 +84,8 @@ describe("PolicyService — evaluation determinism", () => {
       recipient: "stranger@unknown.test",
       tlsVersion: "tls1.3",
     };
-    const first = await container.policies.evaluate(p.id, input);
-    expect(first).toEqual(await container.policies.evaluate(p.id, input));
+    const first = await container.policies.evaluate(writer, p.id, input);
+    expect(first).toEqual(await container.policies.evaluate(writer, p.id, input));
     expect(first.verdict).toBe("warn");
   });
 });
@@ -123,8 +125,10 @@ describe("MailflowService — metadata-only ingest + queries", () => {
         org_id: "orgId",
       }),
     ).rejects.toThrow(AuthorizationDeniedError);
-    const lastDenied = (await container.audit.query(auditor, { limit: 10 })).filter((r) => r.outcome === "denied").at(-1);
-    expect(lastDenied?.action).toBe("mailflow.ingest");
+    // Order-robust: the shared container accumulates rows across describes
+    // (H1 now audits evaluations too), so assert presence, not position.
+    const denied = (await container.audit.query(auditor, { limit: 100 })).filter((r) => r.outcome === "denied");
+    expect(denied.some((r) => r.action === "mailflow.ingest")).toBe(true);
   });
 });
 
@@ -145,7 +149,12 @@ describe("List methods (T-134 admin UI reads)", () => {
 
     const policies = await container.policies.listPolicies(actor, orgId);
     expect(policies.length).toBeGreaterThanOrEqual(1);
-    expect(policies[0]).toHaveProperty("domainRules");
+    // §5.1 wire shape (T-259/ADM-T250-01): the full snake_case PolicyObject —
+    // org_id + name + snake_case fields, not the internal camelCase def.
+    expect(policies[0]).toMatchObject({ org_id: orgId });
+    for (const key of ["id", "org_id", "name", "enabled", "min_tls", "external_recipients", "domain_rules"]) {
+      expect(policies[0]).toHaveProperty(key);
+    }
   });
 
   it("denies cross-org listing", async () => {

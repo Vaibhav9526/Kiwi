@@ -1,0 +1,9 @@
+{
+  "id": "hello",
+  "version": "0.1.0",
+  "name": "Hello Plugin",
+  "description": "Starter template — shows a toast when the host is ready.",
+  "author": "KIWI",
+  "entry": "plugin.js",
+  "permissions": ["notify"]
+}

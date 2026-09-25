@@ -156,8 +156,23 @@ impl TrustMachine {
                 // Trusted stays Trusted; Locked stays Locked.
             }
         }
+        // Sticky-lock splice: `eval` reflects only the fresh signals, so a
+        // machine that stays `Locked` on a clean/weak eval would otherwise
+        // report `required_action: None`. While locked the required action
+        // is always the lock-exit path (same derivation as the free
+        // `evaluate`'s Locked arm and the app's status view).
+        let required_action = if self.state == TrustState::Locked {
+            if policy.unlock_requires_authenticator {
+                RequiredAction::RequireAuthenticatorUnlock
+            } else {
+                RequiredAction::BlockAccess
+            }
+        } else {
+            eval.required_action
+        };
         TrustEvaluation {
             state: self.state,
+            required_action,
             ..eval
         }
     }
@@ -318,6 +333,36 @@ mod tests {
         );
         let e = m.evaluate(&TrustPolicy::default(), vec![]);
         assert_eq!(e.state, TrustState::Locked, "clean eval must not unlock");
+        assert_eq!(
+            e.required_action,
+            RequiredAction::RequireAuthenticatorUnlock,
+            "a still-locked machine must demand the unlock path, not the eval's None"
+        );
+    }
+
+    #[test]
+    fn locked_keeps_block_action_without_authenticator_policy() {
+        let mut m = TrustMachine::new();
+        let policy = TrustPolicy {
+            unlock_requires_authenticator: false,
+            ..TrustPolicy::default()
+        };
+        m.evaluate(
+            &policy,
+            vec![sig(SignalKind::DeviceRevoked, SignalSeverity::Critical, 1)],
+        );
+        // Fresh signals degrade but cannot unlock — required action must
+        // still be the lock-exit path, not WarnUser/None.
+        let e = m.evaluate(
+            &policy,
+            vec![sig(
+                SignalKind::NoForwardSecrecy,
+                SignalSeverity::Medium,
+                25,
+            )],
+        );
+        assert_eq!(e.state, TrustState::Locked);
+        assert_eq!(e.required_action, RequiredAction::BlockAccess);
     }
 
     #[test]

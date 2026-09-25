@@ -212,19 +212,22 @@ pub fn parse_record(text: &str) -> Result<DmarcRecord, Error> {
     })
 }
 
-/// Evaluate DMARC: fetch `_dmarc.<org>`, check SPF/DKIM alignment, apply
-/// policy + pct sampling. DNS trouble → `temperror` output (never `Err`).
-pub fn evaluate<R: DnsResolver>(dns: &R, input: &DmarcInput) -> DmarcOutput {
-    let org = match &input.org_override {
-        Some(o) => o.clone(),
-        None => crate::org_domain_heuristic(&input.from_domain),
-    };
-    let is_sub = input.from_domain.as_str() != org.as_str();
-    let query = format!("_dmarc.{}", org.as_str());
+/// Fetch and filter DMARC policy records at `domain` (RFC 7489 §6.6.3).
+///
+/// Steps 1-2 / 3-4:
+/// - Query `_dmarc.<domain>`.
+/// - Discard TXT strings that do not start with a `v=` tag identifying DMARC1.
+/// - Returns `Ok(None)` if no DMARC records remain (triggers fallback to org domain).
+/// - Returns `Err(outcome)` on DNS errors or invalid sets (multiple records per step 5).
+fn fetch_dmarc_at<R: DnsResolver>(
+    dns: &R,
+    domain: &DomainName,
+) -> Result<Option<String>, DmarcOutput> {
+    let query = format!("_dmarc.{}", domain.as_str());
     let query_name = match DomainName::parse(&query) {
         Ok(d) => d,
         Err(_) => {
-            return DmarcOutput {
+            return Err(DmarcOutput {
                 result: DmarcVerdict::PermError,
                 policy_applied: DmarcPolicy::None,
                 spf_aligned: false,
@@ -232,24 +235,14 @@ pub fn evaluate<R: DnsResolver>(dns: &R, input: &DmarcInput) -> DmarcOutput {
                 sampled_out: false,
                 record: None,
                 explanation: "DMARC query name invalid".to_string(),
-            };
+            });
         }
     };
     let txts = match dns.lookup_txt(&query_name) {
         Ok(t) => t,
-        Err(DnsError::NxDomain) => {
-            return DmarcOutput {
-                result: DmarcVerdict::None,
-                policy_applied: DmarcPolicy::None,
-                spf_aligned: false,
-                dkim_aligned: false,
-                sampled_out: false,
-                record: None,
-                explanation: "no DMARC record published".to_string(),
-            };
-        }
+        Err(DnsError::NxDomain) => return Ok(None),
         Err(DnsError::Temp(e)) => {
-            return DmarcOutput {
+            return Err(DmarcOutput {
                 result: DmarcVerdict::TempError,
                 policy_applied: DmarcPolicy::None,
                 spf_aligned: false,
@@ -257,26 +250,97 @@ pub fn evaluate<R: DnsResolver>(dns: &R, input: &DmarcInput) -> DmarcOutput {
                 sampled_out: false,
                 record: None,
                 explanation: format!("DMARC DNS error: {e}"),
-            };
+            });
         }
     };
-    let rec_txt = match txts.iter().find(|t| {
-        let s = t.trim_start();
-        s == "v=DMARC1" || s.starts_with("v=DMARC1;") || s.starts_with("v=DMARC1 ")
-    }) {
-        Some(t) => t.clone(),
+    let valid_records: Vec<String> = txts
+        .into_iter()
+        .filter(|t| {
+            let s = t.trim_start();
+            s == "v=DMARC1" || s.starts_with("v=DMARC1;") || s.starts_with("v=DMARC1 ")
+        })
+        .collect();
+    if valid_records.is_empty() {
+        return Ok(None);
+    }
+    // Step 5: "If the remaining set contains multiple records ... policy
+    // discovery terminates and DMARC processing is not applied to this message."
+    if valid_records.len() > 1 {
+        return Err(DmarcOutput {
+            result: DmarcVerdict::PermError,
+            policy_applied: DmarcPolicy::None,
+            spf_aligned: false,
+            dkim_aligned: false,
+            sampled_out: false,
+            record: None,
+            explanation: "multiple DMARC policy records published".to_string(),
+        });
+    }
+    Ok(Some(valid_records.into_iter().next().unwrap()))
+}
+
+/// Evaluate DMARC (RFC 7489 §6.6):
+///
+/// 1. Policy discovery (§6.6.3): query `_dmarc.<from_domain>`. If no DMARC
+///    record exists and `from_domain` is a subdomain of `org`, query
+///    `_dmarc.<org>`.
+/// 2. Identifier alignment (§3.1): check SPF and DKIM pass + alignment (strict
+///    or relaxed per the record).
+/// 3. Policy application (§6.6.2, §6.3 `sp=`): `sp=` applies *only* when
+///    evaluating a subdomain against a record discovered at the Organizational
+///    Domain. Records published directly on a subdomain ignore `sp=`.
+/// 4. Message sampling (§6.6.4 `pct=`): when unaligned, deterministic
+///    caller-supplied roll determines if policy is enacted or sampled out.
+pub fn evaluate<R: DnsResolver>(dns: &R, input: &DmarcInput) -> DmarcOutput {
+    let org = match &input.org_override {
+        Some(o) => o.clone(),
+        None => crate::org_domain_heuristic(&input.from_domain),
+    };
+
+    // Step 1: Query at the From domain.
+    let from_res = match fetch_dmarc_at(dns, &input.from_domain) {
+        Ok(rec) => rec,
+        Err(out) => return out,
+    };
+
+    // Record found at From domain vs discovered at Org domain.
+    // RFC 7489 §6.3: "sp will be ignored for DMARC records published on
+    // subdomains of Organizational Domains due to the effect of the DMARC
+    // policy discovery mechanism".
+    let (rec_txt, record_at_org) = match from_res {
+        Some(t) => (t, false),
         None => {
-            return DmarcOutput {
-                result: DmarcVerdict::None,
-                policy_applied: DmarcPolicy::None,
-                spf_aligned: false,
-                dkim_aligned: false,
-                sampled_out: false,
-                record: None,
-                explanation: "TXT present but no v=DMARC1 record".to_string(),
-            };
+            // Step 3: fallback to Organizational Domain if different.
+            if input.from_domain.as_str() != org.as_str() {
+                match fetch_dmarc_at(dns, &org) {
+                    Ok(Some(t)) => (t, true),
+                    Ok(None) => {
+                        return DmarcOutput {
+                            result: DmarcVerdict::None,
+                            policy_applied: DmarcPolicy::None,
+                            spf_aligned: false,
+                            dkim_aligned: false,
+                            sampled_out: false,
+                            record: None,
+                            explanation: "no DMARC record published".to_string(),
+                        };
+                    }
+                    Err(out) => return out,
+                }
+            } else {
+                return DmarcOutput {
+                    result: DmarcVerdict::None,
+                    policy_applied: DmarcPolicy::None,
+                    spf_aligned: false,
+                    dkim_aligned: false,
+                    sampled_out: false,
+                    record: None,
+                    explanation: "no DMARC record published".to_string(),
+                };
+            }
         }
     };
+
     let rec = match parse_record(&rec_txt) {
         Ok(r) => r,
         Err(_) => {
@@ -291,7 +355,15 @@ pub fn evaluate<R: DnsResolver>(dns: &R, input: &DmarcInput) -> DmarcOutput {
             };
         }
     };
-    let policy = if is_sub { rec.sub_policy } else { rec.policy };
+
+    // RFC 7489 §6.3: `sp=` applies only to subdomains of the queried domain.
+    let is_subdomain = input.from_domain.as_str() != org.as_str();
+    let policy = if record_at_org && is_subdomain {
+        rec.sub_policy
+    } else {
+        rec.policy
+    };
+
     let spf_aligned =
         input.spf_pass && aligned(&input.spf_domain, &input.from_domain, &org, rec.spf_align);
     let dkim_aligned = input.dkim_pass
@@ -299,6 +371,7 @@ pub fn evaluate<R: DnsResolver>(dns: &R, input: &DmarcInput) -> DmarcOutput {
             .dkim_domain
             .as_ref()
             .is_some_and(|d| aligned(d, &input.from_domain, &org, rec.dkim_align));
+
     if spf_aligned || dkim_aligned {
         return DmarcOutput {
             result: DmarcVerdict::Pass,
@@ -310,6 +383,7 @@ pub fn evaluate<R: DnsResolver>(dns: &R, input: &DmarcInput) -> DmarcOutput {
             explanation: "DMARC aligned (SPF or DKIM)".to_string(),
         };
     }
+
     let sampled_out = match input.sample_roll {
         None => false,
         Some(roll) => roll >= rec.pct,
@@ -325,6 +399,7 @@ pub fn evaluate<R: DnsResolver>(dns: &R, input: &DmarcInput) -> DmarcOutput {
             explanation: "DMARC unaligned but sampled out by pct".to_string(),
         };
     }
+
     DmarcOutput {
         result: DmarcVerdict::Fail,
         policy_applied: policy,
@@ -458,5 +533,115 @@ mod tests {
         let dns = MockResolver::new().with_temp_fail("_dmarc.example.com");
         let out = evaluate(&dns, &base("example.com"));
         assert_eq!(out.result, DmarcVerdict::TempError);
+    }
+
+    /// RFC 7489 §6.6.3 step 1 -> step 3: query at From domain first; fallback
+    /// to Organizational Domain if no record at From.
+    #[test]
+    fn policy_discovery_queries_from_domain_then_org_domain() {
+        // Record published on subdomain directly overrides the org record.
+        let dns = MockResolver::new()
+            .with_txt("_dmarc.sub.example.com", &["v=DMARC1; p=none"])
+            .with_txt("_dmarc.example.com", &["v=DMARC1; p=reject"]);
+        let mut i = base("sub.example.com");
+        i.spf_pass = false; // unaligned -> policy applies
+        let out = evaluate(&dns, &i);
+        // Direct subdomain record applied: p=none
+        assert_eq!(out.policy_applied, DmarcPolicy::None);
+
+        // Fallback to org domain when no record on subdomain:
+        let dns2 = MockResolver::new()
+            .with_txt("_dmarc.example.com", &["v=DMARC1; p=reject; sp=quarantine"]);
+        let out2 = evaluate(&dns2, &i);
+        // Discovered at org domain for a subdomain -> sp=quarantine applied
+        assert_eq!(out2.policy_applied, DmarcPolicy::Quarantine);
+    }
+
+    /// RFC 7489 §6.3: `sp=` is ignored for records published directly on a
+    /// subdomain.
+    #[test]
+    fn sp_ignored_on_subdomain_direct_record() {
+        let dns = MockResolver::new()
+            .with_txt("_dmarc.mail.example.com", &["v=DMARC1; p=none; sp=reject"]);
+        let mut i = base("mail.example.com");
+        i.spf_pass = false;
+        let out = evaluate(&dns, &i);
+        // Direct record's p=none applies, NOT its sp=reject
+        assert_eq!(out.policy_applied, DmarcPolicy::None);
+    }
+
+    /// RFC 7489 §6.6.3 step 5: multiple DMARC records causes policy discovery
+    /// to terminate and DMARC processing is not applied (permerror).
+    #[test]
+    fn multiple_dmarc_records_produces_permerror() {
+        let dns = MockResolver::new().with_txt(
+            "_dmarc.example.com",
+            &["v=DMARC1; p=reject", "v=DMARC1; p=quarantine"],
+        );
+        let out = evaluate(&dns, &base("example.com"));
+        assert_eq!(out.result, DmarcVerdict::PermError);
+    }
+
+    /// RFC 7489 §6.3 `aspf=s`: strict SPF alignment needs an exact RFC5322.From
+    /// match; relaxed (the default) only needs the same Organizational Domain.
+    #[test]
+    fn strict_aspf_requires_exact_match() {
+        let dns =
+            MockResolver::new().with_txt("_dmarc.strict.example", &["v=DMARC1; p=reject; aspf=s"]);
+        // Subdomain SPF identity -> strict means no alignment.
+        let mut i = base("a.strict.example");
+        i.from_domain = DomainName::parse("a.strict.example").unwrap();
+        i.spf_domain = DomainName::parse("strict.example").unwrap();
+        i.org_override = Some(DomainName::parse("strict.example").unwrap());
+        let out = evaluate(&dns, &i);
+        assert!(!out.spf_aligned);
+        assert_eq!(out.result, DmarcVerdict::Fail);
+        assert_eq!(out.policy_applied, DmarcPolicy::Reject);
+
+        // Exact identity -> strict alignment holds and DMARC passes.
+        let mut e = base("strict.example");
+        e.from_domain = DomainName::parse("strict.example").unwrap();
+        e.spf_domain = DomainName::parse("strict.example").unwrap();
+        e.org_override = Some(DomainName::parse("strict.example").unwrap());
+        let out2 = evaluate(&dns, &e);
+        assert!(out2.spf_aligned);
+        assert_eq!(out2.result, DmarcVerdict::Pass);
+    }
+
+    /// RFC 7489 §6.3 `adkim`: relaxed (default) permits an organizational-
+    /// domain match; strict requires an exact match.
+    #[test]
+    fn adkim_relaxed_permits_subdomain_strict_does_not() {
+        let mut i = base("mail.example.com");
+        i.spf_pass = false; // isolate DKIM alignment
+        i.dkim_pass = true;
+        i.dkim_domain = Some(DomainName::parse("example.com").unwrap());
+
+        let dns_relaxed =
+            MockResolver::new().with_txt("_dmarc.example.com", &["v=DMARC1; p=reject; adkim=r"]);
+        let out = evaluate(&dns_relaxed, &i);
+        assert!(out.dkim_aligned);
+        assert_eq!(out.result, DmarcVerdict::Pass);
+
+        let dns_strict =
+            MockResolver::new().with_txt("_dmarc.example.com", &["v=DMARC1; p=reject; adkim=s"]);
+        let out2 = evaluate(&dns_strict, &i);
+        assert!(!out2.dkim_aligned);
+        assert_eq!(out2.result, DmarcVerdict::Fail);
+        assert_eq!(out2.policy_applied, DmarcPolicy::Reject);
+    }
+
+    /// Alignment requires BOTH an authenticated pass and an identifier match:
+    /// a passing SPF whose domain is unrelated never aligns.
+    #[test]
+    fn unaligned_pass_never_aligns() {
+        let dns = MockResolver::new().with_txt("_dmarc.example.com", &["v=DMARC1; p=quarantine"]);
+        let mut i = base("example.com");
+        i.spf_domain = DomainName::parse("evil.example").unwrap();
+        let out = evaluate(&dns, &i);
+        assert!(i.spf_pass, "SPF itself still passed");
+        assert!(!out.spf_aligned, "but it is unaligned with From");
+        assert_eq!(out.result, DmarcVerdict::Fail);
+        assert_eq!(out.policy_applied, DmarcPolicy::Quarantine);
     }
 }

@@ -121,6 +121,11 @@ One-shot channel addressed by `desktop_endpoint`:
   transport is forbidden.
 - The phone refuses a channel whose desktop key differs from the QR payload
   (QR-swap / channel-mismatch defense).
+- Transport decision (T-184, Agent 6 recommendation, Lead to ratify):
+  `wss://<lan-ip>:<port>` with the endpoint carried in the QR alongside
+  the pin. Platform TLS stacks own framing + certificate validation, no
+  custom framing code to get wrong, no mDNS chatter. mDNS advertisement
+  stays a future discovery enhancement (endpoint format unchanged).
 
 ## 4. Challenge structure + signing
 
@@ -161,6 +166,12 @@ a contract major-version bump (§12).
 
 - `session_id` semantics follow security-session.md §6: the id of the bound
   desktop session/transaction — never an actor label or free-text.
+- Accepted forms (T-184, confirmed against kiwi-app `system.rs:126`):
+  `boot-<...>` session ids for `unlock` / `device-pairing` (the session
+  is the context being authorized); `x-tx:<txn>` transaction ids required
+  once `recovery` / `elevated-action` flows land (the action is narrower
+  than the session). The phone MUST NOT mint either form — it echoes the
+  delivered value into the signed bytes.
 - `expires - issued = 120` s default (`TrustPolicy::challenge_ttl_secs`);
   the phone additionally enforces its own local clock check (§6.1).
 - Parsing is strict: bounded strings, exact-decode base64 (nonce = 32
@@ -249,6 +260,14 @@ Only then: `canonicalChallengeBytes(...)` → keystore Ed25519 sign →
 - The phone still records the deny in its local ledger (one answer per
   challenge id, §4.3) so a re-pushed copy of the same challenge is not
   re-prompted.
+- Deny vs timeout wording (binding, T-184): a timeout (no answer before
+  expiry) is the ABSENCE of a decision — no audit row unless a late response
+  is later verified (then `challenge-verification-failed Expired`, IPC code
+  `challenge-expired` — the ratified ipc.md §9d.9 spelling; builds before the
+  §9d.11 wire migration emit the legacy `expired`). It must never be recorded
+  or rendered as a deny: deny is an
+  explicit user decision (`challenge-denied`, challenge unconsumed,
+  re-approvable). UI copy says "expired / no response", never "denied".
 
 ### 6.4 Replay / conflict handling
 
@@ -330,17 +349,20 @@ Fixtures are synthetic, generated in-test (rule 6 — no real credentials).
 - Event-tag table change, canonical-byte change, or field removal →
   **contract version 2** + ADR + coordinated desktop release (the signed
   bytes must not differ between phone and desktop builds).
-- Open items for Lead + Agent 6 sign-off:
-  1. Keystore-wrapped-seed fallback (§5) — the only way to Ed25519 on
-     keystore implementations lacking it; needs explicit approval as it
-     temporarily handles raw key material in memory.
-  2. Pairing transport choice (§3.2): LAN websocket vs. mDNS-advertised
-     TCP — affects `desktop_endpoint` format only, not this contract's
-     fields.
-  3. Session-id sourcing for unlock challenges (`x-tx:<txn>` mapping in
-     kiwi-app T-120 IPC) — confirm Agent 7's transaction id format.
-  4. Deny-vs-timeout audit wording (§6.3) — align with Agent 6's
-     SECURITY.md §6 review checklist when challenge flow lands in kiwi-app.
+- Open items for Lead + Agent 6 sign-off (T-184 outcomes):
+  1. Keystore-wrapped-seed fallback (§5) — Agent 6 assessment: CONDITIONAL path
+     to yes. Wrapping key non-extractable + device-auth-gated where the
+     platform allows; never persist an unwrapped seed; constant-time
+     Ed25519 (no hand-rolled curve); device-integrity signal before
+     enabling fallback; record fallback use in telemetry. Final approval
+     stays Lead's.
+  2. Pairing transport choice (§3.2): Agent 6 recommends `wss://` with QR-carried
+     endpoint (rationale in §3.2); Lead to ratify.
+  3. Session-id sourcing: CONFIRMED as `boot-<...>` in kiwi-app
+     (`system.rs:126`); contract now documents both accepted forms
+     (§4.2). `x-tx:<txn>` required for recovery/elevated-action when
+     those flows land (Agent 7).
+  4. Deny-vs-timeout audit wording: DONE (§6.3 rule above).
 
 ## 11. Known limitations (honest-enforcement note)
 

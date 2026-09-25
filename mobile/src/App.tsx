@@ -10,28 +10,28 @@
  * exists so the protocol modules have a host and the UX gates (§6.1) have a
  * surface to be reviewed against.
  */
-import React, { useCallback, useMemo, useState } from "react";
-import { SafeAreaView, ScrollView, StyleSheet, Text, TouchableOpacity, View } from "react-native";
+import React, { useCallback, useMemo, useState } from 'react';
+import { SafeAreaView, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
-import { PairingScreen, type PairedIdentity } from "./screens/PairingScreen";
-import { PendingApprovalsScreen } from "./screens/PendingApprovalsScreen";
+import { PairingScreen, type PairedIdentity } from './screens/PairingScreen';
+import { PendingApprovalsScreen } from './screens/PendingApprovalsScreen';
 
-export type ScreenName = "pairing" | "approvals";
+export type ScreenName = 'pairing' | 'approvals';
 
 export function App(): React.JSX.Element {
-  const [screen, setScreen] = useState<ScreenName>("pairing");
+  const [screen, setScreen] = useState<ScreenName>('pairing');
   const [identity, setIdentity] = useState<PairedIdentity | null>(null);
 
   const onPaired = useCallback((id: PairedIdentity) => {
     setIdentity(id);
-    setScreen("approvals");
+    setScreen('approvals');
   }, []);
 
   const tabs = useMemo(
     () =>
       [
-        { name: "pairing" as const, label: "Pairing" },
-        { name: "approvals" as const, label: "Approvals" },
+        { name: 'pairing' as const, label: 'Pairing' },
+        { name: 'approvals' as const, label: 'Approvals' },
       ].slice(),
     [],
   );
@@ -53,7 +53,7 @@ export function App(): React.JSX.Element {
         ))}
       </View>
       <ScrollView contentContainerStyle={styles.body}>
-        {screen === "pairing" ? (
+        {screen === 'pairing' ? (
           <PairingScreen onPaired={onPaired} />
         ) : (
           <PendingApprovalsScreen identity={identity} />
@@ -68,17 +68,17 @@ export function App(): React.JSX.Element {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: "#101418" },
-  title: { color: "#e8edf2", fontSize: 20, fontWeight: "700", padding: 16 },
-  tabs: { flexDirection: "row", paddingHorizontal: 16, gap: 8 },
+  root: { flex: 1, backgroundColor: '#101418' },
+  title: { color: '#e8edf2', fontSize: 20, fontWeight: '700', padding: 16 },
+  tabs: { flexDirection: 'row', paddingHorizontal: 16, gap: 8 },
   tab: {
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: 8,
-    backgroundColor: "#1c232b",
+    backgroundColor: '#1c232b',
   },
-  tabActive: { backgroundColor: "#2c7a4b" },
-  tabText: { color: "#e8edf2", fontSize: 14 },
+  tabActive: { backgroundColor: '#2c7a4b' },
+  tabText: { color: '#e8edf2', fontSize: 14 },
   body: { padding: 16 },
-  footer: { color: "#7a8a99", fontSize: 11, padding: 12, textAlign: "center" },
+  footer: { color: '#7a8a99', fontSize: 11, padding: 12, textAlign: 'center' },
 });

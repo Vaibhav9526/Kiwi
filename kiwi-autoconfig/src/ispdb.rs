@@ -281,11 +281,31 @@ mod tests {
         // published facts, and lookups must be stable across runs.
         let expected = [
             ("gmail.com", "Google", "imap.gmail.com", AuthKind::XOAuth2),
-            ("outlook.com", "Microsoft 365", "outlook.office365.com", AuthKind::XOAuth2),
-            ("yahoo.com", "Yahoo", "imap.mail.yahoo.com", AuthKind::XOAuth2),
-            ("icloud.com", "iCloud", "imap.mail.me.com", AuthKind::Password),
+            (
+                "outlook.com",
+                "Microsoft 365",
+                "outlook.office365.com",
+                AuthKind::XOAuth2,
+            ),
+            (
+                "yahoo.com",
+                "Yahoo",
+                "imap.mail.yahoo.com",
+                AuthKind::XOAuth2,
+            ),
+            (
+                "icloud.com",
+                "iCloud",
+                "imap.mail.me.com",
+                AuthKind::Password,
+            ),
             ("zoho.com", "Zoho", "imap.zoho.com", AuthKind::Password),
-            ("fastmail.com", "Fastmail", "imap.fastmail.com", AuthKind::Password),
+            (
+                "fastmail.com",
+                "Fastmail",
+                "imap.fastmail.com",
+                AuthKind::Password,
+            ),
         ];
         for (domain, provider, imap_host, auth) in expected {
             let d = DomainName::parse(domain).unwrap();
@@ -294,7 +314,11 @@ mod tests {
             assert_eq!(e.provider, provider, "{provider}: wrong entry");
             assert_eq!(e.imap.0, imap_host, "{provider}: wrong imap host");
             assert_eq!(e.imap.1, 993, "{provider}: wrong imap port");
-            assert_eq!(e.imap.2, SocketSecurity::ImplicitTls, "{provider}: wrong security");
+            assert_eq!(
+                e.imap.2,
+                SocketSecurity::ImplicitTls,
+                "{provider}: wrong security"
+            );
             assert_eq!(e.auth, auth, "{provider}: wrong auth kind");
             // Deterministic: repeated suggestion builds agree exactly.
             let s1 = lookup_email(&format!("u@{domain}"));

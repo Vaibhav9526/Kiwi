@@ -1,0 +1,15 @@
+/* KIWI icons (T-268) — inline-SVG glyph chrome. currentColor inherits the
+ * surrounding text color; themes need no per-icon overrides. */
+
+.kiwi-icon {
+  display: inline-block;
+  flex: none;
+  vertical-align: -0.18em;
+}
+
+/* In buttons/rows, keep glyph + label baseline-aligned with a gap when the
+ * consumer doesn't supply one. */
+button .kiwi-icon,
+.kiwi-btn-icon {
+  vertical-align: -0.2em;
+}

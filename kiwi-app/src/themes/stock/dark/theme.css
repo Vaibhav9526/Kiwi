@@ -1,0 +1,96 @@
+/* KIWI Flagship Dark — stock theme package (T-268). The T-145 deep-black
+ * palette expressed as a theme package; values mirror the dark block in
+ * mailspring-tokens.css so the package is self-contained per format. */
+
+:root[data-theme="dark"],
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* ---- surfaces ---- */
+  --kiwi-ms-bg: #0e0e12;
+  --kiwi-ms-surface: #15151c;
+  --kiwi-ms-surface-2: #17171f;
+  --kiwi-ms-surface-3: #1d1d25;
+  --kiwi-ms-sidebar: #0a0a0e;
+  --kiwi-ms-toolbar: #15151c;
+  --kiwi-ms-list-bg: #101016;
+  --kiwi-ms-list-border: #2a2a35;
+  --kiwi-ms-list-hover: #1a1a22;
+
+  /* ---- text ---- */
+  --kiwi-ms-text: #f4f2f9;
+  --kiwi-ms-text-heading: #ffffff;
+  --kiwi-ms-text-secondary: #a9a7bd;
+  --kiwi-ms-text-muted: #5e5c72;
+  --kiwi-ms-link: #f2c063;
+
+  /* ---- borders ---- */
+  --kiwi-ms-border: #2a2a35;
+  --kiwi-ms-border-strong: #3a3a46;
+  --kiwi-ms-divider: #1d1d25;
+  --kiwi-ms-hairline: rgba(255, 255, 255, 0.08);
+
+  /* ---- accent + status: amber flagship ---- */
+  --kiwi-ms-accent: #eaa132;
+  --kiwi-ms-accent-active: #cf8a26;
+  --kiwi-ms-accent-emphasis: #f2c063;
+  --kiwi-ms-primary: #e8781e;
+  --kiwi-ms-primary-text: #ffffff;
+  --kiwi-ms-icon-muted: #8e8ca3;
+  --kiwi-ms-info: #58b660;
+  --kiwi-ms-success: #34d399;
+  --kiwi-ms-warning: #eaa132;
+  --kiwi-ms-danger: #f26d6d;
+  --kiwi-ms-toast-info: #3ec6e0;
+  --kiwi-ms-toast-success: #2bd99a;
+  --kiwi-ms-toast-warning: #ff7a33;
+  --kiwi-ms-toast-error: #e0526e;
+  --kiwi-ms-toast-pending: #9aa0a6;
+
+  /* ---- shadows / focus ---- */
+  --kiwi-ms-shadow-color: rgba(0, 0, 0, 0.55);
+  --kiwi-ms-shadow-standard: 0 1px 4px 0 rgba(0, 0, 0, 0.5);
+  --kiwi-ms-shadow-raised: 0 4px 14px 0 rgba(0, 0, 0, 0.55);
+  --kiwi-ms-shadow-popover: 0 8px 28px rgba(0, 0, 0, 0.6);
+  --kiwi-ms-shadow-modal: 0 24px 64px rgba(0, 0, 0, 0.65);
+  --kiwi-ms-focus-glow: 0 0 0 3px rgba(234, 161, 50, 0.25);
+
+  /* ---- selection ---- */
+  --kiwi-ms-select-tint: color-mix(in srgb, var(--kiwi-ms-accent) 17%, var(--kiwi-ms-list-bg));
+  --kiwi-ms-select-border: color-mix(in srgb, var(--kiwi-ms-accent) 50%, var(--kiwi-ms-list-bg));
+  --kiwi-ms-select-solid: var(--kiwi-ms-accent-active);
+
+  /* ---- legacy --kiwi-* (already flagship dark; restated for the
+   * package format) ---- */
+  --kiwi-bg: #0e0e12;
+  --kiwi-surface: #15151c;
+  --kiwi-sidebar: #0a0a0e;
+  --kiwi-card: #17171f;
+  --kiwi-input: #0f0f15;
+  --kiwi-border: #2a2a35;
+  --kiwi-border-soft: #1d1d25;
+  --kiwi-text: #f4f2f9;
+  --kiwi-text-secondary: #a9a7bd;
+  --kiwi-text-disabled: #5e5c72;
+  --kiwi-brand: #eaa132;
+  --kiwi-brand-ink: #f2c063;
+  --kiwi-focus: #f0a83c;
+  --kiwi-focus-ring: rgba(234, 161, 50, 0.25);
+  --kiwi-secure: #34d399;
+  --kiwi-secure-bg: #0b231b;
+  --kiwi-secure-border: rgba(52, 211, 153, 0.45);
+  --kiwi-warning: #eaa132;
+  --kiwi-warning-bg: #251b0b;
+  --kiwi-warning-border: rgba(234, 161, 50, 0.45);
+  --kiwi-danger: #f26d6d;
+  --kiwi-danger-bg: #290f15;
+  --kiwi-danger-border: rgba(242, 109, 109, 0.5);
+  --kiwi-unknown: #8e8ca3;
+  --kiwi-unknown-bg: #17171e;
+  --kiwi-unknown-border: rgba(142, 140, 163, 0.4);
+  --kiwi-lock: #f2c063;
+  --kiwi-lock-bg: #241b0b;
+  --kiwi-hover-bg: rgba(255, 255, 255, 0.035);
+  --kiwi-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+  --kiwi-shimmer: rgba(255, 255, 255, 0.06);
+}

@@ -1,0 +1,13 @@
+{
+  "comment": "Version-1 / legacy spellings a dual-read consumer must still accept (docs/audits/for-serde-vocab-1.md §Migration). Every value here normalizes to the canonical tag in fsv1_canonical.json. The bare \"unknown\" TLS version is lossy — the raw wire value is irrecoverable and maps to LEGACY_UNKNOWN_WIRE (0xFFFF), never to a fabricated version.",
+  "tls_version": ["ssl2.0", "ssl3.0", "tls1.0", "tls1.1", "tls1.2", "tls1.3", "unknown"],
+  "transport_security": ["starttls"],
+  "auth_mechanism": ["cram-md5", "digest-md5", "xoauth2", "oauthbearer", "oauth_bearer", "scram-sha-1", "scram-sha-256", "scram-sha-256-plus", "scram-sha-512-plus"],
+  "bulk_cipher": ["3des", "chacha20_poly1305"],
+  "finding_category": ["starttls"],
+  "evidence_kind": ["starttls_negotiation"],
+  "change_kind": ["added", "persisting"],
+  "grade": ["A", "B", "C", "D", "F"],
+  "capture_format": [{"ClassicPcap": {"nanosecond": true}}, "PcapNg"],
+  "link_type": ["Ethernet", {"Other": 239}]
+}

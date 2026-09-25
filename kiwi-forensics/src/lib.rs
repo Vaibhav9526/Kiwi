@@ -65,9 +65,13 @@ pub mod rules;
 
 /// Version of the finding/evidence/report contract implemented by this crate.
 ///
-/// Consumers must tolerate unknown fields and unknown enum variants
-/// (`docs/API_CONTRACTS.md`, cross-cutting invariants).
-pub const CONTRACT_VERSION: &str = "kiwi.forensics/1";
+/// `/2` ratifies the FSV-1 wire-enum rule (`docs/audits/for-serde-vocab-1.md`):
+/// enum tags are lower `snake_case`, data-bearing variants stay externally
+/// tagged (`{"unknown": <u16>}`), `EvidenceValue` keeps its `type` tag.
+/// Deserializers still accept the version-1 `as_str()` spellings as legacy
+/// aliases — dual-read, single-write. Unknown fields remain ignorable;
+/// unknown *variant tags* fail closed (FOR-6 is not closed by this rule).
+pub const CONTRACT_VERSION: &str = "kiwi.forensics/2";
 
 /// Rule-catalog version.
 ///
@@ -77,4 +81,8 @@ pub const CONTRACT_VERSION: &str = "kiwi.forensics/1";
 pub const RULE_CATALOG_VERSION: u16 = 1;
 
 /// Version of the deterministic scoring model ([`score`]).
-pub const SCORING_MODEL_VERSION: &str = "kiwi-score-1";
+///
+/// `/2` (T-247) rounds each finding's deduction half-up before summing
+/// (contract §6 wording), instead of rounding the aggregate once —
+/// several fractional findings can cost one more point than under `/1`.
+pub const SCORING_MODEL_VERSION: &str = "kiwi-score-2";

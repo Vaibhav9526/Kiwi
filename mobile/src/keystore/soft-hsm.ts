@@ -12,7 +12,8 @@
  *
  * Production signing is the platform keystore's job (SECURITY.md rule 8).
  */
-import { KeystoreError, type DeviceKeystore, type KeystoreKeyHandle } from "./keystore";
+/* eslint-disable no-bitwise -- test-only xorshift fixture RNG is bitwise by construction. */
+import { KeystoreError, type DeviceKeystore, type KeystoreKeyHandle } from './keystore';
 
 interface SoftKey {
   seed: Uint8Array;
@@ -32,7 +33,7 @@ export class SoftHsmKeystore implements DeviceKeystore {
   async generateKey(alias: string): Promise<KeystoreKeyHandle> {
     this.assertTestMode();
     if (this.keys.has(alias)) {
-      throw new KeystoreError("fail-closed", `alias already exists: ${alias.length} chars kept private`);
+      throw new KeystoreError('fail-closed', `alias already exists: ${alias.length} chars kept private`);
     }
     // Deterministic synthetic seed — NOT entropy, NOT a real key. Fixture only.
     const seed = new Uint8Array(32);
@@ -47,15 +48,15 @@ export class SoftHsmKeystore implements DeviceKeystore {
     return {
       keystoreRef: `soft-hsm:${alias}`,
       publicKeyB64: toB64(publicKey),
-      algorithm: "ed25519",
+      algorithm: 'ed25519',
     };
   }
 
   async sign(keystoreRef: string, message: Uint8Array): Promise<Uint8Array> {
     this.assertTestMode();
-    const alias = keystoreRef.startsWith("soft-hsm:") ? keystoreRef.slice(9) : keystoreRef;
+    const alias = keystoreRef.startsWith('soft-hsm:') ? keystoreRef.slice(9) : keystoreRef;
     const key = this.keys.get(alias);
-    if (!key) throw new KeystoreError("key-not-found", "unknown keystoreRef");
+    if (!key) {throw new KeystoreError('key-not-found', 'unknown keystoreRef');}
     // Non-cryptographic 64-byte filler so plumbing tests have shape.
     const out = new Uint8Array(64);
     for (let i = 0; i < 64; i++) {
@@ -66,34 +67,34 @@ export class SoftHsmKeystore implements DeviceKeystore {
 
   async deleteKey(keystoreRef: string): Promise<void> {
     this.assertTestMode();
-    const alias = keystoreRef.startsWith("soft-hsm:") ? keystoreRef.slice(9) : keystoreRef;
+    const alias = keystoreRef.startsWith('soft-hsm:') ? keystoreRef.slice(9) : keystoreRef;
     this.keys.delete(alias);
   }
 
   async hasKey(keystoreRef: string): Promise<boolean> {
-    const alias = keystoreRef.startsWith("soft-hsm:") ? keystoreRef.slice(9) : keystoreRef;
+    const alias = keystoreRef.startsWith('soft-hsm:') ? keystoreRef.slice(9) : keystoreRef;
     return this.keys.has(alias);
   }
 
   private assertTestMode(): void {
     if (!this.allowTesting) {
-      throw new KeystoreError("fail-closed", "SoftHsmKeystore is test-only");
+      throw new KeystoreError('fail-closed', 'SoftHsmKeystore is test-only');
     }
   }
 }
 
 /** Minimal dependency-free base64 (RFC 4648) for scaffold handles. */
 function toB64(bytes: Uint8Array): string {
-  const table = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  let out = "";
+  const table = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  let out = '';
   for (let i = 0; i < bytes.length; i += 3) {
     const b0 = bytes[i] ?? 0;
     const b1 = i + 1 < bytes.length ? (bytes[i + 1] ?? 0) : 0;
     const b2 = i + 2 < bytes.length ? (bytes[i + 2] ?? 0) : 0;
     out += table[b0 >> 2];
     out += table[((b0 & 0x03) << 4) | (b1 >> 4)];
-    out += i + 1 < bytes.length ? table[((b1 & 0x0f) << 2) | (b2 >> 6)] : "=";
-    out += i + 2 < bytes.length ? table[b2 & 0x3f] : "=";
+    out += i + 1 < bytes.length ? table[((b1 & 0x0f) << 2) | (b2 >> 6)] : '=';
+    out += i + 2 < bytes.length ? table[b2 & 0x3f] : '=';
   }
   return out;
 }

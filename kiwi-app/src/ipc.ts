@@ -10,6 +10,8 @@
  * → views render error/lock states, never demo data as real.
  */
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AccountView,
   AppInfoView,
@@ -19,22 +21,72 @@ import type {
   ContactInput,
   ContactView,
   DeleteResultView,
+  DeliverabilityBeginView,
+  DeliverabilityReportView,
+  DeliverabilitySendView,
+  DeliverabilityStatusView,
   DeviceView,
   FindingDetailView,
   FolderView,
+  MailChangedEvent,
+  LinkClickVerdict,
   MessageBodyView,
   MessagePatch,
+  MessageRef,
+  MessageSourceView,
   MessageUpdateView,
   MessageView,
   MoveResultView,
+  OAuth2BeginView,
+  OAuth2PollView,
+  OAuth2StatusView,
   OutboxItem,
+  PairBeginView,
+  PairStatusView,
+  Pop3PolicyView,
   RemoteContentView,
   RenderedBodyView,
+  RuleHitView,
+  RulePreviewView,
+  RulesApplyView,
+  RuleView,
   SearchHit,
+  SandboxOpenView,
   SecurityStatusView,
+  SendReceipt,
+  SetJunkView,
+  SnoozePreset,
+  SnoozeResultView,
+  SnoozedMessageView,
+  SyncStatusView,
+  TagCountView,
+  RenderedTemplateView,
+  TemplateInput,
+  TemplateView,
+  TempDiscardView,
+  TempExtendView,
+  TempMailboxView,
+  TempMessageView,
+  TempPollView,
+  UnsnoozeResultView,
+  UnsubscribeAction,
+  UnsubscribeResultView,
+  VCardExportView,
+  VCardImportView,
   VerifyResult,
 } from "./kiwi";
-import { parseAutoconfigSuggestion, parseContact, parseSearchHit } from "./kiwi";
+import { parseAutoconfigSuggestion, parseContact, parseOAuth2Begin, parseOAuth2Poll, parseOAuth2Status, parseSearchHit } from "./kiwi";
+import {
+  decodeDeliverabilityBeginView,
+  decodeDeliverabilityReportView,
+  decodeDeliverabilitySendView,
+  decodeDeliverabilityStatusView,
+  decodeTempDiscardView,
+  decodeTempExtendView,
+  decodeTempMailboxView,
+  decodeTempMessageView,
+  decodeTempPollView,
+} from "./integrations";
 
 export class BackendUnavailableError extends Error {
   constructor(command: string, cause?: unknown) {
@@ -48,6 +100,7 @@ export class IpcError extends Error {
   constructor(
     public readonly code: string,
     message: string,
+    public readonly retryAfterMs?: number,
   ) {
     super(message);
     this.name = "IpcError";
@@ -59,11 +112,17 @@ export function isTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
+function retryAfterMs(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) return undefined;
+  return Math.min(value, 60 * 60 * 1000);
+}
+
 function asIpcError(value: unknown): IpcError | null {
   if (typeof value === "object" && value !== null) {
     const r = value as Record<string, unknown>;
     if (typeof r["code"] === "string" && typeof r["message"] === "string") {
-      return new IpcError(r["code"], r["message"]);
+      const hint = retryAfterMs(r["retryAfterMs"] ?? r["retry_after_ms"]);
+      return new IpcError(r["code"], r["message"], hint);
     }
   }
   if (typeof value === "string" && value.length > 0 && value.length < 300) {
@@ -81,8 +140,28 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
   }
 }
 
+function decoded<T>(value: T | null, command: string): T {
+  if (value === null) throw new IpcError("malformed-response", `malformed integration response for ${command}`);
+  return value;
+}
+
 function asArray<T>(raw: unknown): T[] {
   return Array.isArray(raw) ? (raw as T[]) : [];
+}
+
+/* ---------------- events ---------------- */
+
+/**
+ * Subscribe to `kiwi://mail-changed` (ipc.md §6 event; emitted by the
+ * sync worker after a pass that changed stored mail). Caller owns
+ * debouncing/refresh policy; the returned unlisten detaches.
+ * Non-Tauri contexts reject with BackendUnavailableError.
+ */
+export function onMailChanged(handler: (ev: MailChangedEvent) => void): Promise<UnlistenFn> {
+  if (!isTauri()) {
+    return Promise.reject(new BackendUnavailableError("kiwi://mail-changed", "not in Tauri webview"));
+  }
+  return listen<MailChangedEvent>("kiwi://mail-changed", (e) => handler(e.payload));
 }
 
 /* ---------------- system / lock path (exempt) ---------------- */
@@ -100,6 +179,13 @@ export const api = {
   lock(): Promise<SecurityStatusView> {
     return call<SecurityStatusView>("kiwi_lock");
   },
+  /** Canonical §9d unlock path — backend fixes `event:"unlock"` and owns
+   *  challenge id / nonce / session / TTL; renderer supplies only deviceId. */
+  unlockChallenge(deviceId: string): Promise<ChallengeView> {
+    return call<ChallengeView>("unlock_challenge", { deviceId });
+  },
+  /** Compat alias (kiwi_request_challenge) — for non-unlock challenge
+   *  events. Still backed by PairEngine. */
   requestChallenge(deviceId: string, event: "unlock" | "device-pairing" | "recovery" | "elevated-action"): Promise<ChallengeView> {
     return call<ChallengeView>("kiwi_request_challenge", { deviceId, event });
   },
@@ -137,14 +223,61 @@ export const api = {
 
   /**
    * Discovery chain for an email address (ISPDB → autoconfig XML →
-   * MX heuristics → manual). `kiwi_lookup_autoconfig` does not exist in the
-   * backend yet (T-135 IPC pending) — until it lands this throws
-   * BackendUnavailableError and the wizard falls back to its labeled local
-   * stub. Same wrapper either way, so no view changes on land.
+   * MX heuristics → manual). Invokes `kiwi_discover_account`, the
+   * contract-ratified command name (ipc.md §5; `kiwi_lookup_autoconfig`
+   * is a registered alias for stale wrappers — T-230). The backend
+   * returns a DiscoveryOutcomeView; the parser unwraps `suggestion`.
+   * When the backend is absent this throws BackendUnavailableError and
+   * the wizard falls back to its labeled local stub / manual entry.
    */
   async lookupAutoconfig(email: string): Promise<AutoconfigSuggestion | null> {
-    const raw = await call<unknown>("kiwi_lookup_autoconfig", { email });
+    const raw = await call<unknown>("kiwi_discover_account", { email });
     return parseAutoconfigSuggestion(raw);
+  },
+
+  /* ---------------- oauth2 acquisition (gated, T-230/243) ---------------- */
+
+  /**
+   * `kiwi_oauth2_begin(provider, email?)` → the ticket plus whatever the
+   * user must see: `userCode` + `verificationUri` (device_code) or
+   * `authorizeUrl` to open in the system browser (loopback_code).
+   * `oauth2-not-configured` lands here as an IpcError when the deployment
+   * ships no client id for the provider.
+   */
+  async oauth2Begin(provider: string, email?: string): Promise<OAuth2BeginView | null> {
+    const raw = await call<unknown>("kiwi_oauth2_begin", { provider, email });
+    return parseOAuth2Begin(raw);
+  },
+  /**
+   * `kiwi_oauth2_poll(ticketId)` → pending / complete / error. Terminal
+   * failures come back as `status:"error"` with a §9f `errorCode`;
+   * transient transport failures throw IpcError (the grant stays alive).
+   */
+  async oauth2Poll(ticketId: string): Promise<OAuth2PollView | null> {
+    const raw = await call<unknown>("kiwi_oauth2_poll", { ticketId });
+    return parseOAuth2Poll(raw);
+  },
+  /** `kiwi_oauth2_cancel(ticketId)` — abandon a grant the user walked away from. */
+  async oauth2Cancel(ticketId: string): Promise<boolean> {
+    const raw = await call<unknown>("kiwi_oauth2_cancel", { ticketId });
+    return typeof raw === "object" && raw !== null && (raw as Record<string, unknown>)["cancelled"] === true;
+  },
+  /**
+   * `kiwi_oauth2_status(accountId)` → auth posture for the accounts view
+   * (`authMethod`, `needsRefresh`, `credentialPresent`) — no token
+   * material ever crosses this boundary.
+   */
+  async oauth2Status(accountId: string): Promise<OAuth2StatusView | null> {
+    const raw = await call<unknown>("kiwi_oauth2_status", { accountId });
+    return parseOAuth2Status(raw);
+  },
+  /**
+   * `kiwi_open_external(url, sourceUrl?)` — HTTPS system-browser handoff.
+   * Message-link callers pass sourceUrl; T-273 then enforces fresh risk and
+   * refuses failed links with sandbox-required.
+   */
+  openExternal(url: string, sourceUrl?: string): Promise<void> {
+    return call<void>("kiwi_open_external", { url, sourceUrl });
   },
 
   /* ---------------- search (gated, T-160) ---------------- */
@@ -166,28 +299,49 @@ export const api = {
     return out;
   },
 
-  /* ---------------- backend prefs (T-167, pending) ---------------- */
+  /* ---------------- backend prefs (T-167; commands landed T-175) ---------------- */
 
   /**
-   * Backend preference bag. Neither command exists yet — until they land
-   * both throw BackendUnavailableError and the UI runs on localStorage
-   * (source of truth offline; backend wins on load-merge once present).
-   * Same wrappers either way, so no view changes on land.
+   * Backend preference bag over the ipc.md §9c key/value store
+   * (`kiwi_prefs_*`, global scope). `getPrefs` folds the `{key, value}[]`
+   * list rows into a bag; `setPrefs` pushes each entry through the
+   * per-key `kiwi_prefs_set` — the first rejection aborts the push so
+   * callers see a failed sync rather than a partial one. When the backend
+   * is absent both throw BackendUnavailableError and the UI runs on
+   * localStorage (source of truth offline; backend wins on load-merge).
    */
-  getPrefs(): Promise<Record<string, unknown>> {
-    return call<Record<string, unknown>>("kiwi_get_prefs");
+  async getPrefs(): Promise<Record<string, unknown>> {
+    const rows = asArray<{ key: string; value: unknown }>(
+      await call<unknown>("kiwi_prefs_list"),
+    );
+    const bag: Record<string, unknown> = {};
+    for (const row of rows) {
+      if (row && typeof row.key === "string") bag[row.key] = row.value;
+    }
+    return bag;
   },
-  setPrefs(prefs: Record<string, unknown>): Promise<{ saved: number }> {
-    return call<{ saved: number }>("kiwi_set_prefs", { prefs });
+  async setPrefs(prefs: Record<string, unknown>): Promise<{ saved: number }> {
+    let saved = 0;
+    for (const [key, value] of Object.entries(prefs)) {
+      await call<unknown>("kiwi_prefs_set", { key, value });
+      saved += 1;
+    }
+    return { saved };
+  },
+  /**
+   * Single pref read — `null` = unset (ipc.md §9c). `getPrefs` covers the
+   * bag; this is for one-key lookups that should not list the store.
+   */
+  prefsGet(key: string, accountId?: string): Promise<unknown> {
+    return call<unknown>("kiwi_prefs_get", { key, accountId });
   },
 
   /* ---------------- contacts (gated, T-173, pending backend) ---------------- */
 
   /**
    * Address book per docs/contracts/contacts.md §3 (`kiwi.contacts/1`).
-   * No backend command exists yet (Agent 7) — until they land every call
-   * throws BackendUnavailableError and views use the labeled localStorage
-   * book instead. Same wrappers either way, so no view changes on land.
+   * When the backend is absent each call throws BackendUnavailableError
+   * and views use the labeled localStorage book instead.
    */
   async listContacts(limit?: number, offset?: number): Promise<ContactView[]> {
     const raw = await call<unknown>("kiwi_list_contacts", { limit, offset });
@@ -226,6 +380,26 @@ export const api = {
     if (raw === null) return null;
     return parseContact(raw);
   },
+  async contactsByTag(tag: string, limit?: number): Promise<ContactView[]> {
+    const raw = await call<unknown>("kiwi_contacts_by_tag", { tag, limit });
+    if (!Array.isArray(raw)) return [];
+    const out: ContactView[] = [];
+    for (const item of raw) {
+      const c = parseContact(item);
+      if (c) out.push(c);
+    }
+    return out;
+  },
+  contactTags(): Promise<TagCountView[]> {
+    return call<TagCountView[]>("kiwi_contact_tags");
+  },
+  importVcards(vcardText: string): Promise<VCardImportView> {
+    // Wire arg is `vcardText` (Rust `vcard_text` → Tauri camelCase).
+    return call<VCardImportView>("kiwi_import_vcards", { vcardText });
+  },
+  exportVcards(contactIds?: string[]): Promise<VCardExportView> {
+    return call<VCardExportView>("kiwi_export_vcards", { contactIds });
+  },
 
   /* ---------------- mail read (gated) ---------------- */
 
@@ -238,8 +412,17 @@ export const api = {
   getMessage(accountId: string, folderId: number, uid: number): Promise<MessageBodyView> {
     return call<MessageBodyView>("kiwi_get_message", { accountId, folderId, uid });
   },
+  /** T-295: verbatim RFC822 source (lossy UTF-8, 8 MiB cap). Absent → typed
+   * `not-found`, never an empty string. */
+  messageSource(accountId: string, folderId: number, uid: number): Promise<MessageSourceView> {
+    return call<MessageSourceView>("kiwi_message_source", { accountId, folderId, uid });
+  },
   syncAccount(accountId: string, folders?: string[]): Promise<Record<string, unknown>[]> {
     return call<Record<string, unknown>[]>("kiwi_sync_account", { accountId, folders });
+  },
+  /** Per-account sync rows; omit `accountId` for every configured account. */
+  syncStatus(accountId?: string): Promise<SyncStatusView[]> {
+    return call<SyncStatusView[]>("kiwi_sync_status", { accountId });
   },
 
   /* ---------------- message actions (gated, T-146) ---------------- */
@@ -268,6 +451,44 @@ export const api = {
   setRemoteContent(accountId: string, allowed: boolean): Promise<RemoteContentView> {
     return call<RemoteContentView>("kiwi_set_remote_content", { accountId, allowed });
   },
+  /** T-295: per-account POP3 deletion policy — `true` DELEs after ingest
+   * (default keep-on-server). POP3 accounts only. */
+  setPop3Policy(accountId: string, deleteAfterDownload: boolean): Promise<Pop3PolicyView> {
+    return call<Pop3PolicyView>("kiwi_set_pop3_policy", { accountId, deleteAfterDownload });
+  },
+  linkClick(accountId: string, folderId: number, uid: number, url: string): Promise<LinkClickVerdict> {
+    return call<LinkClickVerdict>("kiwi_link_click", { accountId, folderId, uid, url });
+  },
+  sandboxOpenLink(url: string): Promise<SandboxOpenView> {
+    return call<SandboxOpenView>("kiwi_sandbox_open_link", { url });
+  },
+  sandboxOpenAttachment(folderId: number, uid: number, filename: string): Promise<SandboxOpenView> {
+    return call<SandboxOpenView>("kiwi_sandbox_open_attachment", { folderId, uid, filename });
+  },
+
+  /**
+   * Execute the message's stored unsubscribe offer (T-234, F3).
+   * `action="http"` POSTs the advertised https URL (one-click endpoints
+   * get the RFC 8058 body; plain URLs need `consent: true`).
+   * `action="mailto"` enqueues via the normal outbox — ALWAYS needs
+   * `consent: true`. `consent-required` is thrown when the flag is
+   * missing where required.
+   */
+  messageUnsubscribe(
+    accountId: string,
+    folderId: number,
+    uid: number,
+    action: UnsubscribeAction,
+    consent?: boolean,
+  ): Promise<UnsubscribeResultView> {
+    return call<UnsubscribeResultView>("kiwi_message_unsubscribe", {
+      accountId,
+      folderId,
+      uid,
+      action,
+      consent,
+    });
+  },
 
   /* ---------------- delete / move (gated, T-163) ---------------- */
 
@@ -288,6 +509,117 @@ export const api = {
     return call<MoveResultView>("kiwi_move_messages", { accountId, srcFolderId, dstFolderId, uids });
   },
 
+  /* ---------------- snooze (gated, T-255) ---------------- */
+
+  /**
+   * Park messages locally until a deadline — never a server-side move;
+   * parked rows leave folder lists and return at the sync-pass sweep.
+   * Deadline is exactly one of `untilUnix` | `preset`.
+   */
+  snoozeMessages(
+    accountId: string,
+    refs: MessageRef[],
+    deadline: { untilUnix?: number; preset?: SnoozePreset },
+  ): Promise<SnoozeResultView> {
+    return call<SnoozeResultView>("kiwi_message_snooze", { accountId, refs, ...deadline });
+  },
+  unsnoozeMessages(accountId: string, refs: MessageRef[]): Promise<UnsnoozeResultView> {
+    return call<UnsnoozeResultView>("kiwi_message_unsnooze", { accountId, refs });
+  },
+  /** Account-wide parked mail, soonest-due first (the Snoozed view). */
+  async listSnoozed(accountId: string, limit?: number): Promise<SnoozedMessageView[]> {
+    return asArray<SnoozedMessageView>(await call<unknown>("kiwi_list_snoozed", { accountId, limit }));
+  },
+
+  /* ---------------- junk (gated, T-263) ---------------- */
+
+  /**
+   * Mark refs junk (`\Junk` flag + move to the account's Junk folder) or
+   * un-junk them (clear flag; Junk-folder rows return to INBOX). IMAP
+   * writes through immediately; POP3 is local-only. Refs may span
+   * folders; every folderId must belong to `accountId`.
+   */
+  setJunk(accountId: string, refs: MessageRef[], junk: boolean): Promise<SetJunkView> {
+    return call<SetJunkView>("kiwi_message_set_junk", { accountId, refs, junk });
+  },
+
+  /* ---------------- inbox rules (gated, T-233/T-244) ---------------- */
+
+  /**
+   * Stored rules: `accountId` scopes to that account's rules PLUS the
+   * global ones; omit for globals only.
+   */
+  async rulesList(accountId?: string): Promise<RuleView[]> {
+    return asArray<RuleView>(await call<unknown>("kiwi_rules_list", { accountId }));
+  },
+  /**
+   * Create-or-replace a rule — `rule.id` is caller-assigned. The backend
+   * re-runs `Rule::validate` (renderer input is untrusted): malformed
+   * specs throw `invalid-input`, a foreign `accountId` throws
+   * `not-found`.
+   */
+  rulesUpsert(rule: RuleView): Promise<RuleView> {
+    return call<RuleView>("kiwi_rules_upsert", { rule });
+  },
+  rulesDelete(ruleId: string): Promise<{ removed: boolean }> {
+    return call<{ removed: boolean }>("kiwi_rules_delete", { ruleId });
+  },
+  /**
+   * Re-run the enabled ruleset over stored messages (Trash never
+   * scanned). Deliberate re-run — ingest-time application is automatic.
+   */
+  rulesApplyNow(accountId: string): Promise<RulesApplyView> {
+    return call<RulesApplyView>("kiwi_rules_apply_now", { accountId });
+  },
+  /** Matched-rule audit trail, newest first (limit default 100). */
+  async rulesHits(accountId: string, limit?: number): Promise<RuleHitView[]> {
+    return asArray<RuleHitView>(await call<unknown>("kiwi_rules_hits", { accountId, limit }));
+  },
+  /**
+   * "Test this rule" dry-run — evaluates the candidate ALONE against the
+   * newest `limit` stored messages; never executes actions, never writes
+   * hits or watermarks (limit default 50, clamp 1–200).
+   */
+  rulesPreview(accountId: string, rule: RuleView, limit?: number): Promise<RulePreviewView> {
+    return call<RulePreviewView>("kiwi_rules_preview", { accountId, rule, limit });
+  },
+
+  /* ---------------- message templates (gated, T-288) ---------------- */
+
+  /** Stored templates, name-then-id order (ipc.md §6i). */
+  async templatesList(): Promise<TemplateView[]> {
+    return asArray<TemplateView>(await call<unknown>("kiwi_templates_list"));
+  },
+  /**
+   * Create a template — the store assigns `tpl-N` and timestamps;
+   * caller supplies content only. The `tpl-` prefix is reserved.
+   */
+  templatesCreate(template: TemplateInput): Promise<TemplateView> {
+    return call<TemplateView>("kiwi_templates_create", { template });
+  },
+  /**
+   * Full replace by `template.id`, not a merge — `createdUnix` is
+   * preserved. Absent id throws `not-found`.
+   */
+  templatesUpdate(template: TemplateView): Promise<TemplateView> {
+    return call<TemplateView>("kiwi_templates_update", { template });
+  },
+  /** Idempotent — `removed: false` is a normal answer, not an error. */
+  templatesDelete(templateId: string): Promise<{ removed: boolean }> {
+    return call<{ removed: boolean }>("kiwi_templates_delete", { templateId });
+  },
+  /**
+   * Server-side `{{var}}` substitution — returns ready-to-use fields
+   * plus `missingVars` (well-formed placeholders with no value, left
+   * verbatim in the text). Vars bounds: ≤64 entries, ≤4 KiB values.
+   */
+  templatesRender(
+    templateId: string,
+    vars?: Record<string, string>,
+  ): Promise<RenderedTemplateView> {
+    return call<RenderedTemplateView>("kiwi_templates_render", { templateId, vars });
+  },
+
   /* ---------------- send / outbox (gated) ---------------- */
 
   sendMessage(
@@ -299,6 +631,10 @@ export const api = {
   },
   cancelSend(queueId: string): Promise<{ cancelled: boolean }> {
     return call<{ cancelled: boolean }>("kiwi_cancel_send", { queueId });
+  },
+  /** Reschedule a queued send (unix seconds); returns the updated receipt. */
+  scheduleSend(queueId: string, sendAtUnix: number): Promise<SendReceipt> {
+    return call<SendReceipt>("kiwi_schedule_send", { queueId, sendAtUnix });
   },
   async listOutbox(): Promise<OutboxItem[]> {
     return asArray<OutboxItem>(await call<unknown>("kiwi_list_outbox"));
@@ -325,19 +661,100 @@ export const api = {
     return call<Record<string, unknown>>("kiwi_security_report", { accountId });
   },
 
+  /* ---------------- pairing flow (ipc.md §9d) ----------------
+   * Canonical commands; `pair_begin`/`pair_status` are exempt from the lock
+   * gate only while a backend-owned pairing flow is live — the renderer
+   * cannot activate one. */
+
+  /** Begin device pairing — backend owns the ticket/expiry/endpoint. */
+  pairBegin(deviceLabel: string): Promise<PairBeginView> {
+    return call<PairBeginView>("pair_begin", { deviceLabel });
+  },
+  /** Poll a ticket — read-only; never consumes. */
+  pairStatus(ticket: string): Promise<PairStatusView> {
+    return call<PairStatusView>("pair_status", { ticket });
+  },
+
   /* ---------------- devices / org binding (gated) ---------------- */
 
+  /** Compat registration seam (kiwi_register_device) — pending until a
+   *  device-pairing challenge verifies. */
   registerDevice(input: { label: string; algorithm: string; publicKeyB64: string; keystoreRef?: string | null }): Promise<DeviceView> {
     return call<DeviceView>("kiwi_register_device", { input });
   },
   async listDevices(): Promise<DeviceView[]> {
-    return asArray<DeviceView>(await call<unknown>("kiwi_list_devices"));
+    return asArray<DeviceView>(await call<unknown>("device_list"));
   },
   revokeDevice(deviceId: string): Promise<SecurityStatusView> {
-    return call<SecurityStatusView>("kiwi_revoke_device", { deviceId });
+    return call<SecurityStatusView>("device_revoke", { deviceId });
   },
   setOrgBinding(orgId: string | null, baseUrl: string | null): Promise<{ orgId: string; baseUrl: string } | null> {
     return call("kiwi_set_org_binding", { orgId, baseUrl });
+  },
+
+  /* ---------------- integrations (gated, T-227, ipc.md §9e) ---------------- */
+
+  /**
+   * Disposable public inbox (GuerrillaMail). Every response carries
+   * `publicInboxNotice` — display it; the inbox is PUBLIC, anyone who
+   * knows the address can read its mail. One session at a time; create
+   * replaces, discard clears.
+   */
+  async integrationsTempmailCreate(localPart?: string): Promise<TempMailboxView> {
+    const raw = await call<unknown>("kiwi_integrations_tempmail_create", { localPart });
+    return decoded(decodeTempMailboxView(raw), "kiwi_integrations_tempmail_create");
+  },
+  async integrationsTempmailPoll(): Promise<TempPollView> {
+    const raw = await call<unknown>("kiwi_integrations_tempmail_poll");
+    return decoded(decodeTempPollView(raw), "kiwi_integrations_tempmail_poll");
+  },
+  /** Fetched message — `html` arrives pre-sanitized (remote resources
+   * always stripped for a public inbox); raw MIME never crosses IPC. */
+  async integrationsTempmailFetch(mailId: string): Promise<TempMessageView> {
+    const raw = await call<unknown>("kiwi_integrations_tempmail_fetch", { mailId });
+    return decoded(decodeTempMessageView(raw), "kiwi_integrations_tempmail_fetch");
+  },
+  async integrationsTempmailDiscard(): Promise<TempDiscardView> {
+    const raw = await call<unknown>("kiwi_integrations_tempmail_discard");
+    return decoded(decodeTempDiscardView(raw), "kiwi_integrations_tempmail_discard");
+  },
+  async integrationsTempmailExtend(): Promise<TempExtendView> {
+    const raw = await call<unknown>("kiwi_integrations_tempmail_extend");
+    return decoded(decodeTempExtendView(raw), "kiwi_integrations_tempmail_extend");
+  },
+
+  /**
+   * Outbound deliverability test (email-spam-tester). `begin` reserves a
+   * single-use address and returns a single-use `consentToken`; `send`
+   * consumes it — the backend enforces consent (`consent-required` on
+   * missing/wrong/replayed token). Recipients in `message` are ignored;
+   * the sole recipient is the reserved address.
+   */
+  async integrationsDeliverabilityBegin(): Promise<DeliverabilityBeginView> {
+    const raw = await call<unknown>("kiwi_integrations_deliverability_begin");
+    return decoded(decodeDeliverabilityBeginView(raw), "kiwi_integrations_deliverability_begin");
+  },
+  async integrationsDeliverabilitySend(
+    testId: string,
+    consentToken: string,
+    accountId: string,
+    message: Record<string, unknown>,
+  ): Promise<DeliverabilitySendView> {
+    const raw = await call<unknown>("kiwi_integrations_deliverability_send", {
+      testId,
+      consentToken,
+      accountId,
+      message,
+    });
+    return decoded(decodeDeliverabilitySendView(raw), "kiwi_integrations_deliverability_send");
+  },
+  async integrationsDeliverabilityStatus(testId: string): Promise<DeliverabilityStatusView> {
+    const raw = await call<unknown>("kiwi_integrations_deliverability_status", { testId });
+    return decoded(decodeDeliverabilityStatusView(raw), "kiwi_integrations_deliverability_status");
+  },
+  async integrationsDeliverabilityReport(testId: string): Promise<DeliverabilityReportView> {
+    const raw = await call<unknown>("kiwi_integrations_deliverability_report", { testId });
+    return decoded(decodeDeliverabilityReportView(raw), "kiwi_integrations_deliverability_report");
   },
 
   /* ---------------- endpoint signals (exempt) ---------------- */

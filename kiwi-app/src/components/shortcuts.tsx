@@ -4,16 +4,21 @@
  * content — no backend, works identically in demo and live modes.
  */
 
-const ROWS: [string, string][] = [
+export const SHORTCUT_ROWS: [string, string][] = [
   ["Ctrl+K", "Command palette (compose · search · go to · theme · sync · lock)"],
+  ["Ctrl+N", "Compose new message"],
+  ["F5", "Get new messages (sync now)"],
   ["/", "Focus message search"],
   ["Enter (in search)", "Open full search results"],
   ["j / ↓  ·  k / ↑", "Next / previous message"],
   ["n / p", "Next / previous message (alternate)"],
+  ["Enter (in list)", "Open message — focus moves into the reader"],
   ["s", "Star / unstar selected message"],
   ["e", "Archive selected message"],
-  ["r", "Reply (open composer)"],
+  ["Delete", "Delete selected message (Trash; permanent when already in Trash)"],
   ["u", "Mark selected message read / unread"],
+  ["r / a / f", "Reply / reply-all / forward (composer)"],
+  ["Esc (in reader)", "Back to the message list"],
   ["Ctrl+click · Shift+click", "Toggle select / range-select for bulk actions"],
   ["?", "This shortcuts overlay"],
   ["Esc", "Close dialog / overlay"],
@@ -40,7 +45,7 @@ export function ShortcutsHelp({ open, onClose }: { open: boolean; onClose: () =>
         <h1 style={{ marginTop: 0 }}>Keyboard shortcuts</h1>
         <table style={{ borderCollapse: "collapse", width: "100%" }}>
           <tbody>
-            {ROWS.map(([keys, what]) => (
+            {SHORTCUT_ROWS.map(([keys, what]) => (
               <tr key={keys}>
                 <td style={{ padding: "0.3rem 0.6rem 0.3rem 0", whiteSpace: "nowrap" }}>
                   <code>{keys}</code>
@@ -52,9 +57,9 @@ export function ShortcutsHelp({ open, onClose }: { open: boolean; onClose: () =>
         </table>
         <p style={{ color: "var(--kiwi-text-secondary)" }}>
           <small>
-            List shortcuts (j/k/s/e/r/u) are inactive while typing in a text
-            field — press Esc first. Demo mode supports the same map; archive
-            and flags stay local-only there.
+            List and reader shortcuts are inactive while typing in a text
+            field (Esc blurs the field first). Demo mode supports the same
+            map; archive, delete, and flags stay local-only there.
           </small>
         </p>
         <button type="button" className="kiwi-btn-primary" onClick={onClose} autoFocus>

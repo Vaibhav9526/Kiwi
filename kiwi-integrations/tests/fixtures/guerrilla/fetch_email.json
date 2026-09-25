@@ -1,0 +1,12 @@
+{
+    "mail_id": "9002",
+    "mail_from": "verify@example-service.test",
+    "mail_subject": "Confirm your sign-up &lt;kiwi&gt;",
+    "mail_excerpt": "Click to confirm &amp; activate",
+    "mail_timestamp": "1758300900",
+    "mail_read": "0",
+    "mail_date": "2026-09-19 20:15:00",
+    "content_type": "text/html",
+    "mail_body": "<p>Welcome! Confirm via <a href=\"https://example-service.test/c?t=abc\">this link</a>.<\/p>",
+    "att": "0"
+}

@@ -786,3 +786,267 @@ Two things found by reading while doing this:
 file and is marked read-mostly per its own header (changes require Lead review) —
 §13 is additive and marked "pending Lead review" in the document header rather
 than folded into the approved 1.3 text.
+
+## 2026-09-20 — T-185: systematic defect review of kiwi-admin
+
+Read all 22 files under `kiwi-admin/src/**/*.ts` plus the shipped migration SQL
+and both schema files. Deliverable is `docs/audits/admin-review-1.md` — 8 High,
+7 Medium, 7 Low findings, each with a `file:line` reference, a failure scenario
+and a proposed fix, ranked, with a recommended fix order at the end.
+
+> **§13 of `docs/contracts/admin-api.md` remains marked "pending Lead review"** as
+> instructed. It is unchanged by this task — the review only reads that contract.
+> Four of the findings (H5, H7, M1, M5) are contract-vs-code gaps where the
+> contract is the authority and the code disagrees with it, so they will need a
+> ruling on that same review pass.
+
+### EXPLICIT: still nothing executed
+
+The classifier stayed unavailable for the entire session — every `Bash` and
+`PowerShell` call was refused with *"deepseek-v4-flash is temporarily
+unavailable, so auto mode cannot determine the safety of Bash/PowerShell right
+now."* Two allowlisted read-only commands did run (`ls -R kiwi-admin/drizzle`,
+`wc -l`), and one of them is what turned H7 from a schema-file drift into a
+shipped-DDL defect. `npm`, `docker` and `cargo` were refused every time it was
+retried. T-149, T-179, T-150 and the T-149 regression guards therefore all
+remain un-green, and **no finding in the review was reproduced at runtime** —
+each is an argument from source with the evidence needed to confirm it. The
+review document says so at the top rather than in a footnote.
+
+### What the review covered
+
+Every file read: `server.ts`, `services.ts`, `types.ts`, `rbac/rbac.ts`,
+`util/{validate,logger}.ts`, `policy/{model,evaluator,services}.ts`,
+`mailflow/{model,services,emitter}.ts`, `audit/{model,chain,export}.ts`,
+`db/{interfaces,repositories,repositories.pg,pg,sqlite,schema.pg,schema.sqlite}.ts`,
+plus `drizzle/pg/0000_mature_tiger_shark.sql`, `drizzle/sqlite/0000_chubby_shard.sql`
+and both `meta/` snapshots. RBAC coverage was done route-by-route against the §3
+table, which is what produced H1 (a route with no check at all) and H5 (a route
+whose check silently degraded to `org.read`).
+
+### The five worth reading first
+
+1. **H1 — `POST /api/v1/policies/{id}/evaluate` has no actor, no permission, no
+   audit** (`server.ts:301-325`, `policy/services.ts:167`). §3 line 67 documents
+   `policy.read on owning org`; nothing is enforced. A caller with *no* `x-kiwi-*`
+   headers is served, which no other route does.
+2. **H2 — omitting `x-kiwi-org` disables all org scoping** (`server.ts:85`,
+   `rbac.ts:91`). `hasPermission` skips the org comparison when the actor's org is
+   null, so a role-holder with no org header is global. This is the root enabler
+   of H3 and H4.
+3. **H3 — `revokeDevice` passes `orgId: null`** (`policy/services.ts:94-103`), so
+   any `security_admin` can revoke any org's device, and the audit row records no
+   org at all.
+4. **H6 — Postgres audit appends race on the `seq` primary key**
+   (`mailflow/services.ts:86-90`, `repositories.pg.ts:255`). Read-then-insert with
+   two `await`s between, so concurrent requests compute the same `seq`, one insert
+   fails, and its audit row is lost. §7 line 213 claims in-process serialization;
+   the `chain.ts:7-9` comment making the same claim describes `InMemoryAuditLog`,
+   whose append really is synchronous.
+5. **H7 — Postgres ships a NON-unique `users(org_id,email)` index** where SQLite
+   ships `UNIQUE`. Not a schema-file drift: `drizzle/pg/0000_mature_tiger_shark.sql:101`
+   says `CREATE INDEX`, `drizzle/sqlite/0000_chubby_shard.sql:101` says
+   `CREATE UNIQUE INDEX`. §4 line 96 documents `UNIQUE(org_id,email)`.
+
+### H8 is my earlier open finding, and it is worse than I described
+
+The T-179 entry above flags `verify`'s `?limit=` as able to attest a prefix. The
+review found the sharper form: **`?limit=0` returns `{"valid":true,"checked":0}`**.
+`AuditService.verify` bounds only from above (`mailflow/services.ts:131` — no
+`Math.max`, unlike `query` and `mailflow.query` which both floor at 1), so
+`LIMIT 0` reaches the repository and `verifyChain([])` returns
+`valid: true, headHash: "genesis"` (`chain.ts:172`). A monitor reading
+`valid: true` is told the log is intact after verifying nothing.
+
+The same line has a second edge I had not seen: `?limit=-1`. SQLite treats
+`LIMIT -1` as **unlimited** (`repositories.ts:323`), so the 10000-row memory valve
+is bypassed; Postgres rejects a negative limit, producing a 500 that echoes the
+driver message (M4). The earlier entry's proposed fix — drop the parameter and
+always verify full-chain — covers all three cases, and the export already sets
+that precedent by refusing rather than truncating. Still needs the same Lead
+approval.
+
+### Two findings are mine from the previous task
+
+- **M2**: the T-179 export appends its own audit row with `opts.now` in
+  **seconds** (`server.ts:376` → `mailflow/services.ts:177`) while every other row
+  is milliseconds, so the record that proves an export happened is the one row
+  that sorts and filters with the rest of the log.
+- **H7 partly**: the PG/SQLite index divergence predates me, but the review of it
+  is only possible because I read the generated SQL while checking my own
+  migration assumptions.
+
+I would rather log these than let them surface later as someone else's find.
+
+### What held up
+
+Recorded in the review so the picture is not one-sided: no SQL injection anywhere
+(Drizzle parameterizes every query; nothing concatenates SQL, and L1's `like()`
+case is pattern widening, not injection); `parseMailflowIngest` validates every
+field and requires `org_id` for outbound, so `server.ts`'s `as` casts are
+cosmetic; `actorFromHeaders` is still fail-closed on roles; the export still
+refuses rather than truncates and still reports `signed: false` honestly; and org
+scoping itself is correct when both orgs are non-null — the whole H2/H3/H4 cluster
+is about the null paths.
+
+### Risks
+
+1. **Nothing is runtime-verified.** Same class as every entry above. A finding
+   could be wrong in a way only execution shows; each one names the evidence
+   needed to settle it, and the review says so up front.
+2. **H2 and M1 are rulings, not patches.** Making the org binding mandatory breaks
+   the documented bootstrap path (§3 line 60), and standardising timestamps
+   invalidates every existing `entry_hash` — the row's `ts` is inside the hash, so
+   the existing log cannot be rewritten, only cut over. Both should be decided by
+   the Lead before anyone edits code.
+3. **H7 needs a data check before the fix.** The unique index cannot be created if
+   an existing Postgres database already holds duplicates — which it may, since
+   nothing prevents them today.
+4. **The review is one pass by one reader.** It is the same method that found the
+   four earlier defects, and it found more, but "I read every file" is not the
+   same as "these are all the defects". H1 and H5 came from diffing the §3 table
+   against the code; a route added after this pass gets no such check
+   automatically, and there is no test that would fail if one were added without a
+   permission.
+5. Carried over and unchanged: T-149/T-179 un-green, T-150 un-green, and
+   `kiwi-autoconfig` still fails `cargo check` (`mod tests` inside an `impl`,
+   `autoconfig_xml.rs:547`) so `cargo test --workspace` stays red.
+
+**Files changed:** `docs/audits/admin-review-1.md` (new), this log. No source file
+was modified — T-185 is a review, and the fixes it proposes are the Lead's to
+schedule.
+
+**Commands run:** `ls -R kiwi-admin/drizzle`, `wc -l docs/agents/agent-9-status.md`
+(both read-only and allowlisted). Everything else refused.
+
+**Assumptions:** `docs/TASKS.md` not edited (Lead-owned, prompt.md §8).
+`docs/audits/` did not exist and was created for this deliverable. I did not fix
+any finding: several are one-liners, which is exactly why patching them without a
+ruling would be the wrong call — H2 and M1 change documented behaviour, and H1/H3/
+H5 change who can do what.
+
+## 2026-09-20 — T-188: contract work (pairing IPC + admin device/export shapes)
+
+Read/write only. Two deliverables, both additive and both marked
+**pending Lead review** in their own headers, since `ipc.md` (Agent 7) and
+`admin-api.md` (Agent 4) are contract files whose own headers require review.
+
+### 1. `docs/contracts/ipc.md` — new §9d, pairing engine (kiwi-pair)
+
+Sources read: `kiwi-pair/src/{lib,engine,store,crypto}.rs`,
+`kiwi-core/src/challenge.rs`, `docs/contracts/pair.md`, and `ipc.md` in full
+(§1 conventions, §2 lock gate, §4 challenge path, §9 devices, §11 error codes).
+The section maps the engine's public API to five typed JSON command shapes with
+lock-gate notes, and is honest about what does not exist yet.
+
+**The finding worth the Lead's attention: three of the five requested commands
+already exist under different names.** `unlock_challenge` overlaps §4
+`kiwi_request_challenge(deviceId, "unlock")`; `device_list` and `device_revoke`
+overlap §9 `kiwi_list_devices` / `kiwi_revoke_device`, both marked implemented.
+Adding the requested spellings would give the frontend two names per command. I
+documented all five shapes as asked and recommended in §9d.11 item 1 that the
+§4/§9 names be kept and §9d.4-9d.6 be treated as shape extensions plus engine
+bindings. That is a ruling, not a rename I should make silently.
+
+**`pair_status` cannot be implemented as specified.** `PairEngine` has
+`consume_pairing_ticket` (mutating) and no read-only ticket lookup, so the
+poll target the UI needs does not exist. The alternatives are a new engine
+method (Agent 10's crate — the right answer) or caching ticket state in
+kiwi-app, which would put a bearer credential in a second place. Logged as
+§9d.11 item 2 rather than papered over with a shape that implies a method that
+is not there.
+
+Also pinned: the pairing ticket is a real bearer credential for its 300s life,
+so it is never logged, never in `prefs`, never echoed by `pair_status`, and
+never quoted in an error — and §1's "no IPC response contains a token" rule
+needs a documented exception for `pair_begin`, because there is no QR without
+it. Plus the `PairError` → §11 mapping with four proposed new codes
+(`pairing-ticket-invalid`, `pairing-ticket-expired`, `device-exists`,
+`device-revoked`), `Store`'s message needing sanitizing at the boundary (same
+defect class as T-185 M4), and the invariant list the IPC layer must not break
+(canonical bytes are kiwi-core's; nonces are backend-supplied; Ed25519 only;
+replay state is persistent, so there is no safe reset path).
+
+### 2. `docs/contracts/admin-api.md` — §13.5, §13.6, §14
+
+- **§13.5** pins the exact JSON of all four export line types with the field
+  orders, because the key order *is* the signed bytes — a producer that
+  reorders keys yields an export no independent verifier can check, which is
+  the format's entire purpose. Flags the two easy-to-get-wrong details
+  (`actor_roles`/`details` are JSON-encoded **strings**, not nested objects;
+  `covers_through` is `rows + 2`). Also pins the empty-chain case: three lines,
+  `valid: true`, `head_hash: "genesis"`, `covers_through: 2` — honest rather
+  than vacuous, and definitionally distinct from `verify?limit=0`'s
+  `checked: 0` against a populated log (T-185 H8).
+- **§13.6** records the T-185 M2 unit discrepancy — the export's own audit row
+  in seconds while every other row is milliseconds — explicitly marked as a
+  code defect and not a contract statement, with the note that §4/§12.3 are the
+  authority and the fix cannot rewrite existing rows.
+- **§14** is new: `GET /api/v1/orgs/{orgId}/devices`. Shape (superset of
+  `createDevice`'s return, which omits `revoked_at`), `device.read`, a total
+  ordering (ties broken by `id`, since `created_at` is a millisecond value),
+  and two requirements stated as non-optional because T-185 shows the codebase
+  gets them wrong elsewhere: the permission check must use the **real** path
+  `orgId` and never `null` (`rbac.ts:91` skips scoping on null — that is H3/H4),
+  and `orgId` must pass `assertIdentifier`. §14.4 spells out that the
+  `kiwi-admin` `devices` table and `kiwi-pair`'s `pair.db` `devices` table are
+  **two different registries** with different ids, states, and scopes and no
+  sync — so this endpoint does not answer "which authenticators are paired
+  here". §14.5 lists the six things to write (neither driver has an org-scoped
+  list method), and §14.6 leaves `POST`/`device.create` alone rather than
+  inventing a permission the model has not settled.
+
+The §3 route table gained the devices row, marked **not implemented**; the
+header note now lists §13 and §14 as additions pending review. **§13 keeps its
+existing "pending Lead review" marking, unchanged** — the Lead's 2026-09-20
+approval covers 1.3, not §13.
+
+### Verification — NONE
+
+Both deliverables are documents; nothing was executed. The classifier stayed
+unavailable for every `Bash`/`PowerShell` call this session. Source claims are
+read-verified: the line-shape field orders come from `audit/model.ts` +
+`repositories.ts::toAuditRecord`, the `devices` columns from
+`drizzle/pg/0000_mature_tiger_shark.sql:17-24`, and the bounds/error tables from
+`engine.rs:37-41` and `store.rs`. Whether the proposed shapes are *right* is a
+review question, not a runtime one.
+
+### Protocol: DONE message
+
+Told to report completion to the Lead via
+`orca send term_a262bc09-3426-4675-bcd2-9c13d31755da`. **Not sent — the
+command needs the classifier and was refused**, so the Lead has not received
+it. The text I would send is in this log's summary line and is ready to paste:
+`DONE: Agent-9 T-188 — ipc.md §9d pairing engine (5 command shapes, lock gates,
+PairError→IPC map; 3 of 5 duplicate §4/§9 — ruling needed) + admin-api.md §13.5
+exact export line shapes, §13.6 M2 unit discrepancy, §14 devices inventory
+(device.read, real-path scoping, 2 device registries distinct). Docs only,
+nothing run. Awaiting Lead review on both sections.`
+
+### Risks
+
+1. **Two contract files are now carrying my additions while their owners are
+   active.** Both are additive and marked pending review, and neither edits
+   approved text, but `ipc.md` (Agent 7) and `admin-api.md` (Agent 4) may be
+   edited concurrently — §8's conflict rule means this could collide. If an
+   owner rewrites those sections, my additions are the disposable part.
+2. **`ipc.md` §9d proposes four new §11 error codes.** Any frontend already
+   switching on §11 will not know them; they need to land together with the
+   implementation or not at all.
+3. **Everything in §14 is unbuilt.** The checklist is 6 items and one of them
+   (the cross-org denial test) is the test that would have caught H3/H4, so it
+   is worth insisting on when the work is scheduled.
+4. Carried over: T-149/T-179/T-150 un-green, `kiwi-autoconfig` still fails
+   `cargo check` (`autoconfig_xml.rs:547`).
+
+**Files changed:** `docs/contracts/ipc.md` (§9d + header-status note),
+`docs/contracts/admin-api.md` (header note, §3 row, §13.5, §13.6, §14), this
+log. No source file and no `kiwi-pair` file was modified.
+
+**Commands run:** none — every attempt was refused.
+
+**Assumptions:** `docs/TASKS.md` not edited (Lead-owned). `docs/contracts/pair.md`
+is Agent 10's (T-174) and was read only; where it and the engine source
+disagreed, the source was treated as authoritative and the disagreement noted in
+the text (the ticket-status gap). I did not touch `DECISIONS.md`, since both
+contract headers require the Lead to record there.

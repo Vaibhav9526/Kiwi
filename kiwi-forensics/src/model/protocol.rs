@@ -95,6 +95,8 @@ pub enum TransportSecurity {
     /// No TLS in this session (mail exchanged in the clear).
     Plaintext,
     /// TLS negotiated in-band with STARTTLS/STLS.
+    /// Legacy `as_str()` spelling accepted on read (FSV-1 migration).
+    #[serde(alias = "starttls")]
     StartTls,
     /// TLS from the first byte (implicit TLS port, e.g. 465/993/995).
     ImplicitTls,

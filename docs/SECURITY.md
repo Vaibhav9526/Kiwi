@@ -172,6 +172,9 @@ Hard requirements:
   crypto/key/token handling, new admin privileged op, scoring-rule changes,
   transport/TLS-config changes, CSP changes, any `unsafe`.
 - Residual risk tracked in THREAT-MODEL.md, reviewed each phase.
+- Challenge audit wording (authenticator.md §6.3): denials (`challenge-denied`,
+  challenge unconsumed, re-approvable) vs timeouts (no row; a late verify fails
+  `expired`) must stay distinct in code, audit rows, and UI copy.
 
 ## 7. Dependency audit (T-154, Agent 6-operated, 2026-09-20)
 
