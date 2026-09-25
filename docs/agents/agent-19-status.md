@@ -282,3 +282,50 @@ foreign lint `kiwi-mail/src/authstamp.rs:205` (`.trim()` before
 `.split_whitespace()`, T-232-era file mid-edit by its owner; reported to
 Lead, not edited). Same session also saw foreign `authstamp.rs` E0425s
 (`out` unbound mid-write) — self-resolved.
+
+## 2026-09-25 (later) — T-243 wizard OAuth2 branch + re-auth badge (done)
+
+Scope delivered:
+
+- `kiwi-app/src/components/oauth2.tsx` — new shared `OAuth2SignIn` card:
+  begin → device-code (`userCode` large + `verificationUri` link/copy) or
+  loopback ("Open sign-in page" + waiting) → poll loop honoring
+  `pollIntervalSecs`/`retryAfterSecs` (clamped 1–60 s) → `complete` calls
+  `onDone(ticketId)`; §9f codes → human copy (`oauth2-expired` → "Start
+  over"); transient IPC errors keep polling, `BackendUnavailableError`/
+  `locked`/`not-found` end the flow; unmount cancels in-flight grants but
+  never a completed ticket (consumed by `kiwi_add_account`).
+- `kiwi-app/src/views/setup.tsx` — suggestion `oauth2` spec → Credentials
+  step renders the provider sign-in ("Sign in with Google/Microsoft")
+  instead of a token box; `oauth2Ticket` flows into both
+  `incomingAuth`/`outgoingAuth` of `kiwi_add_account`; pasted-token
+  fallback preserved (and fixed — xoauth2 now sends `{kind, secret}`
+  instead of a null auth that would have persisted `AuthRef::None`);
+  verify step skipped for ticket path (grant itself authorizes).
+- `kiwi-app/src/views/settings.tsx` — per-account `kiwi_oauth2_status`
+  on Accounts cards: `OAuth2 · <Provider> — re-auth needed` pill when
+  `credentialPresent==false || needsRefresh==true`; inline OAuth2SignIn
+  re-auth (completing the grant rewrites the same credential-store key —
+  no re-add), status re-polled on completion.
+- `kiwi-app/src/kiwi.ts` — `OAuth2Begin/Poll/Status/CancelView` + tolerant
+  parsers; `AutoconfigSuggestion.oauth2`; `parseAutoconfigSuggestion` now
+  unwraps the real `DiscoveryOutcomeView.suggestion` envelope (the
+  previous parser read top-level fields and would have always returned
+  null against the live command).
+- `kiwi-app/src/ipc.ts` — `oauth2Begin/Poll/Cancel/Status` +
+  `openExternal` wrappers; stale "backend pending" comment corrected.
+- Backend `kiwi_open_external(url)` — gated, `https://`-only, bounded,
+  no quotes/whitespace; direct exec to `rundll32 url.dll,FileProtocolHandler`
+  / `open` / `xdg-open` (no shell, no injection surface); ipc.md §9f entry.
+  Chosen over tauri-plugin-opener to keep the npm surface unchanged.
+- ipc.md: `kiwi_open_external` documented (§9f tail).
+
+Verification: `npm run build` (tsc + vite) green; `cargo test -p
+kiwi-app` **91/91** (incl. new `open_external_rejects_unsafe_urls` — 9
+rejection shapes); `cargo clippy -p kiwi-app --all-targets -- -D
+warnings` clean; `cargo fmt` clean on my files.
+
+Foreign reds during session (all self-resolved, none edited):
+`kiwi-mail` `apply_on_ingest` signature churn (sync.rs E0061 ×3 →
+queries.rs `auth_risk` E0063 ×2 → resolved), `authstamp.rs:205` clippy
+lint (resolved), `commands/mail.rs` collapsible_if (resolved).
