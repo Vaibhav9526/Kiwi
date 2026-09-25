@@ -73,7 +73,7 @@ authorize taking a signed off-box copy. See §13.
 |---------------|--------------|------------|-------|
 | `POST /api/v1/orgs` | `OrgService.createOrg` | `org.create` (org_admin only; T-193/H5) | |
 | `GET  /api/v1/orgs/{orgId}/users` | `OrgService.listUsers` | `user.read` | T-134: users with roles, email-ordered |
-| `GET  /api/v1/orgs/{orgId}/devices` | `OrgService.listDevices` | `device.read` | T-188: device inventory; `limit` default 50, cap 500; see §14 — **not implemented** |
+| `GET  /api/v1/orgs/{orgId}/devices` | `OrgService.listDevices` | `device.read` | T-188/T-253: device inventory; `limit` default 50, cap 500; see §14 |
 | `POST /api/v1/orgs/{orgId}/users` | `OrgService.createUser` | `user.invite` | |
 | `PUT /api/v1/orgs/{orgId}/users/{userId}/role` | `OrgService.grantRole` | `user.role.grant` | |
 | `POST /api/v1/devices/{deviceId}/revoke` | `OrgService.revokeDevice` | `device.revoke` | |
@@ -666,13 +666,14 @@ second-unit `created_at` values from the old route clock; those rows predate the
 unit declaration and must be read with that in mind (local-dev only —
 `docker compose down -v` plus fresh migrations resets the clock).
 
-## 14. Device inventory — T-188 (`GET /api/v1/orgs/{orgId}/devices`) **[RATIFIED, not implemented]**
+## 14. Device inventory — T-188 (`GET /api/v1/orgs/{orgId}/devices`) **[RATIFIED — implemented T-253]**
 
-> **RATIFIED by Lead 2026-09-25 (T-188) — still not implemented.** Agent 9
+> **RATIFIED by Lead 2026-09-25 (T-188); implemented by T-253.** Agent 9
 > drafted this shape; Agent 18 revalidated it against the current
-> repository/RBAC code. No `OrgRepository.listDevices` or HTTP route exists
-> today. The ratified wire shape, duplicate-name conflict rule, and
-> fail-closed org scoping are binding; §14.5 lists the implementation gate.
+> repository/RBAC code. The ratified wire shape, duplicate-name conflict
+> rule, and fail-closed org scoping are binding; §14.5 lists the
+> implementation checklist (all items landed except the deferred create
+> path of §14.6).
 
 ### 14.1 Request and response
 

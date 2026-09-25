@@ -329,3 +329,42 @@ Foreign reds during session (all self-resolved, none edited):
 `kiwi-mail` `apply_on_ingest` signature churn (sync.rs E0061 ×3 →
 queries.rs `auth_risk` E0063 ×2 → resolved), `authstamp.rs:205` clippy
 lint (resolved), `commands/mail.rs` collapsible_if (resolved).
+
+## T-251 — ACFG-7/8/9 parser hardening (2025 …)
+
+Scope: `kiwi-autoconfig` autoconfig-XML parser, per
+`docs/audits/autoconfig-drift-1.md` rulings. Files changed:
+`kiwi-autoconfig/src/autoconfig_xml.rs`, `docs/contracts/autoconfig.md`.
+
+- **ACFG-7 (processing instructions):** `Parser::skip_misc` split —
+  `skip_misc(prolog)` permits one `<?xml …?>` declaration in the prolog
+  only (target exactly `xml` + whitespace; `<?xml-stylesheet?>` and
+  `<?xmlfoo?>` are NOT the declaration). Every other PI in prolog,
+  epilog, or comment-skip context is `MalformedXml("processing
+  instruction prohibited")`; unterminated PI keeps its own error.
+  PIs inside elements were already fatal via `parse_name`.
+- **ACFG-8 (root):** `ClientConfig::parse` no longer accepts a bare
+  `<emailProvider>` root — `clientConfig` only, per contract.
+- **ACFG-9 (provider selection):** unconditional first-provider
+  fallback removed. Order is now exact `<domain>` match, then the
+  documented compat exception (provider `id` == queried domain), else
+  `MalformedXml("no emailProvider for queried domain")` so discovery
+  falls through instead of suggesting a foreign provider's config.
+
+Contract: `autoconfig.md` §5 amended for the two *intentional* compat
+exceptions only (XML-declaration-in-prolog; provider-id second source)
+and now states explicitly that there is no first-provider fallback.
+No other contract wording touched.
+
+Tests (+5, all offline, in-file fixtures):
+`processing_instructions_rejected_except_xml_decl` (6 rejection shapes
+incl. `xml-stylesheet`/`xmlfoo`/second decl/prolog+epilog PIs, plus
+decl+comment acceptance and unterminated-PI),
+`bare_emailprovider_root_rejected`, `no_first_provider_fallback`,
+`provider_id_match_is_second_source`, `exact_domain_beats_provider_id`.
+
+Verification: `cargo test -p kiwi-autoconfig` **97/97** green;
+`cargo clippy -p kiwi-autoconfig --all-targets` clean;
+`cargo fmt -p kiwi-autoconfig --check` clean. Pre-existing uncommitted
+T-230 diffs in `net.rs`/`oauth2/{mod,provider}.rs` observed, not
+touched.

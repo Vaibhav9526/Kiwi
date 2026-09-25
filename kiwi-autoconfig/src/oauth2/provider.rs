@@ -7,6 +7,7 @@
 //! carry the security).
 
 use super::{GrantKind, OAuthError};
+use crate::suggest::{AccountSuggestion, AuthKind};
 
 /// A provider's fixed OAuth2 surface plus the deployment-supplied
 /// `client_id`. URLs are owned `String`s because the Microsoft endpoints
@@ -118,6 +119,12 @@ impl ProviderConfig {
         self.scopes.join(" ")
     }
 
+    /// Grant kind this provider's `begin()` produces — wire spelling.
+    #[must_use]
+    pub fn grant_kind_str(&self) -> &'static str {
+        self.grant_kind.as_str()
+    }
+
     /// Validate the client id shape (non-empty printable ASCII, bounded).
     /// Runs at `begin()` — the config itself stays lenient so tests can
     /// build arbitrary fixtures.
@@ -128,4 +135,45 @@ impl ProviderConfig {
         }
         Ok(())
     }
+}
+
+/// Mail endpoints each shipped provider's tokens are valid for (published
+/// hosts — both the ISPDB fixture table and the MX-hint table resolve to
+/// these, so a custom-domain Google Workspace / M365 tenant is recognized
+/// the same way `user@gmail.com` is).
+const PROVIDER_MAIL_HOSTS: &[(&str, &[&str])] = &[
+    (
+        "google",
+        &["imap.gmail.com", "pop.gmail.com", "smtp.gmail.com"],
+    ),
+    (
+        "microsoft",
+        &["outlook.office365.com", "smtp.office365.com"],
+    ),
+];
+
+/// OAuth2 provider id for a discovery suggestion's incoming endpoint —
+/// present only when the suggestion needs XOAUTH2 **and** its mail host is
+/// one a shipped provider config can mint tokens for. `None` for
+/// password-auth suggestions and for XOAUTH2 providers without a client
+/// config (Yahoo, AOL — they fail closed in the wizard, not here).
+#[must_use]
+pub fn provider_id_for_suggestion(s: &AccountSuggestion) -> Option<&'static str> {
+    // POP3 can't consume a bearer token (kiwi-mail XOAUTH2 is IMAP+SMTP
+    // only) — never offer the wizard a grant it cannot use.
+    if s.incoming.auth != AuthKind::XOAuth2
+        || !matches!(s.incoming.kind, crate::suggest::IncomingKind::Imap)
+    {
+        return None;
+    }
+    let host = s
+        .incoming
+        .host
+        .trim()
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    PROVIDER_MAIL_HOSTS
+        .iter()
+        .find(|(_, hosts)| hosts.contains(&host.as_str()))
+        .map(|(id, _)| *id)
 }

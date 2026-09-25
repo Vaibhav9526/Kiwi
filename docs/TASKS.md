@@ -211,7 +211,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-247 | Wire-shape batch 2: FolderView/MessageView/vcardText/evidenceRef drift (IPC-T241-2..5) | queued (A20 after T-245) | backlog | `types/`, `ipc.md` | T-241 |
 | T-249 | AuthRisk derived enum (clean/noted/failed truth table, authrisk.rs, 178/178) | Agent 21 | done |
 | T-250 | admin-api enumeration (admin-drift-1.md; ADM-08 §14 unimpl, ADM-01 projection gap) | Agent 22 | done |
-| T-251 | ACFG-7/8/9 autoconfig parser hardening | Agent 19 | open | `kiwi-autoconfig/` | T-246 |
+| T-251 | ACFG-7/8/9 parser hardening (PI whitelist, root strict, no fallback; 97/97) | Agent 19 | done |
 | T-248 | Repo hygiene sweep (junk cleanup + gitignore + gate verify) | Watcher | done | repo-wide | — |
 | T-249w | Standing gate-watch loop (fmt/tsc/overlap/secrets, report NEW failures only) | Watcher | standing | fast gates | T-248 |
 | T-252 | FINDINGS.md master register (deduped, owner/status mapped) | Agent 22 | done |
@@ -219,3 +219,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-254 | AttachRisk hints: dangerous exts + double-ext + macro-enabled (clean/noted/failed, evidence-not-finding) | Agent 21 | open | `kiwi-mail/` | T-249 |
 | T-255 | Snooze: store snoozeUntil + unsnooze sweep + IPC presets (schema v10) | Agent 15 | open | `kiwi-mail/`, `src-tauri/` | T-244 |
 | T-256 | sandbox.md contract-vs-impl enumeration (SBX-1/2 + all promises) | Agent 22 | open | `docs/audits/`, `kiwi-sandbox/` (read) | T-252 |
+| T-257 | Account-add -> first-sync e2e verification vs fixtures (PASS/FAIL per stage) | Agent 19 | open | `kiwi-autoconfig/`, `kiwi-mail/`, `src-tauri/` | T-230/243 |

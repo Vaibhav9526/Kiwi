@@ -36,7 +36,7 @@ mod transport;
 pub use flow::OAuthClient;
 pub use loopback::LoopbackListener;
 pub use pkce::GrantSecrets;
-pub use provider::{KNOWN_PROVIDERS, ProviderConfig};
+pub use provider::{KNOWN_PROVIDERS, ProviderConfig, provider_id_for_suggestion};
 pub use token::TokenSet;
 pub use transport::{
     MAX_TOKEN_BODY, OAuthTransport, TransportReply, form_decode, form_encode, live_transport,

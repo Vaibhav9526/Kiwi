@@ -123,10 +123,19 @@ rules:
 - Prohibited constructs (hard `Err(MalformedXml)`, never best-effort):
   DOCTYPE/DTD/ENTITY (XXE), processing instructions, unknown entities,
   depth > 32, mismatched closing tags, documents > 256 KiB.
+  *Compat exception:* a single XML declaration (`<?xml …?>`, target
+  exactly `xml`) is permitted in the prolog — it is how real-world
+  Mozilla-format documents open. A second declaration, or any other PI
+  target anywhere in the document, is `MalformedXml`.
 - Supported: entities `&amp;` `&lt;` `&gt;` `&quot;` `&apos;`,
   numeric (`&#65;`) and hex (`&#x42;`) character references, CDATA.
-- Root element must be `clientConfig`; `<domain>` entries are checked
-  against the queried domain (exact match preferred).
+- Root element must be `clientConfig`; a bare `emailProvider` root is
+  rejected. `<domain>` entries are checked against the queried domain
+  (exact match preferred). *Compat exception:* when no `<domain>`
+  matches, a provider `id` equal to the queried domain selects that
+  provider — Mozilla-format documents carry the served domain in `id`.
+  There is no first-provider fallback: a document matching neither is
+  `MalformedXml` for that query and discovery falls through.
 - Placeholders substituted in `<username>`: `%EMAILADDRESS%`,
   `%EMAILLOCALPART%` (others passed through verbatim).
 - `<socketType>`: `SSL`/`TLS` → ImplicitTLS, `STARTTLS` → StartTls,
