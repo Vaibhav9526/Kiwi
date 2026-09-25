@@ -314,7 +314,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-333 | storage+notify UI wired live to T-330/T-329 IPCs | Agent 25 | done |
 | T-334 | search operators (from:/subject:/has:/is:/before:/after:/in:) over FTS path, honest fallback | Agent 15 | open | `kiwi-mail/store/search`, queries.rs | |
 | T-335 | Unified Inbox smart view: client-side merge, per-row account context, honest <2-account hide | Agent 24 | open | `chrome.tsx` tree, `mailbox.tsx` | |
-| T-336 | ci.yml ui-smoke job: headless Chrome + vite preview + smoke, honest browser-absence skip | Agent 26 | open | `.github/workflows/ci.yml`, `scripts/ui-smoke.mjs` | T-305 |
+| T-336 | ci.yml ui-smoke job (headless Chrome, honest skip/fail, artifacts) — caught demo-fixture gap for A24 | Agent 26 | done |
 | T-337 | release packaging: real tauri build + bundle targets + RELEASING.md honest unsigned notes | Agent 20 | open | `kiwi-app/src-tauri/tauri.conf.json`, `docs/RELEASING.md` | |
 | T-338 | audit-integrity UI: strip indicator + corrupt surface (consumes T-331 signal) | Agent 25 | open | `chrome.tsx` strip, security-center | T-331 | audit-corruption visible: tri-state probe, banner+pill, withheld-rows, no fake-green | Agent 21 | done |
 | T-339 | lazy attachment fetch: BODYSTRUCTURE-first sync + on-demand BODY.PEEK part fetch | Agent 19 | open | `kiwi-mail/imap`, store schema | sync depth |
