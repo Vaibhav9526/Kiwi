@@ -83,7 +83,7 @@ authorize taking a signed off-box copy. See §13.
 | `POST /api/v1/orgs/{orgId}/policies/evaluate-outbound` | `PolicyService.evaluateOutbound` | `policy.read` on the org | T-108 send-path bridge; see §10 |
 | `POST /api/v1/mailflow/events` | `MailflowService.ingest` | `mailflow.ingest` | MailflowEvent schema §6 |
 | `GET  /api/v1/mailflow/events` | `MailflowService.query` | `mailflow.read` | filters: org, recipient domain, ts range, limit ≤ 1000; org-bound callers omitting org read their own org (T-193/H4) |
-| `GET  /api/v1/audit` | `AuditService.query` | `audit.read` | filters: org, ts range, limit ≤ 1000 |
+| `GET  /api/v1/audit` | `AuditService.query` | `audit.read` | filters: org, ts range, limit ≤ 1000; org-bound callers omitting org read their own org (T-193/H4, §12.3) |
 | `GET  /api/v1/audit/verify` | `AuditService.verify` | `audit.read` | replays hash chain; see §7 |
 | `GET  /api/v1/audit/export` | `AuditService.export` | `audit.export` | T-179 global NDJSON; **system-admin only until org-scoped export is implemented**; see §13 |
 | `GET  /api/v1/orgs/{orgId}/audit/export` | future org-scoped export service | `audit.export` on `{orgId}` | **RATIFIED T-188, not implemented**; must never return another org's rows |

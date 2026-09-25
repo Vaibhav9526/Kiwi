@@ -122,7 +122,9 @@ bound action runs: `unlock` → `attempt_unlock`, `device-pairing` →
 `pending → active`. `recovery`/`elevated-action` verify but currently return
 `unsupported-event`. Errors: `invalid-signature`, `challenge-expired`,
 `already-consumed`, `binding-mismatch`, `unknown-challenge`,
-`device-not-active`, `unsupported-algorithm`.
+`device-not-active`, `unsupported-algorithm`. (`challenge-expired` is the
+ratified spelling; builds before the §9d.11 wire migration emit the legacy
+`expired` — authenticator.md §6.3 agrees.)
 
 ## 5. Commands — accounts **[gated]**
 
@@ -146,13 +148,25 @@ bound action runs: `unlock` → `attempt_unlock`, `device-pairing` →
   "username": "…",                    // optional, defaults to email
   "outgoingUsername": "…",            // optional, defaults to username
   "incomingAuth": { "kind": "password | xoauth2 | apop | none",
-                    "secret": "…" },  // secret used once → OS keystore
+                    "secret": "…",            // secret used once → OS keystore
+                    "oauth2Ticket": "oauth2-…" }, // §9f grant ticket (xoauth2 only)
   "outgoingAuth": { … },
   "acceptInvalidCerts": false }
 ```
 Secrets are stored under generated `kiwi/<accountId>/<in|out>` keys in the
 OS credential store (service `kiwi.mail`) — never persisted, logged, or
 returned. `apop` is valid for POP3 only; `xoauth2` not for POP3.
+
+**OAuth2 wizard path (T-230, §9f):** when `kind` is `"xoauth2"` an
+`oauth2Ticket` naming a *completed* `kiwi_oauth2_begin` grant binds the
+already-stored token set — both `AuthRef`s carry the grant's
+`oauth2/<provider>/<email>` key (one grant covers IMAP+SMTP), and
+`secret` is unnecessary/ignored. When both `incomingAuth` and
+`outgoingAuth` name a ticket it must be the SAME ticket; a ticket begun
+with an email must match `email` (case-insensitive). Unknown/incomplete/
+mismatched tickets → `oauth2-incomplete` or `invalid-input`. Without a
+ticket, `xoauth2` keeps its legacy behavior: `secret` is the raw token
+blob stored under the generated `kiwi/` key.
 
 ### `kiwi_remove_account(accountId) → { removed: bool }`
 Best-effort deletes the account's credential-store keys, drops the account
@@ -185,13 +199,13 @@ observation (session + findings) it produces.
 A failed probe returns `ok: false` with the failing step — it is *not* an
 IPC error. IPC errors are reserved for invalid input / locked.
 
-### `kiwi_discover_account(email) → DiscoveryOutcomeView` **[gated]** — REQUESTED (T-178, not yet implemented)
+### `kiwi_discover_account(email) → DiscoveryOutcomeView` **[gated]** — implemented (T-230)
 
-> Request by Agent 8 (authoritative shape source: autoconfig.md,
-> `kiwi.autoconfig/1`). To be implemented by Agent 7 in
-> `kiwi-app/src-tauri` (command + `types.rs` structs). Field names below
-> follow ipc.md camelCase conventions; the Rust source
-> (`kiwi_autoconfig::discover`) is snake_case — rename per field as shown.
+> Requested by Agent 8 (authoritative shape source: autoconfig.md,
+> `kiwi.autoconfig/1`); implemented in `kiwi-app/src-tauri`
+> (`commands/autoconfig.rs`). Field names below follow ipc.md camelCase
+> conventions; the Rust source (`kiwi_autoconfig::discover`) is
+> snake_case — rename per field as shown.
 
 Setup-wizard autoconfiguration: runs the full discovery pipeline
 (ISPDB fixtures → `autoconfig.<domain>` → `/.well-known/autoconfig` →
@@ -213,7 +227,9 @@ persisted — the caller decides what to do via `kiwi_add_account`.
                   "auth": "password | xoauth2", "username": "…" },
     "outgoing":  { "host": "…", "port": 587,
                    "security": "tls | starttls | plaintext",
-                   "auth": "password | xoauth2", "username": "…" } },
+                   "auth": "password | xoauth2", "username": "…" },
+    "oauth2": { "provider": "google | microsoft",
+                "grant": "loopback_code | device_code" } | null },
   "attempts": [ { "source": "…",
                   "outcome": "hit | miss | unreachable | malformed | unsupported",
                   "detail": "…" } ] }
@@ -231,6 +247,13 @@ Errors: only `invalid-input` (autoconfig `Error::InvalidEmail`) and
 `locked`. Discovery performs network calls (MX + HTTPS document fetch);
 it stays offline-first — every network miss is a recorded attempt, and
 an empty result set still yields a flagged suggestion, never an error.
+
+`suggestion.oauth2` (T-230) is present iff the suggestion needs XOAUTH2
+**and** the incoming host is one a shipped provider config can service
+(IMAP `imap.gmail.com`/`outlook.office365.com`, incl. MX-heuristic hits —
+fail-closed for unsupported OAuth2 providers and for POP3). The wizard
+passes `oauth2.provider` to `kiwi_oauth2_begin` directly; `grant` tells
+it which UX to render without a second lookup.
 
 
 ## 6. Commands — mail read **[gated]**
@@ -343,6 +366,47 @@ Audited.
   "uidMap": { "12": 41 } }
 ```
 
+### `kiwi_message_unsubscribe(accountId, folderId, uid, action, consent?) → UnsubscribeResultView` (T-234)
+
+Executes the stored List-Unsubscribe offer on a message — the action the
+unsubscribe chip actually performs. `action` is `"http"` or `"mailto"`;
+the endpoint comes from the message row (`unsub_http` / `unsub_mailto`
+from §6 ingest), never from caller-supplied URLs.
+
+**`action: "http"`** — POSTs the stored `unsub_http` URL through the
+shared integration transport (HTTPS-only — a stored `http://` URL is
+`invalid-input` before any socket; no redirects; capped response body).
+When the message carries the RFC 8058 marker (`unsub_oneclick`), the POST
+sends `Content-Type: application/x-www-form-urlencoded` +
+`List-Unsubscribe=One-Click`; otherwise it is a bare POST.
+**Consent rule:** one-click offers execute on the click alone; a plain
+http URL requires `consent: true`.
+
+**`action: "mailto"`** — enqueues a minimal `unsubscribe` message to the
+stored `unsub_mailto` address through the normal outbox (`send-queued`
+audited, undo-send grace applies — `queueId` + `undoWindowUntilUnix`
+returned). **Always requires `consent: true`** — sending from the user's
+own address reveals identity to the list operator; never silent.
+
+Consent is enforced server-side; the flag is a request field, not UI
+trust. A refused call returns `consent-required` and touches nothing —
+no HTTP request, no outbox row, no audit entry. `action` values outside
+`"http"`/`"mailto"` are `invalid-input`; a message with no stored offer
+of the requested kind is `not-found`. Every executed action writes one
+audit row (`unsubscribe-http` / `unsubscribe-mailto`).
+
+```jsonc
+// http → { "action": "http", "executed": true, "httpStatus": 200,
+//          "queueId": null, "undoWindowUntilUnix": null }
+// mailto → { "action": "mailto", "executed": true, "httpStatus": null,
+//            "queueId": "send-…", "undoWindowUntilUnix": 1758300000 }
+```
+
+`executed: true` means the request left the process (http: a response was
+received; mailto: queued). `httpStatus` <400 means the endpoint accepted
+the unsubscribe — a 4xx/5xx is still `executed` but reported so the UI
+can tell "sent" from "probably ignored".
+
 ## 6c. Live sync engine **[background]** (T-157)
 
 A supervisor (spawned at startup) runs one sync worker per configured
@@ -390,6 +454,86 @@ unknown id → `not-found`). A worker that hasn't run yet reports
   "nextRetryUnix": 0 | null, "foldersSynced": 3, "newMessages": 5,
   "attempts": 0 }
 ```
+
+## 6d. Commands — inbox rules **[gated]** (T-228 engine, T-233 surface)
+
+Deterministic mail-file rules (F1 / backlog T-200's frontend continues
+separately). Evaluation lives in `kiwi_mail::rules` — the IPC layer is a
+thin pass-through; renderer-supplied specs are re-validated at the store
+boundary (`Rule::validate`), rejections surface as `invalid-input`.
+
+Semantics contract: **block rules first** (`isBlock: true` — evaluated
+before all regular rules, first match is terminal, verdict = move to
+Trash), then regular rules by `position` ascending with `id` as
+tie-breaker — a total order. Flag actions dedupe; at most one folder
+disposition applies. The evaluator is pure: no I/O, no clock, no guessed
+facts — a missing header/body/attachment fact simply doesn't match.
+
+### `kiwi_rules_list(accountId?) → RuleView[]`
+With `accountId`: the rules in scope for that account (global `accountId:
+null` rules **plus** its own), in evaluation order. Omitted: global rules
+only. `accountId` bound: ≤128 chars.
+
+```jsonc
+[{ "id": "r1", "accountId": "a1" | null, "name": "…", "enabled": true,
+   "position": 0, "isBlock": false,
+   "when": { "kind": "sender", "op": "domain", "value": "corp.example" },
+   "then": [{ "do": "move", "folder": "Work" }] }]
+```
+
+`when` is a predicate tree — kinds `sender` / `recipient` / `subject` /
+`header` (`{kind:"header","name":"list-id", …}`) / `body_contains` /
+`attachment_name`, with combinators `all` / `any` / `not` and `always`.
+Match ops: `contains` | `is` | `ends_with` | `domain` (`domain` = dot-
+boundary suffix match on the post-`@`/domain part — `evil.com` matches
+`x.evil.com`, never `notevil.com`; `sender`/`recipient` match the email
+address, never the display name). `then` is `{"do":"move","folder":…}` |
+`{"do":"archive"}` | `{"do":"delete"}` | `{"do":"mark_read"}` |
+`{"do":"star"}`. `archive`/`delete` resolve to the account's
+`Archive`/`Trash` folders — rules never hard-expunge.
+
+### `kiwi_rules_upsert(rule: RuleView) → RuleView`
+Create-or-replace by `id` (ids are caller-assigned, ≤64 chars). Full
+`Rule::validate` bounds run again at the store (id/name/fields, ≤8
+actions, ≤32 predicate nodes, ≤8 nesting depth, header-name token
+rules). `accountId` must reference an existing account → `not-found`.
+Returns the stored view.
+
+### `kiwi_rules_delete(ruleId) → { removed: bool }`
+Deletes the rule. Its audit rows in `rule_hits` survive — `ruleId` there
+is evidence, not a join (kiwi.mail/1 §evidence: a deleted rule must not
+erase the record of what it did).
+
+### `kiwi_rules_apply_now(accountId) → RulesApplyView`
+"Run rules now": re-evaluates the account's stored mailbox (Trash never
+scanned — rules don't resurrect deleted mail), executes outcomes, writes
+hit rows. Deterministic + idempotent: the work list is frozen up front,
+each message evaluated once; re-runs converge. Messages without a
+parseable stored body are skipped, not guessed.
+Unknown `accountId` → `not-found`.
+
+```jsonc
+{ "scanned": 40, "matched": 7, "moved": 5, "blocked": 1,
+  "flagsChanged": 4, "skippedNoBody": 2 }
+```
+
+### `kiwi_rules_hits(accountId, limit?) → RuleHitView[]`
+The matched-rule audit trail (transparency surface — task requirement
+3), newest first. `limit` default 100, clamp 1–1000. `folderId`/`uid` are
+the eval-time coordinates (a later move doesn't rewrite the record);
+`messageId` is the stable cross-move identity.
+
+```jsonc
+[{ "folderId": 3, "uid": 712, "ruleId": "r1",
+   "messageId": "<m@x>", "appliedUnix": 1758000000 }]
+```
+
+### Ingest-time application (sync path — no IPC entry)
+The same engine runs automatically during sync: IMAP `sync_folder`
+evaluates envelope-stage rules on new INBOX messages (block verdicts
+trash before the body is ever fetched); `fetch_missing_bodies` and the
+POP3 path re-evaluate with full predicates after parsing. Other folders
+are not reprocessed at ingest — `apply_now` is the deliberate re-run.
 
 ## 7. Commands — send / outbox **[gated]**
 
@@ -1098,6 +1242,115 @@ carries `category` (normalized) + `categoryRaw` (verbatim), `status`,
 `title`, `summary`, `citations[]`. Unknown statuses/categories pass
 through as strings — forward-compat is contract.
 
+## 9f. Commands — OAuth2 acquisition **[gated]** (T-230, implements `kiwi.oauth2/1`)
+
+IPC surface for `kiwi-autoconfig::oauth2` (docs/contracts/oauth2.md). The
+account-wizard seam:
+
+1. `kiwi_discover_account` (§5) — its suggestion carries `oauth2` when
+   the endpoints are grant-capable.
+2. `kiwi_oauth2_begin(provider, email?)` — starts a grant. Returns a
+   `ticketId` plus what the user must see.
+3. User completes the provider flow (browser redirect, or device-code
+   entry) while the UI polls `kiwi_oauth2_poll(ticketId)`.
+4. On `status: "complete"` the token set is already persisted through the
+   `CredentialStore` seam (`oauth2/<provider>/<email>` key) — or deferred
+   in-session when `begin` had no `email`.
+5. `kiwi_add_account` with `oauth2Ticket` binds the grant to the account
+   and consumes the ticket (§5).
+
+**Secrets discipline (binding):** no IPC payload ever carries access or
+refresh tokens, the device code, the PKCE verifier, or the authorization
+code. `credentialKey`/`ticketId` are key *names*/opaque ids — none is a
+secret. Grants live in a bounded in-memory map (`MAX_OAUTH2_SESSIONS` =
+32, evicted expired/failed-first then oldest) and die with the process;
+only the persisted `TokenSet` survives, and only inside the OS keystore.
+Audit entries record provider + email + outcome, never grant material.
+
+`client_id` is deployment config (never a secret): env
+`KIWI_OAUTH2_<PROVIDER>_CLIENT_ID` beats pref `oauth2.<provider>.clientId`
+(global scope). Missing/malformed → `oauth2-not-configured` before any
+network call.
+
+#### `kiwi_oauth2_begin(provider, email?) → OAuth2BeginView`
+
+```jsonc
+// in:  { "provider": "google | microsoft", "email": "u@x.test" }   // email optional
+// out (device_code — Microsoft):
+{ "ticketId": "oauth2-…", "kind": "device_code",
+  "userCode": "ABCD-EFGH", "verificationUri": "https://microsoft.com/devicelogin",
+  "verificationUriComplete": "https://…?otc=ABCD",   // when the provider supplies one
+  "expiresAtUnix": 0, "pollIntervalSecs": 5 }
+// out (loopback_code — Google):
+{ "ticketId": "oauth2-…", "kind": "loopback_code",
+  "authorizeUrl": "https://accounts.google.com/o/oauth2/v2/auth?…",
+  "expiresAtUnix": 0, "pollIntervalSecs": 1 }
+```
+
+`device_code`: display `userCode` + `verificationUri`; the user approves
+there. `loopback_code`: open `authorizeUrl` in the **system browser** —
+the `127.0.0.1` listener is already bound and a waiter thread parks on it
+with a 600 s deadline. `provider` is validated against the shipped
+registry (`invalid-input`); `email`, when present, is validated
+(`invalid-input`) and binds the eventual credential key.
+
+#### `kiwi_oauth2_poll(ticketId) → OAuth2PollView`
+
+```jsonc
+{ "status": "pending",                 // pending | complete | error
+  "ticketId": "oauth2-…",
+  "retryAfterSecs": 5,                 // poll cadence hint (present on pending)
+  "provider": "microsoft",             // set on complete
+  "email": "u@x.test",                 // set on complete when known
+  "credentialKey": "oauth2/microsoft/u@x.test",   // set when persisted
+  "errorCode": "oauth2-denied",        // set on error
+  "errorMessage": "…" }
+```
+
+`status` is a grant state, not an IPC error. **Terminal** failures —
+user denial, expiry, endpoint rejection, malformed payloads — arrive as
+`status: "error"` (the ticket then stays in `Failed`, repeat polls
+re-report it). **Transient** failures (transport) surface as real IPC
+errors and the grant stays alive. Unknown ticket → `not-found`. Polling
+is single-flight per ticket (the sessions mutex serializes concurrent
+pollers); `slow_down` bumps `retryAfterSecs` per RFC 8628 §3.5.
+
+#### `kiwi_oauth2_cancel(ticketId) → OAuth2CancelView`
+
+`{cancelled: bool}` — drops the session. A loopback grant's listener may
+stay bound until its deadline (bounded); its outcome is discarded —
+cancelling frees the ticket and the wizard path, not the socket's
+remaining lifetime.
+
+#### `kiwi_oauth2_status(accountId) → OAuth2StatusView`
+
+Read-only posture of a *stored* account — for settings/troubleshooting
+surfaces, never the grant flow.
+
+```jsonc
+{ "accountId": "acct-…",
+  "authMethod": "xoauth2 | password | apop | none",   // incoming side
+  "provider": "microsoft" | null,    // parsed from an oauth2/ grant key
+  "email": "u@x.test" | null,
+  "credentialPresent": true,         // ANY credential exists at the key
+  "expiresAtUnix": 0 | null,         // stored TokenSet expiry
+  "needsRefresh": false | null,      // inside/past the 60 s skew window
+  "hasRefreshToken": true | null }
+```
+
+`provider`/`email`/`expiresAtUnix`/`needsRefresh`/`hasRefreshToken` are
+populated only when the credential key is an `oauth2/<provider>/<email>`
+grant holding a parseable token blob — legacy `kiwi/` keys and missing
+credentials report `credentialPresent` with the lifecycle fields `null`.
+Unknown `accountId` → `not-found`.
+
+**Error vocabulary added:** `oauth2-not-configured` (no client id),
+`oauth2-incomplete` (ticket unknown at `add_account`, grant not finished,
+or `oauth2Ticket` misuse), `oauth2-denied`, `oauth2-expired`,
+`oauth2-reauth` (`invalid_grant` — re-authorize), `oauth2-endpoint`
+(provider `{error,error_description}` payload), `oauth2-error` (HTTP/
+listener/redirect faults). All messages are secret-free by construction.
+
 ## 10. Commands — endpoint signals **[exempt]** (T-121)
 
 ### `kiwi_collect_endpoint_signals() → EndpointReportView`
@@ -1150,9 +1403,16 @@ Collection caps at 32 observations per run.
 | `unsupported-event` | verified challenge for unwired flow |
 | `replay-detected` | challenge nonce collision |
 | `audit-corrupt` | audit-log chain break |
-| `consent-required` | deliverability send without the unconsumed consent token (wrong/missing/consumed are indistinguishable) |
+| `consent-required` | deliverability send without the unconsumed consent token (wrong/missing/consumed are indistinguishable); unsubscribe without the required consent flag (mailto always, non-one-click http) |
 | `rate-limited` | provider 429; message carries the retry hint when present |
 | `integration-error` | external-integration failure that isn't a covered class (HTTP status, malformed response, oversized body) |
+| `oauth2-not-configured` | no usable `client_id` for the provider (pref/env unset) |
+| `oauth2-incomplete` | grant ticket unknown/expired, grant not yet complete, or `oauth2Ticket` misuse at `kiwi_add_account` |
+| `oauth2-denied` | user declined authorization |
+| `oauth2-expired` | grant deadline passed before completion |
+| `oauth2-reauth` | stored grant dead (`invalid_grant`) — interactive re-authorization required |
+| `oauth2-endpoint` | provider returned an OAuth `{error,error_description}` payload |
+| `oauth2-error` | other OAuth2 acquisition fault (HTTP status, listener, redirect, malformed payload) |
 | `internal` | unexpected backend fault |
 
 ## 12. Notes & known gaps (see agent-7-status.md)

@@ -198,3 +198,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-236 | rules.md contract (kiwi.rules/1, 445L) | Agent 22 | done | `docs/contracts/` | T-228 |
 | T-237 | Drift fixes batch: prefs IPC renames + contracts index + admin-api post-T-193 + challenge-expired ruling | Agent 20 | open | `kiwi-app/src/ipc.ts`, `docs/contracts/` | T-196 |
 | T-238 | Forensics serde vocab unification proposal (per-enum table + canonical rule ruling-request) | Agent 22 | open | `docs/audits/` | T-196 FOR-1/2 |
+| T-239 | IPC-1/2 wire-shape reconciliation (AccountView/SecurityStatusView) + SS-1 required_action + serde(other) note | Agent 20 | open | `types/`, `ipc.md` | T-196 |

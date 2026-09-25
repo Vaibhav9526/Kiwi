@@ -41,4 +41,5 @@ No Rust, TypeScript, or Agent 18 files were changed.
 - Contract content was checked against the source line ranges cited in its sections.
 - `git diff --check` passed for both Agent 22 Markdown files.
 - `cargo test -p kiwi-mail` passed 156/156.
-- Required Orca T-236 completion report is the final handoff step.
+- Required Orca T-236 completion report sent to terminal
+  `term_c20c6737-9b80-4911-bcd2-38aa5113e4d7`; receipt returned `accepted: true`.

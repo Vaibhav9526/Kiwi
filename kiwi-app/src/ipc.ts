@@ -19,6 +19,10 @@ import type {
   ContactInput,
   ContactView,
   DeleteResultView,
+  DeliverabilityBeginView,
+  DeliverabilityReportView,
+  DeliverabilitySendView,
+  DeliverabilityStatusView,
   DeviceView,
   FindingDetailView,
   FolderView,
@@ -32,6 +36,13 @@ import type {
   RenderedBodyView,
   SearchHit,
   SecurityStatusView,
+  TempDiscardView,
+  TempExtendView,
+  TempMailboxView,
+  TempMessageView,
+  TempPollView,
+  UnsubscribeAction,
+  UnsubscribeResultView,
   VerifyResult,
 } from "./kiwi";
 import { parseAutoconfigSuggestion, parseContact, parseSearchHit } from "./kiwi";
@@ -137,13 +148,14 @@ export const api = {
 
   /**
    * Discovery chain for an email address (ISPDB → autoconfig XML →
-   * MX heuristics → manual). `kiwi_lookup_autoconfig` does not exist in the
-   * backend yet (T-135 IPC pending) — until it lands this throws
-   * BackendUnavailableError and the wizard falls back to its labeled local
-   * stub. Same wrapper either way, so no view changes on land.
+   * MX heuristics → manual). Invokes `kiwi_discover_account`, the
+   * contract-ratified command name (ipc.md §5); the backend handler lands
+   * with T-230. Until then this throws BackendUnavailableError and the
+   * wizard falls back to its labeled local stub / manual entry. Same
+   * wrapper either way, so no view changes on land.
    */
   async lookupAutoconfig(email: string): Promise<AutoconfigSuggestion | null> {
-    const raw = await call<unknown>("kiwi_lookup_autoconfig", { email });
+    const raw = await call<unknown>("kiwi_discover_account", { email });
     return parseAutoconfigSuggestion(raw);
   },
 
@@ -166,19 +178,34 @@ export const api = {
     return out;
   },
 
-  /* ---------------- backend prefs (T-167, pending) ---------------- */
+  /* ---------------- backend prefs (T-167; commands landed T-175) ---------------- */
 
   /**
-   * Backend preference bag. Neither command exists yet — until they land
-   * both throw BackendUnavailableError and the UI runs on localStorage
-   * (source of truth offline; backend wins on load-merge once present).
-   * Same wrappers either way, so no view changes on land.
+   * Backend preference bag over the ipc.md §9c key/value store
+   * (`kiwi_prefs_*`, global scope). `getPrefs` folds the `{key, value}[]`
+   * list rows into a bag; `setPrefs` pushes each entry through the
+   * per-key `kiwi_prefs_set` — the first rejection aborts the push so
+   * callers see a failed sync rather than a partial one. When the backend
+   * is absent both throw BackendUnavailableError and the UI runs on
+   * localStorage (source of truth offline; backend wins on load-merge).
    */
-  getPrefs(): Promise<Record<string, unknown>> {
-    return call<Record<string, unknown>>("kiwi_get_prefs");
+  async getPrefs(): Promise<Record<string, unknown>> {
+    const rows = asArray<{ key: string; value: unknown }>(
+      await call<unknown>("kiwi_prefs_list"),
+    );
+    const bag: Record<string, unknown> = {};
+    for (const row of rows) {
+      if (row && typeof row.key === "string") bag[row.key] = row.value;
+    }
+    return bag;
   },
-  setPrefs(prefs: Record<string, unknown>): Promise<{ saved: number }> {
-    return call<{ saved: number }>("kiwi_set_prefs", { prefs });
+  async setPrefs(prefs: Record<string, unknown>): Promise<{ saved: number }> {
+    let saved = 0;
+    for (const [key, value] of Object.entries(prefs)) {
+      await call<unknown>("kiwi_prefs_set", { key, value });
+      saved += 1;
+    }
+    return { saved };
   },
 
   /* ---------------- contacts (gated, T-173, pending backend) ---------------- */
@@ -269,6 +296,30 @@ export const api = {
     return call<RemoteContentView>("kiwi_set_remote_content", { accountId, allowed });
   },
 
+  /**
+   * Execute the message's stored unsubscribe offer (T-234, F3).
+   * `action="http"` POSTs the advertised https URL (one-click endpoints
+   * get the RFC 8058 body; plain URLs need `consent: true`).
+   * `action="mailto"` enqueues via the normal outbox — ALWAYS needs
+   * `consent: true`. `consent-required` is thrown when the flag is
+   * missing where required.
+   */
+  messageUnsubscribe(
+    accountId: string,
+    folderId: number,
+    uid: number,
+    action: UnsubscribeAction,
+    consent?: boolean,
+  ): Promise<UnsubscribeResultView> {
+    return call<UnsubscribeResultView>("kiwi_message_unsubscribe", {
+      accountId,
+      folderId,
+      uid,
+      action,
+      consent,
+    });
+  },
+
   /* ---------------- delete / move (gated, T-163) ---------------- */
 
   deleteMessages(
@@ -338,6 +389,62 @@ export const api = {
   },
   setOrgBinding(orgId: string | null, baseUrl: string | null): Promise<{ orgId: string; baseUrl: string } | null> {
     return call("kiwi_set_org_binding", { orgId, baseUrl });
+  },
+
+  /* ---------------- integrations (gated, T-227, ipc.md §9e) ---------------- */
+
+  /**
+   * Disposable public inbox (GuerrillaMail). Every response carries
+   * `publicInboxNotice` — display it; the inbox is PUBLIC, anyone who
+   * knows the address can read its mail. One session at a time; create
+   * replaces, discard clears.
+   */
+  integrationsTempmailCreate(localPart?: string): Promise<TempMailboxView> {
+    return call<TempMailboxView>("kiwi_integrations_tempmail_create", { localPart });
+  },
+  integrationsTempmailPoll(): Promise<TempPollView> {
+    return call<TempPollView>("kiwi_integrations_tempmail_poll");
+  },
+  /** Fetched message — `html` arrives pre-sanitized (remote resources
+   * always stripped for a public inbox); raw MIME never crosses IPC. */
+  integrationsTempmailFetch(mailId: string): Promise<TempMessageView> {
+    return call<TempMessageView>("kiwi_integrations_tempmail_fetch", { mailId });
+  },
+  integrationsTempmailDiscard(): Promise<TempDiscardView> {
+    return call<TempDiscardView>("kiwi_integrations_tempmail_discard");
+  },
+  integrationsTempmailExtend(): Promise<TempExtendView> {
+    return call<TempExtendView>("kiwi_integrations_tempmail_extend");
+  },
+
+  /**
+   * Outbound deliverability test (email-spam-tester). `begin` reserves a
+   * single-use address and returns a single-use `consentToken`; `send`
+   * consumes it — the backend enforces consent (`consent-required` on
+   * missing/wrong/replayed token). Recipients in `message` are ignored;
+   * the sole recipient is the reserved address.
+   */
+  integrationsDeliverabilityBegin(): Promise<DeliverabilityBeginView> {
+    return call<DeliverabilityBeginView>("kiwi_integrations_deliverability_begin");
+  },
+  integrationsDeliverabilitySend(
+    testId: string,
+    consentToken: string,
+    accountId: string,
+    message: Record<string, unknown>,
+  ): Promise<DeliverabilitySendView> {
+    return call<DeliverabilitySendView>("kiwi_integrations_deliverability_send", {
+      testId,
+      consentToken,
+      accountId,
+      message,
+    });
+  },
+  integrationsDeliverabilityStatus(testId: string): Promise<DeliverabilityStatusView> {
+    return call<DeliverabilityStatusView>("kiwi_integrations_deliverability_status", { testId });
+  },
+  integrationsDeliverabilityReport(testId: string): Promise<DeliverabilityReportView> {
+    return call<DeliverabilityReportView>("kiwi_integrations_deliverability_report", { testId });
   },
 
   /* ---------------- endpoint signals (exempt) ---------------- */

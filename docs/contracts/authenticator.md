@@ -262,8 +262,10 @@ Only then: `canonicalChallengeBytes(...)` → keystore Ed25519 sign →
   re-prompted.
 - Deny vs timeout wording (binding, T-184): a timeout (no answer before
   expiry) is the ABSENCE of a decision — no audit row unless a late response
-  is later verified (then `challenge-verification-failed Expired`, code
-  `expired`). It must never be recorded or rendered as a deny: deny is an
+  is later verified (then `challenge-verification-failed Expired`, IPC code
+  `challenge-expired` — the ratified ipc.md §9d.9 spelling; builds before the
+  §9d.11 wire migration emit the legacy `expired`). It must never be recorded
+  or rendered as a deny: deny is an
   explicit user decision (`challenge-denied`, challenge unconsumed,
   re-approvable). UI copy says "expired / no response", never "denied".
 
