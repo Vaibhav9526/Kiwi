@@ -37,7 +37,7 @@ pub async fn kiwi_list_accounts(state: State<'_, Arc<AppState>>) -> CmdResult<Ve
     list_accounts_impl(state.inner()).await
 }
 
-async fn list_accounts_impl(state: &AppState) -> CmdResult<Vec<AccountView>> {
+pub(crate) async fn list_accounts_impl(state: &AppState) -> CmdResult<Vec<AccountView>> {
     // Snapshot inputs first — locks never nest (refresh_trust's order:
     // index → devices → endpoint → sessions → trust).
     let (ids, folder_map) = {

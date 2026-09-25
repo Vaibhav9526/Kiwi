@@ -32,6 +32,12 @@ const FETCH_CHUNK: usize = 200;
 /// body-arrival (first upgrade, batch fetch) never stalls one sync.
 const DEFERRED_EVAL_LIMIT: u32 = 200;
 
+/// Unsnooze sweep cap per call (T-255): the sweep is account-scoped and
+/// runs at every `sync_folder`/`sync_pop3` start, so the first call in a
+/// pass does the work and the rest find nothing. 200 far exceeds any
+/// realistic parked backlog; leftovers wait for the next call.
+const UNSNOOZE_SWEEP_LIMIT: u32 = 200;
+
 #[derive(Debug, Clone, Default)]
 pub struct FolderSyncReport {
     pub folder: String,
@@ -53,6 +59,12 @@ pub async fn sync_folder(
     folder: &str,
     now: i64,
 ) -> Result<FolderSyncReport> {
+    // T-255: release due snoozes at pass start — account-scoped, so the
+    // first folder synced does the work and repeat calls no-op. Errors
+    // swallowed: a parking-state hiccup must not abort mail sync (same
+    // convention as the derived-data writes below).
+    let _ = store.unsnooze_due(account_id, now, UNSNOOZE_SWEEP_LIMIT);
+
     let sel = client.select(folder, false).await?;
     let folder_id = store.ensure_folder(account_id, folder)?;
 
@@ -154,6 +166,7 @@ pub async fn sync_folder(
             let Ok(parsed) = crate::mime::parse_message(&bytes) else {
                 continue;
             };
+            let _ = store.set_attachment_risk(folder_id, uid, &parsed.attach_risk);
             if crate::rules::apply_on_ingest(
                 store,
                 account_id,
@@ -236,6 +249,7 @@ async fn fetch_missing_bodies_inner(
             // fill the unsubscribe offer. Parse failures keep the existing
             // values (absent fact, no guess).
             if let Ok(parsed) = crate::mime::parse_message(bytes) {
+                let _ = store.set_attachment_risk(folder_id, uid, &parsed.attach_risk);
                 let category = crate::category::categorize(&parsed).category;
                 let _ = store.set_category(folder_id, uid, category);
                 if let Some(info) = &parsed.unsubscribe {
@@ -348,6 +362,10 @@ async fn sync_pop3_inner(
     sealer: Option<&dyn crate::authstamp::AuthSealer>,
     receipt: Option<&crate::authstamp::SmtpReceipt>,
 ) -> Result<Pop3SyncReport> {
+    // T-255: due snoozes release at pass start here too — POP3 sync IS
+    // the account's pass; same swallow contract as sync_folder.
+    let _ = store.unsnooze_due(account_id, now, UNSNOOZE_SWEEP_LIMIT);
+
     let folder_id = store.ensure_folder(account_id, folder_name)?;
     let uidls = client.uidl().await?;
     let mut report = Pop3SyncReport {
@@ -388,6 +406,7 @@ async fn sync_pop3_inner(
         };
         store.upsert_message(folder_id, &meta, now)?;
         store.store_body(folder_id, number as u64, &bytes)?;
+        let _ = store.set_attachment_risk(folder_id, number as u64, &parsed.attach_risk);
         // T-233: the POP3 drop folder *is* the inbox — rules run on the
         // full parse at ingest (POP3 has no envelope-only stage). Errors
         // count, never abort the download; an unmarked eval is retried by

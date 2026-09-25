@@ -112,3 +112,56 @@ pub struct UnsubscribeResultView {
     /// Undo-send deadline for `action=mailto` (normal outbox grace).
     pub undo_window_until_unix: Option<i64>,
 }
+
+/// One `(folderId, uid)` coordinate — the `refs` element of the snooze /
+/// unsnooze calls (T-255). A selection can span folders because the
+/// Snoozed view is account-wide.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageRefInput {
+    pub folder_id: i64,
+    pub uid: i64,
+}
+
+/// `kiwi_message_snooze` result (T-255).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnoozeResultView {
+    /// Rows that ended the call parked.
+    pub snoozed: u64,
+    /// The concrete deadline applied to every ref — presets resolve
+    /// server-side, so this is what the UI displays.
+    pub until_unix: i64,
+}
+
+/// `kiwi_message_unsnooze` result (T-255).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnsnoozeResultView {
+    /// Rows that were actually parked and got released.
+    pub unsnoozed: u64,
+}
+
+/// One row of `kiwi_list_snoozed` — parked coordinates + the display
+/// fields the Snoozed view renders (T-255).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SnoozedMessageView {
+    /// Folder the message lives in NOW (it never moved — snooze is a
+    /// hide-in-place marker, not a folder move).
+    pub folder_id: i64,
+    pub uid: u64,
+    /// Folder name — this is a display list.
+    pub folder: String,
+    /// Folder id it was parked from (diverges only if it moved while
+    /// parked — rules/manual moves carry the parking record).
+    pub snoozed_from_folder_id: i64,
+    /// Deadline the sweep releases at.
+    pub snoozed_until: i64,
+    /// When it was parked.
+    pub snoozed_at: i64,
+    pub subject: Option<String>,
+    pub from_addr: Option<String>,
+    pub message_id: Option<String>,
+    pub date_unix: Option<i64>,
+}

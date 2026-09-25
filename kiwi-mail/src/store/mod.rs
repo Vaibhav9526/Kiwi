@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::Connection;
 
+use crate::attachrisk::AttachRiskEvidence;
 use crate::authrisk::AuthRisk;
 use crate::category::Category;
 use crate::error::Result;
@@ -61,6 +62,9 @@ pub struct MessageMeta {
     /// evaluated", which is NOT the same as a `none` verdict. Populated by
     /// `list_messages` / `list_messages_by_category` from `message_auth`.
     pub auth: Option<AuthMeta>,
+    /// Attachment evidence derived at body parse time (T-254). `None` means
+    /// the body has not been parsed yet, not "clean".
+    pub attach_risk: Option<AttachRiskEvidence>,
 }
 
 /// Persisted Authentication-Results verdicts for one message (T-232).
@@ -208,6 +212,25 @@ pub struct MessageRef {
     pub folder_name: String,
     pub subject: Option<String>,
     pub message_id: Option<String>,
+}
+
+/// One parked message in the Snoozed view (T-255): coordinates, the
+/// parking deadline, and display metadata. `from_folder_id` is where it
+/// was parked — the message may have moved since; `folder_id`/`folder_name`
+/// are where it lives NOW (it never left a real folder — snooze is a
+/// hide-in-place marker, not a move).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnoozedMessage {
+    pub folder_id: i64,
+    pub uid: u64,
+    pub folder_name: String,
+    pub from_folder_id: i64,
+    pub until_unix: i64,
+    pub set_at_unix: i64,
+    pub subject: Option<String>,
+    pub from_addr: Option<String>,
+    pub message_id: Option<String>,
+    pub date_unix: Option<i64>,
 }
 
 pub struct MailStore {
@@ -1137,6 +1160,64 @@ mod tests {
         let rest = store.list_rules(None).unwrap();
         assert_eq!(rest.len(), 1);
         assert_eq!(rest[0].id, "g");
+    }
+
+    // -- T-254 attachment risk evidence ---------------------------------------
+
+    #[test]
+    fn attachment_risk_roundtrips_attaches_and_moves() {
+        let s = MailStore::open_memory().unwrap();
+        seed_account(&s, "a1");
+        let src = s.ensure_folder("a1", "INBOX").unwrap();
+        let dst = s.ensure_folder("a1", "Archive").unwrap();
+        s.upsert_message(src, &meta(9), 0).unwrap();
+        let evidence = crate::attachrisk::AttachRiskEvidence {
+            risk: crate::attachrisk::AttachRisk::Failed,
+            reasons: vec![
+                crate::attachrisk::AttachRiskReason::DangerousExtension,
+                crate::attachrisk::AttachRiskReason::DoubleExtension,
+            ],
+        };
+        assert!(s.set_attachment_risk(src, 9, &evidence).unwrap());
+        assert_eq!(
+            s.get_attachment_risk(src, 9).unwrap(),
+            Some(evidence.clone())
+        );
+        assert_eq!(
+            s.list_messages(src, 10).unwrap()[0].attach_risk,
+            Some(evidence.clone())
+        );
+        assert_eq!(
+            s.list_messages_by_category(src, Category::Primary, 10)
+                .unwrap()[0]
+                .attach_risk,
+            Some(evidence.clone())
+        );
+        let moved = s.move_messages(src, dst, &[9]).unwrap();
+        assert_eq!(moved, vec![(9, 1)]);
+        assert!(s.get_attachment_risk(src, 9).unwrap().is_none());
+        assert_eq!(s.get_attachment_risk(dst, 1).unwrap(), Some(evidence));
+    }
+
+    #[test]
+    fn v10_to_v11_creates_attachment_sibling_without_backfill() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(DDL).unwrap();
+        conn.execute_batch("DROP TABLE message_attachment_risk; PRAGMA user_version = 10")
+            .unwrap();
+        let root = std::env::temp_dir().join(format!("kiwi-mig-attach-{}", std::process::id()));
+        migrate_conn(&conn, &root).unwrap();
+        assert_eq!(
+            conn.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM message_attachment_risk", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(rows, 0, "no historical risk is fabricated");
     }
 
     /// T-232: Authentication-Results stamping.

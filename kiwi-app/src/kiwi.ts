@@ -203,6 +203,8 @@ export interface MessageView {
    * verdict, so the security pill must render unknown rather than safe.
    */
   auth?: AuthResultsView | null;
+  /** Bounded attachment evidence hint (T-254); absent until body parse. */
+  attachRisk?: AttachRiskView | null;
 }
 
 /**
@@ -214,6 +216,22 @@ export interface MessageView {
  * render them as a pass, and never as a finding.
  */
 export type AuthRisk = "clean" | "noted" | "failed";
+export type AttachRisk = "clean" | "noted" | "failed";
+
+export type AttachRiskReason =
+  | "dangerousExtension"
+  | "doubleExtension"
+  | "dangerousContentType"
+  | "macroEnabledOffice"
+  | "vbaProjectContainer"
+  | "archiveNotInspectable"
+  | "encryptedOrOpaqueContainer"
+  | "unicodeConfusable";
+
+export interface AttachRiskView {
+  risk: AttachRisk;
+  reasons: AttachRiskReason[];
+}
 
 export interface AuthResultsView {
   /** Bounded deterministic hint for the frontend pill; never a finding. */

@@ -50,6 +50,9 @@ pub struct ParsedMessage {
     /// One-click unsubscribe offer (RFC 2369/8058, `crate::unsub`).
     /// `None` when the sender advertised nothing actionable.
     pub unsubscribe: Option<crate::unsub::UnsubscribeInfo>,
+    /// Deterministic bounded attachment hint derived while parsing (T-254).
+    /// This is evidence for the frontend, never a finding or blocking action.
+    pub attach_risk: crate::attachrisk::AttachRiskEvidence,
 }
 
 /// Outbound message to serialize. `data` on attachments is already-decoded
@@ -135,16 +138,26 @@ pub fn parse_message(raw: &[u8]) -> Result<ParsedMessage> {
             out.html_body = Some(String::from_utf8_lossy(part.contents()).into_owned());
         }
     }
+    let mut attachment_risk = crate::attachrisk::AttachRiskEvidence::default();
     for att in msg.attachments() {
+        let contents = att.contents();
+        let filename = att.attachment_name().unwrap_or("");
+        let content_type = att
+            .content_type()
+            .map(|c| format!("{}/{}", c.ctype(), c.subtype().unwrap_or("")))
+            .unwrap_or_else(|| "application/octet-stream".into());
+        attachment_risk.merge(crate::attachrisk::inspect_attachment(
+            Some(filename),
+            &content_type,
+            &contents[..contents.len().min(2 * 1024 * 1024)],
+        ));
         out.attachments.push(AttachmentMeta {
-            filename: att.attachment_name().map(|s| s.to_string()),
-            content_type: att
-                .content_type()
-                .map(|c| format!("{}/{}", c.ctype(), c.subtype().unwrap_or("")))
-                .unwrap_or_else(|| "application/octet-stream".into()),
-            size: att.contents().len(),
+            filename: att.attachment_name().map(str::to_string),
+            content_type,
+            size: contents.len(),
         });
     }
+    out.attach_risk = attachment_risk;
     let body_src = out
         .text_body
         .clone()
@@ -534,6 +547,20 @@ mod tests {
         assert_eq!(p.attachments.len(), 1);
         assert_eq!(p.attachments[0].filename.as_deref(), Some("doc.pdf"));
         assert_eq!(p.attachments[0].size, 3); // "ABC"
+        assert_eq!(p.attach_risk.risk, crate::attachrisk::AttachRisk::Clean);
+        assert!(p.attach_risk.reasons.is_empty());
+    }
+
+    #[test]
+    fn parse_time_attachment_risk_uses_filename_and_type() {
+        let raw = b"From: a@x.test\r\nTo: b@y.test\r\nSubject: att\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"B\"\r\n\r\n--B\r\nContent-Type: text/plain\r\n\r\nsee attached\r\n--B\r\nContent-Type: application/octet-stream; name=\"invoice.pdf.exe\"\r\nContent-Transfer-Encoding: base64\r\nContent-Disposition: attachment; filename=\"invoice.pdf.exe\"\r\n\r\nTVpQ\r\n--B--\r\n";
+        let p = parse_message(raw).unwrap();
+        assert_eq!(p.attach_risk.risk, crate::attachrisk::AttachRisk::Failed);
+        assert!(
+            p.attach_risk
+                .reasons
+                .contains(&crate::attachrisk::AttachRiskReason::DoubleExtension)
+        );
     }
 
     #[test]

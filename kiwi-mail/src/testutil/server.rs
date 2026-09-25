@@ -5,19 +5,19 @@
 
 use std::io;
 
-use tokio::io::{AsyncWriteExt, DuplexStream};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio_rustls::TlsAcceptor;
 
 use crate::lines::read_line;
 
 use super::script::*;
 
-enum Wire {
-    Plain(DuplexStream),
-    Tls(Box<tokio_rustls::server::TlsStream<DuplexStream>>),
+enum Wire<S> {
+    Plain(S),
+    Tls(Box<tokio_rustls::server::TlsStream<S>>),
 }
 
-impl Wire {
+impl<S: AsyncRead + AsyncWrite + Unpin> Wire<S> {
     async fn rl(&mut self, scratch: &mut Vec<u8>) -> crate::error::Result<Vec<u8>> {
         match self {
             Wire::Plain(s) => read_line(s, scratch, "fixture").await,
@@ -34,8 +34,11 @@ impl Wire {
 
 /// Drive the server side of a transcript. Asserts each `C:` line
 /// (protocol-aware matching); returns Err describing the first divergence.
-pub async fn serve(
-    end: DuplexStream,
+/// Generic over the stream — `DuplexStream` for in-process pairs, a real
+/// `TcpStream` when the client under test owns its socket setup (loopback
+/// E2E).
+pub async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
+    end: S,
     steps: &[Step],
     proto: Proto,
     tls: Option<TlsAcceptor>,
@@ -100,8 +103,8 @@ pub async fn serve(
 }
 
 /// Spawn a scripted server from an inline `S:`/`C:` transcript string.
-pub fn spawn_script(
-    end: DuplexStream,
+pub fn spawn_script<S: AsyncRead + AsyncWrite + Unpin + Send + 'static>(
+    end: S,
     proto: Proto,
     script: &str,
     tls: Option<TlsAcceptor>,

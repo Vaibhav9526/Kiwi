@@ -40,8 +40,9 @@ fn map_message_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<MessageMeta> {
         unsub_http: r.get(14)?,
         unsub_mailto: r.get(15)?,
         unsub_oneclick: r.get::<_, i64>(16)? != 0,
-        // Filled by the list callers from `message_auth` (see `attach_auth`).
+        // Filled by the list callers from evidence sibling tables.
         auth: None,
+        attach_risk: None,
     })
 }
 
@@ -216,6 +217,10 @@ impl MailStore {
             "DELETE FROM rule_evals WHERE folder_id = ?1",
             params![folder_id],
         )?;
+        self.conn.execute(
+            "DELETE FROM message_attachment_risk WHERE folder_id = ?1",
+            params![folder_id],
+        )?;
         self.remove_payload_dirs(folder_id);
         Ok(n as u64)
     }
@@ -349,6 +354,9 @@ impl MailStore {
                     snippet, body_path, category,
                     unsub_http, unsub_mailto, unsub_oneclick
              FROM messages WHERE folder_id = ?1 AND category = ?2
+               AND NOT EXISTS (SELECT 1 FROM snoozed s
+                               WHERE s.folder_id = messages.folder_id
+                                 AND s.uid = messages.uid)
              ORDER BY uid LIMIT ?3",
         )?;
         let rows = stmt.query_map(
@@ -360,6 +368,7 @@ impl MailStore {
             out.push(r?);
         }
         self.attach_auth(folder_id, &mut out)?;
+        self.attach_attachment_risks(folder_id, &mut out)?;
         Ok(out)
     }
 
@@ -465,6 +474,10 @@ impl MailStore {
                 "DELETE FROM messages WHERE folder_id = ?1 AND uid = ?2",
                 params![folder_id, *uid as i64],
             )? as u64;
+            self.conn.execute(
+                "DELETE FROM message_attachment_risk WHERE folder_id = ?1 AND uid = ?2",
+                params![folder_id, *uid as i64],
+            )?;
             let _ = std::fs::remove_file(self.body_path(folder_id, *uid));
             let _ = std::fs::remove_dir_all(
                 self.root
@@ -615,7 +628,27 @@ impl MailStore {
                 std::fs::rename(&src_att, &dst_att)?;
             }
             self.conn.execute(
+                "INSERT OR REPLACE INTO message_attachment_risk
+                    (folder_id, uid, risk, reasons_json)
+                 SELECT ?1, ?2, risk, reasons_json
+                 FROM message_attachment_risk WHERE folder_id = ?3 AND uid = ?4",
+                params![dst_folder_id, dst_uid, src_folder_id, *uid as i64],
+            )?;
+            // Carry the snooze state across the move (T-255) — parked mail
+            // stays parked at its new coordinates. Must run BEFORE the
+            // source-row DELETE below: the composite FK would otherwise
+            // cascade-drop the parking record.
+            self.conn.execute(
+                "UPDATE snoozed SET folder_id = ?1, uid = ?2
+                 WHERE folder_id = ?3 AND uid = ?4",
+                params![dst_folder_id, dst_uid, src_folder_id, *uid as i64],
+            )?;
+            self.conn.execute(
                 "DELETE FROM messages WHERE folder_id = ?1 AND uid = ?2",
+                params![src_folder_id, *uid as i64],
+            )?;
+            self.conn.execute(
+                "DELETE FROM message_attachment_risk WHERE folder_id = ?1 AND uid = ?2",
                 params![src_folder_id, *uid as i64],
             )?;
             moved.push((*uid, dst_uid as u64));
@@ -766,6 +799,76 @@ impl MailStore {
         Ok(())
     }
 
+    /// Persist bounded attachment-risk evidence parsed from the received MIME
+    /// body. This is independent of optional DNS auth sealing and has no
+    /// blocking or mail-movement side effects.
+    pub fn set_attachment_risk(
+        &self,
+        folder_id: i64,
+        uid: u64,
+        evidence: &crate::attachrisk::AttachRiskEvidence,
+    ) -> Result<bool> {
+        let reasons = serde_json::to_string(&evidence.reasons)
+            .map_err(|_| MailError::Store(rusqlite::Error::InvalidQuery))?;
+        let n = self.conn.execute(
+            "INSERT OR REPLACE INTO message_attachment_risk
+                (folder_id, uid, risk, reasons_json) VALUES (?1, ?2, ?3, ?4)",
+            params![folder_id, uid as i64, evidence.risk.as_str(), reasons],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Read persisted attachment evidence for one message.
+    pub fn get_attachment_risk(
+        &self,
+        folder_id: i64,
+        uid: u64,
+    ) -> Result<Option<crate::attachrisk::AttachRiskEvidence>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT risk, reasons_json FROM message_attachment_risk
+             WHERE folder_id = ?1 AND uid = ?2",
+        )?;
+        let mut rows = stmt.query(params![folder_id, uid as i64])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        let risk: String = row.get(0)?;
+        let reasons_json: String = row.get(1)?;
+        let reasons = serde_json::from_str(&reasons_json).unwrap_or_default();
+        Ok(Some(crate::attachrisk::AttachRiskEvidence {
+            risk: crate::attachrisk::AttachRisk::from_wire(&risk),
+            reasons,
+        }))
+    }
+
+    fn attach_attachment_risks(&self, folder_id: i64, msgs: &mut [MessageMeta]) -> Result<()> {
+        if msgs.is_empty() {
+            return Ok(());
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT uid, risk, reasons_json FROM message_attachment_risk
+             WHERE folder_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![folder_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (uid, risk, reasons_json) = row?;
+            let Some(message) = msgs.iter_mut().find(|m| m.uid == uid as u64) else {
+                continue;
+            };
+            message.attach_risk = Some(crate::attachrisk::AttachRiskEvidence {
+                risk: crate::attachrisk::AttachRisk::from_wire(&risk),
+                reasons: serde_json::from_str(&reasons_json).unwrap_or_default(),
+            });
+        }
+        Ok(())
+    }
+
     /// Messages eligible for Authentication-Results evaluation: those with a
     /// stored body but no stamp yet. Kept so a later re-evaluation pass can
     /// backfill without a full re-sync.
@@ -792,7 +895,11 @@ impl MailStore {
                     to_addrs, date_unix, size, flags, has_attachments,
                     snippet, body_path, category,
                     unsub_http, unsub_mailto, unsub_oneclick
-             FROM messages WHERE folder_id = ?1 ORDER BY uid LIMIT ?2",
+             FROM messages WHERE folder_id = ?1
+               AND NOT EXISTS (SELECT 1 FROM snoozed s
+                               WHERE s.folder_id = messages.folder_id
+                                 AND s.uid = messages.uid)
+             ORDER BY uid LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![folder_id, limit as i64], map_message_row)?;
         let mut out = Vec::new();
@@ -800,6 +907,7 @@ impl MailStore {
             out.push(r?);
         }
         self.attach_auth(folder_id, &mut out)?;
+        self.attach_attachment_risks(folder_id, &mut out)?;
         Ok(out)
     }
 
@@ -1091,6 +1199,119 @@ impl MailStore {
                 folder_name: r.get(2)?,
                 subject: r.get(3)?,
                 message_id: r.get(4)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    // -- snooze (T-255) -----------------------------------------------------
+
+    /// Park `uids` in `folder_id` until `until_unix`. Purely reversible
+    /// local state: the `messages` row never moves — folder listings hide
+    /// parked rows — so snooze can't desync the server and never touches
+    /// Trash. Absent uids are skipped (same convention as `set_flag`);
+    /// re-snoozing an already-parked message updates the deadline but
+    /// keeps the original `from_folder_id`. Returns rows parked.
+    pub fn set_snooze(
+        &self,
+        folder_id: i64,
+        uids: &[u64],
+        until_unix: i64,
+        now: i64,
+    ) -> Result<u64> {
+        let mut n = 0u64;
+        for uid in uids {
+            n += u64::from(
+                self.conn.execute(
+                    "INSERT INTO snoozed (folder_id, uid, until_unix, from_folder_id, set_at_unix)
+                     SELECT ?1, ?2, ?3, ?1, ?4
+                     WHERE EXISTS (SELECT 1 FROM messages
+                                   WHERE folder_id = ?1 AND uid = ?2)
+                     ON CONFLICT(folder_id, uid) DO UPDATE SET
+                         until_unix = excluded.until_unix,
+                         set_at_unix = excluded.set_at_unix",
+                    params![folder_id, *uid as i64, until_unix, now],
+                )? > 0,
+            );
+        }
+        Ok(n)
+    }
+
+    /// Release parked messages explicitly (`kiwi_message_unsnooze` and
+    /// the due-sweep share this shape). Idempotent — unparked uids are
+    /// no-ops. Returns rows that were actually parked.
+    pub fn clear_snooze(&self, folder_id: i64, uids: &[u64]) -> Result<u64> {
+        let mut n = 0u64;
+        for uid in uids {
+            n += u64::from(
+                self.conn.execute(
+                    "DELETE FROM snoozed WHERE folder_id = ?1 AND uid = ?2",
+                    params![folder_id, *uid as i64],
+                )? > 0,
+            );
+        }
+        Ok(n)
+    }
+
+    /// Due-snooze sweep: release up to `limit` parked rows whose deadline
+    /// passed, soonest-due first, uid order for ties. Returns the
+    /// released `(folder_id, uid)` coordinates so callers can log/count.
+    /// Bounded per call — leftovers stay parked until the next pass.
+    pub fn unsnooze_due(&self, account_id: &str, now: i64, limit: u32) -> Result<Vec<(i64, u64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT s.folder_id, s.uid FROM snoozed s
+             JOIN folders f ON f.id = s.folder_id
+             WHERE f.account_id = ?1 AND s.until_unix <= ?2
+             ORDER BY s.until_unix, s.folder_id, s.uid
+             LIMIT ?3",
+        )?;
+        let due: Vec<(i64, u64)> = stmt
+            .query_map(params![account_id, now, limit as i64], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)? as u64))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (fid, uid) in &due {
+            self.conn.execute(
+                "DELETE FROM snoozed WHERE folder_id = ?1 AND uid = ?2",
+                params![fid, *uid as i64],
+            )?;
+        }
+        Ok(due)
+    }
+
+    /// The account's parked mail for the Snoozed view — soonest-due
+    /// first, then folder/uid for a total order. Every parked row is
+    /// returned (including trash-parked ones); the IPC layer filters
+    /// what the view should render.
+    pub fn list_snoozed(&self, account_id: &str, limit: u32) -> Result<Vec<SnoozedMessage>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT s.folder_id, s.uid, f.name, s.from_folder_id,
+                    s.until_unix, s.set_at_unix,
+                    m.subject, m.from_addr, m.message_id, m.date_unix
+             FROM snoozed s
+             JOIN folders f ON f.id = s.folder_id
+             JOIN messages m
+               ON m.folder_id = s.folder_id AND m.uid = s.uid
+             WHERE f.account_id = ?1
+             ORDER BY s.until_unix, s.folder_id, s.uid
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![account_id, limit as i64], |r| {
+            Ok(SnoozedMessage {
+                folder_id: r.get(0)?,
+                uid: r.get::<_, i64>(1)? as u64,
+                folder_name: r.get(2)?,
+                from_folder_id: r.get(3)?,
+                until_unix: r.get(4)?,
+                set_at_unix: r.get(5)?,
+                subject: r.get(6)?,
+                from_addr: r.get(7)?,
+                message_id: r.get(8)?,
+                date_unix: r.get(9)?,
             })
         })?;
         let mut out = Vec::new();

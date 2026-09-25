@@ -738,7 +738,9 @@ impl AppState {
 /// Build the production integration transport: reqwest+rustls, HTTPS-only,
 /// redirects never followed. Body cap covers a fetched temp-mail body
 /// embedded in provider JSON (`MAX_MAIL_BODY` + envelope slack).
-fn integrations_transport() -> CmdResult<Arc<dyn HttpClient>> {
+/// `pub(crate)` for tests that need a real transport-shaped arg into
+/// `open_test_with_net` (they never call it — MockNet answers).
+pub(crate) fn integrations_transport() -> CmdResult<Arc<dyn HttpClient>> {
     let client =
         kiwi_integrations::http::ReqwestClient::new(kiwi_integrations::http::DEFAULT_TIMEOUT_MS)
             .map_err(IpcError::from)?

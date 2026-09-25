@@ -113,7 +113,6 @@ pub struct AuthView {
     pub auth_risk: AuthRisk,
 }
 
-/// Wire view of upstream Authentication-Results evidence (T-240).
 /// Wire view of deterministic attachment evidence (T-254).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -123,6 +122,7 @@ pub struct AttachRiskView {
     pub reasons: Vec<AttachRiskReason>,
 }
 
+/// Wire view of upstream Authentication-Results evidence (T-240).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpstreamAuthView {

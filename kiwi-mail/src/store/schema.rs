@@ -1,7 +1,7 @@
 //! SQLite schema — DDL + version. Migrations are explicit and
 //! append-only; `user_version` is the source of truth.
 
-pub(crate) const SCHEMA_VERSION: u32 = 10;
+pub(crate) const SCHEMA_VERSION: u32 = 12;
 
 pub(crate) const DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS accounts (
@@ -138,4 +138,35 @@ CREATE TABLE IF NOT EXISTS message_auth (
     auth_risk      TEXT CHECK (auth_risk IN ('clean', 'noted', 'failed')),
     PRIMARY KEY (folder_id, uid)
 );
+-- Attachment hints (T-254) are deliberately a sibling, not message_auth:
+-- MIME classification is local and must work even when DNS auth sealing is
+-- unavailable. Reasons are a bounded fixed vocabulary JSON array, never
+-- filenames, MIME parameters, or attachment bodies. Evidence only — this
+-- table never blocks UI or mutates/moves mail.
+CREATE TABLE IF NOT EXISTS message_attachment_risk (
+    folder_id   INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+    uid         INTEGER NOT NULL,
+    risk        TEXT NOT NULL CHECK (risk IN ('clean', 'noted', 'failed')),
+    reasons_json TEXT NOT NULL,
+    PRIMARY KEY (folder_id, uid)
+);
+-- Snooze (T-255): reversible local-only parking. A row means "hide this
+-- message from folder lists until until_unix" — the message row itself
+-- NEVER moves, so snooze can't desync the server (a real folder move
+-- would make the next UID-diff re-download the remote uid into INBOX).
+-- The composite FK gives free cleanup on delete/expunge/UIDVALIDITY
+-- reset; `move_messages` re-keys the row before its source DELETE so
+-- parked mail stays parked across moves. `from_folder_id` records where
+-- it was parked (the message may have since moved) — evidence for the
+-- Snoozed view and future restore-to-origin semantics.
+CREATE TABLE IF NOT EXISTS snoozed (
+    folder_id      INTEGER NOT NULL,
+    uid            INTEGER NOT NULL,
+    until_unix     INTEGER NOT NULL,
+    from_folder_id INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+    set_at_unix    INTEGER NOT NULL,
+    PRIMARY KEY (folder_id, uid),
+    FOREIGN KEY (folder_id, uid) REFERENCES messages(folder_id, uid) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_snoozed_due ON snoozed(until_unix);
 "#;

@@ -37,7 +37,10 @@ pub async fn kiwi_list_folders(
     list_folders_impl(state.inner(), &account_id).await
 }
 
-async fn list_folders_impl(state: &AppState, account_id: &str) -> CmdResult<Vec<FolderView>> {
+pub(crate) async fn list_folders_impl(
+    state: &AppState,
+    account_id: &str,
+) -> CmdResult<Vec<FolderView>> {
     bounded("accountId", account_id, 128)?;
     let entries = state
         .index
