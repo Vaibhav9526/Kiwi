@@ -33,6 +33,13 @@ export interface OrgRepository {
   listRolesForUsers(userIds: string[]): MaybePromise<{ user_id: string; role: OrgRole }[]>;
   createDevice(id: string, orgId: string, label: string, now: number): MaybePromise<{ id: string; org_id: string; label: string; revoked: number; created_at: number }>;
   getDevice(id: string): MaybePromise<{ id: string; org_id: string; label: string; revoked: number; created_at: number } | undefined>;
+  /**
+   * Org-scoped device inventory (§14, T-253): the first `limit` rows in
+   * the mandatory `created_at ASC, id ASC` order (the id tie-breaker gives
+   * same-millisecond registrations a total order). `revoked_at` is the
+   * real column — never fabricated `null` on revoked rows.
+   */
+  listDevices(orgId: string, limit: number): MaybePromise<{ id: string; org_id: string; label: string; revoked: number; revoked_at: number | null; created_at: number }[]>;
   revokeDevice(id: string, now: number): MaybePromise<void>;
 }
 

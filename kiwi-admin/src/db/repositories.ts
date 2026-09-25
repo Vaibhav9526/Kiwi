@@ -28,16 +28,26 @@ export function escapeLikePattern(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
 }
 
-/** True for SQLite unique-violation failures (duplicate email, dup policy id). */
-function isUniqueViolation(err: unknown): boolean {
-  if (typeof err !== "object" || err === null) return false;
-  const code = (err as { code?: unknown }).code;
-  const message = err instanceof Error ? err.message : "";
-  return (
-    code === "SQLITE_CONSTRAINT_UNIQUE" ||
-    code === "SQLITE_CONSTRAINT_PRIMARYKEY" ||
-    /UNIQUE constraint failed/i.test(message)
-  );
+/**
+ * True for SQLite unique-violation failures (duplicate email, dup policy id).
+ * Cause-aware like the Postgres mirror: a wrapped driver error must not
+ * slip through as a 500 (T-193/M5).
+ */
+export function isUniqueViolation(err: unknown): boolean {
+  let cur: unknown = err;
+  for (let depth = 0; cur !== null && typeof cur === "object" && depth < 3; depth++) {
+    const code = (cur as { code?: unknown }).code;
+    const message = cur instanceof Error ? cur.message : "";
+    if (
+      code === "SQLITE_CONSTRAINT_UNIQUE" ||
+      code === "SQLITE_CONSTRAINT_PRIMARYKEY" ||
+      /UNIQUE constraint failed/i.test(message)
+    ) {
+      return true;
+    }
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return false;
 }
 
 export class DrizzleOrgRepository implements OrgRepository {
@@ -149,6 +159,28 @@ export class DrizzleOrgRepository implements OrgRepository {
   ): { id: string; org_id: string; label: string; revoked: number; created_at: number } | undefined {
     const row = this.db.select().from(s.devices).where(eq(s.devices.id, id)).get();
     return row ? { id: row.id, org_id: row.orgId, label: row.label, revoked: row.revoked, created_at: row.createdAt } : undefined;
+  }
+
+  listDevices(
+    orgId: string,
+    limit: number,
+  ): { id: string; org_id: string; label: string; revoked: number; revoked_at: number | null; created_at: number }[] {
+    return this.db
+      .select()
+      .from(s.devices)
+      .where(eq(s.devices.orgId, orgId))
+      // §14.1: total order — created_at then id; never merge dup labels.
+      .orderBy(asc(s.devices.createdAt), asc(s.devices.id))
+      .limit(limit)
+      .all()
+      .map((row) => ({
+        id: row.id,
+        org_id: row.orgId,
+        label: row.label,
+        revoked: row.revoked,
+        revoked_at: row.revokedAt,
+        created_at: row.createdAt,
+      }));
   }
 
   revokeDevice(id: string, now: number): void {

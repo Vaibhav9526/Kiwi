@@ -380,3 +380,124 @@ describe("T-193 HTTP regression guards", () => {
     expect((r.json.items as unknown[]).length).toBeLessThanOrEqual(1);
   });
 });
+
+/** T-253 — §14 device inventory: org-scoped read, denial audit, bounds. */
+describe("device inventory (T-253, §14)", () => {
+  let devOrg = "";
+  let d1Id = "";
+  let d2Id = "";
+  let d3Id = "";
+  const seedAdmin = () => ({ subject: "seeder", roles: ["org_admin" as const], orgId: devOrg });
+  const devHeaders = { "x-kiwi-subject": "devadmin", "x-kiwi-roles": "org_admin", "x-kiwi-org": "" };
+
+  beforeAll(async () => {
+    const created = await api("/api/v1/orgs", { method: "POST", body: { name: "devices.test" }, headers: adminHeaders });
+    expect(created.status).toBe(201);
+    devOrg = created.json.id as string;
+    devHeaders["x-kiwi-org"] = devOrg;
+
+    // Seed through the service (there is deliberately no create route —
+    // §14.6); created_at values are pinned so ordering is deterministic.
+    const d1 = await handle.container.orgs.createDevice(seedAdmin(), devOrg, "Pixel 8", 1000);
+    const d2 = await handle.container.orgs.createDevice(seedAdmin(), devOrg, "Workstation", 2000);
+    const d3 = await handle.container.orgs.createDevice(seedAdmin(), devOrg, "Key2", 2000); // same ms as d2 — id tie-breaker
+    await handle.container.orgs.revokeDevice(seedAdmin(), d2.id, 3000);
+    d1Id = d1.id;
+    d2Id = d2.id;
+    d3Id = d3.id;
+  });
+
+  it("serves the org-scoped list with the ratified wire shape", async () => {
+
+    const r = await api(`/api/v1/orgs/${devOrg}/devices`, { headers: devHeaders });
+    expect(r.status).toBe(200);
+    const items = r.json.items as { id: string; org_id: string; label: string; revoked: number; revoked_at: number | null; created_at: number }[];
+    expect(items.length).toBe(3);
+    for (const it of items) {
+      expect(Object.keys(it).sort()).toEqual(["created_at", "id", "label", "org_id", "revoked", "revoked_at"]);
+      expect(it.org_id).toBe(devOrg);
+      expect(typeof it.revoked).toBe("number"); // integer 0|1, never boolean
+    }
+    // created_at ASC, id ASC — the two same-millisecond rows order by id.
+    expect(items[0]!.id).toBe(d1Id);
+    const tail = [d2Id, d3Id].sort();
+    expect([items[1]!.id, items[2]!.id]).toEqual(tail);
+    // Revoked projection: real revoked_at column, never fabricated.
+    const revoked = items.find((i) => i.id === d2Id)!;
+    expect(revoked.revoked).toBe(1);
+    expect(revoked.revoked_at).toBe(3000);
+  });
+
+  it("honors limit bounds (default 50, clamp 1..=500, decimal grammar)", async () => {
+    const all = await api(`/api/v1/orgs/${devOrg}/devices`, { headers: devHeaders });
+    expect(all.status).toBe(200);
+    expect((all.json.items as unknown[]).length).toBe(3);
+
+    const one = await api(`/api/v1/orgs/${devOrg}/devices?limit=1`, { headers: devHeaders });
+    expect((one.json.items as unknown[]).length).toBe(1);
+
+    const over = await api(`/api/v1/orgs/${devOrg}/devices?limit=99999`, { headers: devHeaders });
+    expect(over.status).toBe(200); // clamped to 500, not an error
+    expect((over.json.items as unknown[]).length).toBe(3);
+
+    const zero = await api(`/api/v1/orgs/${devOrg}/devices?limit=0`, { headers: devHeaders });
+    expect(zero.status).toBe(200); // clamped to 1
+    expect((zero.json.items as unknown[]).length).toBe(1);
+
+    const bad = await api(`/api/v1/orgs/${devOrg}/devices?limit=1e3`, { headers: devHeaders });
+    expect(bad.status).toBe(400);
+    expect(bad.json.error.code).toBe("validation.failed");
+  });
+
+  it("returns 200 {items:[]} for an unknown but valid org id", async () => {
+    // §14.1: unknown org is an empty list, consistent with listUsers —
+    // a 404 for unknown orgs is a separate deferred contract decision.
+    const r = await api("/api/v1/orgs/org-00000000-0000-4000-8000-000000000000/devices", {
+      headers: { "x-kiwi-subject": "nope", "x-kiwi-roles": "org_admin", "x-kiwi-org": "org-00000000-0000-4000-8000-000000000000" },
+    });
+    expect(r.status).toBe(200);
+    expect(r.json.items).toEqual([]);
+  });
+
+  it("denies cross-org and null-org reads, auditing each denial", async () => {
+    // Cross-org: actor bound to the first suite org reads the devices org.
+    const cross = await api(`/api/v1/orgs/${devOrg}/devices`, { headers: boundHeaders });
+    expect(cross.status).toBe(403);
+    expect(cross.json.error.code).toBe("auth.denied");
+    expect(cross.json.error.details.permission).toBe("device.read");
+
+    // Null-org actor: no org binding → fail-closed denial on any org path.
+    const nullOrg = await api(`/api/v1/orgs/${devOrg}/devices`, { headers: adminHeaders });
+    expect(nullOrg.status).toBe(403);
+
+    // §14.3 fixed row: action device.list, resource+org_id = path org,
+    // outcome denied, details.permission, request_id null — the service
+    // query projection omits resource/org_id (ADM-T250-02), so assert on
+    // the raw audit_log row via the db facade.
+    const denials = handle.container.db!.all(
+      "SELECT resource, org_id, request_id, details, ts FROM audit_log WHERE action = 'device.list' AND outcome = 'denied'",
+    ) as { resource: string; org_id: string; request_id: string | null; details: string; ts: number }[];
+    expect(denials.length).toBeGreaterThanOrEqual(2);
+    for (const d of denials) {
+      expect(d.resource).toBe(devOrg);
+      expect(d.org_id).toBe(devOrg);
+      expect(d.request_id).toBeNull();
+      expect(JSON.parse(d.details).permission).toBe("device.read");
+      expect(Number.isSafeInteger(d.ts)).toBe(true);
+    }
+  });
+
+  it("rejects a malformed path id and never merges duplicate labels", async () => {
+    const bad = await api(`/api/v1/orgs/not!!valid/devices`, { headers: devHeaders });
+    expect(bad.status).toBe(400);
+    expect(bad.json.error.code).toBe("validation.failed");
+
+    // §14.1: normalized-duplicate labels are a 409 rule for future create
+    // paths — the read path returns both rows, never canonicalizes.
+    await handle.container.orgs.createDevice(seedAdmin(), devOrg, "Dup Phone", 4000);
+    await handle.container.orgs.createDevice(seedAdmin(), devOrg, "dup phone", 4001);
+    const r = await api(`/api/v1/orgs/${devOrg}/devices`, { headers: devHeaders });
+    const labels = (r.json.items as { label: string }[]).map((i) => i.label);
+    expect(labels.filter((l) => l.toLowerCase() === "dup phone").length).toBe(2);
+  });
+});

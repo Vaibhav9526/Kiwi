@@ -29,11 +29,24 @@ export function escapeLikePattern(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
 }
 
-/** True for Postgres unique-violation failures (SQLSTATE 23505). */
-function isUniqueViolation(err: unknown): boolean {
-  if (typeof err !== "object" || err === null) return false;
-  const code = (err as { code?: unknown }).code;
-  return code === "23505" || (err instanceof Error && /duplicate key value/i.test(err.message));
+/**
+ * True for Postgres unique-violation failures (SQLSTATE 23505).
+ *
+ * Drizzle wraps the driver failure in a `DrizzleQueryError` whose own
+ * message is only "Failed query: ..." — the SQLSTATE and the
+ * "duplicate key" text live on `cause`. A previous revision inspected only
+ * the wrapper, so every duplicate email on Postgres surfaced as a 500 with
+ * a correlation id instead of the contracted 409 `conflict` (T-193/M5).
+ */
+export function isUniqueViolation(err: unknown): boolean {
+  let cur: unknown = err;
+  for (let depth = 0; cur !== null && typeof cur === "object" && depth < 3; depth++) {
+    const code = (cur as { code?: unknown }).code;
+    if (code === "23505") return true;
+    if (cur instanceof Error && /duplicate key value/i.test(cur.message)) return true;
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return false;
 }
 
 const bit = (b: boolean): number => (b ? 1 : 0);
@@ -142,6 +155,26 @@ export class PgOrgRepository implements AsyncInterface<OrgRepository> {
     return row
       ? { id: row.id, org_id: row.orgId, label: row.label, revoked: bit(row.revoked), created_at: row.createdAt }
       : undefined;
+  }
+
+  async listDevices(
+    orgId: string,
+    limit: number,
+  ): Promise<{ id: string; org_id: string; label: string; revoked: number; revoked_at: number | null; created_at: number }[]> {
+    const rows = await this.db
+      .select()
+      .from(p.devices)
+      .where(eq(p.devices.orgId, orgId))
+      .orderBy(asc(p.devices.createdAt), asc(p.devices.id))
+      .limit(limit);
+    return rows.map((row) => ({
+      id: row.id,
+      org_id: row.orgId,
+      label: row.label,
+      revoked: bit(row.revoked),
+      revoked_at: row.revokedAt,
+      created_at: row.createdAt,
+    }));
   }
 
   async revokeDevice(id: string, now: number): Promise<void> {

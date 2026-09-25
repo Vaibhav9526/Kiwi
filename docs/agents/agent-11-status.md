@@ -414,3 +414,72 @@ no remote assets or navigation.
   arguments)]` on `rules::apply::apply_on_ingest` after T-233's new
   `stage` param pushed it to 7 args (matches existing allows on
   `execute` and sync.rs helpers — flagged for the T-233 owner).
+
+---
+
+## T-253 — §14 device-inventory endpoint (ADM-T250-08)
+
+**Outcome:** `GET /api/v1/orgs/{orgId}/devices` implemented to the
+ratified §14 contract — the endpoint 404'd before; now org-scoped,
+bounded, audited-on-denial.
+
+### Layers
+
+- **Repo** (`db/interfaces.ts` + both impls): `listDevices(orgId,
+  limit)` returns `{id, org_id, label, revoked, revoked_at, created_at}`
+  — `revoked_at` read from the real column (never fabricated null),
+  `created_at ASC, id ASC` ordering with the mandatory id tie-breaker,
+  `limit` enforced in SQL (`DrizzleOrgRepository` sync +
+  `PgOrgRepository` async, `bit()` on the PG boolean).
+- **Service** (`policy/services.ts` `OrgService.listDevices`):
+  `assertIdentifier` → `requirePermission(actor, "device.read", oid)`
+  on the validated path org — fail-closed for null-org actors per
+  §14.2. Denial writes the fixed §14.3 row (`device.list`, resource +
+  org_id = path org, `outcome: "denied"`, `details.permission =
+  "device.read"`, `request_id: null`, ms ts) via the new
+  `ServiceContainerLike.auditAppend` — deliberately NOT `auditWrap`,
+  which would also stamp successful reads (§14.3 forbids that).
+  Successful reads stay unaudited, consistent with listUsers. The
+  `revoked=1 ⇔ revoked_at≠null` invariant is checked per row —
+  inconsistent legacy data → sanitized `500 internal`, never silently
+  normalized.
+- **Route** (`server.ts`): `GET` inside the orgs block,
+  `numParam(url,"limit",50)` decimal grammar → service clamps 1..=500.
+- **Contract**: admin-api.md §3 row updated (no longer "not
+  implemented"); §14 header marked implemented-T-253.
+
+### Tests (tests/server.test.ts + infra/e2e/test_admin_e2e.py)
+
+- Wire shape: exact key set `{id, org_id, label, revoked,
+  revoked_at, created_at}`, `revoked` as integer 0|1 (never boolean).
+- Ordering: `created_at ASC`, same-millisecond rows tie-broken by id.
+- Revoked row carries real `revoked_at`.
+- Bounds: `limit=1` → 1 row, `limit=99999` → clamp 500, `limit=0` →
+  clamp 1, `limit=1e3` → `400 validation.failed`.
+- Cross-org → `403 auth.denied` + `details.permission`; null-org actor
+  → 403; both denials asserted on the raw `audit_log` rows (the service
+  query projection omits resource/org_id — ADM-T250-02).
+- Unknown-but-valid orgId → `200 {items:[]}` (per §14.1 — a 404 for
+  unknown orgs is a deferred contract decision, consistent with
+  listUsers).
+- Duplicate normalized labels ("Dup Phone" / "dup phone") returned
+  unmerged — the 409 rule binds future create paths (§14.6), the read
+  never canonicalizes.
+- Malformed path id → `400 validation.failed`.
+- e2e: `test_t253_device_inventory_route` in DialectLeg seeds via the
+  existing backend device helpers, exercises wire shape / ordering /
+  stray-org exclusion / bounds / both denials + audit rows / ghost org.
+
+### Verified
+
+`npm test` in kiwi-admin — 112 passed, 1 skipped (server.test.ts 24);
+`tsc --noEmit` clean; `npm run build` clean; e2e file parses (runs under
+docker compose when the stack is up).
+
+### Note for Lead
+
+The task brief listed "unknown-org not.found" — §14.1 ratifies
+`200 {items:[]}` for an unknown-but-valid orgId (consistent with
+listUsers; the 404 variant is a deferred contract decision per the same
+section). Implemented spec-faithful; flagging in case Lead wants the
+contract amended instead.

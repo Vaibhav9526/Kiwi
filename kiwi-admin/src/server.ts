@@ -22,7 +22,7 @@ import { ConflictError, NotFoundError, RequestValidationError, isRecord } from "
 import { ALL_ORG_ROLES, TLS_VERSION_ALIASES, type ExternalRecipientBehavior, type OrgRole } from "./types.js";
 import { AUDIT_EXPORT_CONTENT_TYPE } from "./audit/export.js";
 
-const HOST = "127.0.0.1";
+const HOST = (process.env["KIWI_ADMIN_HOST"] ?? "").trim() || "127.0.0.1";
 const DEFAULT_PORT = 8471;
 const MAX_BODY_BYTES = 1024 * 1024;
 
@@ -269,6 +269,12 @@ async function route(
         return;
       }
     }
+    // GET /devices — §14 inventory (T-253): bounded, org-scoped, audited
+    // denials. Same `{items}` envelope as /users.
+    if (rest[2] === "devices" && rest.length === 3 && method === "GET") {
+      send(res, 200, { items: await container.orgs.listDevices(actor, orgId, numParam(url, "limit", 50)) });
+      return;
+    }
     // PUT /users/:user/role
     if (rest[2] === "users" && typeof rest[3] === "string" && rest[4] === "role" && rest.length === 5 && method === "PUT") {
       const body = (await readJson(req)) as Record<string, unknown>;
@@ -430,7 +436,15 @@ export interface ServerHandle {
   container: ServiceContainer;
 }
 
-/** Starts the localhost-only server. Never binds anything but 127.0.0.1. */
+/** Starts the server. Binds 127.0.0.1 unless KIWI_ADMIN_HOST says otherwise.
+ *
+ * The ONLY supported override is the containerized deployment, where compose
+ * publishes the port on the host loopback (`127.0.0.1:...:3001`) and the
+ * process must bind 0.0.0.0 to receive it — traffic arriving on a published
+ * port lands on the container's eth0, never its loopback, so a 127.0.0.1
+ * bind inside the container is unreachable from the host. The publish
+ * binding is the loopback guard there; a native run keeps the 127.0.0.1
+ * default and must never set this to a LAN address. */
 export async function startServer(
   opts: {
     // `| undefined` is required on the forwarded options, not decorative: this

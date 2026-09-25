@@ -31,6 +31,19 @@ export interface ServiceContainerLike {
     work: () => MaybePromise<T>,
     permission?: Permission,
   ): Promise<T>;
+  /** Denial-only append for read endpoints that must audit a refused
+    * authorization but never a successful read (§14.3 — auditWrap would
+    * also stamp the allowed side). */
+  auditAppend(
+    actor: Actor,
+    orgId: string | null,
+    action: string,
+    resource: string | null,
+    outcome: import("../audit/model.js").AuditOutcome,
+    requestId: string | null,
+    details: Record<string, unknown>,
+    ts: number,
+  ): Promise<unknown>;
 }
 
 export class OrgService {
@@ -140,6 +153,41 @@ export class OrgService {
       byUser.set(row.user_id, list);
     }
     return users.map((u) => ({ id: u.id, email: u.email, roles: byUser.get(u.id) ?? [], created_at: u.created_at }));
+  }
+
+  /**
+   * §14 device inventory (T-253): org-scoped, bounded, total order.
+   * Authorization denial is audited via a denial-only append (a successful
+   * read stays unaudited, consistent with listUsers/listPolicies). Fails
+   * closed for a null-org actor — `device.read` on the real path org only.
+   */
+  async listDevices(
+    actor: Actor,
+    orgId: string,
+    limit = 50,
+  ): Promise<{ id: string; org_id: string; label: string; revoked: number; revoked_at: number | null; created_at: number }[]> {
+    const oid = assertIdentifier(orgId, "orgId");
+    try {
+      requirePermission(actor, "device.read", oid);
+    } catch (err) {
+      if (err instanceof AuthorizationDeniedError) {
+        // Fixed denial row (§14.3): no device data in details. If this
+        // append fails the error propagates as a sanitized 500 — the
+        // inventory is not returned on a failed denial append.
+        await this.ctx.auditAppend(actor, oid, "device.list", oid, "denied", null, { permission: "device.read" }, Date.now());
+      }
+      throw err;
+    }
+    const bounded = Math.min(Math.max(Math.floor(limit), 1), 500);
+    const rows = await this.repos.orgs.listDevices(oid, bounded);
+    for (const r of rows) {
+      // §14.1 invariant: revoked=1 requires revoked_at, revoked=0 forbids
+      // it. Legacy inconsistent rows must not be silently normalized.
+      if ((r.revoked === 1) !== (r.revoked_at !== null)) {
+        throw new Error(`device '${r.id}' has inconsistent revocation state`);
+      }
+    }
+    return rows;
   }
 }
 

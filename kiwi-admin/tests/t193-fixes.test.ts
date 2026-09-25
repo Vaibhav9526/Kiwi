@@ -4,6 +4,7 @@ import { AuthorizationDeniedError } from "../src/rbac/rbac.js";
 import type { Actor } from "../src/rbac/rbac.js";
 import { ConflictError, NotFoundError, RequestValidationError } from "../src/util/validate.js";
 import { escapeLikePattern } from "../src/db/repositories.js";
+import { isUniqueViolation as isPgUniqueViolation } from "../src/db/repositories.pg.js";
 import { createServiceContainer } from "../src/services.js";
 import { makeTempDbPath } from "./helpers/db.js";
 
@@ -136,6 +137,22 @@ describe("T-193/M3 atomic createPolicy with caps and error audit", () => {
 });
 
 describe("T-193/M5+M6 conflict and membership", () => {
+  it("recognizes a Drizzle-wrapped PG unique violation (live shape)", () => {
+    // node-postgres reports SQLSTATE on the driver error, but drizzle
+    // rethrows it wrapped in DrizzleQueryError("Failed query: ...") with
+    // the driver failure on `cause` — the exact shape that used to slip
+    // through to a 500 on the live Postgres leg.
+    const driver = Object.assign(new Error('duplicate key value violates unique constraint "idx_users_org_email"'), {
+      code: "23505",
+    });
+    const wrapped = new Error("Failed query: insert into ...") as Error & { cause: unknown };
+    wrapped.cause = driver;
+    expect(isPgUniqueViolation(wrapped)).toBe(true);
+    expect(isPgUniqueViolation(driver)).toBe(true);
+    expect(isPgUniqueViolation(new Error("connection refused"))).toBe(false);
+    expect(isPgUniqueViolation(null)).toBe(false);
+  });
+
   it("duplicate email is a 409-class error; outsider grant is 404", async () => {
     const container = await createServiceContainer(makeTempDbPath());
     const admin: Actor = { subject: "m56", roles: ["org_admin"], orgId: null };
