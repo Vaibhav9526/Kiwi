@@ -9,14 +9,45 @@ use url::Url;
 
 use crate::commands::{bounded, gate};
 use crate::error::{CmdResult, IpcError};
-use crate::state::{AppState, MAX_SANDBOX_SESSIONS, SandboxSessionRecord, now_unix};
-use crate::types::SandboxOpenView;
+use crate::state::{
+    AppState, MAX_SANDBOX_SESSIONS, SandboxSessionKind, SandboxSessionRecord, now_unix,
+};
+use crate::types::{SandboxOpenView, SandboxSessionView, SandboxSessionsView};
 
 const MAX_LINK_CHARS: usize = 2048;
 const MAX_FILENAME_CHARS: usize = 512;
 const MAX_SANDBOX_BYTES: usize = 64 * 1024 * 1024;
 const SANDBOX_TIMEOUT_SECS: u64 = 120;
 const SANDBOX_MEMORY_MB: u32 = 512;
+
+/// `kiwi_sandbox_sessions()` → `SandboxSessionsView`.
+///
+/// The transparency surface for the Agenda security card (T-300): the
+/// bounded in-memory record of completed sandbox opens, newest first. There
+/// is no live guest — every T-266 open tears down before it is recorded — so
+/// absent records are `[]`, never an error, and a recorded session's state is
+/// `completed`. Lock-gated: sandbox evidence is mailbox-derived state.
+#[tauri::command]
+pub async fn kiwi_sandbox_sessions(
+    state: State<'_, Arc<AppState>>,
+) -> CmdResult<SandboxSessionsView> {
+    gate(state.inner()).await?;
+    sandbox_sessions_impl(state.inner()).await
+}
+
+pub(crate) async fn sandbox_sessions_impl(state: &AppState) -> CmdResult<SandboxSessionsView> {
+    let sessions = state.sandbox_sessions.lock().await;
+    Ok(SandboxSessionsView {
+        sessions: sessions
+            .iter()
+            // The ring is already bounded at MAX_SANDBOX_SESSIONS; this
+            // re-asserts the IPC bound independent of the store's capacity.
+            .take(MAX_SANDBOX_SESSIONS)
+            .rev()
+            .map(SandboxSessionView::from)
+            .collect(),
+    })
+}
 
 #[tauri::command]
 pub async fn kiwi_sandbox_open_link(
@@ -80,8 +111,10 @@ fn require_available(
 
 async fn run_sandbox(
     state: &AppState,
+    kind: SandboxSessionKind,
     spec: SandboxSpec,
     target: String,
+    risk_verdict: Option<&'static str>,
 ) -> CmdResult<SandboxOpenView> {
     let capabilities = require_available(state.sandbox.as_ref())?;
     if spec.artifact_path.is_file() {
@@ -111,9 +144,12 @@ async fn run_sandbox(
     }
     sessions.push_back(SandboxSessionRecord {
         session_id,
+        kind,
         target,
+        risk_verdict,
         evidence_reasons: spec.evidence_reasons,
         report,
+        opened_at_unix: now_unix(),
     });
     drop(sessions);
     state.audit.lock().await.record(
@@ -130,9 +166,10 @@ async fn run_sandbox(
 
 pub(crate) async fn open_link_impl(state: &AppState, raw: String) -> CmdResult<SandboxOpenView> {
     let url = validate_link(&raw)?;
-    let reasons = link_reasons_for_url(state, &url).await?;
+    let (verdict, reasons) = link_evidence_for_url(state, &url).await?;
     run_sandbox(
         state,
+        SandboxSessionKind::Link,
         SandboxSpec {
             artifact_path: Default::default(),
             link_url: Some(url.to_string()),
@@ -142,11 +179,15 @@ pub(crate) async fn open_link_impl(state: &AppState, raw: String) -> CmdResult<S
             allow_egress: true,
         },
         sanitized_link_target(&url),
+        verdict,
     )
     .await
 }
 
-async fn link_reasons_for_url(state: &AppState, url: &Url) -> CmdResult<Vec<String>> {
+async fn link_evidence_for_url(
+    state: &AppState,
+    url: &Url,
+) -> CmdResult<(Option<&'static str>, Vec<String>)> {
     // Prefer the message-level stored evidence when a matching link is found;
     // otherwise conservatively classify the supplied URL itself.
     let index = state.index.lock().await;
@@ -182,14 +223,19 @@ async fn link_reasons_for_url(state: &AppState, url: &Url) -> CmdResult<Vec<Stri
             };
             let body = String::from_utf8_lossy(&bytes);
             if body.contains(url.as_str()) {
-                return Ok(message
-                    .link_risk
-                    .map(|evidence| reason_codes(&evidence.reasons))
-                    .unwrap_or_else(|| vec!["evidence-unavailable".into()]));
+                // Honest pairing: the verdict is the message's stored link
+                // hint, or absent (never "clean") when nothing was evaluated.
+                return Ok(match message.link_risk {
+                    Some(evidence) => (
+                        Some(evidence.risk.as_str()),
+                        reason_codes(&evidence.reasons),
+                    ),
+                    None => (None, vec!["evidence-unavailable".into()]),
+                });
             }
         }
     }
-    Ok(vec!["unmatched-link".into()])
+    Ok((None, vec!["unmatched-link".into()]))
 }
 
 pub(crate) async fn open_attachment_impl(
@@ -207,15 +253,19 @@ pub(crate) async fn open_attachment_impl(
         let store = state.store.lock().await;
         store.stage_attachment(folder_id, uid as u64, &filename, MAX_SANDBOX_BYTES)?
     };
-    let reasons = {
+    let (verdict, reasons) = {
         let store = state.store.lock().await;
-        store
-            .get_attachment_risk(folder_id, uid as u64)?
-            .map(|evidence| reason_codes(&evidence.reasons))
-            .unwrap_or_else(|| vec!["evidence-unavailable".into()])
+        match store.get_attachment_risk(folder_id, uid as u64)? {
+            Some(evidence) => (
+                Some(evidence.risk.as_str()),
+                reason_codes(&evidence.reasons),
+            ),
+            None => (None, vec!["evidence-unavailable".into()]),
+        }
     };
     let result = run_sandbox(
         state,
+        SandboxSessionKind::Attachment,
         SandboxSpec {
             artifact_path: path.clone(),
             link_url: None,
@@ -225,6 +275,7 @@ pub(crate) async fn open_attachment_impl(
             allow_egress: false,
         },
         format!("attachment:f{folder_id}/u{uid}"),
+        verdict,
     )
     .await;
     if let Some(parent) = path.parent() {
@@ -428,11 +479,65 @@ mod tests {
             .unwrap();
         assert_eq!(view.evidence_reasons, ["dangerousExtension"]);
         assert_eq!(view.target, format!("attachment:f{folder_id}/u7"));
-        let seen = provider.seen.lock().unwrap();
-        assert_eq!(seen[0].link_url, None);
-        assert_eq!(seen[0].artifact_path.extension().unwrap(), "bin");
-        assert!(!seen[0].artifact_path.exists());
-        drop(seen);
+        {
+            let seen = provider.seen.lock().unwrap();
+            assert_eq!(seen[0].link_url, None);
+            assert_eq!(seen[0].artifact_path.extension().unwrap(), "bin");
+            assert!(!seen[0].artifact_path.exists());
+        }
+
+        // T-300: the recorded session is now readable, with the attachment
+        // verdict carried honestly (matched evidence, not a guess).
+        let listed = sandbox_sessions_impl(&state).await.unwrap();
+        assert_eq!(listed.sessions.len(), 1);
+        let row = &listed.sessions[0];
+        assert_eq!(row.kind, "attachment");
+        assert_eq!(row.risk_verdict, Some("failed"));
+        assert_eq!(row.evidence_reasons, ["dangerousExtension"]);
+        assert_eq!(row.target, format!("attachment:f{folder_id}/u7"));
+        assert_eq!(row.state, "completed");
+        assert_eq!(row.expires_at_unix, None);
+        assert!(row.opened_at_unix > 0);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn sandbox_sessions_absent_is_empty_not_an_error() {
+        let dir = std::env::temp_dir().join(format!("kiwi-sbx-empty-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = AppState::open_test(dir.clone()).unwrap();
+        let listed = sandbox_sessions_impl(&state).await.unwrap();
+        assert!(listed.sessions.is_empty(), "absence is [] not not-found");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn sandbox_sessions_are_newest_first_and_bounded() {
+        let dir = std::env::temp_dir().join(format!("kiwi-sbx-ring-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = AppState::open_test(dir.clone()).unwrap();
+        {
+            let mut ring = state.sandbox_sessions.lock().await;
+            for n in 0..(MAX_SANDBOX_SESSIONS + 5) {
+                if ring.len() >= MAX_SANDBOX_SESSIONS {
+                    ring.pop_front();
+                }
+                ring.push_back(SandboxSessionRecord {
+                    session_id: format!("sandbox:{n}"),
+                    kind: SandboxSessionKind::Link,
+                    target: format!("https://host{n}.example"),
+                    risk_verdict: None,
+                    evidence_reasons: vec!["unmatched-link".into()],
+                    report: AnalysisReport::default(),
+                    opened_at_unix: n as i64,
+                });
+            }
+        }
+        let listed = sandbox_sessions_impl(&state).await.unwrap();
+        assert_eq!(listed.sessions.len(), MAX_SANDBOX_SESSIONS);
+        // Newest first, and the five evicted oldest rows are gone.
+        assert_eq!(listed.sessions[0].target, "https://host132.example");
+        assert!(!listed.sessions.iter().any(|s| s.session_id == "sandbox:0"));
         let _ = std::fs::remove_dir_all(dir);
     }
 }

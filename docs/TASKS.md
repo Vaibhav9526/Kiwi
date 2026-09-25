@@ -222,7 +222,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-257 | Add-account->sync e2e PROVEN (scripted loopback TLS IMAP, 98/98 + fail branches) | Agent 19 | done |
 | T-258 | mailauth post-T-183 verification (14 groups + 3 deviations documented) | Agent 22 | done |
 | T-259 | Admin code-side drift fixes ALL landed (ADM-01..15, 126 tests) | Agent 11 | done |
-| T-260 | security-session.md contract-vs-impl enumeration (TrustMachine/lock gates) | Agent 22 | open | `docs/audits/` | T-196 |
+| T-260 | security-session enum cleanup — REASSIGNED from A22 (never picked up); verify scope post-T-269 first | Agent 21 | open | `kiwi-core`, `types/security.rs`, contracts | T-196 program |
 | T-261 | LinkRisk hints (linkrisk.rs 459L, 203/203, wired to TS) | Agent 21 | done |
 | T-262 | send-path e2e proven: scripted loopback SMTP+IMAP matrix (green/5xx/undo/STARTTLS-refusal) + sent-copy, audit, LIST bugfix | Agent 19 | done |
 | T-264 | folder exists/unseen real COUNTs — folder_stats + non-optional FolderView (zeros unrepresentable); store half committed fd042d3, app half in-tree pending T-269 landing | Agent 15 | done |
@@ -277,7 +277,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-297 | no-mock audit: 1100 clicks, 0 console errs, 1 dead fixed, 4 honest gaps filed → ui-honesty-1.md | Agent 25 | done |
 | T-298 | OutboxItem state+lastError (v16, honestly derived held) — T-296 gap closed | Agent 20 | done |
 | T-299 | context menus real: shared menu, message+folder actions on real IPC, state-aware | Agent 24 | done |
-| T-300 | kiwi_sandbox_sessions IPC (live/pending sessions for rail security card) — gap from T-283 | Agent 21 | open | `kiwi-sandbox`, `commands/`, ipc.ts | T-266,T-283 |
+| T-300 | kiwi_sandbox_sessions IPC (honest completed-state, verdict+reasons consistent) | Agent 21 | done |
 | T-301 | templates UI real (picker/render/save-as/Settings CRUD, missingVars honest) — Mailspring parity complete | Agent 24 | done |
 | T-302 | all 4 plugin caps have real hosts (whitelist sinks, composer action, gates, 47/47); CSP-blocks-live-exec finding filed | Agent 25 | done |
 | T-303 | real pairing QR: reused mobile encoder, pair_begin payload→QR, status poll, Settings+LockOverlay | Agent 24 | done |
