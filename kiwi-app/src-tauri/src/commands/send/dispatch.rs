@@ -119,6 +119,7 @@ pub(crate) async fn deliver(
 ) -> Delivered {
     let queue_id = item.queue_id.clone();
     let attempts = item.attempts;
+    let single_attempt = meta.as_ref().is_some_and(|m| m.class.is_single_attempt());
     run_mail_io(state.clone(), move |s| async move {
         let mut last_error: Option<String> = None;
         let outcome = match deliver_inner(&s, &item, meta.as_ref()).await {
@@ -144,7 +145,20 @@ pub(crate) async fn deliver(
                 }
             }
         };
-        // Held with attempts left → re-enqueue with linear backoff.
+        // Held with attempts left → re-enqueue with linear backoff. A
+        // single-attempt class never re-enqueues: the destination accepts
+        // exactly one message, so an ambiguous failure must not be retried.
+        if matches!(outcome, Delivered::Held) && single_attempt {
+            let _ = s.audit.lock().await.record(
+                "send-single-attempt-abandoned",
+                &format!(
+                    "{queue_id}: {} — not retried (single-attempt reservation)",
+                    last_error.as_deref().unwrap_or("ambiguous failure")
+                ),
+                now_unix(),
+            );
+            return Ok(Delivered::Failed);
+        }
         if matches!(outcome, Delivered::Held) && attempts + 1 < MAX_ATTEMPTS {
             let backoff = 30 * (attempts as i64 + 1);
             s.send_queue.lock().await.enqueue(QueuedSend {
@@ -382,10 +396,35 @@ async fn transmit(
         }
     }
 
-    client
+    let outcome = client
         .send_mail(&item.request)
         .await
         .map_err(IpcError::from)?;
+    // An SMTP transaction that accepted nobody is not a delivery. Without
+    // this check a fully-rejected message would be journaled as `sent`.
+    if outcome.accepted.is_empty() {
+        let _ = client.quit().await;
+        return Err(IpcError::new(
+            "server-reject",
+            format!(
+                "no recipient accepted: {} rejected, 0 of {} accepted",
+                outcome.rejected.len(),
+                item.request.to.len()
+            ),
+        ));
+    }
+    if !outcome.rejected.is_empty() {
+        let _ = state.audit.lock().await.record(
+            "send-partially-rejected",
+            &format!(
+                "{}: {} of {} recipient(s) rejected by the server",
+                item.queue_id,
+                outcome.rejected.len(),
+                item.request.to.len()
+            ),
+            now_unix(),
+        );
+    }
     let record = record_smtp(state, &client, account_id, &acct.outgoing.auth).await;
     ctx.security_status =
         bridge::security_status_label(true, record.findings.iter().map(|f| f.severity));

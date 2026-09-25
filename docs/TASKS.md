@@ -283,4 +283,6 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-303 | real pairing QR: reused mobile encoder, pair_begin payload→QR, status poll, Settings+LockOverlay | Agent 24 | done |
 | T-304 | LAN pair-claim listener: bounded endpoint → claim_ticket_and_register, loopback-tested (T-269 flag) | Agent 20 | open | `kiwi-pair`, `kiwi-app/src-tauri` | T-269,T-270 |
 | T-305 | scripted UI smoke suite (CDP/playwright): boot→folders→list→reader→compose→settings→theme→menu→lock assertions, CI-runnable | Agent 24 | done | `kiwi-app`, scripts/ | regression gate |
-| T-306 | CSP-safe plugin loader: Worker-based (no unsafe-eval), live exec proven in built app | Agent 25 | open | `kiwi-app/src/plugins/`, CSP config | T-302 |
+| T-306 | CSP-safe Worker plugin loader (blob: worker-src only, free isolation, live-proven) | Agent 25 | done |
+| T-307 | plugin install UX: file-picker sideload button + error surfaces + cap badges + live install demo | Agent 25 | open | `kiwi-app/src` settings+plugins | T-302,T-306 |
+| T-308 | device-management surface vs canonical T-269 cmds: real device list + revoke + fingerprint display | Agent 24 | open | `kiwi-app/src` settings/security | T-269,T-303 |

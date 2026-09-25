@@ -1,13 +1,16 @@
 # KIWI plugins — Getting Started (v1, sideload-only)
 
-> **Alpha model:** plugins run as *trusted code* inside the app context.
-> Isolation (sandboxed iframe/worker, origin checks) is deferred post-alpha —
+> **Alpha model:** plugins run as *trusted code*, but inside a dedicated
+> `Worker` built from a `blob:` URL (T-306 — **not** `new Function`, so no
+> `unsafe-eval` ever). Workers have no DOM/`window`/`localStorage`/`__TAURI__`
+> and inherit the document CSP (plugin `fetch` is clamped by `connect-src`).
+> Origin pinning, signing, and resource limits remain deferred post-alpha —
 > see `docs/THREAT-MODEL.md` RR-11. Only install plugins you trust; the
-> manifest capabilities below are the *contract*, not yet a hard boundary.
+> manifest capabilities below are the *contract*, enforced at the bridge.
 
 ## Alpha trust boundary — what is enforced vs. deferred
 
-**Enforced today** (proven by `e2e/run.mjs`, 21 assertions):
+**Enforced today** (proven by `e2e/run.mjs`, 48 assertions):
 
 | Control | Where | Behavior |
 |---|---|---|
@@ -17,18 +20,19 @@
 | Method registry | `bridge.ts` `CAPABILITY_METHODS` | method outside every capability → `unknown-method` |
 | Lock gate | `bridge.ts` `isLocked()` | every request rejects `locked` while the app is locked |
 | Envelope shape | `bridge.ts` `isBridgeMessage` | untagged/malformed/foreign-plugin frames dropped silently |
-| Timeout | `bridge.ts` `createPluginClient` | unanswered requests reject `timeout` after 10s (configurable) |
+| Timeout | worker prelude + `createPluginClient` | unanswered requests reject `timeout` after 10s (configurable) |
+| Worker context | `worker.ts` blob `Worker` | plugin runs off the main thread: no DOM, `window`, `localStorage`, cookies, or `__TAURI__`; CSP inherited (connect-src clamps fetch) |
+| Dedicated channel | `runtime.ts` session host | each plugin's bridge traffic rides its own worker port — no broadcast window bus |
 
 **NOT enforced in alpha** (accepted risk RR-11 — plugins are trusted code):
 
-- No origin check (`e.origin` ignored) — any context can address the host.
-- No context isolation — `plugin.js` executes in the app context
-  (`new Function` loader style); it shares DOM, globals, and fetch.
-- No DOM/IPC hard boundary — a hostile plugin can reach anything the
-  renderer can. Capabilities gate *bridge methods only*.
+- No origin pinning on the worker port — any code running *inside* the
+  worker context can speak the bridge protocol for that plugin id.
+- No hard resource boundary — the worker shares the process: a hostile
+  plugin can burn CPU/memory; no memory caps or rate limits yet.
 - No code review/signing gate — sideload is user-trust based.
-- `enabled=false` stops new loads; a running plugin context is not
-  preempted (no context to preempt yet).
+- `enabled=false` stops new sessions; `removePlugin`/`disable` terminates
+  the worker (real teardown now — the context exists to terminate).
 - Plugin pane markup renders verbatim in Settings→Plugins
   (`dangerouslySetInnerHTML`) — trusted-code posture; CSP blocks inline
   script but markup/style is unsanitized.
@@ -113,14 +117,16 @@ node src/plugins/e2e/run.mjs        # from kiwi-app/ — prints TAP-ish lines
 
 The harness bundles the real `src/plugins` modules in-memory (esbuild), stubs
 a `window` bus + localStorage, then drives the full path: manifest on disk →
-validate → `installPlugin` → `getPlugin` → exec `plugin.js` with an injected
-`PluginClient` → `mail-changed` event → `notify.show` request → capability
-gate → host handler. It also exercises the T-280 sinks end-to-end via
-`startPluginSession`: pane registration, `pane.mount` → `renderPane` markup,
-scoped `notify.show` toasts, the capability denial, and the T-302 sinks:
-whitelisted `messages.list`/`getEnvelope` snapshots, composer-action
-register → fire → dispose cleanup, and denial without the caps.
-47 assertions; exits non-zero on any failure.
+validate → `installPlugin` → `getPlugin` → build worker script → exec in a
+real `node:worker_threads` Worker (the *same* prelude+entry artifact the
+app's blob Worker runs — `spawnWorker` is injected) → `mail-changed` event →
+`notify.show` request → capability gate → host handler. It exercises all four
+capability sinks end-to-end via `startPluginSession`: pane registration,
+`pane.mount` → `renderPane` markup, scoped `notify.show` toasts, whitelisted
+`messages.list`/`getEnvelope` snapshots, composer-action register → fire →
+unregister → dispose cleanup, capability denials in both directions, and a
+worker-isolation proof (a plugin-side `globalThis` write must not reach the
+host). 48 assertions; exits non-zero on any failure.
 
 ## Lifecycle (v1)
 
@@ -135,21 +141,20 @@ remove UI) is wired by the layout task onto `listPlugins()` etc.
 Tracked as a follow-up task (THREAT-MODEL RR-11). Each item closes a gap
 listed in "NOT enforced in alpha" above:
 
-**Live-exec blocker (found T-302):** `index.html`'s CSP is
-`script-src 'self'` — `new Function` (the alpha plugin loader's exec
-mechanism) is refused in the real app, so plugin sessions only ever run
-inside the e2e harness today. The bridge contract, capability gates, and
-all host sinks are proven there; live in-app execution arrives with item 1
-(sandboxed context gets its own CSP). Deliberately **not** worked around by
-adding `'unsafe-eval'` — that would weaken the mail-content CSP backstop
-(threat-model B2) for every script in the app.
+**Resolved T-302 blocker (T-306):** live exec now works under the strict
+CSP — the loader moved into a `blob:` `Worker`. The only CSP delta is
+`worker-src 'self' blob:` on `index.html` + `tauri.conf.json` (narrower than
+`script-src 'unsafe-eval'`, which stays absent). Verified live in the built
+app: `examples/hello` loads and toasts; a plugin-side global write does not
+reach the host page. Remaining checklist items:
 
-1. **Isolated context** — run `plugin.js` in a sandboxed `<iframe
-   sandbox="allow-scripts">` or a `Worker`; no same-context `new Function`.
-2. **Origin pinning** — enforce `e.origin` against the plugin's assigned
-   origin in `createPluginHost` (the hook is already marked in `bridge.ts`).
-3. **Channel binding** — replace broadcast `postMessage("*")` with a
-   `MessageChannel`/port handoff per plugin instance.
+1. ~~Isolated context~~ — **done (T-306)**: dedicated Worker; no DOM,
+   localStorage, cookies, or `__TAURI__` in plugin context.
+2. **Origin pinning** — pin the worker's CSP origin / tie bridge identity
+   to the spawned context, not just the manifest id field.
+3. ~~Channel binding~~ — **done (T-306)**: per-session dedicated worker
+   port replaced the broadcast `postMessage("*")` window bus (host posts
+   with same-origin `/` now, never `*`).
 4. **Boundary re-check** — re-validate capabilities inside the isolated
    context (the bridge gate alone isn't enough once contexts exist).
 5. **CSP + asset policy** — restrictive CSP for plugin contexts; file size

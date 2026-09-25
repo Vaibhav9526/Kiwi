@@ -32,6 +32,12 @@ pub struct AuditLog {
     path: PathBuf,
     seq: u64,
     last_hash: String,
+    /// Test-only: make the next `record` fail, so ordering guarantees
+    /// (intent before effect) are provable without corrupting the file.
+    #[cfg(test)]
+    fail_next: u32,
+    #[cfg(test)]
+    fail_skip: u32,
 }
 
 impl AuditLog {
@@ -66,12 +72,37 @@ impl AuditLog {
             path,
             seq,
             last_hash,
+            #[cfg(test)]
+            fail_next: 0,
+            #[cfg(test)]
+            fail_skip: 0,
         })
+    }
+
+    #[cfg(test)]
+    pub fn inject_failure(&mut self) {
+        self.fail_next = 1;
+        self.fail_skip = 0;
+    }
+
+    #[cfg(test)]
+    pub fn inject_failure_after(&mut self, skip: u32) {
+        self.fail_next = 1;
+        self.fail_skip = skip;
     }
 
     /// Append one audited action. `detail` must already be sanitized by the
     /// caller (256-char bound applied here as a backstop).
     pub fn record(&mut self, action: &str, detail: &str, now_unix: i64) -> CmdResult<()> {
+        #[cfg(test)]
+        if self.fail_next > 0 {
+            if self.fail_skip > 0 {
+                self.fail_skip -= 1;
+            } else {
+                self.fail_next -= 1;
+                return Err(IpcError::new("io-error", "injected audit write failure"));
+            }
+        }
         let detail: String = detail.chars().take(256).collect();
         let rec = AuditRecord {
             seq: self.seq,

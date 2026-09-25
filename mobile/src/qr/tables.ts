@@ -1,14 +1,14 @@
 /**
  * QR EC block structure -- GENERATED FILE, do not hand-edit.
  *
- * Source: `mobile/tools/gen-qr-vectors.py`, which reads `segno.consts.ECC`
- * (mirrors ISO/IEC 18004 Table 9). Regenerate with:
+ * Source: `mobile/tools/gen-qr-vectors.py`, which reads
+ * `qrcode.base.rs_blocks` (mirrors ISO/IEC 18004 Table 9). Regenerate with:
  *
  *   python mobile/tools/gen-qr-vectors.py
  *
- * Generated with segno 1.6.6; versions 1..25, error-correction
- * levels L and M (the ones `qrcode.ts` encodes). Each entry lists block
- * groups as (count, totalCodewords per block, dataCodewords per block).
+ * Versions 1..25, error-correction levels L and M (the ones `qrcode.ts`
+ * encodes). Each entry lists block groups as (count, totalCodewords per
+ * block, dataCodewords per block).
  */
 
 export interface EcBlockGroup {

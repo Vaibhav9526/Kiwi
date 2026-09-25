@@ -2,8 +2,8 @@
 //!
 //! The production adapter is [`ReqwestClient`] (reqwest + rustls). Tests use
 //! [`ScriptedHttp`] — an ordered, recorded-response transport that also
-//! asserts what was requested (method, URL, headers), so fixtures double as
-//! request-shape tests.
+//! asserts what was requested (method, URL, query, headers, body), so fixtures
+//! double as request-shape tests.
 //!
 //! Boundary rules (contract `docs/contracts/integrations.md`):
 //!
@@ -16,17 +16,102 @@
 //! - Transport errors are classified into [`TransportKind`]; the underlying
 //!   message is dropped because it embeds the request URL, which for the
 //!   deliverability API contains a capability secret.
+//! - Requests and responses redact themselves on `Debug` — the URL, a `Cookie`
+//!   header, and a body can each carry secret material.
+//! - The convenience live constructors are environment-gated (see
+//!   [`LIVE_ENV`]); [`ReqwestClient::new`] stays the trusted production entry
+//!   point and is not gated.
+//!
+//! [`ScriptedHttp`] is offline by construction: it answers from a script and
+//! panics on an un-scripted request, so a test reaches the network only if it
+//! deliberately builds a [`ReqwestClient`] and opts in through [`LIVE_ENV`].
+
+use std::collections::BTreeMap;
+use std::fmt;
+use std::sync::Mutex;
 
 use async_trait::async_trait;
 
 use crate::error::{IntegrationError, TransportKind};
 
-/// Default per-response body cap (1 MiB) — comfortably above any API JSON
-/// these providers emit; a synthesized message is capped separately.
+/// Default per-response body cap (1 MiB). Providers whose JSON embeds message
+/// bodies raise this explicitly via [`ReqwestClient::with_body_cap`]; a
+/// synthesized message is capped separately by `tempmail::MAX_RFC822`.
 pub const DEFAULT_BODY_CAP: usize = 1024 * 1024;
 
 /// Default request timeout for the live adapter.
 pub const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+
+/// Environment variable that opts into the live constructors. The value must be
+/// exactly `1`; unset, `0`, `true`, `yes`, and anything else refuse.
+pub const LIVE_ENV: &str = "KIWI_INTEGRATIONS_LIVE";
+
+/// Environment variable CI runners set to a truthy value.
+pub const CI_ENV: &str = "CI";
+
+/// Why a live constructor refused to build. Offline test runs land on
+/// [`LiveRefused::NotEnabled`]; CI lands on [`LiveRefused::BlockedInCi`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum LiveRefused {
+    /// [`LIVE_ENV`] is not exactly `1`.
+    NotEnabled,
+    /// [`CI_ENV`] is truthy: live provider calls are refused even when opted
+    /// in, so a canary can never run unattended.
+    BlockedInCi,
+    /// The TLS client (or the hardcoded base URL) could not be built. The inner
+    /// error is already sanitized — no URL, no provider text.
+    Build(IntegrationError),
+}
+
+impl fmt::Display for LiveRefused {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotEnabled => write!(
+                f,
+                "live provider construction is not enabled (set {LIVE_ENV}=1)"
+            ),
+            Self::BlockedInCi => write!(f, "live provider construction is refused in CI"),
+            Self::Build(e) => write!(f, "live transport unavailable ({e})"),
+        }
+    }
+}
+
+impl std::error::Error for LiveRefused {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Build(e) => Some(e),
+            _ => None,
+        }
+    }
+}
+
+/// Fail-closed live gate, pure over its inputs so it is testable without
+/// mutating the process environment.
+fn live_gate(enabled: Option<&str>, ci: Option<&str>) -> Result<(), LiveRefused> {
+    if ci.is_some_and(truthy) {
+        return Err(LiveRefused::BlockedInCi);
+    }
+    if enabled != Some("1") {
+        return Err(LiveRefused::NotEnabled);
+    }
+    Ok(())
+}
+
+/// [`live_gate`] against the real environment, re-read on every call. A
+/// non-UTF-8 `CI` value counts as set, so a mangled environment fails closed.
+pub(crate) fn live_gate_from_env() -> Result<(), LiveRefused> {
+    let enabled = std::env::var(LIVE_ENV).ok();
+    let ci = std::env::var_os(CI_ENV)
+        .map(|v| v.to_str().map_or_else(|| String::from("1"), str::to_string));
+    live_gate(enabled.as_deref(), ci.as_deref())
+}
+
+fn truthy(v: &str) -> bool {
+    matches!(
+        v.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
 
 /// HTTP method — only what the integrated APIs need.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,7 +133,10 @@ impl HttpMethod {
 
 /// A fully-formed request. `url` includes scheme + query. Header names are
 /// lowercase on the wire; callers may pass either case.
-#[derive(Debug, Clone)]
+///
+/// `Debug` is redacted: the URL, the header values (a `Cookie` carries the
+/// session id), and the body can all hold secret material.
+#[derive(Clone)]
 pub struct HttpRequest {
     pub method: HttpMethod,
     pub url: String,
@@ -57,6 +145,17 @@ pub struct HttpRequest {
     pub headers: Vec<(String, String)>,
     /// Request body for POST. `None`/empty sends no body.
     pub body: Option<Vec<u8>>,
+}
+
+impl fmt::Debug for HttpRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HttpRequest")
+            .field("method", &self.method)
+            .field("url", &"[redacted]")
+            .field("header_count", &self.headers.len())
+            .field("body_len", &self.body.as_ref().map_or(0, Vec::len))
+            .finish()
+    }
 }
 
 impl HttpRequest {
@@ -100,12 +199,25 @@ impl HttpRequest {
 }
 
 /// A response. `headers` preserves duplicates (Set-Cookie matters).
-#[derive(Debug, Clone)]
+///
+/// `Debug` is redacted: `Set-Cookie` carries the rotating session id and the
+/// body is untrusted provider data.
+#[derive(Clone)]
 pub struct HttpResponse {
     pub status: u16,
     /// `(name, value)` pairs; names lowercased by the adapter.
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
+}
+
+impl fmt::Debug for HttpResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HttpResponse")
+            .field("status", &self.status)
+            .field("header_count", &self.headers.len())
+            .field("body_len", &self.body.len())
+            .finish()
+    }
 }
 
 impl HttpResponse {
@@ -295,13 +407,29 @@ fn classify(e: &reqwest::Error) -> TransportKind {
 
 /// One recorded exchange: what the request must look like and what to answer.
 ///
-/// `expect_query` / `expect_headers` are *substring/pair* assertions — the
-/// request URL must contain every `expect_query` fragment, and each listed
-/// header must be present with exactly that value. `None` matchers accept
-/// anything. A mismatch fails the step loudly (the request never happened).
-#[derive(Debug, Clone)]
+/// Four combinable levels of strictness:
+///
+/// - **Fragment** (default): every `expect_query` entry must appear somewhere
+///   in the request URL, and every `expect_headers` pair must be present
+///   verbatim. Cheap, and the right level for a base-URL probe.
+/// - **Exact query** ([`Step::query_exact`]): the request's query must be
+///   exactly the listed `key=value` pairs — nothing missing, nothing extra, no
+///   altered value.
+/// - **Exact URL** ([`Step::url`]): byte equality with the whole URL, scheme
+///   and path and query.
+/// - **Strict** ([`Step::strict`], implied by [`Step::get_exact`] and
+///   [`Step::post_exact`]): exact method and URL are mandatory and the header
+///   set must match exactly (no unlisted header, no missing one), and a
+///   non-empty body is a mismatch unless [`Step::body`] pins it.
+///
+/// `expect_forbid` fragments must appear nowhere in the URL (pin "the slug is
+/// not in the query"). A mismatch panics before the response is returned, so a
+/// mis-shaped request can never look like a pass. Mismatch text is a fixed
+/// reason plus the step name — never the request URL, headers, or body, which
+/// can carry a capability.
+#[derive(Clone)]
 pub struct Step {
-    /// Optional step label used in assertion messages.
+    /// Step label used in assertion messages.
     pub name: &'static str,
     /// Required method (`None` = any).
     pub expect_method: Option<HttpMethod>,
@@ -313,6 +441,31 @@ pub struct Step {
     pub expect_body: Option<&'static [u8]>,
     /// The recorded response.
     pub respond: HttpResponse,
+    /// Whole-URL equality, set by [`Step::url`].
+    pub expect_url: Option<String>,
+    /// Complete query-pair set, set by [`Step::query_exact`]. Values compare
+    /// exactly as they appear on the wire (percent-encoding included).
+    pub expect_query_exact: Option<&'static [(&'static str, &'static str)]>,
+    /// Fragments that must appear nowhere in the URL, set by [`Step::forbid`].
+    pub expect_forbid: &'static [&'static str],
+    /// Whole-request strictness, set by [`Step::strict`].
+    pub strict: bool,
+}
+
+impl fmt::Debug for Step {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Step")
+            .field("name", &self.name)
+            .field("method", &self.expect_method)
+            .field("url", &"[redacted]")
+            .field("query_fragment_count", &self.expect_query.len())
+            .field("exact_query", &self.expect_query_exact.is_some())
+            .field("header_count", &self.expect_headers.len())
+            .field("body_configured", &self.expect_body.is_some())
+            .field("strict", &self.strict)
+            .field("respond", &self.respond)
+            .finish()
+    }
 }
 
 impl Step {
@@ -335,6 +488,10 @@ impl Step {
                 headers: Vec::new(),
                 body: body.as_bytes().to_vec(),
             },
+            expect_url: None,
+            expect_query_exact: None,
+            expect_forbid: &[],
+            strict: false,
         }
     }
 
@@ -357,7 +514,33 @@ impl Step {
                 headers: Vec::new(),
                 body: body.as_bytes().to_vec(),
             },
+            expect_url: None,
+            expect_query_exact: None,
+            expect_forbid: &[],
+            strict: false,
         }
+    }
+
+    /// GET step that must match the whole request exactly (method, URL, header
+    /// set, and an empty body unless [`Step::body`] pins one).
+    #[must_use]
+    pub fn get_exact(name: &'static str, url: &str, status: u16, body: &'static str) -> Self {
+        Self::get(name, &[], status, body).url(url).strict()
+    }
+
+    /// POST step that must match the whole request exactly.
+    #[must_use]
+    pub fn post_exact(name: &'static str, url: &str, status: u16, body: &'static str) -> Self {
+        Self::post(name, &[], status, body).url(url).strict()
+    }
+
+    /// Require an exact method, an exact URL, an exact header set, and no
+    /// un-pinned body. Mismatches report why; the reason never carries the
+    /// request's own material.
+    #[must_use]
+    pub fn strict(mut self) -> Self {
+        self.strict = true;
+        self
     }
 
     /// Attach recorded response headers (e.g. `Set-Cookie`).
@@ -377,14 +560,121 @@ impl Step {
             .push((name.to_string(), value.to_string()));
         self
     }
+
+    /// Require the exact method.
+    #[must_use]
+    pub fn method(mut self, m: HttpMethod) -> Self {
+        self.expect_method = Some(m);
+        self
+    }
+
+    /// Require this exact whole URL (scheme + path + query).
+    #[must_use]
+    pub fn url(mut self, url: &str) -> Self {
+        self.expect_url = Some(url.to_string());
+        self
+    }
+
+    /// Require the query to be exactly these `key=value` pairs — nothing
+    /// missing, nothing extra, no value drift.
+    #[must_use]
+    pub fn query_exact(mut self, pairs: &'static [(&'static str, &'static str)]) -> Self {
+        self.expect_query_exact = Some(pairs);
+        self
+    }
+
+    /// Require that no URL fragment matches (e.g. a leaked capability).
+    #[must_use]
+    pub fn forbid(mut self, fragment: &'static str) -> Self {
+        let mut v = self.expect_forbid.to_vec();
+        v.push(fragment);
+        self.expect_forbid = Box::leak(v.into_boxed_slice());
+        self
+    }
+
+    /// Require a byte-exact request body.
+    #[must_use]
+    pub fn body(mut self, body: &'static [u8]) -> Self {
+        self.expect_body = Some(body);
+        self
+    }
+
+    /// Compare the recorded expectation against a request, returning a fixed,
+    /// secret-free reason on the first mismatch.
+    fn validate(&self, request: &HttpRequest) -> Result<(), &'static str> {
+        if self.strict && (self.expect_method.is_none() || self.expect_url.is_none()) {
+            return Err("strict mode requires an exact method and URL");
+        }
+        if self
+            .expect_method
+            .is_some_and(|expected| expected != request.method)
+        {
+            return Err("method mismatch");
+        }
+        if self
+            .expect_url
+            .as_ref()
+            .is_some_and(|expected| expected != &request.url)
+        {
+            return Err("exact URL mismatch");
+        }
+        if self
+            .expect_query
+            .iter()
+            .any(|fragment| !request.url.contains(fragment))
+        {
+            return Err("missing fragment in request URL");
+        }
+        if self
+            .expect_forbid
+            .iter()
+            .any(|fragment| request.url.contains(fragment))
+        {
+            return Err("forbidden URL fragment present");
+        }
+        if let Some(expected) = self.expect_query_exact {
+            let mut actual = query_pairs(&request.url);
+            let mut expected = expected.to_vec();
+            actual.sort_unstable();
+            expected.sort_unstable();
+            if actual != expected {
+                return Err("exact query mismatch");
+            }
+        }
+        if self.strict {
+            if header_set(&self.expect_headers) != header_set(&request.headers) {
+                return Err("strict header-set mismatch");
+            }
+        } else if self
+            .expect_headers
+            .iter()
+            .any(|(name, value)| request.header_value(name) != Some(value.as_str()))
+        {
+            return Err("required header mismatch");
+        }
+        if let Some(expected) = self.expect_body {
+            if request.body.as_deref().unwrap_or_default() != expected {
+                return Err("request body mismatch");
+            }
+        } else if self.strict && request.body.as_ref().is_some_and(|body| !body.is_empty()) {
+            return Err("strict request body mismatch");
+        }
+        Ok(())
+    }
 }
 
 /// Ordered recorded transport. Each `request` consumes the next step and
 /// asserts the request matched it. Exhaustion or mismatch panics in tests —
 /// that is the point: a fixture run must replay exactly.
+///
+/// Diagnostics are redacted by construction: a mismatch prints the step name
+/// and a fixed reason, never the request URL, header values, or body, because
+/// those carry the session cookie and the deliverability capability. Finish a
+/// fixture test with [`ScriptedHttp::assert_exhausted`] so a dropped provider
+/// call fails the test.
 #[derive(Debug, Default)]
 pub struct ScriptedHttp {
-    steps: std::sync::Mutex<std::collections::VecDeque<Step>>,
+    steps: Mutex<std::collections::VecDeque<Step>>,
 }
 
 impl ScriptedHttp {
@@ -392,7 +682,7 @@ impl ScriptedHttp {
     #[must_use]
     pub fn new(steps: Vec<Step>) -> Self {
         Self {
-            steps: std::sync::Mutex::new(steps.into()),
+            steps: Mutex::new(steps.into()),
         }
     }
 
@@ -407,53 +697,69 @@ impl ScriptedHttp {
     pub fn remaining(&self) -> usize {
         self.steps.lock().expect("scripted http").len()
     }
+
+    /// Names of the steps that were never consumed.
+    #[must_use]
+    pub fn unconsumed(&self) -> Vec<&'static str> {
+        self.steps
+            .lock()
+            .expect("scripted http")
+            .iter()
+            .map(|s| s.name)
+            .collect()
+    }
+
+    /// Panics unless every scripted step was consumed. Call this at the end of
+    /// a fixture test: an operation that silently stopped calling the
+    /// transport then fails the test instead of passing on a half-replayed
+    /// script.
+    #[track_caller]
+    pub fn assert_exhausted(&self) {
+        let names = self.unconsumed();
+        if !names.is_empty() {
+            panic!(
+                "ScriptedHttp: {} unconsumed step(s): {}",
+                names.len(),
+                names.join(", ")
+            );
+        }
+    }
+}
+
+/// `key=value` pairs of a URL query, in wire order, percent-encoding intact.
+fn query_pairs(url: &str) -> Vec<(&str, &str)> {
+    let Some((_, query)) = url.split_once('?') else {
+        return Vec::new();
+    };
+    query
+        .split('&')
+        .filter(|pair| !pair.is_empty())
+        .map(|pair| pair.split_once('=').unwrap_or((pair, "")))
+        .collect()
+}
+
+fn header_set(headers: &[(String, String)]) -> BTreeMap<String, Vec<String>> {
+    let mut set: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for (name, value) in headers {
+        set.entry(name.to_ascii_lowercase())
+            .or_default()
+            .push(value.clone());
+    }
+    set
 }
 
 #[async_trait]
 impl HttpClient for ScriptedHttp {
     async fn request(&self, req: HttpRequest) -> Result<HttpResponse, IntegrationError> {
         let step = {
-            let mut q = self.steps.lock().expect("scripted http");
-            q.pop_front()
+            let mut steps = self.steps.lock().expect("scripted http");
+            steps.pop_front()
         };
         let Some(step) = step else {
-            panic!(
-                "ScriptedHttp: unexpected request {} {}",
-                req.method.as_str(),
-                req.url
-            );
+            panic!("ScriptedHttp: unexpected request; URL, headers, and body redacted");
         };
-        if let Some(m) = step.expect_method {
-            assert_eq!(
-                m, req.method,
-                "step {}: method mismatch for {}",
-                step.name, req.url
-            );
-        }
-        for frag in step.expect_query {
-            assert!(
-                req.url.contains(frag),
-                "step {}: URL {:?} missing fragment {:?}",
-                step.name,
-                req.url,
-                frag
-            );
-        }
-        for (n, v) in &step.expect_headers {
-            assert_eq!(
-                req.header_value(n),
-                Some(v.as_str()),
-                "step {}: header {n} mismatch",
-                step.name
-            );
-        }
-        if let Some(want) = step.expect_body {
-            assert_eq!(
-                req.body.as_deref(),
-                Some(want),
-                "step {}: body mismatch",
-                step.name
-            );
+        if let Err(reason) = step.validate(&req) {
+            panic!("ScriptedHttp: step {}: {reason}", step.name);
         }
         Ok(step.respond)
     }
@@ -501,5 +807,213 @@ mod tests {
         let _ = http
             .request(HttpRequest::get("https://x.test/?f=right"))
             .await;
+    }
+
+    #[tokio::test]
+    async fn exact_url_and_query_matchers_accept_the_recorded_request() {
+        let http = ScriptedHttp::new(vec![
+            Step::get("strict", &[], 200, "{}")
+                .url("https://api.test/ajax.php?f=check_email&seq=7")
+                .query_exact(&[("f", "check_email"), ("seq", "7")])
+                .forbid("sid_token")
+                .body(b""),
+        ]);
+        let resp = http
+            .request(HttpRequest::get(
+                "https://api.test/ajax.php?f=check_email&seq=7",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status, 200);
+        http.assert_exhausted();
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "exact query mismatch")]
+    async fn exact_query_rejects_an_extra_parameter() {
+        let http = ScriptedHttp::new(vec![
+            Step::get("strict", &[], 200, "{}").query_exact(&[("f", "check_email")]),
+        ]);
+        let _ = http
+            .request(HttpRequest::get("https://api.test/?f=check_email&leak=1"))
+            .await;
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "exact query mismatch")]
+    async fn exact_query_rejects_a_missing_parameter() {
+        let http = ScriptedHttp::new(vec![
+            Step::get("strict", &[], 200, "{}").query_exact(&[("f", "check_email"), ("seq", "0")]),
+        ]);
+        let _ = http
+            .request(HttpRequest::get("https://api.test/?f=check_email"))
+            .await;
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "exact URL mismatch")]
+    async fn exact_url_rejects_a_differing_path() {
+        let http = ScriptedHttp::new(vec![
+            Step::get("strict", &[], 200, "{}").url("https://api.test/a"),
+        ]);
+        let _ = http.request(HttpRequest::get("https://api.test/b")).await;
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "forbidden URL fragment present")]
+    async fn forbid_catches_a_leaked_capability() {
+        let http = ScriptedHttp::new(vec![Step::get("strict", &[], 200, "{}").forbid("s3cr3t")]);
+        let _ = http
+            .request(HttpRequest::get("https://api.test/?slug=s3cr3t"))
+            .await;
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "unconsumed step(s): never-called")]
+    async fn assert_exhausted_fails_on_an_unreplayed_script() {
+        let http = ScriptedHttp::new(vec![Step::get("never-called", &[], 200, "{}")]);
+        assert!(!http.is_exhausted());
+        assert_eq!(http.unconsumed(), vec!["never-called"]);
+        http.assert_exhausted();
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "unexpected request")]
+    async fn scripted_panics_when_the_script_runs_out() {
+        let http = ScriptedHttp::new(vec![]);
+        let _ = http.request(HttpRequest::get("https://x.test/")).await;
+    }
+
+    #[test]
+    fn mismatch_diagnostics_are_redacted_by_default() {
+        let step = Step::get_exact(
+            "safe",
+            "https://api.test/tests/expected-secret/status",
+            200,
+            "{}",
+        );
+        let request = HttpRequest::get("https://api.test/tests/actual-secret/status")
+            .header("cookie", "PHPSESSID=session-secret");
+        let reason = step.validate(&request).unwrap_err();
+        let diagnostic = format!("ScriptedHttp: step {}: {reason}", step.name);
+        assert_eq!(reason, "exact URL mismatch");
+        assert!(!diagnostic.contains("expected-secret"));
+        assert!(!diagnostic.contains("actual-secret"));
+        assert!(!diagnostic.contains("session-secret"));
+        assert!(!format!("{step:?}").contains("expected-secret"));
+    }
+
+    #[test]
+    fn request_and_response_debug_carry_no_secret() {
+        let req = HttpRequest::post("https://api.test/tests/fx-slug-9u2n4k", Some(b"x".to_vec()))
+            .header("cookie", "PHPSESSID=sess42");
+        let line = format!("{req:?}");
+        assert!(!line.contains("fx-slug-9u2n4k"));
+        assert!(!line.contains("PHPSESSID"));
+        assert!(line.contains("header_count: 1"));
+        assert!(line.contains("body_len: 1"));
+
+        let resp = HttpResponse {
+            status: 200,
+            headers: vec![("set-cookie".into(), "PHPSESSID=sess42".into())],
+            body: b"{\"slug\":\"fx-slug-9u2n4k\"}".to_vec(),
+        };
+        let line = format!("{resp:?}");
+        assert!(!line.contains("fx-slug-9u2n4k"));
+        assert!(!line.contains("PHPSESSID"));
+        assert!(line.contains("header_count: 1"));
+        assert!(line.contains("body_len:"));
+    }
+
+    #[tokio::test]
+    async fn strict_step_matches_the_complete_request() {
+        let http = ScriptedHttp::new(vec![
+            Step::get_exact("strict", "https://api.test/check?a=1&b=two", 200, "{}")
+                .expect_header("accept", "application/json"),
+        ]);
+        let response = http
+            .request(
+                HttpRequest::get("https://api.test/check?a=1&b=two")
+                    .header("Accept", "application/json"),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status, 200);
+        http.assert_exhausted();
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "strict header-set mismatch")]
+    async fn strict_step_rejects_extra_headers() {
+        let http = ScriptedHttp::new(vec![Step::get_exact(
+            "strict",
+            "https://api.test/check",
+            200,
+            "{}",
+        )]);
+        let _ = http
+            .request(HttpRequest::get("https://api.test/check").header("x-extra", "secret"))
+            .await;
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "strict request body mismatch")]
+    async fn strict_step_rejects_an_unexpected_body() {
+        let http = ScriptedHttp::new(vec![Step::post_exact(
+            "strict",
+            "https://api.test/submit",
+            200,
+            "{}",
+        )]);
+        let _ = http
+            .request(HttpRequest::post(
+                "https://api.test/submit",
+                Some(b"unexpected".to_vec()),
+            ))
+            .await;
+    }
+
+    #[test]
+    fn live_gate_refuses_without_the_exact_opt_in() {
+        assert_eq!(live_gate(None, None), Err(LiveRefused::NotEnabled));
+        assert_eq!(live_gate(Some("0"), None), Err(LiveRefused::NotEnabled));
+        assert_eq!(live_gate(Some("true"), None), Err(LiveRefused::NotEnabled));
+        assert_eq!(live_gate(Some(""), None), Err(LiveRefused::NotEnabled));
+        assert_eq!(live_gate(Some("1"), None), Ok(()));
+    }
+
+    #[test]
+    fn live_gate_refuses_ci_even_when_opted_in() {
+        for ci in ["1", "true", "TRUE", "yes", "on", " 1 "] {
+            assert_eq!(
+                live_gate(Some("1"), Some(ci)),
+                Err(LiveRefused::BlockedInCi),
+                "CI={ci:?} must refuse"
+            );
+        }
+        for ci in ["0", "false", "no", ""] {
+            assert_eq!(
+                live_gate(Some("1"), Some(ci)),
+                Ok(()),
+                "CI={ci:?} must allow"
+            );
+        }
+        assert_eq!(live_gate(None, Some("true")), Err(LiveRefused::BlockedInCi));
+    }
+
+    #[test]
+    fn live_refusal_display_names_the_opt_in() {
+        let s = LiveRefused::NotEnabled.to_string();
+        assert!(s.contains(LIVE_ENV));
+        assert!(s.contains('1'));
+        assert_eq!(
+            LiveRefused::BlockedInCi.to_string(),
+            "live provider construction is refused in CI"
+        );
+        assert!(
+            LiveRefused::Build(IntegrationError::NoSession)
+                .to_string()
+                .contains("no active session")
+        );
     }
 }

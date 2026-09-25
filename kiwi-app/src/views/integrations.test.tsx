@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AccountView, DeliverabilityReportView, DeliverabilityStatusView, TempMessageSummaryView, TempPollView } from "../kiwi";
 import { PUBLIC_INBOX_NOTICE } from "../kiwi";
 import { api, IpcError } from "../ipc";
-import { DeliverabilityPanel, IntegrationsView, TempMailPanel } from "./integrations";
+import { DELIVERABILITY_POLL_MS, DeliverabilityPanel, IntegrationsView, TempMailPanel } from "./integrations";
 
 const account: AccountView = {
   id: "account-1",
@@ -111,9 +111,28 @@ async function startDeliverability() {
   await waitFor(() => expect(screen.getByText("queued")).toBeInTheDocument());
 }
 
+async function flushPending() {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+async function startDeliverabilityUnderFakeTimers() {
+  fireEvent.click(screen.getByRole("button", { name: "Begin test" }));
+  await act(async () => {
+    await Promise.resolve();
+  });
+  fireEvent.click(screen.getByRole("checkbox"));
+  fireEvent.change(screen.getByRole("combobox"), { target: { value: account.id } });
+  fireEvent.click(screen.getByRole("button", { name: "Send test" }));
+  await flushPending();
+}
+
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  Reflect.deleteProperty(navigator, "clipboard");
 });
 
 describe("integrations UI", () => {
@@ -205,7 +224,7 @@ describe("integrations UI", () => {
       await Promise.resolve();
     });
     expect(status).toHaveBeenCalledTimes(1);
-    vi.advanceTimersByTime(30_000);
+    vi.advanceTimersByTime(DELIVERABILITY_POLL_MS * 2);
     await act(async () => {
       await Promise.resolve();
     });
@@ -270,6 +289,7 @@ describe("integrations UI", () => {
     });
     expect(status).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("button", { name: "New test" }));
+    expect(screen.getByRole("button", { name: "Begin test" })).toBeEnabled();
     await act(async () => {
       resolveStatus?.(pendingStatus);
       await pending;
@@ -285,5 +305,133 @@ describe("integrations UI", () => {
     fireEvent.click(screen.getByRole("button", { name: "Begin test" }));
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("bad begin"));
     expect(screen.getByRole("button", { name: "Begin test" })).toBeInTheDocument();
+  });
+
+  it("re-renders the mandated notice from every temp-mail response", async () => {
+    vi.spyOn(api, "integrationsTempmailPoll").mockResolvedValue(emptyPoll);
+    vi.spyOn(api, "integrationsTempmailCreate").mockResolvedValue({
+      address: "throwaway@example.test",
+      publicInboxNotice: PUBLIC_INBOX_NOTICE,
+    });
+    vi.spyOn(api, "integrationsTempmailPoll")
+      .mockResolvedValue(emptyPoll)
+      .mockResolvedValue(pollWith([summary()]));
+    vi.spyOn(api, "integrationsTempmailFetch").mockResolvedValue({
+      mailId: "mail-1",
+      from: "sender@example.test",
+      subject: "A message",
+      date: "2026-09-25",
+      text: "plain body",
+      remoteImagesStripped: 3,
+      publicInboxNotice: PUBLIC_INBOX_NOTICE,
+    });
+    vi.spyOn(api, "integrationsTempmailExtend").mockResolvedValue({
+      extended: true,
+      expired: false,
+      publicInboxNotice: PUBLIC_INBOX_NOTICE,
+    });
+    const notice = () => screen.getByRole("note", { name: "Public inbox notice" });
+    render(<TempMailPanel live />);
+    expect(notice()).toHaveTextContent(PUBLIC_INBOX_NOTICE);
+    fireEvent.click(screen.getByRole("button", { name: "Create disposable address" }));
+    await waitFor(() => expect(screen.getByText("throwaway@example.test")).toBeInTheDocument());
+    expect(notice()).toHaveTextContent(PUBLIC_INBOX_NOTICE);
+    fireEvent.click(document.querySelector('button[aria-expanded="false"]') as HTMLButtonElement);
+    await waitFor(() => expect(screen.getByText("3 remote resource(s) stripped.")).toBeInTheDocument());
+    expect(notice()).toHaveTextContent(PUBLIC_INBOX_NOTICE);
+    fireEvent.click(screen.getByRole("button", { name: "Extend session" }));
+    await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Session extended."));
+    expect(notice()).toHaveTextContent(PUBLIC_INBOX_NOTICE);
+  });
+
+  it("honors a structured rate-limit hint on a retryable status error", async () => {
+    vi.useFakeTimers();
+    const { status } = mockBeginAndSend();
+    status
+      .mockRejectedValueOnce(new IpcError("rate-limited", "provider rate-limited", 5_000))
+      .mockResolvedValue(readyStatus);
+    render(<DeliverabilityPanel accounts={[account]} live />);
+    await startDeliverabilityUnderFakeTimers();
+    expect(status).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("alert")).toHaveTextContent("rate-limited");
+    vi.advanceTimersByTime(4_999);
+    expect(status).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(1);
+    await flushPending();
+    expect(status).toHaveBeenCalledTimes(2);
+  });
+
+  it("ignores a rate-limit delay that exists only in the error text", async () => {
+    vi.useFakeTimers();
+    const { status } = mockBeginAndSend();
+    status.mockRejectedValue(new IpcError("rate-limited", "provider rate-limited; retry after 5000 ms"));
+    render(<DeliverabilityPanel accounts={[account]} live />);
+    await startDeliverabilityUnderFakeTimers();
+    expect(status).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(5_000);
+    await flushPending();
+    expect(status).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(DELIVERABILITY_POLL_MS - 5_000);
+    await flushPending();
+    expect(status).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops polling on a terminal analysis status", async () => {
+    vi.useFakeTimers();
+    const { status } = mockBeginAndSend({ ...pendingStatus, analysisStatus: "failed" });
+    render(<DeliverabilityPanel accounts={[account]} live />);
+    await startDeliverabilityUnderFakeTimers();
+    expect(status).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(120_000);
+    await flushPending();
+    expect(status).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("cancels the pending poll timer when the test is reset", async () => {
+    vi.useFakeTimers();
+    const { status } = mockBeginAndSend();
+    render(<DeliverabilityPanel accounts={[account]} live />);
+    await startDeliverabilityUnderFakeTimers();
+    expect(status).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(1);
+    fireEvent.click(screen.getByRole("button", { name: "New test" }));
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("cancels the pending poll timer on unmount", async () => {
+    vi.useFakeTimers();
+    const { status } = mockBeginAndSend();
+    const view = render(<DeliverabilityPanel accounts={[account]} live />);
+    await startDeliverabilityUnderFakeTimers();
+    expect(status).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(1);
+    view.unmount();
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(DELIVERABILITY_POLL_MS * 4);
+    await flushPending();
+    expect(status).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores a status response that lands after unmount", async () => {
+    vi.useFakeTimers();
+    let resolveStatus: ((value: DeliverabilityStatusView) => void) | undefined;
+    const inFlight = new Promise<DeliverabilityStatusView>((resolve) => {
+      resolveStatus = resolve;
+    });
+    const { status } = mockBeginAndSend();
+    status.mockReturnValue(inFlight);
+    const view = render(<DeliverabilityPanel accounts={[account]} live />);
+    await startDeliverabilityUnderFakeTimers();
+    expect(status).toHaveBeenCalledTimes(1);
+    view.unmount();
+    await act(async () => {
+      resolveStatus?.(pendingStatus);
+      await inFlight;
+    });
+    vi.advanceTimersByTime(120_000);
+    await flushPending();
+    expect(status).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

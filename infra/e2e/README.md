@@ -60,6 +60,7 @@ let compose fall back) to exercise the signature.
 | Class | Runs | Covers |
 |-------|------|--------|
 | `TransportLeg` | always | published port, `/healthz`, dialect reporting, the audit routes' `audit.read` guard, the T-179 export |
+| `T193Regression` | always | one HTTP guard per admin-review-1 fix: H1–H8 + M1/M6/M7 (see below) |
 | `SqliteLeg` | when the service opened SQLite | the shared flow + tamper tests on SQLite, `sqlite_master` table check |
 | `PostgresLeg` | when the service opened Postgres | the shared flow + tamper tests on Postgres, `pg_tables` check |
 
@@ -91,6 +92,36 @@ in-process by `kiwi-admin/tests/audit.guard.test.ts`.
 - **`?org=` filter.** Accepted by the server, ignored by `AuditService.query`,
   so one org's request returned every org's rows.
   `DialectLeg.test_audit_org_filter_actually_narrows`.
+
+## T-193 regression guards (admin-review-1, per Lead rulings)
+
+`T193Regression` pins every High and every applicable Medium fix at the HTTP
+boundary, dialect-independent. The shared flow helper binds `x-kiwi-org`
+after `createOrg` — it previously rode the H2 hole (null-org global reach),
+which is exactly what H2 closed.
+
+| Test | Fix | Asserts |
+|------|-----|---------|
+| `test_h1_evaluate_requires_an_actor` | H1 | role-less evaluate → 403, cross-org → 403, own-org → 200 with a verdict |
+| `test_h2_org_scoped_call_without_org_header_is_denied` | H2 | org-bound role with no `x-kiwi-org` → 403, not global |
+| `test_h3_cross_org_revoke_is_denied` | H3 | cross-org revoke → 403 and the row stays unrevoked; own-org revoke → 200 and lands (device row inserted via backend SQL — no route creates devices) |
+| `test_h4_unfiltered_reads_stay_inside_the_callers_org` | H4 | mailflow without `?org=` returns only the caller's org; explicit cross-org `?org=` → 403; unfiltered audit read equals the own-org slice |
+| `test_h5_viewer_cannot_create_orgs` | H5 | viewer `POST /orgs` → 403 |
+| `test_h6_parallel_burst_appends_without_loss` | H6 | 10 concurrent user creates → all 201, chain still verifies |
+| `test_h7_duplicate_email_is_rejected` | H7 | double-create same email → 409 `conflict` on whichever dialect is live |
+| `test_h8_verify_floor` | H8 | `verify?limit=0` and `limit=-1` → 400; full verify attests `checked > 0` |
+| `test_m1_service_timestamps_are_milliseconds` | M1 | every audit `ts` is ms-scale (contract §4) |
+| `test_m6_outsider_grant_is_404` | M6 | granting a foreign user into the actor's org → 404, never a cross-org row or a 500 |
+| `test_m7_listings_honor_limit` | M7 | users and policies `?limit=1` return at most one row |
+
+Live findings from the first green run (2026-09-25, Postgres leg): the H7
+test caught a real 500 — drizzle wraps the driver error in
+`DrizzleQueryError`, so the PG `isUniqueViolation` matcher (which read only
+the wrapper) missed SQLSTATE 23505; fixed by unwrapping `cause`. The same
+run showed the old shared flow and the old `?org=` audit test rode the H2
+hole; both now bind the org. M4 (sanitized 500s) has no deterministic HTTP
+trigger and stays covered by the `server.test.ts` typed-error tests; M2–M5
+are covered by unit + the 409/404 assertions above.
 
 ## Safety
 

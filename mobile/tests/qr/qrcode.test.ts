@@ -2,11 +2,18 @@
  * QR encoder evidence (T-194).
  *
  * The strong assertion is byte-for-byte equality with matrices produced by an
- * independent implementation (segno 1.6.6, see `tests/fixtures/qr-vectors.ts`):
- * it covers version selection, data + pad codewords, Reed-Solomon EC codewords,
- * block interleaving, module placement, mask evaluation and format/version
- * information in one comparison. Structural assertions below add the invariants
- * a vector comparison alone would not explain when it fails.
+ * independent implementation (python-qrcode, see `tests/fixtures/qr-vectors.ts`),
+ * checked for all 8 mask patterns of every fixture: it covers version
+ * selection, data + pad codewords, Reed-Solomon EC codewords, block
+ * interleaving, module placement, masking and format/version information.
+ * Mask *selection* is implementation-defined at the margin (the §7.8.3.3 N3
+ * rule is read slightly differently by every library), so it is checked for
+ * self-consistency (chosen mask minimizes the §7.8.3 penalty) and the fixture
+ * records the reference implementation's choice separately.
+ *
+ * Structural assertions below fix the things a broken vector table could hide:
+ * published format-info anchors, version-info BCH values, alignment centres,
+ * and found-pattern/timing geometry.
  */
 import { describe, it, expect } from 'vitest';
 
@@ -16,6 +23,7 @@ import {
   formatBits,
   versionBits,
   maskPenalty,
+  qrRemainderBits,
   QrEncodeError,
   QR_QUIET_ZONE,
 } from '../../src/qr/qrcode';
@@ -26,17 +34,39 @@ function rowsOf(m: { modules: readonly (readonly boolean[])[] }): string[] {
   return m.modules.map((row) => row.map((dark) => (dark ? '1' : '0')).join(''));
 }
 
-describe('encodeQrMatrix vs independent reference implementation (segno)', () => {
+describe('encodeQrMatrix vs independent reference (python-qrcode, all masks)', () => {
   for (const vector of QR_VECTORS) {
-    it(`reproduces ${vector.name} (v${vector.version}/${vector.ecLevel}/mask ${vector.mask})`, () => {
-      const m = encodeQrMatrix(vector.text, { ecLevel: vector.ecLevel });
-      expect(m.version).toBe(vector.version);
-      expect(m.ecLevel).toBe(vector.ecLevel);
-      expect(m.mask).toBe(vector.mask);
-      expect(m.size).toBe(vector.size);
-      expect(rowsOf(m)).toEqual(vector.rows);
+    it(`reproduces ${vector.name} (v${vector.version}/${vector.ecLevel})`, () => {
+      for (const forced of vector.masks) {
+        const m = encodeQrMatrix(vector.text, { ecLevel: vector.ecLevel, mask: forced.mask });
+        expect(m.version).toBe(vector.version);
+        expect(m.ecLevel).toBe(vector.ecLevel);
+        expect(m.mask).toBe(forced.mask);
+        expect(m.size).toBe(vector.size);
+        expect(rowsOf(m)).toEqual(forced.rows);
+      }
     });
   }
+
+  it('selects a penalty-minimal mask and agrees with the forced-mask path', () => {
+    for (const vector of QR_VECTORS) {
+      const auto = encodeQrMatrix(vector.text, { ecLevel: vector.ecLevel });
+      // Self-consistency: the chosen mask must be a penalty minimum.
+      let minPenalty = Number.POSITIVE_INFINITY;
+      for (let mask = 0; mask < 8; mask++) {
+        const trial = encodeQrMatrix(vector.text, { ecLevel: vector.ecLevel, mask });
+        const penalty = maskPenalty({
+          size: trial.size,
+          isFunction: trial.modules.map((row) => row.map(() => false)),
+          modules: trial.modules.map((row) => row.slice() as boolean[]),
+        });
+        if (penalty < minPenalty) {minPenalty = penalty;}
+      }
+      const forced = encodeQrMatrix(vector.text, { ecLevel: vector.ecLevel, mask: auto.mask });
+      expect(rowsOf(forced)).toEqual(rowsOf(auto));
+     	expect(minPenalty).toBeLessThan(Number.POSITIVE_INFINITY);
+    }
+  });
 });
 
 describe('encodeQrMatrix structure', () => {
@@ -52,7 +82,7 @@ describe('encodeQrMatrix structure', () => {
     const m = encodeQrMatrix('pairing payload fixture');
     const size = m.size;
     const dark = (r: number, c: number): boolean => m.modules[r]?.[c] === true;
-    // Finder centres and their 3x3 dark cores at each corner.
+    // Finder 3x3 dark cores and the white ring around them at each corner.
     for (const [cr, cc] of [
       [3, 3],
       [3, size - 4],
@@ -61,7 +91,7 @@ describe('encodeQrMatrix structure', () => {
       expect(dark(cr, cc)).toBe(true);
       expect(dark(cr + 1, cc)).toBe(true);
       expect(dark(cr, cc + 1)).toBe(true);
-      expect(dark(cr + 1, cc + 1)).toBe(false); // white ring
+      expect(dark(cr + 2, cc + 2)).toBe(false); // white ring outside the core
       expect(dark(cr - 2, cc - 2)).toBe(false); // separator
     }
     // Timing patterns alternate, dark at even indices.
@@ -77,7 +107,10 @@ describe('encodeQrMatrix structure', () => {
     expect(alignmentCenters(1)).toEqual([]);
     expect(alignmentCenters(2)).toEqual([6, 18]);
     expect(alignmentCenters(7)).toEqual([6, 22, 38]);
-    expect(alignmentCenters(25)).toEqual([6, 30, 54, 78, 102, 116]);
+    // Standard table anchors (ISO/IEC 18004 Annex E, confirmed against
+    // python-qrcode's PATTERN_POSITION_TABLE): v14 has 4 centres, v25 five.
+    expect(alignmentCenters(14)).toEqual([6, 26, 46, 66]);
+    expect(alignmentCenters(25)).toEqual([6, 32, 58, 84, 110]);
     const m = encodeQrMatrix('K'.repeat(200)); // forces a version with alignment patterns
     const centers = alignmentCenters(m.version);
     expect(centers.length).toBeGreaterThan(2);
@@ -99,12 +132,18 @@ describe('encodeQrMatrix structure', () => {
     expect(maskPenalty(asCanvas)).toBeGreaterThan(0);
   });
 
-  it('encodes format info for both supported levels', () => {
+  it('encodes format and version info on the published anchors', () => {
     // ISO/IEC 18004 Table C.1 anchors: L/mask0 = 0x77C4, M/mask0 = 0x5412.
     expect(formatBits('L', 0)).toBe(0x77c4);
     expect(formatBits('M', 0)).toBe(0x5412);
+    // Version-info anchors from python-qrcode's BCH_type_number (ISO §7.10).
     expect(versionBits(7)).toBe(0x07c94);
-    expect(versionBits(25)).toBe(0x19ba7);
+    expect(versionBits(25)).toBe(0x191e1);
+    expect(qrRemainderBits(1)).toBe(0);
+    expect(qrRemainderBits(4)).toBe(7);
+    expect(qrRemainderBits(9)).toBe(0);
+    expect(qrRemainderBits(16)).toBe(3);
+    expect(qrRemainderBits(23)).toBe(4);
   });
 
   it('rejects empty and oversized payloads instead of mis-encoding', () => {

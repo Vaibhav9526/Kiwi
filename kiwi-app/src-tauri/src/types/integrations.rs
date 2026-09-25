@@ -13,11 +13,12 @@
 use std::collections::BTreeMap;
 
 use kiwi_integrations::deliverability::{
-    AnalysisStatus, CategoryTally, CheckCategory, CheckEvidence, CheckStatus, DeliverabilityReport,
-    TestStatus,
+    AnalysisStatus, AuthEvidenceGap, AuthGate, CategoryTally, CheckCategory, CheckEvidence,
+    CheckStatus, DeliverabilityReport, TestStatus,
 };
 use kiwi_integrations::tempmail::{InboxPoll, TempMessageSummary};
 use serde::Serialize;
+use zeroize::Zeroize;
 
 /// The mandated disclosure — one place, so every view shares the instance.
 fn public_inbox_notice() -> &'static str {
@@ -157,7 +158,7 @@ pub struct TempExtendView {
 // ---------------------------------------------------------------------------
 
 /// `kiwi_integrations_deliverability_begin` answer.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeliverabilityBeginView {
     /// Opaque session key for `status`/`report`/`send`. Not a secret.
@@ -170,12 +171,29 @@ pub struct DeliverabilityBeginView {
     /// Expiry verbatim when it wasn't numeric (e.g. ISO-8601).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub expires_at_raw: Option<String>,
-    /// Single-use consent capability — `deliverability_send` consumes it.
-    /// Opaque to the UI; passing it back is the consent gesture. The
+    /// Single-use anti-replay capability — `deliverability_send` consumes
+    /// it. Opaque to the UI; passing it back is the replay gate. The
     /// provider slug it guards never leaves the backend.
     pub consent_token: String,
-    /// What the consent covers — mandatory UI copy.
+    /// What the capability covers — mandatory UI copy.
     pub consent_notice: &'static str,
+}
+
+impl std::fmt::Debug for DeliverabilityBeginView {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeliverabilityBeginView")
+            .field("test_id", &self.test_id)
+            .field("address", &self.address)
+            .field("consent_token", &"[redacted]")
+            .field("consent_notice", &self.consent_notice)
+            .finish()
+    }
+}
+
+impl Drop for DeliverabilityBeginView {
+    fn drop(&mut self) {
+        self.consent_token.zeroize();
+    }
 }
 
 /// `kiwi_integrations_deliverability_send` answer.
@@ -187,6 +205,15 @@ pub struct DeliverabilitySendView {
     pub queue_id: String,
     /// Earliest dispatch (unix seconds).
     pub not_before_unix: i64,
+    /// The single-use capability was burned by this call (it is never
+    /// returned to the UI again, whatever the enqueue outcome was).
+    pub consent_consumed: bool,
+    /// A message is queued for the reserved address. `true` only when the
+    /// enqueue actually succeeded.
+    pub enqueued: bool,
+    /// The queued send is single-attempt: an ambiguous relay failure is
+    /// never retried into the single-use reservation.
+    pub single_attempt: bool,
 }
 
 /// `kiwi_integrations_deliverability_status` answer.
@@ -201,9 +228,18 @@ pub struct DeliverabilityStatusView {
     pub checks_total: u32,
     /// `checks_ready` — the report is fetchable.
     pub ready: bool,
-    /// Consent already consumed + send enqueued (the backend tracks it;
-    /// the UI cannot infer send state from status alone).
+    /// A send is enqueued for this test (set only after a successful
+    /// enqueue; the backend tracks it, the UI cannot infer send state
+    /// from status alone).
     pub sent: bool,
+    /// The single-use capability was already consumed, whatever the
+    /// enqueue outcome was.
+    pub consent_consumed: bool,
+    /// The provider was not called: this answer was served from the
+    /// backend's last observation and the caller must wait this long
+    /// before the next poll.
+    #[serde(rename = "retryAfterMs", skip_serializing_if = "Option::is_none")]
+    pub retry_after_ms: Option<u64>,
 }
 
 /// `kiwi_integrations_deliverability_report` answer.
@@ -217,7 +253,9 @@ pub struct DeliverabilityReportView {
     /// Classic 0–10 score ×1000.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score_compat_milli: Option<u64>,
-    /// `false` = some checks could not run; the score is optimistic.
+    /// `false` = some checks could not run; the score is optimistic. The
+    /// provider's own flag: it says nothing about KIWI's own client-side
+    /// cap, which is `checks_truncated`.
     pub complete: bool,
     /// Human-readable report page (share this, not the JSON).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -228,8 +266,62 @@ pub struct DeliverabilityReportView {
     pub tallies: BTreeMap<String, CategoryTallyView>,
     /// Per-check evidence, wire order.
     pub checks: Vec<CheckView>,
-    /// `id`s of failed `auth` checks — the gate set for the UI banner.
+    /// `id`s of failed `auth` checks observed before any evidence gap —
+    /// the display set for the UI banner. Not a decision procedure: use
+    /// `auth_gate`.
     pub auth_failure_ids: Vec<String>,
+    /// The fail-closed authentication gate for this report. Only
+    /// `state == "clear"` means the evidence is complete and clean;
+    /// `blocked` and `incomplete` both forbid acting on the report.
+    pub auth_gate: AuthGateView,
+    /// KIWI kept only the first `MAX_CHECKS` checks: a failure may exist
+    /// in the part the client never saw, so `complete` must never be read
+    /// as "nothing was dropped".
+    pub checks_truncated: bool,
+    /// `complete` AND not truncated — the only combination in which the
+    /// provider's flag and the client-side cap agree.
+    pub evidence_complete: bool,
+}
+
+/// The crate's fail-closed `AuthGate`, flattened for the wire.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthGateView {
+    /// `clear` | `blocked` | `incomplete`.
+    pub state: &'static str,
+    /// The single boolean a caller may act on: true only for `clear`.
+    pub clear: bool,
+    /// Failing auth check ids seen so far (empty when the gate is clear).
+    pub failed_ids: Vec<String>,
+    /// Why the evidence cannot be trusted: `no-auth-checks` |
+    /// `unknown-auth-status` | `unknown-category` | `truncated-checks`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gap: Option<&'static str>,
+}
+
+impl From<AuthGate> for AuthGateView {
+    fn from(g: AuthGate) -> Self {
+        let state = match &g {
+            AuthGate::Clear => "clear",
+            AuthGate::Blocked { .. } => "blocked",
+            AuthGate::Incomplete { .. } => "incomplete",
+        };
+        Self {
+            state,
+            clear: g.clear(),
+            failed_ids: g.failed_ids().to_vec(),
+            gap: g.gap().map(auth_gap_wire),
+        }
+    }
+}
+
+pub(crate) fn auth_gap_wire(g: AuthEvidenceGap) -> &'static str {
+    match g {
+        AuthEvidenceGap::NoAuthChecks => "no-auth-checks",
+        AuthEvidenceGap::UnknownAuthStatus => "unknown-auth-status",
+        AuthEvidenceGap::UnknownCategory => "unknown-category",
+        AuthEvidenceGap::TruncatedChecks => "truncated-checks",
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -312,7 +404,13 @@ fn check_status_wire(s: &CheckStatus) -> String {
 }
 
 impl DeliverabilityStatusView {
-    pub fn from_status(test_id: &str, s: TestStatus, sent: bool) -> Self {
+    pub fn from_status(
+        test_id: &str,
+        s: TestStatus,
+        sent: bool,
+        consent_consumed: bool,
+        retry_after_ms: Option<u64>,
+    ) -> Self {
         Self {
             test_id: test_id.to_string(),
             analysis_status: analysis_status_wire(&s.analysis_status),
@@ -320,6 +418,8 @@ impl DeliverabilityStatusView {
             checks_total: s.checks_total,
             ready: s.ready(),
             sent,
+            consent_consumed,
+            retry_after_ms,
         }
     }
 }
@@ -332,6 +432,9 @@ impl DeliverabilityReportView {
             .iter()
             .map(|c: &&CheckEvidence| c.id.clone())
             .collect();
+        let checks_truncated = r.checks_truncated;
+        let complete = r.complete;
+        let auth_gate = AuthGateView::from(r.auth_gate());
         let checks = r
             .checks
             .iter()
@@ -357,7 +460,7 @@ impl DeliverabilityReportView {
             test_id: test_id.to_string(),
             score_ours_milli: r.score_ours_milli,
             score_compat_milli: r.score_compat_milli,
-            complete: r.complete,
+            complete,
             report_url: r.report_url,
             subscores: r.subscores,
             tallies: r
@@ -367,6 +470,156 @@ impl DeliverabilityReportView {
                 .collect(),
             checks,
             auth_failure_ids,
+            auth_gate,
+            checks_truncated,
+            evidence_complete: complete && !checks_truncated,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn check(id: &str, category: &str, status: &str) -> CheckEvidence {
+        CheckEvidence {
+            id: id.into(),
+            category_raw: category.into(),
+            status: match status {
+                "pass" => CheckStatus::Pass,
+                "warn" => CheckStatus::Warn,
+                "fail" => CheckStatus::Fail,
+                "skip" => CheckStatus::Skip,
+                other => CheckStatus::Other(other.into()),
+            },
+            title: id.into(),
+            summary: String::new(),
+            citations: Vec::new(),
+        }
+    }
+
+    fn report(checks: Vec<CheckEvidence>, truncated: bool) -> DeliverabilityReport {
+        DeliverabilityReport {
+            score_ours_milli: Some(87_000),
+            score_compat_milli: Some(9_100),
+            complete: true,
+            report_url: None,
+            subscores: BTreeMap::new(),
+            tallies: BTreeMap::new(),
+            checks,
+            checks_truncated: truncated,
+        }
+    }
+
+    #[test]
+    fn complete_never_hides_client_truncation() {
+        let v = DeliverabilityReportView::from_report(
+            "dtest-1",
+            report(vec![check("spf", "auth", "pass")], true),
+        );
+        let json = serde_json::to_value(&v).unwrap();
+        assert_eq!(json["complete"], true);
+        assert_eq!(json["checksTruncated"], true);
+        assert_eq!(json["evidenceComplete"], false);
+        assert_eq!(json["authGate"]["state"], "incomplete");
+        assert_eq!(json["authGate"]["clear"], false);
+        assert_eq!(json["authGate"]["gap"], "truncated-checks");
+    }
+
+    #[test]
+    fn gate_states_survive_the_wire() {
+        let clear = DeliverabilityReportView::from_report(
+            "dtest-2",
+            report(vec![check("spf", "auth", "pass")], false),
+        );
+        assert!(clear.auth_gate.clear);
+        assert_eq!(clear.auth_gate.state, "clear");
+        assert!(clear.evidence_complete);
+
+        let blocked = DeliverabilityReportView::from_report(
+            "dtest-3",
+            report(
+                vec![check("spf", "auth", "pass"), check("dkim", "auth", "fail")],
+                false,
+            ),
+        );
+        assert_eq!(blocked.auth_gate.state, "blocked");
+        assert_eq!(blocked.auth_gate.failed_ids, vec!["dkim"]);
+        assert_eq!(blocked.auth_failure_ids, vec!["dkim"]);
+
+        let unknown_status = DeliverabilityReportView::from_report(
+            "dtest-4",
+            report(vec![check("spf", "auth", "quantum")], false),
+        );
+        assert_eq!(unknown_status.auth_gate.state, "incomplete");
+        assert_eq!(unknown_status.auth_gate.gap, Some("unknown-auth-status"));
+        assert!(unknown_status.auth_failure_ids.is_empty());
+
+        let no_auth = DeliverabilityReportView::from_report(
+            "dtest-5",
+            report(vec![check("links", "content", "warn")], false),
+        );
+        assert_eq!(no_auth.auth_gate.gap, Some("no-auth-checks"));
+
+        let unknown_cat = DeliverabilityReportView::from_report(
+            "dtest-6",
+            report(
+                vec![check("spf", "auth", "pass"), check("x", "brand-new", "fail")],
+                false,
+            ),
+        );
+        assert_eq!(unknown_cat.auth_gate.gap, Some("unknown-category"));
+    }
+
+    #[test]
+    fn begin_view_debug_never_carries_the_capability() {
+        let v = DeliverabilityBeginView {
+            test_id: "dtest-7".into(),
+            address: "drop@e2e.example".into(),
+            expires_at_unix: Some(1),
+            expires_at_raw: None,
+            consent_token: "consent-secret-value".into(),
+            consent_notice: "n",
+        };
+        let line = format!("{v:?}");
+        assert!(!line.contains("consent-secret-value"));
+        assert!(line.contains("[redacted]"));
+        let json = serde_json::to_value(&v).unwrap();
+        assert_eq!(json["consentToken"], "consent-secret-value");
+        assert_eq!(json["testId"], "dtest-7");
+    }
+
+    #[test]
+    fn status_view_serializes_the_backoff_hint() {
+        let v = DeliverabilityStatusView::from_status(
+            "dtest-8",
+            TestStatus {
+                analysis_status: AnalysisStatus::Pending,
+                checks_done: 0,
+                checks_total: 0,
+            },
+            false,
+            true,
+            Some(30_000),
+        );
+        let json = serde_json::to_value(&v).unwrap();
+        assert_eq!(json["retryAfterMs"], 30_000);
+        assert_eq!(json["consentConsumed"], true);
+        assert_eq!(json["sent"], false);
+        let plain = DeliverabilityStatusView::from_status(
+            "dtest-9",
+            TestStatus {
+                analysis_status: AnalysisStatus::ChecksReady,
+                checks_done: 3,
+                checks_total: 3,
+            },
+            true,
+            true,
+            None,
+        );
+        assert!(serde_json::to_value(&plain)
+            .unwrap()
+            .get("retryAfterMs")
+            .is_none());
     }
 }

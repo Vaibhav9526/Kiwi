@@ -7,20 +7,26 @@
 //! replaces it, `poll`/`fetch`/`extend`/`discard` act on it. Every
 //! response carries `publicInboxNotice` verbatim (the binding UI
 //! disclosure — a public disposable inbox is a hostile-content surface).
+//! The session lock is held across the whole provider interaction, so
+//! create/discard/extend cannot interleave on one mailbox, a replaced or
+//! half-built remote mailbox is retired with a best-effort `forget_me`,
+//! and a failed candidate never costs the caller the session they had.
 //!
 //! `fetch` never returns raw RFC822 to the webview: the synthesized
 //! message is parsed by `kiwi_mail::mime` and the HTML body passes
-//! through the same `sanitize_html` path as real mail — with remote
-//! resources ALWAYS stripped, regardless of any account opt-in (a
-//! public inbox must never load remote content: tracking surface).
+//! through the display-only sanitizer — remote resources AND anchors
+//! gone, regardless of any account opt-in (a public inbox must never
+//! load remote content or navigate the app).
 //!
 //! ## Deliverability (`integrations_deliverability_*`)
 //!
-//! `begin` reserves a single-use address and mints a random consent
-//! token. `send` REQUIRES that token — the check + consume happen
-//! backend-side under the sessions lock, so the webview cannot skip or
-//! replay consent (it is a capability, not a flag). `status`/`report`
-//! are single-shot calls; any poll loop is the caller's job.
+//! `begin` reserves a single-use address and mints a random single-use
+//! anti-replay capability. `send` REQUIRES that capability — the check +
+//! consume happen backend-side under the sessions lock, so the webview
+//! can neither replay it nor skip it. It is a replay gate, not a trusted
+//! user gesture: the renderer that holds it can hand it straight back.
+//! `status`/`report` are single-shot calls; the poll loop is the caller's,
+//! single-flighted and rate-limit-aware here.
 //!
 //! The provider slug inside each reservation is a capability secret —
 //! it is stored in memory only, never serialized to IPC, never audited.
@@ -36,11 +42,12 @@ use kiwi_integrations::tempmail::guerrilla::GUERRILLA_API;
 use kiwi_integrations::tempmail::{GuerrillaMail, TempMailProvider};
 
 use super::{bounded, gate};
-use crate::commands::message::sanitize_html;
-use crate::commands::send::send_impl;
+use crate::commands::message::sanitize_html_display_only;
+use crate::commands::send::send_impl_class;
 use crate::error::{CmdResult, IpcError};
 use crate::state::{
-    AppState, DeliverabilitySession, MAX_DELIVERABILITY_SESSIONS, new_id, now_unix,
+    AppState, DeliverabilitySession, MAX_DELIVERABILITY_SESSIONS, OutboxClass, new_id, now_unix,
+    now_unix_ms,
 };
 use crate::types::{
     ComposeInput, DeliverabilityBeginView, DeliverabilityReportView, DeliverabilitySendView,
@@ -53,6 +60,9 @@ const MAX_RENDER_BYTES: usize = 8 * 1024 * 1024;
 
 /// Provider UA label — a constant, never the webview's UA.
 const INTEGRATIONS_AGENT: &str = concat!("KIWI/", env!("CARGO_PKG_VERSION"));
+
+/// Backoff hint handed to a second concurrent poll of the same test.
+const POLL_BUSY_RETRY_MS: u64 = 5_000;
 
 // ---------------------------------------------------------------------------
 // Temp mail
@@ -95,27 +105,89 @@ pub(crate) async fn tempmail_create_impl(
         }
     }
 
+    // One mailbox, one lifecycle: the session lock covers allocation,
+    // replacement, and the remote cleanup of whatever it displaces.
+    let mut slot = state.tempmail.lock().await;
+    // Audit intent first: the next call allocates a public remote mailbox,
+    // which cannot be undone by clearing local state.
+    state
+        .audit
+        .lock()
+        .await
+        .record(
+            "tempmail-create-intent",
+            "allocating a public disposable inbox via guerrillamail",
+            now_unix(),
+        )?;
+
     let gm = GuerrillaMail::new(
         state.integrations_http.clone(),
         GUERRILLA_API,
         INTEGRATIONS_AGENT,
     )
     .map_err(IpcError::from)?;
-    let mut addr = gm.get_email_address().await.map_err(IpcError::from)?;
-    if let Some(p) = &local_part {
-        addr = gm.set_email_user(p).await.map_err(IpcError::from)?;
+    let candidate = async {
+        let addr = gm.get_email_address().await.map_err(IpcError::from)?;
+        let addr = match &local_part {
+            Some(p) => gm.set_email_user(p).await.map_err(IpcError::from)?,
+            None => addr,
+        };
+        Ok::<_, IpcError>(addr)
     }
+    .await;
+
+    let addr = match candidate {
+        Ok(addr) => addr,
+        Err(e) => {
+            // The provider may already own a remote address for this
+            // candidate: retire it, then hand the caller the original
+            // failure. The previous session (if any) stays usable.
+            let forgotten = gm.forget_me().await.is_ok();
+            let _ = state.audit.lock().await.record(
+                "tempmail-create-failed",
+                &format!(
+                    "candidate abandoned: {e}; remote forget {}",
+                    if forgotten { "ok" } else { "failed" }
+                ),
+                now_unix(),
+            );
+            return Err(e);
+        }
+    };
+
     let view = TempMailboxView {
         address: addr.address.clone(),
         address_created_unix: addr.created_unix,
         public_inbox_notice: kiwi_integrations::tempmail::PUBLIC_INBOX_NOTICE,
     };
-    // Replace any existing session — the dropped provider carries its
-    // session secrets away; nothing was persisted.
-    *state.tempmail.lock().await = Some(gm);
+    let replaced = slot.replace(gm);
+    let mut old_forgotten = None;
+    if let Some(old) = replaced {
+        // Best-effort: a remote cleanup failure must not roll back the
+        // replacement, and must not be silent.
+        let ok = old.forget_me().await.is_ok();
+        old_forgotten = Some(ok);
+        let _ = state.audit.lock().await.record(
+            "tempmail-replaced",
+            &format!(
+                "previous session retired: remote forget {}",
+                if ok { "ok" } else { "failed" }
+            ),
+            now_unix(),
+        );
+    }
+    drop(slot);
     state.audit.lock().await.record(
         "tempmail-create",
-        &format!("{} via guerrillamail", addr.address),
+        &format!(
+            "{} via guerrillamail{}",
+            addr.address,
+            match old_forgotten {
+                Some(true) => " (replaced, previous forgotten)",
+                Some(false) => " (replaced, previous remote forget failed)",
+                None => "",
+            }
+        ),
         now_unix(),
     )?;
     Ok(view)
@@ -176,9 +248,11 @@ pub(crate) async fn tempmail_fetch_impl(
     let parsed = kiwi_mail::mime::parse_message(&msg.raw_rfc822).map_err(IpcError::from)?;
     // Remote content hard-off: a public inbox is read-only hostile content;
     // the per-account `remote_content_allowed` opt-in does not apply here.
+    // Display-only: anchors are dropped entirely, so a message cannot
+    // navigate the webview (real mail keeps its link policy instead).
     let (html, stripped) = match parsed.html_body {
         Some(h) => {
-            let (clean, s) = sanitize_html(&h, false);
+            let (clean, s) = sanitize_html_display_only(&h);
             let clean = if clean.len() > MAX_RENDER_BYTES {
                 clean.chars().take(MAX_RENDER_BYTES).collect()
             } else {
@@ -204,7 +278,9 @@ pub(crate) async fn tempmail_fetch_impl(
 /// `kiwi_integrations_tempmail_discard()` → `TempDiscardView`.
 ///
 /// Local session state is cleared unconditionally; `forget_me` is
-/// best-effort (a dead session may already be gone server-side).
+/// best-effort (a dead session may already be gone server-side) and runs
+/// under the session lock, so it cannot interleave with a create that is
+/// still allocating a replacement.
 #[tauri::command]
 pub async fn kiwi_integrations_tempmail_discard(
     state: State<'_, Arc<AppState>>,
@@ -214,13 +290,14 @@ pub async fn kiwi_integrations_tempmail_discard(
 }
 
 pub(crate) async fn tempmail_discard_impl(state: &AppState) -> CmdResult<TempDiscardView> {
-    let gm = state.tempmail.lock().await.take();
-    let Some(gm) = gm else {
+    let mut slot = state.tempmail.lock().await;
+    let Some(gm) = slot.take() else {
         return Err(IpcError::not_found(
             "no active temp-mail session to discard",
         ));
     };
     let remote_forgotten = gm.forget_me().await.is_ok();
+    drop(slot);
     state.audit.lock().await.record(
         "tempmail-discard",
         if remote_forgotten {
@@ -299,17 +376,28 @@ pub async fn kiwi_integrations_deliverability_begin(
 pub(crate) async fn deliverability_begin_impl(
     state: &AppState,
 ) -> CmdResult<DeliverabilityBeginView> {
+    // Audit intent first: reserving a single-use address is an external,
+    // un-undoable effect, and an intent that cannot be recorded aborts it.
+    state
+        .audit
+        .lock()
+        .await
+        .record(
+            "deliverability-begin-intent",
+            "reserving a single-use test address via email-spam-tester",
+            now_unix(),
+        )?;
     let tester = spamtester(state)?;
     let res = tester.reserve_inbox().await.map_err(IpcError::from)?;
 
     let test_id = new_id("dtest");
-    let consent_token = new_id("consent");
+    let consent = zeroize::Zeroizing::new(new_id("consent"));
     let view = DeliverabilityBeginView {
         test_id: test_id.clone(),
         address: res.address.clone(),
         expires_at_unix: res.expires_at_unix,
         expires_at_raw: res.expires_at_raw.clone(),
-        consent_token,
+        consent_token: consent.as_str().to_string(),
         consent_notice: crate::types::DELIVERABILITY_CONSENT_NOTICE,
     };
     {
@@ -324,19 +412,28 @@ pub(crate) async fn deliverability_begin_impl(
                     .unwrap_or(true)
             });
             while sessions.len() >= MAX_DELIVERABILITY_SESSIONS {
-                sessions.pop_first();
+                if let Some((evicted, _)) = sessions.pop_first() {
+                    state
+                        .deliverability_cooldown
+                        .lock()
+                        .expect("deliverability cooldown")
+                        .forget(&evicted);
+                }
             }
         }
         sessions.insert(
             test_id.clone(),
             DeliverabilitySession {
                 reservation: res,
-                consent_token: Some(view.consent_token.clone()),
-                sent: false,
+                consent_token: Some(consent),
+                consent_consumed: false,
+                enqueued: false,
+                queue_id: None,
+                last_status: None,
             },
         );
     }
-    // Audit: test_id + address only — NEVER the slug or consent token.
+    // Audit: test_id + address only — NEVER the slug or the capability.
     state.audit.lock().await.record(
         "deliverability-begin",
         &format!("{test_id} reserved {}", view.address),
@@ -345,7 +442,7 @@ pub(crate) async fn deliverability_begin_impl(
     Ok(view)
 }
 
-/// Single-use consent check — constant-time compare on a fixed-format
+/// Single-use capability check — constant-time compare on a fixed-format
 /// CSPRNG token; consumed on authorize (a failed enqueue still burns it;
 /// retry = fresh `begin`).
 fn consent_ok(expected: &str, presented: &str) -> bool {
@@ -360,12 +457,15 @@ fn consent_ok(expected: &str, presented: &str) -> bool {
 /// `kiwi_integrations_deliverability_send(testId, consentToken, accountId,
 /// message)` → `DeliverabilitySendView`.
 ///
-/// CONSENT IS NON-BYPASSABLE: the token minted by `begin` must match the
-/// stored one and is consumed atomically under the sessions lock before
-/// the send is enqueued — the webview cannot fabricate or replay it.
-/// The message's own `to`/`cc`/`bcc` are ignored: the only recipient is
-/// the reserved single-use address. The send rides the normal outbox
-/// (undo-send grace applies), so dispatch is audited like any send.
+/// The capability minted by `begin` must match the stored one and is
+/// consumed atomically under the sessions lock before the send is
+/// enqueued — the webview can neither fabricate nor replay it. It is a
+/// single-use anti-replay gate, not a trusted user gesture. The
+/// message's own `to`/`cc`/`bcc` are ignored: the only recipient is the
+/// reserved single-use address. The send rides the outbox in the
+/// single-attempt class — a relay-ambiguous failure is never retried into
+/// a reservation that accepts exactly one message — and undo-send grace
+/// still applies, so dispatch is audited like any send.
 #[tauri::command]
 pub async fn kiwi_integrations_deliverability_send(
     state: State<'_, Arc<AppState>>,
@@ -397,8 +497,8 @@ pub(crate) async fn deliverability_send_impl(
     bounded("accountId", account_id, 128)?;
 
     let address = {
-        let mut sessions = state.deliverability.lock().await;
-        let Some(session) = sessions.get_mut(test_id) else {
+        let sessions = state.deliverability.lock().await;
+        let Some(session) = sessions.get(test_id) else {
             return Err(IpcError::not_found("unknown deliverability test"));
         };
         let authorized = session
@@ -414,16 +514,72 @@ pub(crate) async fn deliverability_send_impl(
                 "deliverability send requires the unconsumed consent token from begin",
             ));
         }
-        session.consent_token = None;
-        session.sent = true;
         session.reservation.address.clone()
     };
+
+    // Audit intent before the first irreversible effect (capability
+    // consumption + outbox write). An intent that cannot be recorded
+    // aborts the send rather than performing it unevidenced.
+    state.audit.lock().await.record(
+        "deliverability-send-intent",
+        &format!("{test_id} enqueue to {address} via {account_id}"),
+        now_unix(),
+    )?;
+
+    {
+        let mut sessions = state.deliverability.lock().await;
+        let Some(session) = sessions.get_mut(test_id) else {
+            return Err(IpcError::not_found("unknown deliverability test"));
+        };
+        // Re-check under the lock: a concurrent call may have consumed it
+        // while the intent record was being written.
+        if !session
+            .consent_token
+            .as_deref()
+            .is_some_and(|t| consent_ok(t, consent_token))
+        {
+            return Err(IpcError::new(
+                "consent-required",
+                "deliverability send requires the unconsumed consent token from begin",
+            ));
+        }
+        // Taking the value drops the last copy, which zeroes it.
+        session.consent_token = None;
+        session.consent_consumed = true;
+    }
 
     let mut forced = message;
     forced.to = vec![address];
     forced.cc = Vec::new();
     forced.bcc = Vec::new();
-    let receipt = send_impl(state, account_id, forced, None).await?;
+    let receipt = match send_impl_class(
+        state,
+        account_id,
+        forced,
+        None,
+        OutboxClass::SingleAttempt,
+    )
+    .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            // The capability is spent; the enqueue is not. Record why and
+            // surface the original failure — `enqueued` stays false.
+            let _ = state.audit.lock().await.record(
+                "deliverability-send-failed",
+                &format!("{test_id}: {} — {} (not enqueued)", e.code, e.message),
+                now_unix(),
+            );
+            return Err(e);
+        }
+    };
+    {
+        let mut sessions = state.deliverability.lock().await;
+        if let Some(session) = sessions.get_mut(test_id) {
+            session.enqueued = true;
+            session.queue_id = Some(receipt.queue_id.clone());
+        }
+    }
     state.audit.lock().await.record(
         "deliverability-send",
         &format!("{test_id} enqueued as {}", receipt.queue_id),
@@ -433,11 +589,17 @@ pub(crate) async fn deliverability_send_impl(
         test_id: test_id.to_string(),
         queue_id: receipt.queue_id,
         not_before_unix: receipt.not_before_unix,
+        consent_consumed: true,
+        enqueued: true,
+        single_attempt: true,
     })
 }
 
 /// `kiwi_integrations_deliverability_status(testId)` →
-/// `DeliverabilityStatusView`. Single-shot; the UI owns the poll loop.
+/// `DeliverabilityStatusView`. Single-shot; the UI owns the poll loop,
+/// and the backend refuses to amplify it: one in-flight poll per test, a
+/// cooldown after a provider 429 (served from the last observation, with
+/// `retryAfterMs` telling the caller when to come back).
 #[tauri::command]
 pub async fn kiwi_integrations_deliverability_status(
     state: State<'_, Arc<AppState>>,
@@ -447,24 +609,111 @@ pub async fn kiwi_integrations_deliverability_status(
     deliverability_status_impl(state.inner(), &test_id).await
 }
 
+struct PollGuard<'a> {
+    state: &'a AppState,
+    test_id: &'a str,
+}
+
+impl Drop for PollGuard<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut inflight) = self
+            .state
+            .deliverability_polling
+            .lock()
+            .map_err(|_| ())
+        {
+            inflight.remove(self.test_id);
+        }
+    }
+}
+
 pub(crate) async fn deliverability_status_impl(
     state: &AppState,
     test_id: &str,
 ) -> CmdResult<DeliverabilityStatusView> {
     bounded("testId", test_id, 128)?;
-    let res = reservation_for(state, test_id).await?;
-    let sent = state
-        .deliverability
+    let (res, enqueued, consent_consumed, cached) = {
+        let sessions = state.deliverability.lock().await;
+        let Some(session) = sessions.get(test_id) else {
+            return Err(IpcError::not_found("unknown deliverability test"));
+        };
+        (
+            session.reservation.clone(),
+            session.enqueued,
+            session.consent_consumed,
+            session.last_status.clone(),
+        )
+    };
+
+    if let Some(remaining) = cooldown_remaining(state, test_id) {
+        return match cached {
+            Some(last) => Ok(DeliverabilityStatusView::from_status(
+                test_id,
+                last,
+                enqueued,
+                consent_consumed,
+                Some(remaining),
+            )),
+            None => Err(IpcError::rate_limited(
+                format!("provider rate-limited; poll again after {remaining} ms"),
+                Some(remaining),
+            )),
+        };
+    }
+
+    {
+        let mut inflight = state
+            .deliverability_polling
+            .lock()
+            .map_err(|_| IpcError::new("internal", "poll guard poisoned"))?;
+        if !inflight.insert(test_id.to_string()) {
+            return Err(IpcError::new(
+                "poll-in-flight",
+                "a status poll for this test is already running",
+            )
+            .with_retry_after(Some(POLL_BUSY_RETRY_MS)));
+        }
+    }
+    let _guard = PollGuard { state, test_id };
+
+    let polled = spamtester(state)?.poll_status(&res).await;
+    let status = match polled {
+        Ok(s) => s,
+        Err(kiwi_integrations::IntegrationError::RateLimited { retry_after_ms }) => {
+            let until = state
+                .deliverability_cooldown
+                .lock()
+                .map_err(|_| IpcError::new("internal", "cooldown guard poisoned"))?
+                .note(test_id, retry_after_ms, now_unix_ms());
+            let remaining = (until - now_unix_ms()).max(0) as u64;
+            return Err(IpcError::rate_limited(
+                format!("provider rate-limited; poll again after {remaining} ms"),
+                Some(remaining),
+            ));
+        }
+        Err(e) => return Err(e.into()),
+    };
+    {
+        let mut sessions = state.deliverability.lock().await;
+        if let Some(session) = sessions.get_mut(test_id) {
+            session.last_status = Some(status.clone());
+        }
+    }
+    Ok(DeliverabilityStatusView::from_status(
+        test_id,
+        status,
+        enqueued,
+        consent_consumed,
+        None,
+    ))
+}
+
+fn cooldown_remaining(state: &AppState, test_id: &str) -> Option<u64> {
+    state
+        .deliverability_cooldown
         .lock()
-        .await
-        .get(test_id)
-        .map(|s| s.sent)
-        .unwrap_or(false);
-    let status = spamtester(state)?
-        .poll_status(&res)
-        .await
-        .map_err(IpcError::from)?;
-    Ok(DeliverabilityStatusView::from_status(test_id, status, sent))
+        .ok()?
+        .remaining(test_id, now_unix_ms())
 }
 
 /// `kiwi_integrations_deliverability_report(testId)` →
@@ -502,24 +751,59 @@ mod tests {
     use super::*;
     use crate::commands::accounts::add_account_impl;
     use crate::commands::send::tests::{acct_input, test_state};
-    use kiwi_integrations::http::{ScriptedHttp, Step};
+    use crate::state::{OutboxMeta, PollCooldowns, PROVIDER_429_COOLDOWN_MS};
+    use kiwi_integrations::deliverability::MAX_CHECKS;
+    use kiwi_integrations::http::{HttpRequest, HttpResponse, ScriptedHttp, Step};
 
-    fn state_with(script: Vec<Step>, tag: &str) -> AppState {
-        let dir = std::env::temp_dir().join(format!(
+    struct Fixture {
+        state: AppState,
+        http: Arc<ScriptedHttp>,
+    }
+
+    fn state_with(script: Vec<Step>, tag: &str) -> Fixture {
+        let http = Arc::new(ScriptedHttp::new(script));
+        let state =
+            AppState::open_test_with_http(temp_dir(tag), http.clone()).expect("test state");
+        Fixture { state, http }
+    }
+
+    fn temp_dir(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
             "kiwi-integ-{tag}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
-        ));
-        AppState::open_test_with_http(dir, Arc::new(ScriptedHttp::new(script))).unwrap()
+        ))
     }
 
-    // Recorded responses (synthetic — no real mail ever enters fixtures).
+    fn audit_log(state: &AppState) -> String {
+        std::fs::read_to_string(state.data_dir.join("audit.jsonl")).unwrap_or_default()
+    }
+
+    fn compose() -> ComposeInput {
+        ComposeInput {
+            to: vec!["attacker@elsewhere.example".into()],
+            cc: vec![],
+            bcc: vec![],
+            subject: "probe".into(),
+            text: "body".into(),
+            html: None,
+            in_reply_to: None,
+            references: vec![],
+            attachments: vec![],
+        }
+    }
+
+    fn leaked(s: String) -> &'static str {
+        Box::leak(s.into_boxed_str())
+    }
+
     const GM_ADDR: &str = r#"{"email_addr":"itest01@guerrillamailblock.com","email_timestamp":"1758300000","sid_token":"sid-fixture-1"}"#;
+    const GM_ADDR_2: &str = r#"{"email_addr":"itest02@guerrillamailblock.com","email_timestamp":"1758300001","sid_token":"sid-fixture-2"}"#;
     const GM_CHECK: &str = r#"{"list":[{"mail_id":"7001","mail_from":"svc@test.example","mail_subject":"Confirm &lt;kiwi&gt;","mail_excerpt":"Body preview","mail_timestamp":"1758300120","mail_date":"2026-09-25 12:00:00","mail_read":"0","mail_size":"1234"}],"count":"1","email":"itest01@guerrillamailblock.com","stats":{"mail_host":"sharklasers.com"}}"#;
-    const GM_FETCH: &str = r#"{"mail_id":"7001","mail_from":"svc@test.example","mail_subject":"Confirm <kiwi>","mail_excerpt":"Body preview","mail_timestamp":"1758300120","mail_date":"2026-09-25 12:00:00","mail_read":"0","mail_size":"1234","content_type":"text/html","mail_body":"<html><body><h1>Hello</h1><script>alert(1)</script><img src=\"https://tracker.example/x.png\"></body></html>","att":0,"attachments":[]}"#;
+    const GM_FETCH: &str = r#"{"mail_id":"7001","mail_from":"svc@test.example","mail_subject":"Confirm <kiwi>","mail_excerpt":"Body preview","mail_timestamp":"1758300120","mail_date":"2026-09-25 12:00:00","mail_read":"0","mail_size":"1234","content_type":"text/html","mail_body":"<html><body><h1>Hello</h1><script>alert(1)</script><a href=\"https://evil.example/pwn\">click me</a><a href=\"javascript:alert(2)\">js</a><a href=\"data:text/html,x\">data</a><a href=\"mailto:a@b.test\">mail</a><img src=\"https://tracker.example/x.png\"><svg><a xlink:href=\"https://evil.example/svg\">s</a></svg><form action=\"https://evil.example/post\"><input name=\"cc\"></form><div onclick=\"steal()\">text</div></body></html>","att":0,"attachments":[]}"#;
     const GM_EXTEND: &str = r#"{"expired":false,"affected":"1","email_timestamp":"1758300000"}"#;
     const GM_FORGET: &str = "true";
 
@@ -531,64 +815,93 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn tempmail_lifecycle_notice_and_sanitized_fetch() {
-        let http = vec![
-            Step::get("init", &["f=get_email_address"], 200, GM_ADDR)
-                .respond_headers(&[("set-cookie", "PHPSESSID=sess-1; path=/")]),
-            Step::get("poll", &["f=check_email"], 200, GM_CHECK),
-            Step::get("fetch", &["f=fetch_email", "email_id=7001"], 200, GM_FETCH),
-            Step::post("extend", &["f=extend"], 200, GM_EXTEND),
-            Step::post("forget", &["f=forget_me"], 200, GM_FORGET),
-        ];
-        let state = state_with(http, "tm-life");
+        let f = state_with(
+            vec![
+                Step::get("init", &["f=get_email_address"], 200, GM_ADDR)
+                    .respond_headers(&[("set-cookie", "PHPSESSID=sess-1; path=/")]),
+                Step::get("poll", &["f=check_email"], 200, GM_CHECK),
+                Step::get("fetch", &["f=fetch_email", "email_id=7001"], 200, GM_FETCH),
+                Step::post("extend", &["f=extend"], 200, GM_EXTEND),
+                Step::post("forget", &["f=forget_me"], 200, GM_FORGET),
+            ],
+            "tm-life",
+        );
 
-        let mb = tempmail_create_impl(&state, None).await.unwrap();
+        let mb = tempmail_create_impl(&f.state, None).await.unwrap();
         assert_eq!(mb.address, "itest01@guerrillamailblock.com");
         assert!(mb.public_inbox_notice.contains("PUBLIC"));
 
-        let poll = tempmail_poll_impl(&state).await.unwrap();
+        let poll = tempmail_poll_impl(&f.state).await.unwrap();
         assert_eq!(poll.messages.len(), 1);
         assert_eq!(poll.messages[0].mail_id, "7001");
         assert!(poll.public_inbox_notice.contains("PUBLIC"));
 
-        let msg = tempmail_fetch_impl(&state, "7001").await.unwrap();
-        // Script stripped by the sanitizer; remote img src dropped.
+        let msg = tempmail_fetch_impl(&f.state, "7001").await.unwrap();
         let html = msg.html.expect("html body");
         assert!(html.contains("<h1>Hello</h1>"));
+        assert!(html.contains("click me"));
         assert!(!html.contains("script"));
         assert!(!html.contains("tracker.example"));
         assert_eq!(msg.remote_images_stripped, 1);
         assert!(msg.public_inbox_notice.contains("PUBLIC"));
+        assert!(audit_log(&f.state).contains("tempmail-create-intent"));
+        f.http.assert_exhausted();
+    }
 
-        let ext = tempmail_extend_impl(&state).await.unwrap();
-        assert!(ext.extended && !ext.expired);
-
-        let d = tempmail_discard_impl(&state).await.unwrap();
-        assert!(d.discarded && d.remote_forgotten);
-        // Session gone — poll fails not-found now.
-        assert!(
-            tempmail_poll_impl(&state)
-                .await
-                .is_err_and(|e| e.code == "not-found")
+    #[tokio::test(flavor = "current_thread")]
+    async fn tempmail_fetch_html_has_no_navigable_anchor() {
+        let f = state_with(
+            vec![
+                Step::get("init", &["f=get_email_address"], 200, GM_ADDR),
+                Step::get("fetch", &["f=fetch_email", "email_id=7001"], 200, GM_FETCH),
+            ],
+            "tm-anchors",
         );
+        tempmail_create_impl(&f.state, None).await.unwrap();
+        let msg = tempmail_fetch_impl(&f.state, "7001").await.unwrap();
+        let html = msg.html.expect("html body");
+        let lowered = html.to_ascii_lowercase();
+        for forbidden in [
+            "<a ",
+            "href",
+            "xlink",
+            "javascript:",
+            "data:text/html",
+            "mailto:",
+            "<form",
+            "<input",
+            "onclick",
+            "<svg",
+            "evil.example",
+        ] {
+            assert!(
+                !lowered.contains(forbidden),
+                "{forbidden} survived display-only sanitization: {html}"
+            );
+        }
+        f.http.assert_exhausted();
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn tempmail_create_with_local_part_and_notice_on_all() {
-        let http = vec![
-            Step::get("init", &["f=get_email_address"], 200, GM_ADDR),
-            Step::post(
-                "rename",
-                &["f=set_email_user", "email_user=mymbox"],
-                200,
-                r#"{"email_addr":"mymbox@sharklasers.com","email_timestamp":"1758300100"}"#,
-            ),
-        ];
-        let state = state_with(http, "tm-local");
-        let mb = tempmail_create_impl(&state, Some("mymbox".into()))
+        let f = state_with(
+            vec![
+                Step::get("init", &["f=get_email_address"], 200, GM_ADDR),
+                Step::post(
+                    "rename",
+                    &["f=set_email_user", "email_user=mymbox"],
+                    200,
+                    r#"{"email_addr":"mymbox@sharklasers.com","email_timestamp":"1758300100"}"#,
+                ),
+            ],
+            "tm-local",
+        );
+        let mb = tempmail_create_impl(&f.state, Some("mymbox".into()))
             .await
             .unwrap();
         assert_eq!(mb.address, "mymbox@sharklasers.com");
         assert!(mb.public_inbox_notice.contains("PUBLIC"));
+        f.http.assert_exhausted();
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -638,99 +951,179 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn deliverability_begin_send_status_report_flow() {
-        let http = vec![
-            Step::post("reserve", &["/api/v1/inbox"], 200, ST_RESERVE),
-            Step::get(
-                "pending",
-                &["/api/v1/tests/fx-slug-9u2n4k/status"],
-                202,
-                ST_STATUS_PENDING_202,
-            ),
-            Step::get(
-                "ready",
-                &["/api/v1/tests/fx-slug-9u2n4k/status"],
-                200,
-                ST_STATUS_READY,
-            ),
-            Step::get("report", &["/api/v1/tests/fx-slug-9u2n4k"], 200, ST_REPORT),
-        ];
-        let state = state_with(http, "d-flow");
-        let acct = add_account_impl(&state, acct_input()).await.unwrap();
+    async fn tempmail_failed_candidate_forgets_remote_and_keeps_old_session() {
+        let f = state_with(
+            vec![
+                Step::get("init-1", &["f=get_email_address"], 200, GM_ADDR),
+                Step::get("init-2", &["f=get_email_address"], 200, GM_ADDR_2),
+                Step::post("rename-fails", &["f=set_email_user"], 502, "{}"),
+                Step::post("forget-candidate", &["f=forget_me"], 200, GM_FORGET),
+                Step::get("poll-old", &["f=check_email"], 200, GM_CHECK),
+            ],
+            "tm-candidate",
+        );
+        let first = tempmail_create_impl(&f.state, None).await.unwrap();
+        assert_eq!(first.address, "itest01@guerrillamailblock.com");
 
-        let begin = deliverability_begin_impl(&state).await.unwrap();
+        let failed = tempmail_create_impl(&f.state, Some("newbox".into())).await;
+        assert!(failed.is_err_and(|e| e.code == "integration-error"));
+
+        let poll = tempmail_poll_impl(&f.state).await.unwrap();
+        assert_eq!(poll.address.as_deref(), Some("itest01@guerrillamailblock.com"));
+        let log = audit_log(&f.state);
+        assert!(log.contains("tempmail-create-failed"));
+        assert!(log.contains("remote forget ok"));
+        f.http.assert_exhausted();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn tempmail_failed_candidate_keeps_old_session_when_cleanup_fails() {
+        let f = state_with(
+            vec![
+                Step::get("init-1", &["f=get_email_address"], 200, GM_ADDR),
+                Step::get("init-2", &["f=get_email_address"], 200, GM_ADDR_2),
+                Step::post("rename-fails", &["f=set_email_user"], 502, "{}"),
+                Step::post("forget-candidate-fails", &["f=forget_me"], 500, "{}"),
+                Step::get("poll-old", &["f=check_email"], 200, GM_CHECK),
+            ],
+            "tm-candidate2",
+        );
+        tempmail_create_impl(&f.state, None).await.unwrap();
+        assert!(
+            tempmail_create_impl(&f.state, Some("newbox".into()))
+                .await
+                .is_err_and(|e| e.code == "integration-error")
+        );
+        assert!(
+            tempmail_poll_impl(&f.state)
+                .await
+                .is_ok_and(|p| p.total_new == 1)
+        );
+        assert!(audit_log(&f.state).contains("remote forget failed"));
+        f.http.assert_exhausted();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn tempmail_replacement_retires_previous_remote_session() {
+        let f = state_with(
+            vec![
+                Step::get("init-1", &["f=get_email_address"], 200, GM_ADDR),
+                Step::get("init-2", &["f=get_email_address"], 200, GM_ADDR_2),
+                Step::post("forget-old", &["f=forget_me"], 200, GM_FORGET),
+                Step::get("poll-new", &["f=check_email"], 200, GM_CHECK),
+            ],
+            "tm-replace",
+        );
+        tempmail_create_impl(&f.state, None).await.unwrap();
+        let second = tempmail_create_impl(&f.state, None).await.unwrap();
+        assert_eq!(second.address, "itest02@guerrillamailblock.com");
+        let log = audit_log(&f.state);
+        assert!(log.contains("tempmail-replaced"));
+        assert!(log.contains("replaced, previous forgotten"));
+        tempmail_poll_impl(&f.state).await.unwrap();
+        f.http.assert_exhausted();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn tempmail_create_aborts_when_intent_cannot_be_audited() {
+        let f = state_with(
+            vec![Step::get("init", &["f=get_email_address"], 200, GM_ADDR)],
+            "tm-intent",
+        );
+        f.state.audit.lock().await.inject_failure();
+        let err = tempmail_create_impl(&f.state, None).await.unwrap_err();
+        assert_eq!(err.code, "io-error");
+        assert_eq!(f.http.unconsumed(), vec!["init"]);
+        assert!(
+            tempmail_poll_impl(&f.state)
+                .await
+                .is_err_and(|e| e.code == "not-found")
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn deliverability_begin_send_status_report_flow() {
+        let f = state_with(
+            vec![
+                Step::post("reserve", &["/api/v1/inbox"], 200, ST_RESERVE),
+                Step::get(
+                    "pending",
+                    &["/api/v1/tests/fx-slug-9u2n4k/status"],
+                    202,
+                    ST_STATUS_PENDING_202,
+                ),
+                Step::get(
+                    "ready",
+                    &["/api/v1/tests/fx-slug-9u2n4k/status"],
+                    200,
+                    ST_STATUS_READY,
+                ),
+                Step::get("report", &["/api/v1/tests/fx-slug-9u2n4k"], 200, ST_REPORT),
+            ],
+            "d-flow",
+        );
+        let acct = add_account_impl(&f.state, acct_input()).await.unwrap();
+
+        let begin = deliverability_begin_impl(&f.state).await.unwrap();
         assert_eq!(begin.address, "drop-k7f2@in.email-spam-tester.example");
         assert!(!begin.consent_token.is_empty());
         assert!(begin.consent_notice.contains("third-party"));
+        assert!(!format!("{begin:?}").contains(&begin.consent_token));
 
-        // Send is gated on the token — wrong token refused, no send queued.
-        let msg = crate::types::ComposeInput {
-            to: vec!["attacker@elsewhere.example".into()], // ignored
-            cc: vec![],
-            bcc: vec![],
-            subject: "probe".into(),
-            text: "body".into(),
-            html: None,
-            in_reply_to: None,
-            references: vec![],
-            attachments: vec![],
-        };
         let bad = deliverability_send_impl(
-            &state,
+            &f.state,
             &begin.test_id,
             "consent-wrong",
             &acct.id,
-            msg.clone(),
+            compose(),
         )
         .await;
         assert!(bad.is_err_and(|e| e.code == "consent-required"));
-        assert_eq!(state.send_queue.lock().await.pending_count(), 0);
+        assert_eq!(f.state.send_queue.lock().await.pending_count(), 0);
+        assert!(!audit_log(&f.state).contains("deliverability-send-intent"));
 
-        let st = deliverability_status_impl(&state, &begin.test_id)
+        let st = deliverability_status_impl(&f.state, &begin.test_id)
             .await
             .unwrap();
         assert_eq!(st.analysis_status, "pending");
-        assert!(!st.ready && !st.sent);
+        assert!(!st.ready && !st.sent && !st.consent_consumed);
+        assert!(st.retry_after_ms.is_none());
 
-        // Correct token → one send enqueued to the RESERVED address only.
-        let sent =
-            deliverability_send_impl(&state, &begin.test_id, &begin.consent_token, &acct.id, msg)
-                .await
-                .unwrap();
-        assert_eq!(state.send_queue.lock().await.pending_count(), 1);
-        let meta = state.outbox_meta.lock().await;
-        let m = meta.get(&sent.queue_id).expect("outbox meta");
-        assert_eq!(m.to, vec!["drop-k7f2@in.email-spam-tester.example"]);
-        drop(meta);
-
-        // Token is single-use — replay is refused.
-        let replay = deliverability_send_impl(
-            &state,
+        let sent = deliverability_send_impl(
+            &f.state,
             &begin.test_id,
             &begin.consent_token,
             &acct.id,
-            crate::types::ComposeInput {
-                to: vec![],
-                cc: vec![],
-                bcc: vec![],
-                subject: "x".into(),
-                text: "y".into(),
-                html: None,
-                in_reply_to: None,
-                references: vec![],
-                attachments: vec![],
-            },
+            compose(),
+        )
+        .await
+        .unwrap();
+        assert!(sent.enqueued && sent.consent_consumed && sent.single_attempt);
+        assert_eq!(f.state.send_queue.lock().await.pending_count(), 1);
+        {
+            let meta = f.state.outbox_meta.lock().await;
+            let m = meta.get(&sent.queue_id).expect("outbox meta");
+            assert_eq!(m.to, vec!["drop-k7f2@in.email-spam-tester.example"]);
+            assert!(m.class.is_single_attempt());
+        }
+
+        let replay = deliverability_send_impl(
+            &f.state,
+            &begin.test_id,
+            &begin.consent_token,
+            &acct.id,
+            compose(),
         )
         .await;
         assert!(replay.is_err_and(|e| e.code == "consent-required"));
 
-        let st = deliverability_status_impl(&state, &begin.test_id)
+        let st = deliverability_status_impl(&f.state, &begin.test_id)
             .await
             .unwrap();
-        assert!(st.ready && st.sent);
+        assert!(st.ready && st.sent && st.consent_consumed);
         assert_eq!((st.checks_done, st.checks_total), (3, 3));
 
-        let rep = deliverability_report_impl(&state, &begin.test_id)
+        let rep = deliverability_report_impl(&f.state, &begin.test_id)
             .await
             .unwrap();
         assert_eq!(rep.score_ours_milli, Some(87_000));
@@ -739,6 +1132,12 @@ mod tests {
         assert_eq!(rep.tallies["auth"].fail, 1);
         assert_eq!(rep.tallies["content"].warn, 1);
         assert_eq!(rep.checks[0].category, "auth");
+        assert_eq!(rep.auth_gate.state, "blocked");
+        assert!(!rep.auth_gate.clear);
+        assert_eq!(rep.auth_gate.failed_ids, vec!["dkim"]);
+        assert!(!rep.checks_truncated);
+        assert!(rep.evidence_complete);
+        f.http.assert_exhausted();
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -750,20 +1149,397 @@ mod tests {
             "dtest-ghost",
             "consent-anything",
             &acct.id,
-            crate::types::ComposeInput {
-                to: vec![],
-                cc: vec![],
-                bcc: vec![],
-                subject: "s".into(),
-                text: "t".into(),
-                html: None,
-                in_reply_to: None,
-                references: vec![],
-                attachments: vec![],
-            },
+            compose(),
         )
         .await;
         assert!(r.is_err_and(|e| e.code == "not-found"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn deliverability_report_gate_blocks_on_auth_failure() {
+        let f = state_with(
+            vec![
+                Step::post("reserve", &["/api/v1/inbox"], 200, ST_RESERVE),
+                Step::get("report", &["/api/v1/tests/fx-slug-9u2n4k"], 200, ST_REPORT),
+            ],
+            "d-gate",
+        );
+        let begin = deliverability_begin_impl(&f.state).await.unwrap();
+        let rep = deliverability_report_impl(&f.state, &begin.test_id)
+            .await
+            .unwrap();
+        let json = serde_json::to_value(&rep).unwrap();
+        assert_eq!(json["authGate"]["state"], "blocked");
+        assert_eq!(json["authGate"]["clear"], false);
+        assert_eq!(json["authGate"]["failedIds"][0], "dkim");
+        assert_eq!(json["checksTruncated"], false);
+        assert_eq!(json["evidenceComplete"], true);
+        f.http.assert_exhausted();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn deliverability_report_truncation_never_reads_as_complete() {
+        let checks: Vec<String> = (0..=MAX_CHECKS)
+            .map(|i| {
+                format!(
+                    r#"{{"id":"auth-{i}","category":"auth","status":"pass","title":"t","summary":"s","citations":{{}}}}"#
+                )
+            })
+            .collect();
+        let body = format!(
+            r#"{{"score_ours":50.0,"score_compat":5.0,"complete":true,"checks":[{}]}}"#,
+            checks.join(",")
+        );
+        let f = state_with(
+            vec![
+                Step::post("reserve", &["/api/v1/inbox"], 200, ST_RESERVE),
+                Step::get("report", &["/api/v1/tests/fx-slug-9u2n4k"], 200, leaked(body)),
+            ],
+            "d-trunc",
+        );
+        let begin = deliverability_begin_impl(&f.state).await.unwrap();
+        let rep = deliverability_report_impl(&f.state, &begin.test_id)
+            .await
+            .unwrap();
+        assert_eq!(rep.checks.len(), MAX_CHECKS);
+        assert!(rep.checks_truncated);
+        assert!(rep.complete, "the provider flag is preserved verbatim");
+        assert!(!rep.evidence_complete);
+        assert_eq!(rep.auth_gate.state, "incomplete");
+        assert_eq!(rep.auth_gate.gap, Some("truncated-checks"));
+        let json = serde_json::to_value(&rep).unwrap();
+        assert_eq!(json["complete"], true);
+        assert_eq!(json["checksTruncated"], true);
+        assert_eq!(json["evidenceComplete"], false);
+        f.http.assert_exhausted();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn deliverability_send_failure_never_marks_enqueued() {
+        let f = state_with(
+            vec![Step::post("reserve", &["/api/v1/inbox"], 200, ST_RESERVE)],
+            "d-nofail",
+        );
+        let begin = deliverability_begin_impl(&f.state).await.unwrap();
+        let err = deliverability_send_impl(
+            &f.state,
+            &begin.test_id,
+            &begin.consent_token,
+            "acct-does-not-exist",
+            compose(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, "not-found");
+        assert_eq!(f.state.send_queue.lock().await.pending_count(), 0);
+        assert!(f.state.outbox_meta.lock().await.is_empty());
+        {
+            let sessions = f.state.deliverability.lock().await;
+            let s = sessions.get(&begin.test_id).unwrap();
+            assert!(s.consent_consumed, "the capability is spent either way");
+            assert!(!s.enqueued, "a failed enqueue is never `sent`");
+            assert!(s.queue_id.is_none());
+        }
+        let log = audit_log(&f.state);
+        assert!(log.contains("deliverability-send-intent"));
+        assert!(log.contains("deliverability-send-failed"));
+        assert!(log.contains("not enqueued"));
+        f.http.assert_exhausted();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn deliverability_send_is_durable_single_attempt_class() {
+        let f = state_with(
+            vec![Step::post("reserve", &["/api/v1/inbox"], 200, ST_RESERVE)],
+            "d-class",
+        );
+        let acct = add_account_impl(&f.state, acct_input()).await.unwrap();
+        let begin = deliverability_begin_impl(&f.state).await.unwrap();
+        let sent = deliverability_send_impl(
+            &f.state,
+            &begin.test_id,
+            &begin.consent_token,
+            &acct.id,
+            compose(),
+        )
+        .await
+        .unwrap();
+
+        assert!(f.state.single_attempt.lock().await.contains(&sent.queue_id));
+        let ordinary = crate::commands::send::send_impl(&f.state, &acct.id, compose(), None)
+            .await
+            .unwrap();
+        assert!(!f.state.single_attempt.lock().await.contains(&ordinary.queue_id));
+        let on_disk =
+            std::fs::read_to_string(f.state.data_dir.join("outbox_single_attempt.json")).unwrap();
+        assert!(on_disk.contains(&sent.queue_id));
+        f.http.assert_exhausted();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_send_keeps_the_retryable_class() {
+        let f = state_with(vec![], "ordinary-class");
+        let acct = add_account_impl(&f.state, acct_input()).await.unwrap();
+        let sent = crate::commands::send::send_impl(&f.state, &acct.id, compose(), None)
+            .await
+            .unwrap();
+        let meta: OutboxMeta = f
+            .state
+            .outbox_meta
+            .lock()
+            .await
+            .get(&sent.queue_id)
+            .cloned()
+            .unwrap();
+        assert_eq!(meta.class, OutboxClass::Ordinary);
+        assert_eq!(meta.attempts, 0);
+        assert!(!f.state.single_attempt.lock().await.contains(&sent.queue_id));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn single_attempt_item_is_never_retried_after_restart() {
+        let dir = temp_dir("d-restart");
+        let (test_id, queue_id) = {
+            let http = Arc::new(ScriptedHttp::new(vec![Step::post(
+                "reserve",
+                &["/api/v1/inbox"],
+                200,
+                ST_RESERVE,
+            )]));
+            let state = AppState::open_test_with_http(dir.clone(), http).unwrap();
+            let acct = add_account_impl(&state, acct_input()).await.unwrap();
+            let begin = deliverability_begin_impl(&state).await.unwrap();
+            let sent = deliverability_send_impl(
+                &state,
+                &begin.test_id,
+                &begin.consent_token,
+                &acct.id,
+                compose(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(state.send_queue.lock().await.pending_count(), 1);
+            (begin.test_id.clone(), sent.queue_id)
+        };
+
+        let state = AppState::open_test(dir.clone()).unwrap();
+        assert_eq!(state.send_queue.lock().await.pending_count(), 0);
+        assert!(state.outbox_meta.lock().await.is_empty());
+        assert!(state.store.lock().await.outbox_list(10).unwrap().is_empty());
+        assert!(!state.single_attempt.lock().await.contains(&queue_id));
+        let log = audit_log(&state);
+        assert!(log.contains("send-abandoned-no-retry"));
+        assert!(log.contains(&queue_id));
+        assert!(
+            deliverability_status_impl(&state, &test_id)
+                .await
+                .is_err_and(|e| e.code == "not-found")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn deliverability_begin_aborts_when_intent_cannot_be_audited() {
+        let f = state_with(
+            vec![Step::post("reserve", &["/api/v1/inbox"], 200, ST_RESERVE)],
+            "d-beginintent",
+        );
+        f.state.audit.lock().await.inject_failure();
+        let err = deliverability_begin_impl(&f.state).await.unwrap_err();
+        assert_eq!(err.code, "io-error");
+        assert_eq!(f.http.unconsumed(), vec!["reserve"]);
+        assert!(f.state.deliverability.lock().await.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn deliverability_send_aborts_when_intent_cannot_be_audited() {
+        let f = state_with(
+            vec![Step::post("reserve", &["/api/v1/inbox"], 200, ST_RESERVE)],
+            "d-sendintent",
+        );
+        let acct = add_account_impl(&f.state, acct_input()).await.unwrap();
+        let begin = deliverability_begin_impl(&f.state).await.unwrap();
+        f.state.audit.lock().await.inject_failure();
+        let err = deliverability_send_impl(
+            &f.state,
+            &begin.test_id,
+            &begin.consent_token,
+            &acct.id,
+            compose(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, "io-error");
+        assert_eq!(f.state.send_queue.lock().await.pending_count(), 0);
+        {
+            let sessions = f.state.deliverability.lock().await;
+            let s = sessions.get(&begin.test_id).unwrap();
+            assert!(!s.consent_consumed, "no effect ran, so nothing is spent");
+            assert!(!s.enqueued);
+            assert!(s.consent_token.is_some());
+        }
+        let sent = deliverability_send_impl(
+            &f.state,
+            &begin.test_id,
+            &begin.consent_token,
+            &acct.id,
+            compose(),
+        )
+        .await
+        .unwrap();
+        assert!(sent.enqueued);
+        f.http.assert_exhausted();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn deliverability_send_surfaces_completion_audit_failure() {
+        let f = state_with(
+            vec![Step::post("reserve", &["/api/v1/inbox"], 200, ST_RESERVE)],
+            "d-completeaudit",
+        );
+        let acct = add_account_impl(&f.state, acct_input()).await.unwrap();
+        let begin = deliverability_begin_impl(&f.state).await.unwrap();
+        f.state.audit.lock().await.inject_failure_after(2);
+        let err = deliverability_send_impl(
+            &f.state,
+            &begin.test_id,
+            &begin.consent_token,
+            &acct.id,
+            compose(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, "io-error");
+        {
+            let sessions = f.state.deliverability.lock().await;
+            let s = sessions.get(&begin.test_id).unwrap();
+            assert!(s.enqueued, "the queue is real, so the state says so");
+        }
+        let log = audit_log(&f.state);
+        assert!(log.contains("deliverability-send-intent"));
+        assert!(log.contains("send-queued"));
+        assert!(!log.contains("\"deliverability-send\""));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn deliverability_poll_rate_limited_sets_a_cooldown() {
+        let f = state_with(
+            vec![
+                Step::post("reserve", &["/api/v1/inbox"], 200, ST_RESERVE),
+                Step::get(
+                    "first",
+                    &["/api/v1/tests/fx-slug-9u2n4k/status"],
+                    200,
+                    ST_STATUS_PENDING_202,
+                )
+                .respond_headers(&[("retry-after", "5")]),
+                Step::get(
+                    "second",
+                    &["/api/v1/tests/fx-slug-9u2n4k/status"],
+                    200,
+                    ST_STATUS_PENDING_202,
+                )
+                .respond_headers(&[("retry-after", "5")]),
+            ],
+            "d-429",
+        );
+        let begin = deliverability_begin_impl(&f.state).await.unwrap();
+        let first = deliverability_status_impl(&f.state, &begin.test_id)
+            .await
+            .unwrap();
+        assert_eq!(first.analysis_status, "pending");
+
+        let limited = deliverability_status_impl(&f.state, &begin.test_id)
+            .await
+            .unwrap_err();
+        assert_eq!(limited.code, "rate-limited");
+        let hint = limited.retry_after_ms.expect("structured retry hint");
+        assert!(
+            (PROVIDER_429_COOLDOWN_MS..=PROVIDER_429_COOLDOWN_MS + 5_000).contains(&hint),
+            "the enforced cooldown must dominate a 5 s server hint: {hint}"
+        );
+        let json = serde_json::to_value(&limited).unwrap();
+        assert_eq!(json["code"], "rate-limited");
+        assert_eq!(json["retryAfterMs"], hint);
+
+        let cached = deliverability_status_impl(&f.state, &begin.test_id)
+            .await
+            .unwrap();
+        assert_eq!(cached.analysis_status, "pending");
+        assert_eq!(cached.checks_done, first.checks_done);
+        assert!(cached.retry_after_ms.is_some_and(|ms| ms <= hint));
+        f.http.assert_exhausted();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn deliverability_poll_cooldown_without_a_cached_status_errors() {
+        let f = state_with(
+            vec![
+                Step::post("reserve", &["/api/v1/inbox"], 200, ST_RESERVE),
+                Step::get(
+                    "limited",
+                    &["/api/v1/tests/fx-slug-9u2n4k/status"],
+                    429,
+                    "{}",
+                )
+                .respond_headers(&[("retry-after", "120")]),
+                Step::get(
+                    "never-called",
+                    &["/api/v1/tests/fx-slug-9u2n4k/status"],
+                    200,
+                    ST_STATUS_READY,
+                ),
+            ],
+            "d-429b",
+        );
+        let begin = deliverability_begin_impl(&f.state).await.unwrap();
+        let err = deliverability_status_impl(&f.state, &begin.test_id)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "rate-limited");
+        assert!(err.retry_after_ms.is_some_and(|ms| ms >= 120_000));
+        let again = deliverability_status_impl(&f.state, &begin.test_id)
+            .await
+            .unwrap_err();
+        assert_eq!(again.code, "rate-limited");
+        assert_eq!(
+            f.http.unconsumed(),
+            vec!["never-called"],
+            "the cooldown must not amplify provider calls"
+        );
+    }
+
+    #[test]
+    fn cooldown_math_is_floor_bounded_and_expiring() {
+        let mut c = PollCooldowns::default();
+        assert!(c.remaining("t", 1_000).is_none());
+        let until = c.note("t", Some(5_000), 1_000);
+        assert_eq!(until, 1_000 + PROVIDER_429_COOLDOWN_MS as i64);
+        assert_eq!(c.remaining("t", 2_000), Some(29_000));
+        assert!(c.remaining("t", until).is_none());
+        let _until = c.note("t", Some(600_000), 1_000);
+        assert_eq!(c.remaining("t", 1_000), Some(600_000));
+        c.forget("t");
+        assert!(c.remaining("t", 1_000).is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn default_test_state_refuses_provider_network() {
+        let state = test_state("integ-offline");
+        assert!(
+            tempmail_create_impl(&state, None)
+                .await
+                .is_err_and(|e| e.code == "connect-failed")
+        );
+        assert!(
+            deliverability_begin_impl(&state)
+                .await
+                .is_err_and(|e| e.code == "connect-failed")
+        );
+        assert!(
+            state.offline_attempts(),
+            "the default test transport must have seen both calls"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -779,5 +1555,87 @@ mod tests {
         assert!(!consent_ok("abc", "abd"));
         assert!(!consent_ok("abc", "abcd"));
         assert!(!consent_ok("abc", ""));
+    }
+
+    struct SlowHttp {
+        inner: ScriptedHttp,
+        entered: Arc<tokio::sync::Semaphore>,
+        release: Arc<tokio::sync::Notify>,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl kiwi_integrations::http::HttpClient for SlowHttp {
+        async fn request(
+            &self,
+            req: HttpRequest,
+        ) -> Result<HttpResponse, kiwi_integrations::IntegrationError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.entered.add_permits(1);
+            self.release.notified().await;
+            self.inner.request(req).await
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deliverability_poll_is_single_flight() {
+        let entered = Arc::new(tokio::sync::Semaphore::new(0));
+        let release = Arc::new(tokio::sync::Notify::new());
+        let transport = Arc::new(SlowHttp {
+            inner: ScriptedHttp::new(vec![
+                Step::post("reserve", &["/api/v1/inbox"], 200, ST_RESERVE),
+                Step::get(
+                    "poll",
+                    &["/api/v1/tests/fx-slug-9u2n4k/status"],
+                    200,
+                    ST_STATUS_READY,
+                ),
+            ]),
+            entered: entered.clone(),
+            release: release.clone(),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let state = Arc::new(
+            AppState::open_test_with_http(temp_dir("d-single"), transport.clone()).unwrap(),
+        );
+
+        let reserving = {
+            let s = state.clone();
+            tokio::spawn(async move { deliverability_begin_impl(&s).await })
+        };
+        entered
+            .acquire()
+            .await
+            .expect("reserve entered the transport")
+            .forget();
+        release.notify_one();
+        let begin = reserving.await.unwrap().unwrap();
+
+        let polling = {
+            let s = state.clone();
+            let id = begin.test_id.clone();
+            tokio::spawn(async move { deliverability_status_impl(&s, &id).await })
+        };
+        entered
+            .acquire()
+            .await
+            .expect("poll entered the transport")
+            .forget();
+
+        let second = deliverability_status_impl(&state, &begin.test_id).await;
+        let busy = second.unwrap_err();
+        assert_eq!(busy.code, "poll-in-flight");
+        assert_eq!(busy.retry_after_ms, Some(POLL_BUSY_RETRY_MS));
+
+        release.notify_one();
+        let done = polling.await.unwrap().unwrap();
+        assert!(done.ready);
+        assert_eq!(done.checks_done, 3);
+        assert_eq!(
+            transport.calls.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "one provider call per operation, no amplification"
+        );
+        transport.inner.assert_exhausted();
     }
 }

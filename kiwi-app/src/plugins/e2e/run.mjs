@@ -4,8 +4,9 @@
  * REAL shipped modules (bundled in-memory via esbuild; nothing reimplemented):
  *
  *   manifest.json on disk → validatePluginManifest → installPlugin → getPlugin
- *   → load entry source → exec with injected PluginClient (the documented
- *   trusted-code alpha loader) → host "mail-changed" event → plugin replies
+ *   → load entry source → exec inside a real Worker (T-306: prelude +
+ *   entry source via node:worker_threads — same script artifact the app's
+ *   blob Worker runs) → host "mail-changed" event → plugin replies
  *   with notify.show → capability gate → handler.
  *
  * Asserts: event delivered + plugin acted (granted capability), capability
@@ -18,6 +19,7 @@
  */
 import { build } from "esbuild";
 import { readFileSync } from "node:fs";
+import { Worker as NodeWorker } from "node:worker_threads";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -76,6 +78,35 @@ const P = await import(
   "data:text/javascript;base64," +
     Buffer.from(out.outputFiles[0].text).toString("base64")
 );
+
+/**
+ * Node-side spawnWorker for the harness (T-306): runs the exact
+ * prelude+entry script startPluginSession builds, in a real worker thread.
+ * Adapts worker_threads' on/postMessage to the browser-Worker shape the
+ * runtime expects.
+ */
+function spawnNodeWorker(script) {
+  const w = new NodeWorker(script, { eval: true });
+  const wrapped = new Map(); // runtime fn → [nodeEvent, wrapper]
+  const ev = (t) => (t === "message" ? "message" : t === "messageerror" ? "messageerror" : "error");
+  const adapt = (t, d) => (t === "message" ? { data: d } : { message: d instanceof Error ? d.message : String(d) });
+  return {
+    postMessage: (m) => w.postMessage(m),
+    addEventListener: (t, f) => {
+      const g = (d) => f(adapt(t, d));
+      wrapped.set(f, [ev(t), g]);
+      w.on(ev(t), g);
+    },
+    removeEventListener: (_t, f) => {
+      const g = wrapped.get(f);
+      if (g) {
+        w.off(g[0], g[1]);
+        wrapped.delete(f);
+      }
+    },
+    terminate: () => void w.terminate(),
+  };
+}
 const {
   validatePluginManifest,
   installPlugin,
@@ -267,10 +298,10 @@ const instP = installPlugin(readFileSync(join(paneDir, "manifest.json"), "utf8")
 ok(instP.ok, "settings-pane reference plugin installs");
 const recP = getPlugin("settings-pane-demo");
 const toasts = [];
-const sinks = { notify: (k, t) => toasts.push({ k, t }), isLocked: () => locked };
+const sinks = { notify: (k, t) => toasts.push({ k, t }), isLocked: () => locked, spawnWorker: spawnNodeWorker };
 const sess = P.startPluginSession(recP, sinks);
-ok(!!sess, "plugin session starts via runtime (in-context alpha loader)");
-await sleep(50); // host.ready evt → plugin calls settings.registerPane
+ok(!!sess, "plugin session starts via runtime (worker loader, T-306)");
+for (let i = 0; i < 75 && !P.listPluginPanes().some((p) => p.paneId === "about"); i++) await sleep(20); // host.ready → registerPane
 ok(
   P.listPluginPanes().some(
     (p) => p.pluginId === "settings-pane-demo" && p.paneId === "about" && p.title === "Demo Plugin" && p.icon === "puzzle",
@@ -279,7 +310,7 @@ ok(
 );
 
 P.emitToPlugin("settings-pane-demo", "pane.mount", { paneId: "about" });
-await sleep(60);
+for (let i = 0; i < 75 && !/rendered by the plugin/.test(P.listPluginPanes().find((p) => p.paneId === "about")?.body ?? ""); i++) await sleep(20);
 const paneBody = P.listPluginPanes().find((p) => p.paneId === "about")?.body ?? "";
 ok(/rendered by the plugin/.test(paneBody), "pane.mount evt → plugin pushed markup via settings.renderPane");
 ok(
@@ -313,6 +344,7 @@ ok(
 
 const snapFiles = {
   "plugin.js": `
+    try { globalThis.__kiwiHostLeak = "leaked"; } catch (e) {}
     kiwi.onEvent("host.ready", async () => {
       try {
         const l = await kiwi.request("messages.list");
@@ -338,6 +370,14 @@ const snapFiles = {
     })();
     kiwi.onEvent("composer.action", (d) => {
       kiwi.request("notify.show", { kind: "ok", text: "action:" + (d && d.actionId) + "|" + (d && d.subject) }).catch(() => {});
+    });
+    kiwi.onEvent("test.unregister", async () => {
+      try {
+        const r = await kiwi.request("composer.unregisterAction", { actionId: "summary" });
+        await kiwi.request("notify.show", { kind: "info", text: "unreg:" + JSON.stringify(r) });
+      } catch (e) {
+        try { await kiwi.request("notify.show", { kind: "error", text: "unreg-fail:" + e.code }); } catch (e2) {}
+      }
     });
   `,
 };
@@ -368,11 +408,12 @@ const sinks2 = {
   notify: (k, t) => toasts.push({ k, t }),
   isLocked: () => locked,
   listSnapshot: () => fixtureList,
+  spawnWorker: spawnNodeWorker,
 };
 const sess2 = P.startPluginSession(getPlugin("snap-plugin"), sinks2);
 ok(!!sess2, "snap-plugin session starts");
 ok(!toasts.some((t) => /plugin failed to load/.test(t.t)), "plugin source parsed + ran (no loader error toast)");
-for (let i = 0; i < 40 && !toasts.some((t) => /miss:/.test(t.t)); i++) await sleep(20); // host.ready → async echo chain
+for (let i = 0; i < 75 && !toasts.some((t) => /miss:/.test(t.t)); i++) await sleep(20); // host.ready → async echo chain
 const listToast = toasts.find((t) => /list:/.test(t.t));
 ok(!!listToast && /"n":2/.test(listToast.t), "messages.list returned the snapshot through the real sink");
 ok(
@@ -383,6 +424,9 @@ ok(
 ok(toasts.some((t) => t.t === "[snap-plugin] env:Invoice ready"), "messages.getEnvelope resolves a row by id");
 ok(toasts.some((t) => t.t === "[snap-plugin] miss:null"), "messages.getEnvelope unknown id → envelope:null");
 ok(!toasts.some((t) => /snap-fail:/.test(t.t)), "no capability rejection on the declared path");
+// T-306 isolation proof: the plugin assigned a global inside its context —
+// in-process exec would leak it onto the host's globalThis; a worker can't.
+ok(globalThis.__kiwiHostLeak === undefined, "plugin ran in a real worker — global write did not leak into the host");
 
 // composer-action round-trip: register → store → click evt → plugin acts.
 ok(
@@ -417,12 +461,16 @@ ok(
 );
 deniedCli.dispose();
 
-// Unregister + dispose cleanup.
-const snapClient = createPluginClient({ pluginId: "snap-plugin", host: hostBus, listenOn: makeBus("unused") });
-// unregister goes through a request — reuse a direct host-level call via session client:
-const unreg = await sess2.client.request("composer.unregisterAction", { actionId: "summary" }).catch(() => null);
-ok(unreg?.removed === true || P.listComposerActions().every((a) => a.actionId !== "summary"), "composer.unregisterAction removes the action");
-snapClient.dispose();
+// Unregister + dispose cleanup. The client lives inside the worker (T-306),
+// so the unregister request is exercised the way a plugin really sends it:
+// host evt → plugin code → bridge req → host sink.
+P.emitToPlugin("snap-plugin", "test.unregister", {});
+for (let i = 0; i < 75 && !toasts.some((t) => /unreg:/.test(t.t)); i++) await sleep(20);
+ok(
+  toasts.some((t) => /unreg:\{"removed":true\}/.test(t.t)) &&
+    P.listComposerActions().every((a) => a.actionId !== "summary"),
+  "composer.unregisterAction removes the action (plugin-side request through the worker)",
+);
 sess2.dispose();
 ok(
   !P.listComposerActions().some((a) => a.pluginId === "snap-plugin"),

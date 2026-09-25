@@ -18,6 +18,7 @@ mod discovery_net;
 mod e2e;
 mod error;
 mod observe;
+mod pairing_listen;
 mod signals;
 mod state;
 mod syncer;
@@ -66,6 +67,13 @@ pub fn run() {
             // IDLE-driven updates → kiwi://mail-changed.
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(syncer::sync_supervisor(handle));
+            // T-304: LAN pair-claim listener — present only when
+            // KIWI_PAIR_LISTEN enabled a bind at open (plaintext dev seam;
+            // wss/TLS ruling still pending, authenticator.md §3.2).
+            let app_state = app.state::<std::sync::Arc<state::AppState>>();
+            if let Some(sock) = app_state.inner().pair_listen_socket.lock().unwrap().take() {
+                tauri::async_runtime::spawn(pairing_listen::serve(app_state.inner().clone(), sock));
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

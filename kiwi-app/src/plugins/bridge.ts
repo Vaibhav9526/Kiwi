@@ -81,8 +81,14 @@ export type BridgeHandler = (params: unknown, plugin: PluginManifest) => unknown
 
 export interface PluginHostOptions {
   manifest: PluginManifest;
-  /** Message target the plugin posts/listens on (iframe.contentWindow etc). */
+  /** Message target host→plugin traffic posts to (worker port, iframe.contentWindow…). */
   target: Pick<Window, "postMessage">;
+  /**
+   * Message source for plugin→host requests — defaults to `window`
+   * (broadcast bus, T-268 alpha); worker sessions (T-306) pass the worker
+   * port so each plugin gets a dedicated channel.
+   */
+  listenOn?: Pick<Window, "addEventListener" | "removeEventListener">;
   /** App lock check — every request rejects while locked. */
   isLocked: () => boolean;
   /** Method handlers; a method absent here rejects even if permitted. */
@@ -102,10 +108,12 @@ export interface PluginHost {
  * (RR-11). Everything else is enforced now: envelope shape, declared
  * capabilities, handler presence, lock gate.
  */
-export function createPluginHost({ manifest, target, isLocked, handlers }: PluginHostOptions): PluginHost {
+export function createPluginHost({ manifest, target, listenOn, isLocked, handlers }: PluginHostOptions): PluginHost {
   const post = (msg: BridgeResponse | BridgeEvent) => {
     try {
-      target.postMessage(msg, "*");
+      // One-arg postMessage: Window defaults targetOrigin to "/" (same-origin
+      // — tighter than "*"), and Worker/MessagePort ports take a single arg.
+      target.postMessage(msg);
     } catch {
       // Plugin context gone — drop silently.
     }
@@ -133,15 +141,18 @@ export function createPluginHost({ manifest, target, isLocked, handlers }: Plugi
     }
   };
 
+  const listenFrom =
+    listenOn ?? (typeof window !== "undefined" ? (window as unknown as Pick<Window, "addEventListener" | "removeEventListener">) : undefined);
+  const listener = onMessage as unknown as EventListener;
   try {
-    window.addEventListener("message", onMessage);
+    listenFrom?.addEventListener("message", listener);
   } catch {
     // No DOM.
   }
   return {
     detach: () => {
       try {
-        window.removeEventListener("message", onMessage);
+        listenFrom?.removeEventListener("message", listener);
       } catch {
         // ignore
       }
@@ -206,7 +217,7 @@ export function createPluginClient({ pluginId, host, listenOn, timeoutMs = BRIDG
           reject(new PluginBridgeError("timeout", `Bridge call "${method}" timed out.`));
         }, timeoutMs);
         pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer });
-        target.postMessage({ $kiwi: BRIDGE_PROTOCOL, dir: "req", id, plugin: pluginId, method, params } satisfies BridgeRequest, "*");
+        target.postMessage({ $kiwi: BRIDGE_PROTOCOL, dir: "req", id, plugin: pluginId, method, params } satisfies BridgeRequest);
       });
     },
     onEvent(event, cb) {
