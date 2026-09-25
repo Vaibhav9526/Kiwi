@@ -316,11 +316,11 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-335 | Unified Inbox: account badges, composite-id ops, honest <2-acct hide; 24/24 smoke | Agent 24 | done |
 | T-336 | ci.yml ui-smoke job (headless Chrome, honest skip/fail, artifacts) — caught demo-fixture gap for A24 | Agent 26 | done |
 | T-337 | real installers built+verified (exe/NSIS/MSI, honest unsigned, RELEASING.md) | Agent 20 | done |
-| T-338 | audit-integrity UI: strip tri-state indicator + corrupt surface (consumes T-331 signal) | Agent 25 | done | `chrome.tsx` strip, security-center | T-331 | audit-corruption visible: tri-state probe, banner+pill, withheld-rows, no fake-green | Agent 21 | done |
+| T-338 | audit-integrity UI: tri-state TrustChip + banner + re-check; demo honest-unchecked | Agent 25 | done |
 | T-339 | lazy attachment fetch: BODYSTRUCTURE-first sync + on-demand BODY.PEEK part fetch | Agent 19 | open | `kiwi-mail/imap`, store schema | sync depth |
 | T-340 | lock-gate coverage audit: classify every command, findings for ungated-by-omission | Agent 21 | open | `lib.rs`, `commands/`, `docs/audits/` | T-269 |
 | T-341 | conversation/thread mute: per-conversation flag, suppresses counts+notify, unmute restores | Agent 15b | open | `kiwi-mail/store`, `commands/`, `notify.rs` | |
-| T-342 | UI pass#2 (planner): disposable-inbox sidebar promotion + density/empty-states + global radius tokens | Agent 25 | open | `chrome.tsx`, `tokens.css`, integrations view | owner-directed |
+| T-342 | UI pass#2 (planner): disposable-inbox sidebar promo + density + radius tokens — LIVE | Agent 25 | in-progress | `chrome.tsx`, `tokens.css` | owner-directed |
 | T-343 | Gmail floating compose dock — LIVE (post-T-335) | Agent 24 | in-progress | `compose.tsx`, `App.tsx` | owner-directed |
 | T-344 | local gates script (ps1+sh) mirroring CI gates + TESTING.md doc | Agent 26 | open | `scripts/`, `docs/TESTING.md` | T-336 |
 | T-345 | system tray: icon+unread tooltip, show/compose/quit menu, close-to-tray pref, honest degrade | Agent 20 | open | `src-tauri` setup, `tauri.conf` | |
