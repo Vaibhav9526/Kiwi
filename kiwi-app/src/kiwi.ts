@@ -193,7 +193,11 @@ export interface AccountView {
 export interface FolderView {
   id: number;
   accountId: string;
+  /** null for a root local folder; local children only. */
+  parentId: number | null;
   name: string;
+  /** Real store row: remote (sync), local (user-managed), or system. */
+  origin: "remote" | "local" | "system";
   /** null until a sync has selected the folder. */
   uidValidity: number | null;
   uidNext: number | null;
@@ -319,6 +323,20 @@ export type ChainValidationToken =
  */
 export type SessionSourceToken =
   | "live-client" | "forensic-pcap" | "test-fixture" | "unknown";
+
+/** `kiwi_forensics_export` receipt (T-320) — a self-verifying artifact. */
+export interface ForensicsExportView {
+  /** The user-chosen destination written (the user already knows it). */
+  path: string;
+  /** Size of the whole artifact on disk (envelope + report). */
+  bytes: number;
+  /** Lowercase hex SHA-256 of the canonical report payload, as embedded. */
+  sha256: string;
+  reportContractVersion: string;
+  /** Findings carried in the exported report (a count, never the list). */
+  findings: number;
+  generatedAtUnix: number;
+}
 
 /** `kiwi_session_detail` result — T-269 canonical shape (ipc.md §3). */
 export interface SecuritySessionView {
@@ -636,6 +654,38 @@ export interface MboxImportView {
   truncated: boolean;
   ruleFailures: number;
   issues: MboxImportIssueView[];
+}
+
+/**
+ * `kiwi_mailbox_export_mbox` report (T-316). `exported` counts members
+ * written to the file; `skipped` counts rows whose RFC822 body could not
+ * be obtained (omitted, never synthesized); `partial` flips whenever the
+ * file doesn't carry every row. Write is atomic (`.kiwi-part` + rename).
+ */
+export interface MboxExportView {
+  accountId: string;
+  folder: string;
+  folderId: number;
+  exported: number;
+  skipped: number;
+  bytes: number;
+  partial: boolean;
+  truncated: boolean;
+}
+
+/**
+ * `kiwi_audit_events` row (T-323/T-324). One real append-only JSONL record:
+ * `action` → `event`, `ts_unix` → `atUnix`, verbatim `detail` →
+ * `detailJson` (often plain text). The persisted schema has no actor or
+ * subject column, so both are explicit nulls — never synthesized.
+ */
+export interface AuditEventView {
+  event: string;
+  atUnix: number;
+  /** Real JSONL has no actor/subject columns; absence is explicit null. */
+  actor: string | null;
+  subjectId?: string | null;
+  detailJson?: string | null;
 }
 
 /** `kiwi_message_unsubscribe` action selector (T-234). */
@@ -1467,16 +1517,20 @@ export interface DeliverabilitySendView {
   testId: string;
   queueId: string;
   notBeforeUnix: number;
+  consentConsumed: boolean;
+  enqueued: boolean;
+  singleAttempt: boolean;
 }
 
 export interface DeliverabilityStatusView {
   testId: string;
-  /** "pending" | "received" | "analyzing" | "checks_ready" | "failed" | unknown string */
+  /** "pending" | "received" | "analyzing" | "checks_ready" | unknown string. `failed` is an error, never a status. */
   analysisStatus: string;
   checksDone: number;
   checksTotal: number;
   ready: boolean;
   sent: boolean;
+  consentConsumed: boolean;
   retryAfterMs?: number;
 }
 
@@ -1513,9 +1567,10 @@ export interface DeliverabilityReportView {
   subscores: Record<string, number>;
   tallies: Record<string, DeliverabilityCategoryTally>;
   checks: DeliverabilityCheckView[];
-  /** ids of failed `auth` checks — the gate set. */
   authFailureIds: string[];
   authGate: "pass" | "fail" | "unknown";
+  checksTruncated: boolean;
+  evidenceComplete: boolean;
 }
 
 /* ---------------- mappers (backend → UI, never throw) ---------------- */

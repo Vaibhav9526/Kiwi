@@ -4,10 +4,10 @@
  * kiwi_finding_detail), session-detail dialog, JSON report export. Demo mode
  * renders the T-112 fixtures, badged.
  */
-import { useEffect, useState } from "react";
-import type { FindingInfo, SecurityEventRow, SecuritySessionView, Severity } from "../kiwi";
+import { Fragment, useEffect, useState } from "react";
+import type { AuditEventView, FindingInfo, SecurityEventRow, SecuritySessionView, Severity } from "../kiwi";
 import { severityGlyph, severityLabel } from "../kiwi";
-import { api } from "../ipc";
+import { api, BackendUnavailableError } from "../ipc";
 
 function pretty(v: unknown): string {
   try {
@@ -36,6 +36,67 @@ export function SecurityCenterView({
   const [session, setSession] = useState<SecuritySessionView | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [reportError, setReportError] = useState<string | null>(null);
+  // T-323: app-audit trail (audit.jsonl — mbox import/export, device, rules,
+  // account mutations). Read IPC kiwi_audit_events (T-324) is queued, not yet
+  // registered → until it lands the section shows the honest pending state;
+  // the moment it registers the same code renders real rows.
+  const AUDIT_PAGE = 200;
+  const [audit, setAudit] = useState<AuditEventView[]>([]);
+  const [auditState, setAuditState] = useState<"idle" | "loading" | "pending" | "ready" | "error">("idle");
+  const [auditErr, setAuditErr] = useState<string | null>(null);
+  const [auditDone, setAuditDone] = useState(false); // older page returned empty
+  const [auditExpanded, setAuditExpanded] = useState<number | null>(null);
+  const [auditCopy, setAuditCopy] = useState<string | null>(null);
+
+  const loadAudit = async (beforeUnix?: number) => {
+    setAuditState("loading");
+    setAuditErr(null);
+    try {
+      const rows = await api.auditEvents(beforeUnix, AUDIT_PAGE);
+      setAudit((prev) => (beforeUnix === undefined ? rows : [...prev, ...rows]));
+      if (beforeUnix === undefined) setAuditDone(false);
+      if (rows.length < AUDIT_PAGE) setAuditDone(true);
+      setAuditState("ready");
+    } catch (e) {
+      // Not-yet-registered command = pending, not failure.
+      const msg = e instanceof Error ? e.message : String(e);
+      if (e instanceof BackendUnavailableError || /unknown command|not found|unregistered|not implemented/i.test(msg)) {
+        setAuditState("pending");
+      } else {
+        setAuditState("error");
+        setAuditErr(msg);
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (demo) {
+      setAuditState("pending"); // demo never fabricates an audit trail
+      return;
+    }
+    void loadAudit();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [demo]);
+
+  const auditCsv = (rows: AuditEventView[]) =>
+    [
+      "event,at_iso,actor,subject_id,detail_json",
+      ...rows.map((r) =>
+        [r.event, new Date(r.atUnix * 1000).toISOString(), r.actor, r.subjectId ?? "", r.detailJson ?? ""]
+          .map((c) => `"${String(c).replaceAll('"', '""')}"`)
+          .join(","),
+      ),
+    ].join("\n");
+
+  const copyAudit = async (fmt: "json" | "csv") => {
+    if (!audit.length || !navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(fmt === "json" ? JSON.stringify(audit, null, 2) : auditCsv(audit));
+      setAuditCopy(`${audit.length} loaded rows copied as ${fmt.toUpperCase()}.`);
+    } catch {
+      setAuditCopy("Clipboard unavailable — copy failed.");
+    }
+  };
 
   useEffect(() => {
     if (!session) return;
@@ -207,6 +268,131 @@ export function SecurityCenterView({
           )}
         </tbody>
       </table>
+      <h2>App audit log</h2>
+      <p style={{ color: "var(--kiwi-ms-text-secondary)" }}>
+        <small>
+          Action trail (audit.jsonl) — imports, exports, device and account mutations. Distinct from the
+          transport-security events above: these rows record what the app DID, not what the wire showed.
+          Ids and counts only — the trail never carries paths, subjects, or bodies.
+        </small>
+      </p>
+      {auditState === "pending" && (
+        <div className="kiwi-banner" role="status">
+          <small>
+            Audit-log read IPC (<code>kiwi_audit_events</code>) is backend-pending (T-324 — queued). Actions
+            are already being recorded; this panel renders them the moment the read command lands.
+            {demo && " Demo mode never fabricates an audit trail."}
+          </small>
+        </div>
+      )}
+      {auditState === "error" && (
+        <div className="kiwi-banner error" role="alert">
+          <small>Audit log failed to load: {auditErr}</small>{" "}
+          <button type="button" className="ms-btn" onClick={() => void loadAudit()}>
+            Retry
+          </button>
+        </div>
+      )}
+      {auditState === "loading" && audit.length === 0 && (
+        <p role="status">
+          <small>Loading audit log…</small>
+        </p>
+      )}
+      {audit.length > 0 && (
+        <>
+          <div className="ms-filterbar">
+            <button type="button" className="ms-btn" onClick={() => void loadAudit()} disabled={auditState === "loading"}>
+              Refresh
+            </button>
+            <button type="button" className="ms-btn" onClick={() => void copyAudit("json")}>
+              Copy JSON
+            </button>
+            <button type="button" className="ms-btn" onClick={() => void copyAudit("csv")}>
+              Copy CSV
+            </button>
+            <small style={{ color: "var(--kiwi-ms-text-secondary)" }}>
+              copies the {audit.length} loaded rows — a full-file download needs the backend
+            </small>
+          </div>
+          {auditCopy && (
+            <p role="status">
+              <small>{auditCopy}</small>
+            </p>
+          )}
+          <table className="ms-table">
+            <caption className="kiwi-sr-only">App audit trail</caption>
+            <thead>
+              <tr>
+                {["Time", "Event", "Actor", "Subject", "Detail"].map((h) => (
+                  <th key={h} scope="col">
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {audit.map((r, i) => (
+                <Fragment key={i}>
+                  <tr>
+                    <td>{new Date(r.atUnix * 1000).toLocaleString()}</td>
+                    <td>
+                      <code>{r.event}</code>
+                    </td>
+                    <td>{r.actor}</td>
+                    <td>{r.subjectId ?? "—"}</td>
+                    <td>
+                      {r.detailJson ? (
+                        <button
+                          type="button"
+                          className="ms-btn"
+                          aria-expanded={auditExpanded === i}
+                          onClick={() => setAuditExpanded(auditExpanded === i ? null : i)}
+                        >
+                          Detail
+                        </button>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                  </tr>
+                  {auditExpanded === i && r.detailJson && (
+                    <tr>
+                      <td colSpan={5}>
+                        <pre className="kiwi-evidence" tabIndex={0}>
+                          {(() => {
+                            try {
+                              return JSON.stringify(JSON.parse(r.detailJson), null, 2);
+                            } catch {
+                              return r.detailJson;
+                            }
+                          })()}
+                        </pre>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+          {!auditDone && (
+            <p>
+              <button
+                type="button"
+                className="ms-btn"
+                disabled={auditState === "loading"}
+                onClick={() => void loadAudit(audit[audit.length - 1]?.atUnix)}
+              >
+                {auditState === "loading" ? "Loading…" : "Load older"}
+              </button>
+            </p>
+          )}
+        </>
+      )}
+      {auditState === "ready" && audit.length === 0 && (
+        <p>
+          <small>No audit events recorded yet.</small>
+        </p>
+      )}
       {session && (
         <div className="kiwi-dialog-backdrop" onClick={() => setSession(null)}>
           <div

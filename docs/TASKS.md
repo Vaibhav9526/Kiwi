@@ -300,8 +300,8 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-320 | forensics file export: self-verifying SHA-256 envelope, atomic, verdict-not-panic | Agent 21 | done |
 | T-321 | post-T-286: contract/docs sweep — consent-boundary semantics documented as-built | Agent 23 | open | `ipc.md`, `docs/contracts/` | T-286 |
 | T-322 | folder-mgmt UI over T-319 (ctx create/rename/delete, system/smart protected) | Agent 24 | done |
-| T-323 | audit-log view surface (backend read-IPC queued; Security Center home; honest pending-state) | Agent 25 | open | `security-center.tsx` | T-318 finding |
-| T-324 | kiwi_audit_events read IPC (bounded, keyset, lock-gated) — LIVE for A25 T-323 | Agent 15 | in-progress | `kiwi-mail/store/queries.rs`, `commands/` | T-323 |
+| T-323 | audit-log view shipped behind honest pending state; auto-lights on T-324 | Agent 25 | done |
+| T-324 | kiwi_audit_events read IPC (bounded, keyset, lock-gated) — LIVE for A25 T-323 | Agent 15 | in-progress | `kiwi-mail/store/queries.rs`, `commands/` | T-323 | audit-log view shipped behind honest pending state; auto-lights on T-324 | Agent 25 | done |
 | T-325 | kiwi_copy_messages IPC (copy vs move; local-only dst semantics documented) | Agent 20 | open | `commands/message`, `store` | |
 | T-326 | import/synced-folder expunge edge: refuse synced dst OR minted-uid reconcile skip | Agent 19 | open | `commands/import.rs`, `imap` reconcile | T-309 caveat |
 | T-327 | audit retention: bounded keep-N/age policy, sweep itself audited (id+count only) | Agent 21 | open | `kiwi-mail/store`, `commands/security.rs` | T-324 coord |
