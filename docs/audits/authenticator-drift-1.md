@@ -1,6 +1,6 @@
 # Mobile Authenticator Drift Audit 1 (T-270)
 
-**Reviewer:** Agent 23 · **Date:** 2026-09-25 · **Snapshot:** `9f13f47` plus the current shared worktree  
+**Reviewer:** Agent 23 · **Date:** 2026-09-25 · **Snapshot:** `9f13f47` plus the current shared worktree
 **Mode:** read-only implementation audit. `mobile/` and implementation files were inspected, not edited. This report and the Agent 23 status entry are the only T-270 writes.
 
 ## Scope and verdict
@@ -10,6 +10,23 @@ This audit enumerates `docs/contracts/authenticator.md` against the current Reac
 **Verdict: the mobile client is an honestly labelled, fail-closed scaffold, not a production authenticator.** The deterministic QR/challenge primitives, canonical byte encoder, event tags, replay helper, and queue helper have substantial test-backed coverage. However, the required pairing channel, native keystore, durable identity/replay/queue state, desktop-compatible challenge handoff, explicit deny receiver, and complete approval transaction are absent or divergent.
 
 The current default cannot authorize or deliver anything: `UnavailableKeystore` rejects signing, and `OfflineTransport` always returns `offline`. This prevents the listed gaps from becoming a current unauthorized-approval path, but it does not satisfy the contract's production obligations. T-269 is also changing `kiwi-pair`; its current primitive improvements are recorded below, while claims requiring Tauri integration or new regression tests remain unverified.
+
+### T-269 snapshot caveat
+
+The current shared worktree is mid-migration. T-269 has added the `kiwi-pair` dependency, a persisted `AppState::pair`, backend channel provisioning, and `PairError` mapping (`kiwi-app/src-tauri/Cargo.toml:16-25`; `src/state.rs:511-587,734-890`; `src/error.rs:115-161`). The canonical command handlers are not registered or callable, while the old device/challenge handlers still reference the removed in-memory fields. Those transitional sources are therefore classified as **in progress**, not as a completed Tauri integration.
+
+## Contract decisions required before implementation
+
+| Decision | Contract conflict or omission | Current consequence |
+|---|---|---|
+| Desktop key encoding | The QR example says “64-char base64,” but a 32-byte Ed25519 key is 44 characters in canonical padded standard Base64 (`authenticator.md:79,92`; `ipc.md:1146-1151`). | Mobile and PairEngine cannot know whether length or decoded bytes is authoritative. Ratify the 32-byte/44-character rule already present in `ipc.md`. |
+| TLS pin identity | The channel is required to pin `desktop_public_key_b64`, but the contract does not state whether that raw Ed25519 key is the TLS certificate key, an SPKI pin, or an application signature exchanged inside a separately pinned TLS channel (`authenticator.md:92,119-123`). | A transport can be implemented with the wrong trust semantics. Define the certificate/channel design and exact peer comparison before mobile code. |
+| Transport scheme | The binding text forbids plaintext and recommends `wss://`, while the exact QR example uses `ws://`; Agent 6's `wss://` recommendation remains described as awaiting Lead ratification (`authenticator.md:77,119-128,359-360`). | Both current parsers accept plaintext. Ratify the `ipc.md` `wss://` form and amend this draft contract. |
+| Challenge wire casing | `authenticator.md` uses snake_case `nonce_b64`; ratified `ipc.md` §9d uses camelCase `nonceB64` and explicitly calls it canonical (`authenticator.md:152-164`; `ipc.md:1211-1232`). | Tauri can be internally camelCase while the pairing transport must explicitly adapt to the authenticator wire. The contract needs an adapter boundary, not two accepted nonce fields. |
+| Session example | The challenge/response examples use `x-tx` for `unlock`, while the normative text reserves `x-tx:` for recovery/elevated actions and uses `boot-` for unlock/pairing (`authenticator.md:154-174,227-238`). | Tests currently encode the contradictory example. Correct the examples before enforcing event/session forms. |
+| Desktop approval context | Approval requires a trusted desktop label, transaction ID, and issue/expiry time, but `ChallengeData` has no desktop-label field and the desktop Tauri view sends no trusted display identity (`authenticator.md:219-225`; `mobile/src/protocol/types.ts:24-34`; `kiwi-app/src-tauri/src/types/system.rs:48-76`). | The phone cannot display all required context from the current wire. Define the trusted source/field. |
+| Timeout audit | Section 6.3 says timeout creates no audit row, while §7 says a dropped deny may be handled because the desktop audits the timeout (`authenticator.md:263-270,286-288`). | Deny/drop behavior and required audit semantics are contradictory. Ratify one rule before implementing delivery. |
+| Secret wording | The QR is called free of secrets, but the single-use ticket is a bearer capability and `ipc.md` explicitly labels it a **BEARER SECRET** (`authenticator.md:45-46,89,95-97`; `ipc.md:1122,1155-1160`). | The contract must explicitly say no private/secret key material, while treating the ticket as sensitive bearer data with strict retention/logging rules. |
 
 ## Status legend
 

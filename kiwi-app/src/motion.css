@@ -262,6 +262,26 @@
   animation: ms-fade-in var(--kiwi-ms-motion-quick) var(--kiwi-ms-ease-out);
 }
 
+/* T-268: theme switch — brief surface/text color cross-fade on the big
+ * chrome surfaces when data-theme flips (cheap, no layout properties).
+ * Uses the panel cadence; killed by the reduced-motion block below. */
+html,
+body,
+.ms-chrome,
+.ms-sidebar,
+.ms-content,
+.ms-statusbar,
+.ms-toolbar,
+.ms-list,
+.ms-reader,
+.kiwi-card,
+.kiwi-reader {
+  transition:
+    background-color var(--kiwi-ms-motion-panel) var(--kiwi-ms-ease-out),
+    color var(--kiwi-ms-motion-panel) var(--kiwi-ms-ease-out),
+    border-color var(--kiwi-ms-motion-panel) var(--kiwi-ms-ease-out);
+}
+
 /* Reduced motion: full kill-switch (Mailspring has none; KIWI does) */
 @media (prefers-reduced-motion: reduce) {
   .ms-view-enter,
@@ -294,7 +314,18 @@
   .ms-disclosure,
   .ms-switch-track,
   .ms-switch-knob,
-  .ms-meter-fill {
+  .ms-meter-fill,
+  html,
+  body,
+  .ms-chrome,
+  .ms-sidebar,
+  .ms-content,
+  .ms-statusbar,
+  .ms-toolbar,
+  .ms-list,
+  .ms-reader,
+  .kiwi-card,
+  .kiwi-reader {
     transition: none !important;
   }
 }

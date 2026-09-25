@@ -1,0 +1,97 @@
+/* KIWI Light — stock theme package (T-268). DEFAULT per owner directive
+ * (eM Client reference): white content surfaces, gray-blue pane chrome,
+ * blue selection accent, orange primary action. Overrides
+ * mailspring-tokens.css `--kiwi-ms-*` and legacy theme.css `--kiwi-*`. */
+
+:root[data-theme="light"],
+[data-theme="light"] {
+  color-scheme: light;
+
+  /* ---- surfaces ---- */
+  --kiwi-ms-bg: #eef1f5;
+  --kiwi-ms-surface: #ffffff;
+  --kiwi-ms-surface-2: #f4f6f9;
+  --kiwi-ms-surface-3: #e4e8ee;
+  --kiwi-ms-sidebar: #e6eaf0;
+  --kiwi-ms-toolbar: #e9edf2;
+  --kiwi-ms-list-bg: #ffffff;
+  --kiwi-ms-list-border: #d9dee4;
+  --kiwi-ms-list-hover: #eef3f9;
+
+  /* ---- text ---- */
+  --kiwi-ms-text: #23262a;
+  --kiwi-ms-text-heading: #1f2430;
+  --kiwi-ms-text-secondary: #57606b;
+  --kiwi-ms-text-muted: #7d8794;
+  --kiwi-ms-link: #2f6fd6;
+
+  /* ---- borders ---- */
+  --kiwi-ms-border: #d6dce3;
+  --kiwi-ms-border-strong: #b7bfc9;
+  --kiwi-ms-divider: #e4e8ee;
+  --kiwi-ms-hairline: rgba(15, 23, 42, 0.1);
+
+  /* ---- accent + status: blue selection system, orange primary ---- */
+  --kiwi-ms-accent: #2f6fd6;
+  --kiwi-ms-accent-active: #2561bd;
+  --kiwi-ms-accent-emphasis: #4a90e2;
+  --kiwi-ms-primary: #e8781e;
+  --kiwi-ms-primary-text: #ffffff;
+  --kiwi-ms-icon-muted: #8a919c;
+  --kiwi-ms-info: #2561bd;
+  --kiwi-ms-success: #3d9a50;
+  --kiwi-ms-warning: #c47d0e;
+  --kiwi-ms-danger: #c93c3c;
+  --kiwi-ms-toast-info: #2561bd;
+  --kiwi-ms-toast-success: #2e8b57;
+  --kiwi-ms-toast-warning: #c2410c;
+  --kiwi-ms-toast-error: #c93c3c;
+  --kiwi-ms-toast-pending: #9aa3ad;
+
+  /* ---- shadows / focus ---- */
+  --kiwi-ms-shadow-color: rgba(15, 23, 42, 0.12);
+  --kiwi-ms-shadow-standard: 0 1px 4px 0 rgba(15, 23, 42, 0.12);
+  --kiwi-ms-shadow-raised: 0 4px 14px 0 rgba(15, 23, 42, 0.15);
+  --kiwi-ms-shadow-popover: 0 8px 28px rgba(15, 23, 42, 0.2);
+  --kiwi-ms-shadow-modal: 0 24px 64px rgba(15, 23, 42, 0.32);
+  --kiwi-ms-focus-glow: 0 0 0 3px rgba(47, 111, 214, 0.22);
+
+  /* ---- selection (eM: light blue select wash) ---- */
+  --kiwi-ms-select-tint: #dbe8fa;
+  --kiwi-ms-select-border: #a9c8f0;
+  --kiwi-ms-select-solid: var(--kiwi-ms-accent-active);
+
+  /* ---- legacy --kiwi-* tokens: neutralize the parchment palette so
+   * every pre-token surface follows the light theme too ---- */
+  --kiwi-bg: #eef1f5;
+  --kiwi-surface: #ffffff;
+  --kiwi-sidebar: #e6eaf0;
+  --kiwi-card: #ffffff;
+  --kiwi-input: #ffffff;
+  --kiwi-border: #d6dce3;
+  --kiwi-border-soft: #e4e8ee;
+  --kiwi-text: #23262a;
+  --kiwi-text-secondary: #57606b;
+  --kiwi-text-disabled: #8a919c;
+  --kiwi-brand: #e8781e;
+  --kiwi-brand-ink: #9a4f08;
+  --kiwi-focus: #2f6fd6;
+  --kiwi-focus-ring: rgba(47, 111, 214, 0.22);
+  --kiwi-secure: #157a44;
+  --kiwi-secure-bg: #e0f2e8;
+  --kiwi-secure-border: rgba(21, 122, 68, 0.45);
+  --kiwi-warning: #9a6206;
+  --kiwi-warning-bg: #faf0d4;
+  --kiwi-warning-border: rgba(154, 98, 6, 0.45);
+  --kiwi-danger: #c93c3c;
+  --kiwi-danger-bg: #fae5e5;
+  --kiwi-danger-border: rgba(201, 60, 60, 0.45);
+  --kiwi-unknown: #5f6470;
+  --kiwi-unknown-bg: #e8ebf0;
+  --kiwi-unknown-border: rgba(95, 100, 112, 0.4);
+  --kiwi-lock: #9a4f08;
+  --kiwi-lock-bg: #f6e8c8;
+  --kiwi-hover-bg: rgba(47, 111, 214, 0.06);
+  --kiwi-shadow: 0 18px 48px rgba(15, 23, 42, 0.18);
+  --kiwi-shimmer: rgba(47, 111, 214, 0.07);
+}
