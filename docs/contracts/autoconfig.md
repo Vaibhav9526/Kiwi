@@ -105,7 +105,10 @@ manual fallback must not be persisted without explicit user consent.
 ## 4. Fixture tables (data, not policy)
 
 - `ISPDB_FIXTURES`: public provider endpoints only (Google, Microsoft
-  365, Yahoo, iCloud, Fastmail, Zoho, GMX, Yandex, GoDaddy, AOL).
+  365, Yahoo, iCloud, Fastmail, Zoho, GMX, Yandex, AOL). GoDaddy is
+  intentionally absent — it hosts arbitrary customer domains with no
+  fixed domain list to key an ISPDB entry on; it is reached via the
+  `secureserver.net` MX hint instead (see `MX_HINTS`).
   Apps may pass their own table via `discover_with_table`; the caller's
   table fully replaces the bundled one for stage 1.
 - `MX_HINTS`: MX-host-suffix → provider map (e.g. `google.com`,
