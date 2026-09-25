@@ -251,4 +251,60 @@ Full per-site mapping in `src/components/icons/README.md`.
 - A vite dev server was already live on :1420 (stale agent process) —
   reused for the visual pass; did not kill it.
 - `shell-icons.tsx`'s stale "icons.tsx shadows icons/" NOTE comment left
-  as-is in T-274; file is now transferred — comment is harmless.
+  as-is in T-274; file is now transferred — comment corrected in T-275.
+
+## 2026-09-25 — T-280: Host-side plugin surfaces (notify + settings-page)
+
+**Status:** complete — capabilities now land on real app surfaces.
+
+### Delivered
+
+- `src/plugins/runtime.ts` — session supervisor (React-free, harness-
+  exercisable): `startPluginSession` builds the capability-gated host +
+  in-context client + runs the entry via `new Function` (documented
+  trusted-code alpha loader); sessions self-register/dispose; `reconcile
+  Plugins`, `stopAllPlugins`, `emitToPlugin`, `broadcastPluginEvent`;
+  module pane store (`listPluginPanes`/`subscribePluginPanes`).
+- Host sinks: `notify.show` → app toasts with `[plugin-id]` scope (kind
+  validated against ToastKind set); `settings.registerPane` →
+  `{paneId,title,icon?,html?}` record; `settings.renderPane` → pane body
+  update; `settings.unregisterPane` → removal. Lock gate unchanged —
+  rejects before handlers run.
+- `src/plugins/hooks.ts` — `usePluginRuntime(notify, locked)` (mount-time
+  reconcile + `kiwi-plugins-changed` re-reconcile + unmount teardown),
+  `usePluginPanes` (useSyncExternalStore), `useInstalledPlugins`.
+- `bridge.ts` — `settings.renderPane` added to the `settings-page`
+  capability method set.
+- `views/settings.tsx` — new **Plugins** tab: installed plugins with
+  capabilities list, enable/disable, remove; registered panes render via
+  `PluginPaneCard` (emits `pane.mount`/`pane.unmount`; body markup
+  verbatim — documented trusted-code posture).
+- `App.tsx` — `usePluginRuntime(notify, trust.locked)`; the T-271
+  mail-changed debounce now also `broadcastPluginEvent("mail-changed",
+  {added})`.
+- `plugins/examples/settings-pane/` — second reference plugin:
+  registers pane on `host.ready`, renders markup on `pane.mount`, fires
+  a scoped `notify.show`.
+
+### Verification
+
+- `node src/plugins/e2e/run.mjs` — **30/30 pass** (9 new: pane install →
+  session → registerPane lands store record → pane.mount → renderPane
+  markup → scoped toast; denial without the cap; locked no-crash; dispose
+  removes panes).
+- `npx vite build` — green (409 kB).
+- `npx tsc` — 0 errors in T-280 files; 2 residual errors in
+  `src/views/rules.tsx` — an untracked file a concurrent agent is actively
+  writing (union-narrowing on `RulePredicate` group nodes; foreign
+  in-flight work, not T-280 scope — same posture as A24's earlier
+  transient errors).
+
+### Notes
+
+- `message-list-read`/`composer-action` methods remain honestly
+  `not-implemented` — host sinks for those mount points are future work.
+- Plugin pane markup is rendered verbatim by design (alpha); CSP blocks
+  inline script, markup/style unsanitized — recorded in GETTING-STARTED's
+  trust-boundary list.
+- A concurrent agent touched `App.tsx` (T-231 FTS wiring) during this
+  task — my edits were additive only, no overlap.

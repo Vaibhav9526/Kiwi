@@ -10,6 +10,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, IpcError, isTauri, onMailChanged } from "./ipc";
 import { applyUiPrefs } from "./prefs";
 import { useTheme } from "./themes";
+import { broadcastPluginEvent, usePluginRuntime } from "./plugins";
 import { useToasts } from "./state/toasts";
 import { DEMO_TRUST, useSession } from "./state/session";
 import { useAccountModel } from "./state/accounts";
@@ -119,6 +120,9 @@ export default function App() {
     refreshAccounts,
     doLock,
   } = useSession(notify);
+  // T-280: host the enabled sideloaded plugins — notify.show → toast sink,
+  // settings-page → Settings→Plugins panes; every bridge call is lock-gated.
+  usePluginRuntime(notify, trust.locked);
   const [folderLists, setFolderLists] = useState<Record<string, FolderView[]>>({});
   const [foldersError, setFoldersError] = useState<string | null>(null);
   const { emailById, folders, folderLabel, filtersListLabel, smartFolders, accountSections, smartUnread } = useAccountModel(
@@ -218,6 +222,8 @@ export default function App() {
         setMailboxRev((r) => r + 1);
         void loadFolders();
         if (n > 0) notify("info", `${n} new message${n === 1 ? "" : "s"} arrived.`);
+        // T-280: fan the same debounced signal out to plugin hosts.
+        broadcastPluginEvent("mail-changed", { added: n });
       }, 300);
     })
       .then((fn) => {
@@ -1354,6 +1360,7 @@ export default function App() {
               })();
             }}
             onLock={() => void doLock()}
+            folderLists={folderLists}
             filters={{
               demo,
               accounts: accountsRaw.map((a) => ({ id: a.id, email: a.email, displayName: a.displayName || a.email })),

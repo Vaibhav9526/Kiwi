@@ -29,6 +29,9 @@
 - No code review/signing gate — sideload is user-trust based.
 - `enabled=false` stops new loads; a running plugin context is not
   preempted (no context to preempt yet).
+- Plugin pane markup renders verbatim in Settings→Plugins
+  (`dangerouslySetInnerHTML`) — trusted-code posture; CSP blocks inline
+  script but markup/style is unsanitized.
 
 ## Package format
 
@@ -60,12 +63,17 @@ Rules: `id` = `^[a-z0-9][a-z0-9.-]{1,63}$`; `version` = semver `x.y.z`;
 
 ## Capabilities (v1)
 
-| Capability | Bridge methods it unlocks |
-|---|---|
-| `message-list-read` | `messages.list`, `messages.getEnvelope` |
-| `composer-action` | `composer.registerAction`, `composer.unregisterAction` |
-| `settings-page` | `settings.registerPane`, `settings.unregisterPane` |
-| `notify` | `notify.show` |
+| Capability | Bridge methods it unlocks | Host sink (T-280) |
+|---|---|---|
+| `message-list-read` | `messages.list`, `messages.getEnvelope` | *unwired — `not-implemented` until the read API lands* |
+| `composer-action` | `composer.registerAction`, `composer.unregisterAction` | *unwired — composer mount point pending* |
+| `settings-page` | `settings.registerPane`, `settings.unregisterPane`, `settings.renderPane` | pane in **Settings → Plugins** (title/icon live; body = plugin markup) |
+| `notify` | `notify.show` | app toast system, text scoped `[plugin-id] …` |
+
+**Host events:** `host.ready` fires after each session loads; `pane.mount`/
+`pane.unmount` fire when a plugin pane opens/closes (reply with
+`settings.renderPane` to fill the body); `mail-changed` is broadcast from
+the app's `kiwi://mail-changed` debounce (`{added: n}`).
 
 Undeclared capabilities → host replies `{ ok:false, error.code:"capability-denied" }`.
 While the app is locked, **all** calls fail with `"locked"`.
@@ -105,9 +113,10 @@ The harness bundles the real `src/plugins` modules in-memory (esbuild), stubs
 a `window` bus + localStorage, then drives the full path: manifest on disk →
 validate → `installPlugin` → `getPlugin` → exec `plugin.js` with an injected
 `PluginClient` → `mail-changed` event → `notify.show` request → capability
-gate → host handler. It asserts a plugin *without* `notify` is denied
-(`capability-denied`) while its declared capability resolves — the gate is
-proven, not just documented. Exits non-zero on any failure.
+gate → host handler. It also exercises the T-280 sinks end-to-end via
+`startPluginSession`: pane registration, `pane.mount` → `renderPane` markup,
+scoped `notify.show` toasts, and the capability denial. 30 assertions; exits
+non-zero on any failure.
 
 ## Lifecycle (v1)
 

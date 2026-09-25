@@ -646,4 +646,38 @@ touched-file rustfmt, and diff check clean. Full app lib passed all T-273 tests
 and every preceding test, then reached the pre-existing unrelated
 `e2e_send_delivers_files_sent_copy` hang observed in T-266. A second run skipping
 only that test progressed through all T-273 tests and later reached another
+
+
+## 2026-09-25 — T-277 e2e send hang fixed
+
+**Status:** DONE. Reproduced both formerly hanging tests independently. The
+common root cause was in `kiwi-mail/src/testutil/script.rs`, not the T-262
+assertions: SMTP `client_matches` used `actual.starts_with(expected)`, so a
+scripted empty `C:` line matched every non-empty actual line. During DATA it
+consumed the real lone `.` terminator as the empty body-line expectation, then
+waited forever for the next scripted `.`—a transcript-server deadlock, not a
+channel or SMTP-client bug.
+
+The matcher now treats an empty expected line as an exact empty wire line while
+retaining prefix tolerance for real commands such as `MAIL FROM ... SIZE=n`.
+A focused regression test pins both invariants. The scripted server now bounds
+listener acceptance, TLS upgrade, every client read, and every server/off-script
+write with a finite 10-second `TRANSCRIPT_STEP_TIMEOUT`; T-262's multi-session
+helper additionally caps each accepted session at 30 seconds. Timeouts return
+diagnostic transcript errors rather than parking the test binary forever.
+
+Preserved A19's deterministic IMAP APPEND script correction and T-262 assertions.
+No production send behavior was changed. Validation:
+
+- `cargo test -p kiwi-app e2e -- --test-threads=1`: **8/8**, no hang; repeated
+  three times (including both formerly hanging tests individually).
+- `cargo test -p kiwi-mail testutil -- --test-threads=1`: **16/16**.
+- `cargo clippy -p kiwi-app --all-targets -- -D warnings`: clean.
+- `cargo clippy -p kiwi-mail --all-targets -- -D warnings`: clean.
+- Touched-file rustfmt and diff checks: clean; no test binary remained running.
+
+Shared integration note: the matcher/timeout/regression changes were swept into
+concurrent commit `fd042d3`; the remaining uncommitted T-262 harness diff is the
+bounded session helper plus A19's APPEND/assertion-preserving formatting/fixes.
+
 pre-existing send-E2E hang (`e2e_send_smtp_reject_retains_outbox`).

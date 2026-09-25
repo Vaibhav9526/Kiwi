@@ -37,3 +37,15 @@ export type {
 } from "./bridge";
 export { PLUGINS_KEY, PLUGINS_CHANGED_EVENT, getPlugin, installPlugin, listPlugins, removePlugin, setPluginEnabled } from "./registry";
 export type { InstalledPlugin } from "./registry";
+export {
+  broadcastPluginEvent,
+  emitToPlugin,
+  listPluginPanes,
+  reconcilePlugins,
+  startPluginSession,
+  stopAllPlugins,
+  subscribePluginPanes,
+} from "./runtime";
+export type { PluginPane, PluginSession, PluginSinks } from "./runtime";
+export { useInstalledPlugins, usePluginPanes, usePluginRuntime } from "./hooks";
+export type { NotifySink } from "./hooks";

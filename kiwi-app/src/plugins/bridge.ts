@@ -65,7 +65,7 @@ export function isBridgeMessage(v: unknown): v is BridgeMessage {
 export const CAPABILITY_METHODS: Record<PluginCapability, readonly string[]> = {
   "message-list-read": ["messages.list", "messages.getEnvelope"],
   "composer-action": ["composer.registerAction", "composer.unregisterAction"],
-  "settings-page": ["settings.registerPane", "settings.unregisterPane"],
+  "settings-page": ["settings.registerPane", "settings.unregisterPane", "settings.renderPane"],
   notify: ["notify.show"],
 };
 

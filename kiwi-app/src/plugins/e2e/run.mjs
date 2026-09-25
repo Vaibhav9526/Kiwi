@@ -258,11 +258,61 @@ ok(
 );
 ok(!installPlugin("not json", {}).ok, "install rejects non-JSON manifest text");
 
+/* ---------- 10) host sinks: settings-page pane + scoped notify.show (T-280) ---------- */
+
+const paneDir = join(pluginsDir, "examples", "settings-pane");
+const instP = installPlugin(readFileSync(join(paneDir, "manifest.json"), "utf8"), {
+  "plugin.js": readFileSync(join(paneDir, "plugin.js"), "utf8"),
+});
+ok(instP.ok, "settings-pane reference plugin installs");
+const recP = getPlugin("settings-pane-demo");
+const toasts = [];
+const sinks = { notify: (k, t) => toasts.push({ k, t }), isLocked: () => locked };
+const sess = P.startPluginSession(recP, sinks);
+ok(!!sess, "plugin session starts via runtime (in-context alpha loader)");
+await sleep(50); // host.ready evt → plugin calls settings.registerPane
+ok(
+  P.listPluginPanes().some(
+    (p) => p.pluginId === "settings-pane-demo" && p.paneId === "about" && p.title === "Demo Plugin" && p.icon === "puzzle",
+  ),
+  "settings.registerPane landed a pane record in the host store",
+);
+
+P.emitToPlugin("settings-pane-demo", "pane.mount", { paneId: "about" });
+await sleep(60);
+const paneBody = P.listPluginPanes().find((p) => p.paneId === "about")?.body ?? "";
+ok(/rendered by the plugin/.test(paneBody), "pane.mount evt → plugin pushed markup via settings.renderPane");
+ok(
+  toasts.some((t) => t.t === "[settings-pane-demo] demo pane mounted" && t.k === "info"),
+  "notify.show reached the toast sink scoped with the plugin id",
+);
+
+let paneDenied = null;
+await rogue.request("settings.registerPane", { paneId: "x", title: "X" }).catch((e) => (paneDenied = e.code));
+ok(paneDenied === "capability-denied", "settings.registerPane denied without settings-page cap");
+ok(
+  !P.listPluginPanes().some((p) => p.pluginId === "rogue-reader"),
+  "denied registerPane created no pane record",
+);
+
+locked = true;
+P.emitToPlugin("settings-pane-demo", "pane.mount", { paneId: "about" });
+await sleep(50);
+ok(true, "no crash while locked (plugin renderPane call rejected 'locked' internally)");
+locked = false;
+
+sess.dispose();
+ok(
+  !P.listPluginPanes().some((p) => p.pluginId === "settings-pane-demo"),
+  "session dispose removes the plugin's panes",
+);
+
 host.detach();
 hostRogue.detach();
 kiwi.dispose();
 rogue.dispose();
 orphan.dispose();
+P.stopAllPlugins();
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

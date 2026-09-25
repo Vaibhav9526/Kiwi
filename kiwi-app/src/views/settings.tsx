@@ -10,22 +10,24 @@ import { useEffect, useRef, useState } from "react";
 import type { ComponentProps } from "react";
 import { accountPref, applyPrefsBag, applyUiPrefs, collectPrefs, loadMuted, loadPref, savePref } from "../prefs";
 import { api, BackendUnavailableError, IpcError } from "../ipc";
-import type { AccountView, DeviceView, OAuth2StatusView, VerifyResult } from "../kiwi";
+import type { AccountView, DeviceView, FolderView, OAuth2StatusView, VerifyResult } from "../kiwi";
 import { OAuth2SignIn, oauth2ProviderLabel } from "../components/oauth2";
 import { navigate } from "../router";
 import { EDIT_HANDOFF_KEY, localAutoconfigGuess } from "./setup";
 import { FiltersView } from "./filters";
 import { IntegrationsView } from "./integrations";
+import { RulesView } from "./rules";
 import { SHORTCUT_ROWS } from "../components/shortcuts";
-import { Icon } from "../components/icons/index";
+import { Icon, isIconName } from "../components/icons/index";
 import { ThemePicker, useTheme } from "../themes";
+import { emitToPlugin, removePlugin, setPluginEnabled, useInstalledPlugins, usePluginPanes } from "../plugins";
 
 // T-191 tabbed preferences (Mailspring idiom): the eight legacy sections
 // fold into seven tabs — General (general + notifications + privacy +
 // advanced), Accounts, Identity (KIWI Security), Appearance (appearance +
 // templates), Shortcuts, Mail Rules (embedded filters), Integrations
 // (temp mail + deliverability, T-242).
-const SECTIONS = ["General", "Accounts", "Identity", "Appearance", "Shortcuts", "Mail Rules", "Integrations"] as const;
+const SECTIONS = ["General", "Accounts", "Identity", "Appearance", "Shortcuts", "Mail Rules", "Integrations", "Plugins"] as const;
 type Section = (typeof SECTIONS)[number];
 
 function errText(e: unknown): string {
@@ -41,6 +43,7 @@ export function SettingsView({
   onOrgChanged,
   onLock,
   filters,
+  folderLists,
 }: {
   mode: "live" | "demo";
   accounts: AccountView[];
@@ -51,12 +54,18 @@ export function SettingsView({
   onLock: () => void;
   /** Mail Rules tab embeds the filters surface (same props as the route). */
   filters?: ComponentProps<typeof FiltersView>;
+  /** Real folder list per account — the rules editor's move-folder picker. */
+  folderLists?: Record<string, FolderView[]>;
 }) {
   const [section, setSection] = useState<Section>("General");
   // T-275: theme is owned by useTheme() — the ThemePicker (Appearance tab)
   // and TopBar select write through it; backend bag merges dispatch
   // kiwi-theme via applyPrefsBag, so no manual pref re-read is needed.
   const { theme: themeDefault } = useTheme();
+  // T-280: plugin surface — installed records + registered panes (live via
+  // the kiwi-plugins-changed / pane-store subscriptions).
+  const installedPlugins = useInstalledPlugins();
+  const pluginPanes = usePluginPanes();
   const [grace, setGrace] = useState(() => loadPref("kiwi.grace", "10"));
   const [minTls, setMinTls] = useState(() => loadPref("kiwi.minTls", "tls1.2"));
   const [templates, setTemplates] = useState<string[]>(() => loadPref("kiwi.templates", ["Status update", "Meeting request"]));
@@ -997,6 +1006,17 @@ export function SettingsView({
 
         {section === "Mail Rules" && (
           <>
+            {/* T-281: server-side ruleset (kiwi_rules_*) — authoritative
+                management surface. The localFilters block below is the
+                older prefs-backed draft engine, kept separate. */}
+            <RulesView demo={mode === "demo"} accounts={accounts} folderLists={folderLists ?? {}} />
+            <hr style={{ border: 0, borderTop: "1px solid var(--kiwi-border)", margin: "1rem 0" }} />
+            <h3>
+              Draft filters{" "}
+              <small style={{ color: "var(--kiwi-text-secondary)", fontWeight: "normal" }}>
+                — local prefs engine (kiwi.filterRules), run-on-list only
+              </small>
+            </h3>
             {filters ? (
               <FiltersView {...filters} />
             ) : (
@@ -1014,7 +1034,86 @@ export function SettingsView({
         )}
 
         {section === "Integrations" && <IntegrationsView accounts={accounts} mode={mode} />}
+
+        {section === "Plugins" && (
+          <>
+            {installedPlugins.length === 0 ? (
+              <p style={{ color: "var(--kiwi-text-secondary)" }}>
+                <small>
+                  No plugins installed. Sideload-only v1 — see <code>src/plugins/GETTING-STARTED.md</code>
+                  ("alpha: plugins run as trusted code").
+                </small>
+              </p>
+            ) : (
+              installedPlugins.map((p) => (
+                <div className="kiwi-card" key={p.manifest.id}>
+                  <h2>
+                    {p.manifest.name ?? p.manifest.id}{" "}
+                    <small style={{ color: "var(--kiwi-text-secondary)" }}>
+                      v{p.manifest.version} · {p.manifest.id}
+                    </small>
+                  </h2>
+                  <p>
+                    <small>
+                      capabilities: {p.manifest.permissions.length ? p.manifest.permissions.join(", ") : "none"}
+                    </small>
+                  </p>
+                  <p>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={p.enabled}
+                        onChange={(e) => setPluginEnabled(p.manifest.id, e.target.checked)}
+                      />{" "}
+                      Enabled
+                    </label>{" "}
+                    <button type="button" className="ms-btn" onClick={() => removePlugin(p.manifest.id)}>
+                      Remove
+                    </button>
+                  </p>
+                </div>
+              ))
+            )}
+            {pluginPanes.length > 0 && (
+              <>
+                <h2>Plugin panes</h2>
+                {pluginPanes.map((pane) => (
+                  <PluginPaneCard key={`${pane.pluginId}/${pane.paneId}`} pane={pane} />
+                ))}
+              </>
+            )}
+          </>
+        )}
       </section>
+    </div>
+  );
+}
+
+/**
+ * Plugin-supplied Settings pane (T-280). Mount notifies the plugin via the
+ * bridge (`pane.mount`); the plugin pushes body markup back through
+ * `settings.renderPane`. ALPHA: markup renders verbatim — plugins are
+ * trusted code (THREAT-MODEL RR-11); CSP still blocks inline script.
+ */
+function PluginPaneCard({ pane }: { pane: import("../plugins").PluginPane }) {
+  useEffect(() => {
+    emitToPlugin(pane.pluginId, "pane.mount", { paneId: pane.paneId });
+    return () => emitToPlugin(pane.pluginId, "pane.unmount", { paneId: pane.paneId });
+  }, [pane.pluginId, pane.paneId]);
+  const icon = pane.icon && isIconName(pane.icon) ? pane.icon : "puzzle";
+  return (
+    <div className="kiwi-card kiwi-plugin-pane" data-plugin={pane.pluginId} data-pane={pane.paneId}>
+      <h2>
+        <Icon name={icon} size={14} /> {pane.title}{" "}
+        <small style={{ color: "var(--kiwi-text-secondary)" }}>by {pane.pluginName}</small>
+      </h2>
+      {pane.body ? (
+        <div className="kiwi-plugin-pane-body" dangerouslySetInnerHTML={{ __html: pane.body }} />
+      ) : (
+        <p style={{ color: "var(--kiwi-text-secondary)" }}>
+          <small>Pane registered — plugin will render content on mount.</small>
+        </p>
+      )}
     </div>
   );
 }

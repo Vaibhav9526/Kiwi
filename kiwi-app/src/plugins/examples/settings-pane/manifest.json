@@ -1,0 +1,9 @@
+{
+  "id": "settings-pane-demo",
+  "version": "0.1.0",
+  "name": "Settings Pane Demo",
+  "description": "Reference plugin (T-280): registers a pane in Settings → Plugins and renders markup via the bridge.",
+  "author": "KIWI",
+  "entry": "plugin.js",
+  "permissions": ["settings-page", "notify"]
+}

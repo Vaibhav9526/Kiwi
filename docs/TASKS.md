@@ -257,6 +257,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-277 | Fix e2e_send_* hang: root-cause blocking point + bounded timeout, keep deterministic | Agent 21 | open | `kiwi-app/src-tauri/src/e2e.rs`, `kiwi-mail` seams | T-262,T-273 |
 | T-278 | integrations.md ↔ kiwi-integrations drift audit (last unaudited domain) — findings only | Agent 23 | open | `kiwi-integrations`, `docs/contracts/integrations.md` | T-196 program |
 | T-279 | HickoryResolver production DNS impl for mailauth (bounded timeouts, fail-closed temperror) | Agent 20 | open | `kiwi-mailauth`, app resolver wiring | T-196 |
-| T-280 | host-side plugin surfaces: notify.show→toast sink + settings-page→pane mount (alpha trusted-code) | Agent 25 | open | `kiwi-app/src/plugins/`, `components/toasts.tsx`, `views/settings.tsx` | T-274,T-268 |
+| T-280 | host plugin surfaces: notify→toasts, settings-page→mounted panes+lifecycle, runtime supervisor, 30/30 | Agent 25 | done |
 | T-281 | rules management UI: list/create/edit predicate+action forms, enable/disable, reorder, preview seam | Agent 24 | open | `kiwi-app/src` | T-200,T-263 |
 | T-282 | AUTH-1 failure/denied authenticator audit rows + timeout-audit contract ruling (evidence-before-effect) | Agent 11 | open | `kiwi-pair`, `commands/security.rs` | T-272 |
+| T-283 | Agenda rail real content: security-summary card (real trust/lock state only, no mock) + persisted task items | Agent 25 | open | `kiwi-app/src` rail | T-267 |
