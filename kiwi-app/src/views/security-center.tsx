@@ -81,25 +81,33 @@ export function SecurityCenterView({
     }
   };
 
-  // T-331: probe chain health on mount. Cheap (no rows), ungated, and it is
-  // the only way corruption becomes visible before the rows are requested.
+  // T-331 + T-338: probe chain health. Cheap (no rows), ungated, and it is the
+  // only way corruption becomes visible before the rows are requested. The
+  // verdict is backend-owned — the renderer never guesses.
+  const probeIntegrity = async (): Promise<"ok" | "corrupt" | "unknown"> => {
+    try {
+      const v = await api.auditIntegrity();
+      setAuditIntegrity(v.state);
+      return v.state;
+    } catch {
+      setAuditIntegrity("unknown");
+      return "unknown";
+    }
+  };
+
+  // "Re-check" on the corrupt banner: a real re-verification — if the chain
+  // now verifies, reload the rows that were withheld as evidence.
+  const recheckIntegrity = async () => {
+    const s = await probeIntegrity();
+    if (s === "ok") void loadAudit();
+  };
+
   useEffect(() => {
     if (demo) {
       setAuditIntegrity("unknown");
       return;
     }
-    let cancelled = false;
-    void (async () => {
-      try {
-        const v = await api.auditIntegrity();
-        if (!cancelled) setAuditIntegrity(v.state);
-      } catch {
-        if (!cancelled) setAuditIntegrity("unknown");
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    void probeIntegrity();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [demo]);
 
@@ -320,13 +328,31 @@ export function SecurityCenterView({
         </div>
       )}
       {/*
+        T-338: the probe verdict surfaces alongside the rows in every readable
+        state — verified says so, unreadable says the rows are unverified.
+        Both come from kiwi_audit_integrity alone; nothing is assumed.
+      */}
+      {!demo && auditIntegrity === "ok" && (
+        <p role="status" style={{ color: "var(--kiwi-ms-text-secondary)" }}>
+          <small>Chain integrity: verified (kiwi_audit_integrity).</small>
+        </p>
+      )}
+      {!demo && auditIntegrity === "unknown" && auditState === "ready" && (
+        <p role="status" style={{ color: "var(--kiwi-ms-text-secondary)" }}>
+          <small>Chain integrity: could not be verified — rows shown are unverified.</small>
+        </p>
+      )}
+      {/*
         T-331: the persistent security state. Deliberately NOT a toast and NOT
         dismissible-by-time: `audit-corrupt` means the log can no longer prove
         what the app did, and that claim has to keep standing on screen.
       */}
       {auditIntegrity === "corrupt" && (
         <div className="kiwi-banner error" role="alert" data-audit-integrity="corrupt">
-          <strong>Audit integrity failure.</strong> {AUDIT_CORRUPT_MESSAGE}.
+          <strong>Audit integrity failure.</strong> {AUDIT_CORRUPT_MESSAGE}.{" "}
+          <button type="button" className="ms-btn" onClick={() => void recheckIntegrity()}>
+            Re-check
+          </button>
           <br />
           <small>
             The rows below are unverified and must not be treated as evidence. Do not clear the log — it

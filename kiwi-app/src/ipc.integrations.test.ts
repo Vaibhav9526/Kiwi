@@ -21,6 +21,7 @@ const statusPayload = {
   checksTotal: 2,
   ready: false,
   sent: true,
+  consentConsumed: true,
 };
 
 beforeEach(() => {

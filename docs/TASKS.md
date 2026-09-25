@@ -313,7 +313,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-332 | Copy-to ctx-menu (shared submenu, picked-aware, honest local-only tooltip) | Agent 24 | done |
 | T-333 | storage+notify UI wired live to T-330/T-329 IPCs | Agent 25 | done |
 | T-334 | search operators (from:/subject:/has:/is:/before:/after:/in:) over FTS path, honest fallback | Agent 15 | open | `kiwi-mail/store/search`, queries.rs | |
-| T-335 | Unified Inbox smart view: client-side merge, per-row account context, honest <2-account hide | Agent 24 | open | `chrome.tsx` tree, `mailbox.tsx` | |
+| T-335 | Unified Inbox: account badges, composite-id ops, honest <2-acct hide; 24/24 smoke | Agent 24 | done |
 | T-336 | ci.yml ui-smoke job (headless Chrome, honest skip/fail, artifacts) — caught demo-fixture gap for A24 | Agent 26 | done |
 | T-337 | release packaging: real tauri build + bundle targets + RELEASING.md honest unsigned notes | Agent 20 | open | `kiwi-app/src-tauri/tauri.conf.json`, `docs/RELEASING.md` | |
 | T-338 | audit-integrity UI: strip indicator + corrupt surface (consumes T-331 signal) | Agent 25 | open | `chrome.tsx` strip, security-center | T-331 | audit-corruption visible: tri-state probe, banner+pill, withheld-rows, no fake-green | Agent 21 | done |
@@ -321,5 +321,5 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-340 | lock-gate coverage audit: classify every command, findings for ungated-by-omission | Agent 21 | open | `lib.rs`, `commands/`, `docs/audits/` | T-269 |
 | T-341 | conversation/thread mute: per-conversation flag, suppresses counts+notify, unmute restores | Agent 15b | open | `kiwi-mail/store`, `commands/`, `notify.rs` | |
 | T-342 | UI pass#2 (planner): disposable-inbox sidebar promotion + density/empty-states + global radius tokens | Agent 25 | open | `chrome.tsx`, `tokens.css`, integrations view | owner-directed |
-| T-343 | UI pass#2 (planner): Gmail floating compose dock (minimize/stack/drafts persist) | Agent 24 | open | `compose.tsx`, `App.tsx` | owner-directed |
+| T-343 | Gmail floating compose dock — LIVE (post-T-335) | Agent 24 | in-progress | `compose.tsx`, `App.tsx` | owner-directed |
 | T-344 | local gates script (ps1+sh) mirroring CI gates + TESTING.md doc | Agent 26 | open | `scripts/`, `docs/TESTING.md` | T-336 |

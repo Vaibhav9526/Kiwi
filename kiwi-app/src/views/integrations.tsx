@@ -9,9 +9,11 @@
  * the fragment mounts via dangerouslySetInnerHTML exactly like the
  * reading-pane render path. Nothing persists — sessions die with the app.
  *
- * Deliverability: begin mints testId + a single-use consentToken; the
- * token stays in component memory (never rendered); the send requires
- * the consent checkbox — `consentNotice` is shown verbatim beside it.
+ * Deliverability: begin mints testId + a single-use anti-replay token; the
+ * token stays in component memory (never rendered) and is returned to the
+ * backend, which additionally requires an operating-system confirmation
+ * before any message to an integration-managed address is enqueued. The
+ * checkbox only acknowledges `consentNotice`; it is never the approval.
  * Status polls are single-shot IPC calls; one recursive timeout drives
  * the loop while a test is in flight, and the report loads once `ready`.
  *
@@ -380,7 +382,7 @@ function ReportView({ r }: { r: DeliverabilityReportView }) {
               <span className="kiwi-pill unknown">compat {milli(r.scoreCompatMilli)}/10</span>{" "}
             </>
           )}
-          {!r.complete && <span className="kiwi-pill warn">partial report</span>}
+          {!r.evidenceComplete && <span className="kiwi-pill warn">partial report</span>}
         </p>
       )}
       {r.authFailureIds.length > 0 && (
@@ -672,7 +674,7 @@ export function DeliverabilityPanel({ accounts, live }: { accounts: AccountView[
                 onChange={(e) => setConsent(e.target.checked)}
                 disabled={!live || busy !== null}
               />{" "}
-              I consent — send the test message once (single-use; the backend will refuse a replay).
+              I have read this notice — the system confirmation dialog is the approval.
             </label>
           </p>
           <p>

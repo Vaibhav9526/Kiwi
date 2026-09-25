@@ -17,6 +17,13 @@ export interface TrustState {
   /** 0–100, null when unreported. */
   score: number | null;
   requiredAction: string;
+  /**
+   * T-331: backend-owned audit-chain verdict carried on the security status
+   * payload. `true` verified, `false` failed verification, `null`/absent =
+   * not checked. `null` is honest absence and renders as nothing at all —
+   * never as a reassuring tick.
+   */
+  auditOk?: boolean | null;
 }
 
 export interface AccountInfo {
@@ -175,7 +182,29 @@ export interface SecurityStatusView {
   signals: SignalView[];
   sessionsObserved: number;
   deviceId: string;
+  /**
+   * T-331: backend-owned audit-chain integrity. `true` verified, `false`
+   * failed verification, `null`/absent = not checked yet — honest absence,
+   * which must never render as "fine".
+   */
+  auditOk?: boolean | null;
 }
+
+/**
+ * T-331 `kiwi_audit_integrity` — the cheap health probe (no row payloads).
+ * `state` is the honest tri-state the UI words from; `auditOk` mirrors it
+ * (`null` = unknown). A tampered chain is a *state*, not an exception: the
+ * backend already emitted `audit-corrupt` with no renderer handling it, so the
+ * failure was invisible.
+ */
+export interface AuditIntegrityView {
+  state: "ok" | "corrupt" | "unknown";
+  auditOk: boolean | null;
+}
+
+/** The one honest sentence for a failed chain verification (T-331). */
+export const AUDIT_CORRUPT_MESSAGE =
+  "audit log failed integrity verification — possible corruption or tampering";
 
 export interface AccountView {
   id: string;
@@ -688,6 +717,32 @@ export interface AuditEventView {
   detailJson?: string | null;
 }
 
+/**
+ * `kiwi_storage_stats` snapshot (T-330, ipc.md §8). Every field is a real
+ * measurement or explicit `null` — `0` and `null` are different facts:
+ * `dbBytes`/`attachmentBytes` null = unmeasurable, never an estimate.
+ * `integrityCheck` is SQLite's own PRAGMA result — only `"ok"` is a pass.
+ */
+export interface StorageStatsView {
+  dbBytes: number | null;
+  messageCount: number;
+  folderCount: number;
+  attachmentBytes: number | null;
+  auditCount: number;
+  schemaVersion: number;
+  integrityCheck: string;
+}
+
+/**
+ * `kiwi_storage_compact` receipt (T-330) — real mail.db length measured
+ * immediately before/after the VACUUM. `after > before` is possible and
+ * honest. Audited twice backend-side (`-requested` then `-compacted`).
+ */
+export interface StorageCompactView {
+  beforeDbBytes: number | null;
+  afterDbBytes: number | null;
+}
+
 /** `kiwi_message_unsubscribe` action selector (T-234). */
 export type UnsubscribeAction = "http" | "mailto";
 
@@ -720,6 +775,22 @@ export interface MoveResultView {
   srcFolderId: number;
   dstFolderId: number;
   moved: number;
+  /** src uid → dst uid for moved messages (uids are folder-scoped). */
+  uidMap: Record<string, number>;
+}
+
+/**
+ * `kiwi_copy_messages` result (T-325). Store-level duplicate only —
+ * never a server-side IMAP COPY; a copy of a synced-folder message is a
+ * local row the next reconcile treats as new (gap filed: real IMAP COPY
+ * belongs in the sync layer).
+ */
+export interface CopyResultView {
+  srcFolderId: number;
+  dstFolderId: number;
+  copied: number;
+  /** src uid → fresh local dst uid. */
+  uidMap: Record<string, number>;
 }
 
 /**
@@ -1614,6 +1685,8 @@ export function toTrustState(raw: unknown): TrustState {
     state,
     score: typeof r["score"] === "number" ? r["score"] : null,
     requiredAction: typeof r["requiredAction"] === "string" ? r["requiredAction"] : "none",
+    // T-331: only a real boolean counts; anything else stays null = unchecked.
+    auditOk: typeof r["auditOk"] === "boolean" ? r["auditOk"] : null,
   };
 }
 

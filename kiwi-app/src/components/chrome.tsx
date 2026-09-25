@@ -11,7 +11,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import type { Severity, SnoozePreset, TrustState } from "../kiwi";
-import { severityGlyph, severityLabel } from "../kiwi";
+import { AUDIT_CORRUPT_MESSAGE, severityGlyph, severityLabel } from "../kiwi";
 import { Icon, SEVERITY_ICON } from "./icons/index";
 import { navigate } from "../router";
 import { loadPref, savePref } from "../prefs";
@@ -55,24 +55,75 @@ import {
   IconUser,
 } from "./shell-icons";
 
-export function TrustChip({ trust, locked }: TrustState) {
+export function TrustChip({ trust, locked, auditOk }: TrustState) {
+  /*
+   * T-331 + T-338: audit-chain health rides the same security strip as a
+   * three-state indicator. `false` gets a persistent danger pill — a tampered
+   * log must be visible from the mailbox, not only after the user opens
+   * Security. `true` renders a quiet verified pill (a real backend claim).
+   * `null` — never checked / could not check — renders "unchecked": honest
+   * absence that must never look green, and never be silent in a way that is
+   * indistinguishable from verified. The value is backend-owned only
+   * (`kiwi_security_status.auditOk`); there is no renderer-side guess.
+   */
+  const auditChip =
+    auditOk === false ? (
+      <button
+        type="button"
+        className="kiwi-pill danger"
+        data-audit-integrity="corrupt"
+        aria-label={`KIWI audit: ${AUDIT_CORRUPT_MESSAGE}. Activate to open the Security view.`}
+        onClick={() => navigate({ name: "security" })}
+        title={AUDIT_CORRUPT_MESSAGE}
+      >
+        ✕ Audit: unverified
+      </button>
+    ) : auditOk === true ? (
+      <button
+        type="button"
+        className="kiwi-pill secure"
+        data-audit-integrity="ok"
+        aria-label="KIWI audit: log chain verified. Activate to open the Security view."
+        onClick={() => navigate({ name: "security" })}
+        title="Audit log chain verified"
+      >
+        ✓ Audit: verified
+      </button>
+    ) : (
+      <button
+        type="button"
+        className="kiwi-pill unknown"
+        data-audit-integrity="unchecked"
+        aria-label="KIWI audit: integrity not yet verified. Activate to open the Security view."
+        onClick={() => navigate({ name: "security" })}
+        title="Audit log integrity not yet verified"
+      >
+        Audit: unchecked
+      </button>
+    );
   if (locked) {
     return (
-      <span className="kiwi-pill locked" role="status">
-        <IconLock size={11} /> KIWI: Locked
+      <span className="em-trust" style={{ display: "inline-flex", gap: "6px" }}>
+        <span className="kiwi-pill locked" role="status">
+          <IconLock size={11} /> KIWI: Locked
+        </span>
+        {auditChip}
       </span>
     );
   }
   return (
-    <button
-      type="button"
-      className={`kiwi-pill ${trust}`}
-      aria-label={`KIWI trust: ${severityLabel(trust)}. Activate to open the Security view.`}
-      onClick={() => navigate({ name: "security" })}
-      title={trust === "unknown" ? "No connection data yet" : `Trust: ${severityLabel(trust)}`}
-    >
-      {severityGlyph(trust)} KIWI: {severityLabel(trust)}
-    </button>
+    <span className="em-trust" style={{ display: "inline-flex", gap: "6px" }}>
+      <button
+        type="button"
+        className={`kiwi-pill ${trust}`}
+        aria-label={`KIWI trust: ${severityLabel(trust)}. Activate to open the Security view.`}
+        onClick={() => navigate({ name: "security" })}
+        title={trust === "unknown" ? "No connection data yet" : `Trust: ${severityLabel(trust)}`}
+      >
+        {severityGlyph(trust)} KIWI: {severityLabel(trust)}
+      </button>
+      {auditChip}
+    </span>
   );
 }
 

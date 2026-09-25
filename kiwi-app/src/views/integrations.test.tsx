@@ -29,6 +29,9 @@ const sendView = {
   testId: beginView.testId,
   queueId: "queue-1",
   notBeforeUnix: 1_700_000_001,
+  consentConsumed: true,
+  enqueued: true,
+  singleAttempt: true,
 };
 
 const pendingStatus: DeliverabilityStatusView = {
@@ -38,6 +41,7 @@ const pendingStatus: DeliverabilityStatusView = {
   checksTotal: 2,
   ready: false,
   sent: true,
+  consentConsumed: true,
 };
 
 const readyStatus: DeliverabilityStatusView = {
@@ -47,6 +51,7 @@ const readyStatus: DeliverabilityStatusView = {
   checksTotal: 2,
   ready: true,
   sent: true,
+  consentConsumed: true,
 };
 
 const reportView: DeliverabilityReportView = {
@@ -70,6 +75,8 @@ const reportView: DeliverabilityReportView = {
   ],
   authFailureIds: [],
   authGate: "pass",
+  checksTruncated: false,
+  evidenceComplete: true,
 };
 
 const emptyPoll: TempPollView = {
