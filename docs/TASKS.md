@@ -322,3 +322,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-341 | conversation/thread mute: per-conversation flag, suppresses counts+notify, unmute restores | Agent 15b | open | `kiwi-mail/store`, `commands/`, `notify.rs` | |
 | T-342 | UI pass#2 (planner): disposable-inbox sidebar promotion + density/empty-states + global radius tokens | Agent 25 | open | `chrome.tsx`, `tokens.css`, integrations view | owner-directed |
 | T-343 | UI pass#2 (planner): Gmail floating compose dock (minimize/stack/drafts persist) | Agent 24 | open | `compose.tsx`, `App.tsx` | owner-directed |
+| T-344 | local gates script (ps1+sh) mirroring CI gates + TESTING.md doc | Agent 26 | open | `scripts/`, `docs/TESTING.md` | T-336 |
