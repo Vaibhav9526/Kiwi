@@ -164,3 +164,64 @@
   the correct semantics.
 - Required Orca T-231 completion report sent to terminal
   `term_c20c6737-9b80-4911-bcd2-38aa5113e4d7`.
+
+## 2026-09-25 — T-281: rules management UI (kiwi_rules_* surface)
+
+**Status:** done (`tsc && vite build` green).
+
+### Files changed
+
+- `kiwi-app/src/views/rules.tsx` — NEW `RulesView`: the authoring surface
+  for the backend rules DSL (ipc.md §6d). List shows name / enabled
+  checkbox / scope pill / block-list badge / position + humanized
+  `describePredicate` → `describeAction` summary; enable/disable and
+  up/down reorder are `kiwi_rules_upsert` calls on the stored row (reorder
+  = position swap with the neighbor); delete uses an inline confirm.
+  Create/edit form: name + account scope + enabled + `isBlock`, recursive
+  `PredicateEditor` covering every AST node kind (sender/recipient/
+  subject/header/body_contains/attachment_name leaves with
+  contains/is/ends_with/domain ops + header-name field; all/any/not/
+  always combinators, node-count and depth caps mirroring model.rs),
+  action rows (move/archive/delete/mark_read/star — move gets a real
+  `folderLists` picker grouped per account, disposition kinds limited to
+  one per rule since evaluation is first-wins). "Test rule" dry-runs
+  `kiwi_rules_preview` (exists — landed with T-244 surface) and renders
+  matched count + first hits; "Run rules now" loops `kiwi_rules_apply_now`
+  over all accounts and reports aggregate counts. Renderer inputs are
+  `maxLength`-bounded to the model.rs caps; validation stays server-side
+  (`invalid-input` errors surface verbatim in a banner).
+- `kiwi-app/src/views/settings.tsx` — `RulesView` mounted at the top of
+  the existing "Mail Rules" section; the prefs-backed `FiltersView`
+  (T-186 local engine) remains below as "Draft filters", clearly labeled.
+  New optional `folderLists` prop.
+- `kiwi-app/src/App.tsx` — passes `folderLists` to `SettingsView`.
+- `docs/TASKS.md` — T-281 row → done.
+- `docs/agents/agent-24-status.md` — this entry.
+
+### Contract findings
+
+- `kiwi_rules_list` with no `accountId` returns **global rules only** —
+  per-account calls are merged + deduped by id so scoped rules are
+  visible. Documented in-file.
+- `kiwi_rules_preview` IS registered (`lib.rs:172`) — the preview seam
+  the brief asked for exists and is wired; no contract gap.
+- `kiwi_rules_hits` (audit trail) exists but is not yet surfaced — noted
+  as a natural follow-up for the security/forensic side, not required by
+  the brief.
+
+### Assumptions / risks
+
+- Demo mode shows a labeled empty state — no fabricated ruleset.
+- All edits ride `kiwi_rules_upsert` (create-or-replace by caller-assigned
+  id); reorder swaps `position` values, matching backend evaluation order
+  (ascending position, id tie-break).
+- Committed code was swept into A25's T-280 commit `8b4aabb` mid-flight
+  (same working tree) — HEAD verified to contain the final file.
+
+### Verification
+
+- `npm run build` (`tsc && vite build`) — green, 81 modules.
+- Registry sweep: all six `kiwi_rules_*` commands present in
+  `src-tauri/src/lib.rs:167-172`.
+- Required Orca T-281 completion report sent to terminal
+  `term_c20c6737-9b80-4911-bcd2-38aa5113e4d7`.
