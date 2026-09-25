@@ -204,7 +204,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-241 | ipc.md completeness + missing/divergent table (7 findings queued for wire owner) | Agent 22 | done |
 | T-242 | Integrations UI (TempMail panel, deliverability view, unsub chip) | Agent 11 | done |
 | T-243 | OAuth2 wizard UI + re-auth badge + kiwi_open_external (91/91) | Agent 19 | done |
-| T-244 | Rules preview + rule_failures + deferred staged eval (schema v9, 176/91) | Agent 15 | done |
+| T-244 | rules preview + per-rule failure counter + deferred body-predicate semantics | Agent 21 (reassigned from A15) | open | `kiwi-mail`, `commands/rules*` | T-233,T-281 |
 | T-245 | FSV-1 implemented (kiwi.forensics/2, dual-read, sentinel, 120 tests) | Agent 20 | done |
 <!-- QUEUE: ACFG-3..10 autoconfig-parser drift (ex-Agent-8 items) — assign when autoconfig owner frees. authstamp clippy -> A21 in-flight. -->
 | T-246 | ACFG-3..10 enumerated (autoconfig-drift-1.md; 7/8/9 = code-owner hardening) | Agent 22 | done |
@@ -254,7 +254,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-274 | Reference plugin + capability-gate proof (bridge e2e in plugins/) | Agent 25 | done | `kiwi-app/src/plugins/` | T-268 |
 | T-275 | T-268 seams landed + live-verified (CDP vs reference, ghost-id fallback proven) | Agent 25 | done |
 | T-276 | ACFG-4 GoDaddy: resolved inline — removed from ISPDB_FIXTURES roster (correctly MX_HINTS-only, no fixed domains) | Lead | done |
-| T-277 | e2e_send hang: verify-only — root cause (DATA-terminator wedge) fixed by A19/T-262 + TRANSCRIPT_STEP_TIMEOUT | Agent 21 | open |
+| T-277 | e2e_send hang FIXED: empty-line wildcard matcher ate DATA dot → exact-empty + finite timeouts (complements A19 bound) | Agent 21 | done |
 | T-278 | integrations.md ↔ kiwi-integrations drift audit (last unaudited domain) — findings only | Agent 23 | open | `kiwi-integrations`, `docs/contracts/integrations.md` | T-196 program |
 | T-279 | HickoryResolver production DNS impl for mailauth (bounded timeouts, fail-closed temperror) | Agent 20 | open | `kiwi-mailauth`, app resolver wiring | T-196 |
 | T-280 | host plugin surfaces: notify→toasts, settings-page→mounted panes+lifecycle, runtime supervisor, 30/30 | Agent 25 | done |

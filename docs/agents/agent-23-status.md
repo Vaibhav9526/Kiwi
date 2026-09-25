@@ -151,3 +151,32 @@ No `kiwi-autoconfig` source or contract file was changed by Agent 23 in this ver
 ### Handoff
 
 - Terminal DONE command sent: `orca terminal send --terminal term_c20c6737-9b80-4911-bcd2-38aa5113e4d7 --text 'DONE: Agent-23 T-251 — result' --enter`; Orca returned `input_accepted` and reported provider delivery as unsupported.
+
+## 2026-09-25 — T-278: external integrations drift audit
+
+**Status:** done (read-only contract/implementation audit; no source, contract, task-ledger, test, or findings-register edits).
+
+### Files changed
+
+- `docs/audits/integrations-drift-1.md` — complete integrations contract/crate/Tauri/TypeScript/test matrix and proposed rulings.
+- `docs/agents/agent-23-status.md` — this entry.
+
+### Evidence and findings
+
+- Confirmed the crate is not smaller than the contract implies: all eight `TempMailProvider` trait methods, all four `DeliverabilityTester` methods, and all nine Tauri commands are present/registered; current Rust and TypeScript camelCase response shapes align.
+- Enumerated the two real external services and their outbound methods, error/status mappings, session/capability lifetimes, timeouts/body caps, UI polling, relay/outbox behavior, and lack of webhooks/callbacks/listeners.
+- Recorded 19 proposed findings: one H (renderer can bypass the claimed non-bypassable user-consent boundary), eleven M (secret representability, report-URL capability ambiguity, provider false-success, auth fail-open, temp-mail navigation, send/outbox state, single-use retry, rate limiting, orphan mailboxes, audit ordering, offline isolation, and missing frontend gate), and seven L wire/test/contract rulings.
+- Recorded implemented controls honestly: production HTTPS/no-redirect/streaming cap, memory-only state, redacted `TestSlug`/provider Debug, public notice on successful temp-mail views, raw MIME never crossing IPC, reserved-recipient confinement, and copy-only report/citation URLs.
+- Stale broad `INT` wording is superseded; `INT-6` remains fixed. No master-findings edit was made.
+
+### Verification
+
+- `cargo test -p kiwi-integrations` — **30 passed, 0 failed** (26 unit + 4 deterministic fixture flows).
+- `cargo clippy -p kiwi-integrations --all-targets -- -D warnings` — passed.
+- `cargo fmt -p kiwi-integrations -- --check` — passed.
+- All audit verification used source inspection and synthetic/scripted provider flows; no live service was called.
+
+### Handoff
+
+- Required terminal DONE command: `orca terminal send --terminal term_c20c6737-9b80-4911-bcd2-38aa5113e4d7 --text 'DONE: Agent-23 T-278 — result' --enter`.
+
