@@ -121,12 +121,12 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-192 | Re-integrate KIWI security surfaces in Mailspring idiom | Agent 5 | open | `kiwi-app/src/` | T-191 |
 | T-193 | kiwi-admin H1-H8 fixes per Lead rulings + M1-M7 + e2e regression guards | Agent 6 | open | `kiwi-admin/` | T-187 |
 | T-194 | Mobile authenticator screens: pairing QR, approvals, devices, history (mock transport) | Agent 4 (Nemotron 3.5 Lightning) | open | `mobile/` | T-136 |
-| T-195 | OAuth2 flows (device-code + localhost auth-code) for Gmail/Outlook providers | Agent 8 | queued | `kiwi-autoconfig/`, `kiwi-mail/` | T-183 |
+| T-195 | OAuth2 flows (Google loopback + Microsoft device-code) spec + impl | Agent 19 | open | `kiwi-autoconfig/`, `kiwi-mail/` | T-183 |
 
 ## Backlog — MailFlow feature mine (specs in docs/BACKLOG-MAILFLOW.md; start after current queues + T-190-192)
 
 | T-200 | F1 inbox rules engine (sync-ingest, ordered, block-list-first, deterministic) | unassigned | backlog | `kiwi-mail/` | — |
-| T-201 | F2 categorization tabs (deterministic header/heuristic classifier) | unassigned | backlog | `kiwi-mail/` | — |
+| T-201 | F2 categorization tabs (deterministic header/heuristic classifier) | Agent 14 | open | `kiwi-mail/` | — |
 | T-202 | F3 one-click unsubscribe (open URL default; mailto needs confirm) | unassigned | backlog | `kiwi-mail/` + UI | — |
 | T-203 | F4 sender block list (trash-before-rules, per-account) | unassigned | backlog | `kiwi-mail/` | — |
 | T-204 | F5 mark-as-read behavior pref | unassigned | backlog | `kiwi-app/` | — |
@@ -167,13 +167,13 @@ rebuild context. Lead handle is now term_c20c6737.
 | 11 | Devin Pro | d869b293 | T-226 kiwi-integrations |
 | 12 | Muse Spark 1.3 xhigh | 4cc53da5 | T-190b Mailspring map → T-191/192 rebuild (frontend owner) |
 | 13 | Muse Spark 1.3 xhigh | e5adf4d9 | T-193 admin H1-H8 + M fixes |
-| 14 | OpenCode Zen xhigh | e26f119b | T-180 finish/verify kiwi-mail splits |
+| 14 | OpenCode Zen xhigh | e26f119b | T-180 done → T-201 F2 categorization |
 | 15 | Devin Pro | c47aa1d7 | T-181 finish/verify src-tauri splits |
 | 16 | DeepSeek V4.1 Flash | 87c46343 | T-183 mailauth hardening |
 | 17 | DeepSeek V4.1 Flash | 71a0b324 | T-194 mobile authenticator screens |
 | 18 | Space Bunny Free | f7e88089 | T-188 pair/challenge + admin contracts |
-| 19 | Pi | 0135ee79 | T-195 OAuth2 spec + impl |
-| 20 | Pi | 290216b7 | T-196 contract-drift audit |
+| 19 | Devin Pro | e84c9837 | T-195 OAuth2 spec + impl |
+| 20 | Devin Pro | 593d9aea | T-196 contract-drift audit |
 | 21 | Space Bunny Alpha | 12f55a82 | T-197 license/secret scan |
 | Watcher | Space Bunny Alpha | 30e63397 | tools/watcher/watcher.py loop |
 | Planner | Devin | 621f9265 | plans |
