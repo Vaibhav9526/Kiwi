@@ -159,3 +159,21 @@ Prior roster (agents 4-10) lost all context when the runtime restarted. Fresh
 fleet as of 2026-09-25: Agent 11 (Devin Pro) + 4x OpenCode + 3x Cline + 2x Pi +
 Planner. Agents must read prompt.md/ARCHITECTURE/TASKS + their status files to
 rebuild context. Lead handle is now term_c20c6737.
+
+## Fleet roster (post-restart 2026-09-25)
+
+| Agent | Model | Terminal | Assignment |
+|---|---|---|---|
+| 11 | Devin Pro | d869b293 | T-226 kiwi-integrations |
+| 12 | Muse Spark 1.3 xhigh | 4cc53da5 | T-190b Mailspring map → T-191/192 rebuild (frontend owner) |
+| 13 | Muse Spark 1.3 xhigh | e5adf4d9 | T-193 admin H1-H8 + M fixes |
+| 14 | OpenCode Zen xhigh | e26f119b | T-180 finish/verify kiwi-mail splits |
+| 15 | Devin Pro | c47aa1d7 | T-181 finish/verify src-tauri splits |
+| 16 | DeepSeek V4.1 Flash | 87c46343 | T-183 mailauth hardening |
+| 17 | DeepSeek V4.1 Flash | 71a0b324 | T-194 mobile authenticator screens |
+| 18 | Space Bunny Free | f7e88089 | T-188 pair/challenge + admin contracts |
+| Watcher | Space Bunny Alpha | 30e63397 | tools/watcher/watcher.py loop |
+| Planner | Devin | 621f9265 | plans |
+| Lead | Devin (SWE-2) | c20c6737 | orchestration + ledger |
+
+Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c6737.
