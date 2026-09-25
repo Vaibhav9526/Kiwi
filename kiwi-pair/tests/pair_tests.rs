@@ -209,7 +209,7 @@ fn qr_payload_exact_shape() {
 fn registration_and_revocation() {
     let mut e = engine();
     register(&mut e, "dev-1");
-    assert_eq!(e.list_devices().unwrap()[0].status, "pending");
+    assert_eq!(e.list_devices(500).unwrap()[0].status, "pending");
 
     assert!(matches!(
         e.register_device(
@@ -234,7 +234,7 @@ fn registration_and_revocation() {
     // revoke is terminal + idempotent
     e.revoke_device("dev-1", 2_000).unwrap();
     e.revoke_device("dev-1", 2_001).unwrap();
-    let d = &e.list_devices().unwrap()[0];
+    let d = &e.list_devices(500).unwrap()[0];
     assert_eq!(d.status, "revoked");
     assert_eq!(d.revoked_unix, Some(2_000));
     assert!(matches!(
@@ -370,7 +370,7 @@ fn full_pairing_flow_then_unlock() {
         signature: s.sign(&c.canonical_bytes()).to_vec(),
     };
     e.verify_response(&r, 1_040).unwrap();
-    assert_eq!(e.list_devices().unwrap()[0].status, "active");
+    assert_eq!(e.list_devices(500).unwrap()[0].status, "active");
 
     // now an unlock challenge on the active device
     let c2 = issue(&mut e, "u-1", "dev-1", NONCE_B, 1_050);
@@ -450,5 +450,373 @@ fn revoked_device_cannot_verify() {
     assert!(matches!(
         e.verify_response(&resp_for(&c, &signer()), 110),
         Err(PairError::DeviceRevoked(_))
+    ));
+}
+
+// ---- T-269: pair_status / atomic claim / persistence / bounds ----------
+
+/// Unique on-disk engine dir (restart tests need real pair.db files).
+fn temp_root(tag: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "kiwi-pair-test-{}-{}-{}",
+        std::process::id(),
+        tag,
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    ))
+}
+
+#[test]
+fn ticket_status_state_machine() {
+    let mut e = engine();
+    let t = e.issue_pairing_ticket("Pixel", &[9u8; 32], 1_000).unwrap();
+
+    // awaiting-phone: exists, unclaimed, unexpired
+    let s = e.ticket_status(&t.ticket, 1_100).unwrap();
+    assert_eq!(s.state, TicketState::AwaitingPhone);
+    assert_eq!(s.device_id, None);
+    assert_eq!(s.expires_unix, t.expires_unix);
+
+    // expired once past expiry — unlinked and unclaimed
+    let s = e.ticket_status(&t.ticket, t.expires_unix).unwrap();
+    assert_eq!(s.state, TicketState::Expired);
+    assert_eq!(s.device_id, None);
+
+    // unknown / malformed collapse to InvalidTicket
+    assert!(matches!(
+        e.ticket_status("nope-nope-nope", 1_100),
+        Err(PairError::InvalidTicket)
+    ));
+    assert!(matches!(
+        e.ticket_status("bad ticket!", 1_100),
+        Err(PairError::InvalidTicket)
+    ));
+    assert!(matches!(
+        e.ticket_status("short", 1_100),
+        Err(PairError::InvalidTicket)
+    ));
+    // consumed-but-unlinked → InvalidTicket while unexpired (non-oracle)…
+    let mut e2 = engine();
+    let t2 = e2.issue_pairing_ticket("Other", &[8u8; 32], 1_000).unwrap();
+    e2.consume_pairing_ticket(&t2.ticket, 1_010).unwrap();
+    assert!(matches!(
+        e2.ticket_status(&t2.ticket, 1_020),
+        Err(PairError::InvalidTicket)
+    ));
+    // …but expiry outranks the consumed flag once it passes.
+    let s = e2.ticket_status(&t2.ticket, t2.expires_unix).unwrap();
+    assert_eq!(s.state, TicketState::Expired);
+}
+
+#[test]
+fn claim_ticket_and_register_is_atomic_and_linked() {
+    let mut e = engine();
+    let t = e
+        .issue_pairing_ticket("Pixel 8", &[1u8; 32], 1_000)
+        .unwrap();
+    let s = signer();
+
+    let row = e
+        .claim_ticket_and_register(
+            &t.ticket,
+            "dev-9",
+            KeyAlgorithm::Ed25519,
+            &s.public_key(),
+            Some("ks://9"),
+            1_050,
+        )
+        .unwrap();
+    assert_eq!(row.label, "Pixel 8"); // label bound at issue, not re-supplied
+    assert_eq!(row.status, "pending");
+
+    // status now reports claimed with the linked device
+    let st = e.ticket_status(&t.ticket, 1_060).unwrap();
+    assert_eq!(st.state, TicketState::Claimed);
+    assert_eq!(st.device_id.as_deref(), Some("dev-9"));
+
+    // claim is single-use even against its own link
+    assert!(matches!(
+        e.claim_ticket_and_register(
+            &t.ticket,
+            "dev-10",
+            KeyAlgorithm::Ed25519,
+            &s.public_key(),
+            None,
+            1_070,
+        ),
+        Err(PairError::TicketConsumed)
+    ));
+}
+
+#[test]
+fn claim_rejects_expired_and_duplicate_without_consuming() {
+    let mut e = engine();
+    let s = signer();
+
+    // expired ticket: claim fails TicketExpired and the ticket is NOT
+    // consumed (it still reports expired, not invalid)
+    let t = e.issue_pairing_ticket("Old", &[2u8; 32], 1_000).unwrap();
+    assert!(matches!(
+        e.claim_ticket_and_register(
+            &t.ticket,
+            "dev-x",
+            KeyAlgorithm::Ed25519,
+            &s.public_key(),
+            None,
+            1_000 + QR_TTL_SECS + 1,
+        ),
+        Err(PairError::TicketExpired)
+    ));
+    let st = e.ticket_status(&t.ticket, 1_000 + QR_TTL_SECS + 2).unwrap();
+    assert_eq!(st.state, TicketState::Expired);
+
+    // duplicate device_id → DeviceExists, ticket stays unclaimed
+    let t2 = e
+        .issue_pairing_ticket("Phone A", &[3u8; 32], 2_000)
+        .unwrap();
+    e.claim_ticket_and_register(
+        &t2.ticket,
+        "dev-1",
+        KeyAlgorithm::Ed25519,
+        &s.public_key(),
+        None,
+        2_010,
+    )
+    .unwrap();
+    let t3 = e
+        .issue_pairing_ticket("Phone B", &[4u8; 32], 2_020)
+        .unwrap();
+    assert!(matches!(
+        e.claim_ticket_and_register(
+            &t3.ticket,
+            "dev-1",
+            KeyAlgorithm::Ed25519,
+            &[7u8; 32],
+            None,
+            2_030,
+        ),
+        Err(PairError::DeviceExists(_))
+    ));
+    // t3 untouched — still awaiting (claim rolled back)
+    let st = e.ticket_status(&t3.ticket, 2_040).unwrap();
+    assert_eq!(st.state, TicketState::AwaitingPhone);
+}
+
+#[test]
+fn duplicate_labels_conflict_on_issue_and_register() {
+    let mut e = engine();
+    let s = signer();
+    e.register_device(
+        "dev-1",
+        "My Phone",
+        KeyAlgorithm::Ed25519,
+        &s.public_key(),
+        None,
+        1_000,
+    )
+    .unwrap();
+
+    // normalized (trim + case) duplicates refuse at both entry points
+    assert!(matches!(
+        e.issue_pairing_ticket(" my phone ", &[6u8; 32], 1_010),
+        Err(PairError::DeviceLabelConflict(_))
+    ));
+    assert!(matches!(
+        e.register_device(
+            "dev-7",
+            "MY PHONE",
+            KeyAlgorithm::Ed25519,
+            &[3u8; 32],
+            None,
+            1_020
+        ),
+        Err(PairError::DeviceLabelConflict(_))
+    ));
+    // …but a revoked device releases its name
+    e.revoke_device("dev-1", 1_030).unwrap();
+    e.register_device(
+        "dev-8",
+        "My Phone",
+        KeyAlgorithm::Ed25519,
+        &[4u8; 32],
+        None,
+        1_040,
+    )
+    .unwrap();
+}
+
+#[test]
+fn issue_pairing_challenge_requires_pending_device() {
+    let mut e = engine();
+    register(&mut e, "dev-1");
+    let s = signer();
+    // activate via the pairing challenge
+    let c = e
+        .issue_challenge(
+            spec("p", "dev-1", "sess", ChallengeEvent::DevicePairing, NONCE_A),
+            100,
+            120,
+        )
+        .unwrap();
+    e.verify_response(&resp_for(&c, &s), 110).unwrap();
+    // PAIR-1: an active device can no longer be issued a pairing challenge
+    assert!(matches!(
+        e.issue_challenge(
+            spec(
+                "p2",
+                "dev-1",
+                "sess",
+                ChallengeEvent::DevicePairing,
+                NONCE_B
+            ),
+            120,
+            120,
+        ),
+        Err(PairError::DeviceNotActive(DeviceStatus::Active))
+    ));
+    // unlock still works on active
+    e.issue_challenge(
+        spec("u", "dev-1", "sess", ChallengeEvent::Unlock, [0xCC; 32]),
+        130,
+        120,
+    )
+    .unwrap();
+}
+
+#[test]
+fn revocation_and_replay_survive_reopen() {
+    let root = temp_root("reopen");
+    {
+        let mut e = PairEngine::open(&root).unwrap();
+        register(&mut e, "dev-1");
+        let s = signer();
+        let c = e
+            .issue_challenge(
+                spec("p", "dev-1", "sess", ChallengeEvent::DevicePairing, NONCE_A),
+                100,
+                120,
+            )
+            .unwrap();
+        e.verify_response(&resp_for(&c, &s), 110).unwrap();
+        e.revoke_device("dev-1", 120).unwrap();
+    } // engine dropped — everything below is a FRESH open on the same db
+
+    let mut e = PairEngine::open(&root).unwrap();
+    let d = e.list_devices(500).unwrap();
+    assert_eq!(d[0].status, "revoked");
+    assert_eq!(d[0].revoked_unix, Some(120));
+    // revoked device can never be challenged again — across the restart
+    assert!(matches!(
+        e.issue_challenge(
+            spec("u2", "dev-1", "sess", ChallengeEvent::Unlock, [0xDD; 32]),
+            130,
+            120,
+        ),
+        Err(PairError::DeviceRevoked(_))
+    ));
+    // nonce replay ledger persisted across the reopen
+    register(&mut e, "dev-2");
+    assert!(matches!(
+        e.issue_challenge(
+            spec(
+                "p3",
+                "dev-2",
+                "sess",
+                ChallengeEvent::DevicePairing,
+                NONCE_A
+            ),
+            140,
+            120,
+        ),
+        Err(PairError::ReplayDetected)
+    ));
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn two_engines_cannot_both_consume_one_challenge() {
+    let root = temp_root("race");
+    let mut e1 = PairEngine::open(&root).unwrap();
+    let mut e2 = PairEngine::open(&root).unwrap();
+    let s = signer();
+    register(&mut e1, "dev-1");
+    let c = e1
+        .issue_challenge(
+            spec("p", "dev-1", "sess", ChallengeEvent::DevicePairing, NONCE_A),
+            100,
+            120,
+        )
+        .unwrap();
+    let r = resp_for(&c, &s);
+    e1.verify_response(&r, 110).unwrap();
+    // The second engine instance sees the row consumed at read time — and
+    // even if it had raced past that read, the atomic UPDATE inside
+    // consume_challenge_and_activate refuses a second success.
+    assert!(matches!(
+        e2.verify_response(&r, 111),
+        Err(PairError::Challenge(ChallengeError::AlreadyConsumed))
+    ));
+    std::fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn device_list_total_order_and_bound() {
+    let mut e = engine();
+    let s = signer();
+    // Same registered_unix on purpose — device_id breaks the tie.
+    for (id, label) in [("dev-b", "B"), ("dev-a", "A"), ("dev-c", "C")] {
+        e.register_device(
+            id,
+            label,
+            KeyAlgorithm::Ed25519,
+            &s.public_key(),
+            None,
+            1_700_000_000,
+        )
+        .unwrap();
+    }
+    let ids: Vec<String> = e
+        .list_devices(500)
+        .unwrap()
+        .into_iter()
+        .map(|d| d.device_id)
+        .collect();
+    assert_eq!(ids, vec!["dev-a", "dev-b", "dev-c"]);
+    assert_eq!(e.list_devices(2).unwrap().len(), 2);
+}
+
+#[test]
+fn verify_response_bounds_input_before_lookup() {
+    let mut e = engine();
+    register(&mut e, "dev-1");
+    let r = ChallengeResponse {
+        challenge_id: String::new(),
+        device_id: "dev-1".into(),
+        session_id: "s".into(),
+        event: ChallengeEvent::Unlock,
+        signature: vec![0u8; 64],
+    };
+    assert!(matches!(
+        e.verify_response(&r, 100),
+        Err(PairError::InvalidField {
+            field: "challenge_id",
+            ..
+        })
+    ));
+    let r2 = ChallengeResponse {
+        challenge_id: "c".into(),
+        device_id: "dev-1".into(),
+        session_id: "s".into(),
+        event: ChallengeEvent::Unlock,
+        signature: vec![0u8; 600],
+    };
+    assert!(matches!(
+        e.verify_response(&r2, 100),
+        Err(PairError::InvalidField {
+            field: "signature",
+            ..
+        })
     ));
 }

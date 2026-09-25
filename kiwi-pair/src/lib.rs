@@ -24,8 +24,11 @@ mod store;
 pub use crypto::{
     DeviceSigner, Ed25519Verifier, algorithm_supported, device_fingerprint, os_nonce,
 };
-pub use engine::{CHALLENGE_TTL_SECS, MAX_TTL_SECS, PairEngine, PairingTicket, QR_TTL_SECS};
-pub use store::{ChallengeRow, DeviceRow, PairStore};
+pub use engine::{
+    CHALLENGE_TTL_SECS, MAX_TTL_SECS, PairEngine, PairingTicket, QR_TTL_SECS, TicketState,
+    TicketStatus,
+};
+pub use store::{ChallengeRow, ClaimDevice, DeviceRow, PairStore, TicketRow};
 
 pub use kiwi_core::challenge::{
     Challenge, ChallengeBook, ChallengeError, ChallengeEvent, ChallengeResponse, ChallengeSpec,
@@ -57,6 +60,11 @@ pub enum PairError {
     TicketExpired,
     #[error("device already registered: {0}")]
     DeviceExists(String),
+    /// A non-revoked device already carries this label (normalized).
+    /// ipc.md §9d maps this to `conflict` — duplicate display names are
+    /// never silently merged into the device list.
+    #[error("a live device already uses label: {0}")]
+    DeviceLabelConflict(String),
     #[error("unknown device: {0}")]
     DeviceNotFound(String),
     /// Revocation is terminal — the device id can never be re-trusted.

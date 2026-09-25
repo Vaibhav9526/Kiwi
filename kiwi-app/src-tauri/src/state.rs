@@ -23,11 +23,9 @@ use tokio::sync::Mutex;
 
 use kiwi_autoconfig::net::DiscoveryNet;
 use kiwi_autoconfig::oauth2::{OAuthError, PendingGrant, ProviderConfig, TokenSet};
-use kiwi_core::challenge::ChallengeBook;
-use kiwi_core::device::DeviceRegistry;
 use kiwi_core::policy::TrustPolicy;
 use kiwi_core::session::SecuritySession;
-use kiwi_core::trust::{TrustMachine, TrustSignal};
+use kiwi_core::trust::{SignalKind, TrustMachine, TrustSignal};
 use kiwi_forensics::findings::Finding;
 use kiwi_integrations::deliverability::TestReservation;
 use kiwi_integrations::http::HttpClient;
@@ -53,6 +51,30 @@ pub struct SandboxSessionRecord {
     pub target: String,
     pub evidence_reasons: Vec<String>,
     pub report: kiwi_sandbox::AnalysisReport,
+}
+
+/// Backend-provisioned pairing-channel identity (ipc.md §9d.2). The
+/// renderer can never supply or override either field — the endpoint comes
+/// from `pairing-channel.json`/`KIWI_PAIR_ENDPOINT` and the key from the
+/// OS credential store; `pair_begin` fails closed when this is `None`.
+#[derive(Debug, Clone)]
+pub struct PairChannel {
+    /// The endpoint the phone dials (e.g. `wss://192.168.1.20:49310/pair`).
+    pub desktop_endpoint: String,
+    /// `ed25519:<canonical padded std Base64 of the 32-byte verify key>`.
+    pub desktop_public_key_b64: String,
+}
+
+/// A backend-owned active pairing flow (ipc.md §9d.7). Created only by
+/// `pair_begin` (or a future trusted pairing-channel handler); bound to
+/// the issued ticket; dead once `expires_unix` passes. While this is
+/// alive, `pair_begin`/`pair_status` are exempt from the lock gate.
+#[derive(Debug, Clone)]
+pub struct PairFlow {
+    /// The bearer ticket this flow issued — `pair_status` while locked is
+    /// bound to exactly this value.
+    pub ticket: String,
+    pub expires_unix: i64,
 }
 
 /// One observed mail connection and everything it produced.
@@ -282,10 +304,6 @@ pub struct AppIndex {
     /// account_id → known folders (populated by sync / manual creation).
     #[serde(default)]
     pub folders: BTreeMap<String, Vec<FolderEntry>>,
-    /// Registered authenticator device ids (DeviceRegistry has no
-    /// enumeration API — the index keeps the id list).
-    #[serde(default)]
-    pub device_ids: Vec<String>,
     #[serde(default)]
     pub org: Option<OrgBinding>,
     /// Threading header cache (T-169): `"f<folderId>:u<uid>"` →
@@ -306,7 +324,6 @@ impl Default for AppIndex {
             account_ids: Vec::new(),
             account_meta: BTreeMap::new(),
             folders: BTreeMap::new(),
-            device_ids: Vec::new(),
             org: None,
             thread_headers: BTreeMap::new(),
             prefs: BTreeMap::new(),
@@ -498,8 +515,21 @@ pub struct AppState {
     pub credentials: Arc<dyn CredentialStore>,
     pub trust: Mutex<TrustMachine>,
     pub policy: TrustPolicy,
-    pub devices: Mutex<DeviceRegistry>,
-    pub challenges: Mutex<ChallengeBook>,
+    /// THE device/challenge authority (T-269): the persisted kiwi-pair
+    /// engine over `pair.db` — devices, tickets, challenges, and the nonce
+    /// replay ledger all live there and survive restarts. The old kiwi-core
+    /// in-memory `DeviceRegistry`/`ChallengeBook` stand-ins are gone.
+    pub pair: Mutex<kiwi_pair::PairEngine>,
+    /// Trusted pairing-channel identity (§9d.2): provisioned endpoint +
+    /// this desktop's `ed25519:` public key. `None` when unprovisioned —
+    /// `pair_begin` then fails closed rather than inventing an identity.
+    /// Never renderer-writable.
+    pub pair_channel: Option<PairChannel>,
+    /// The backend-owned active pairing flow (§9d.7): bound to the ticket
+    /// `pair_begin` issued, dying at ticket expiry. Its existence is what
+    /// unlocks the flow-scoped exemption for pair_begin/pair_status while
+    /// the endpoint is locked. Renderers can never set or extend it.
+    pub pair_flow: Mutex<Option<PairFlow>>,
     pub send_queue: Mutex<SendQueue>,
     /// queue_id → send metadata (SendQueue exposes no item iterator).
     pub outbox_meta: Mutex<BTreeMap<String, OutboxMeta>>,
@@ -613,6 +643,17 @@ impl AppState {
         Ok(state)
     }
 
+    /// Provision a pairing channel for tests without env/file plumbing —
+    /// endpoint injected directly, key minted into the memory credstore.
+    /// `None` endpoint models the unprovisioned (fail-closed) posture.
+    #[cfg(test)]
+    pub fn provision_test_pair_channel(&mut self, endpoint: &str) {
+        self.pair_channel = desktop_pair_key_b64(self.credentials.as_ref()).map(|k| PairChannel {
+            desktop_endpoint: endpoint.to_string(),
+            desktop_public_key_b64: k,
+        });
+    }
+
     /// Test open with injected integration transport AND discovery net.
     #[cfg(test)]
     pub fn open_test_with_net(
@@ -706,13 +747,14 @@ impl AppState {
                 kiwi_contacts::ContactStore::open(&data_dir, now_unix())
                     .map_err(|e| IpcError::new("contacts", format!("open contacts.db: {e}")))?,
             ),
+            pair: Mutex::new(kiwi_pair::PairEngine::open(&data_dir).map_err(IpcError::from)?),
+            pair_channel: provision_pair_channel(&data_dir, credentials.as_ref()),
+            pair_flow: Mutex::new(None),
             data_dir,
             store: Mutex::new(store),
             credentials,
             trust: Mutex::new(TrustMachine::new()),
             policy: TrustPolicy::default(),
-            devices: Mutex::new(DeviceRegistry::new()),
-            challenges: Mutex::new(ChallengeBook::new()),
             send_queue: Mutex::new(SendQueue::new()),
             outbox_meta: Mutex::new(BTreeMap::new()),
             sessions: Mutex::new(VecDeque::new()),
@@ -755,14 +797,29 @@ impl AppState {
     }
 
     /// Recompute the trust decision from every live signal source:
-    /// endpoint indicators + device-registry status + all retained session
-    /// signals. `Locked` is sticky inside `TrustMachine`.
+    /// endpoint indicators + the pair.db device record for this endpoint's
+    /// own id + all retained session signals. `Locked` is sticky inside
+    /// `TrustMachine`.
     ///
-    /// Locks are taken sequentially (never nested): index → devices →
+    /// Locks are taken sequentially (never nested): index → pair →
     /// endpoint → sessions → trust. Keep that order everywhere.
     pub async fn refresh_trust(&self) -> kiwi_core::trust::TrustEvaluation {
         let device_id = self.index.lock().await.device_id.clone();
-        let device_kinds = self.devices.lock().await.device_signals(&device_id);
+        // PairEngine is the device authority (T-269): a revoked/suspended
+        // record for THIS endpoint's id feeds the same hard-lock/medium
+        // signals the in-memory registry used to produce.
+        let device_kinds: Vec<SignalKind> = {
+            let pair = self.pair.lock().await;
+            match pair.store().get_device(&device_id) {
+                Ok(Some(d)) => match d.status.as_str() {
+                    "pending" => vec![SignalKind::NewDeviceUnverified],
+                    "suspended" => vec![SignalKind::DeviceSuspended],
+                    "revoked" => vec![SignalKind::DeviceRevoked],
+                    _ => Vec::new(),
+                },
+                _ => Vec::new(),
+            }
+        };
         let mut signals = self.endpoint_signals.lock().await.clone();
         for kind in device_kinds {
             signals.push(crate::observe::device_signal(&device_id, kind));
@@ -772,6 +829,68 @@ impl AppState {
         }
         self.trust.lock().await.evaluate(&self.policy, signals)
     }
+}
+
+/// Load-or-generate this desktop's Ed25519 pairing key. The 32-byte seed
+/// lives ONLY in the OS credential store (`kiwi.pair.desktop-key`); the
+/// value returned is the public half as `ed25519:<std b64>`. `None` when
+/// the keystore is unavailable — provisioning then fails closed.
+fn desktop_pair_key_b64(credentials: &dyn CredentialStore) -> Option<String> {
+    use base64::Engine as _;
+    const KEY_ID: &str = "kiwi.pair.desktop-key";
+    let seed_b64 = match credentials.get(KEY_ID) {
+        Ok(Some(s)) => s.to_string(),
+        _ => {
+            let mut seed = [0u8; 32];
+            getrandom::fill(&mut seed).ok()?;
+            let b64 = base64::engine::general_purpose::STANDARD.encode(seed);
+            credentials.set(KEY_ID, &b64).ok()?;
+            b64
+        }
+    };
+    let seed: [u8; 32] = base64::engine::general_purpose::STANDARD
+        .decode(seed_b64.as_bytes())
+        .ok()?
+        .try_into()
+        .ok()?;
+    let vk = ed25519_dalek::SigningKey::from_bytes(&seed).verifying_key();
+    Some(format!(
+        "ed25519:{}",
+        base64::engine::general_purpose::STANDARD.encode(vk.to_bytes())
+    ))
+}
+
+/// Provision the trusted pairing-channel identity (ipc.md §9d.2). Endpoint
+/// source order: `KIWI_PAIR_ENDPOINT` env, then
+/// `<data_dir>/pairing-channel.json` (`{"desktopEndpoint": "…"}`) — both
+/// backend-controlled, never IPC-writable. Returns `None` when either half
+/// is absent/unusable; `pair_begin` then fails closed.
+fn provision_pair_channel(
+    data_dir: &Path,
+    credentials: &dyn CredentialStore,
+) -> Option<PairChannel> {
+    let endpoint = std::env::var("KIWI_PAIR_ENDPOINT")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            let text = std::fs::read_to_string(data_dir.join("pairing-channel.json")).ok()?;
+            serde_json::from_str::<serde_json::Value>(&text)
+                .ok()?
+                .get("desktopEndpoint")?
+                .as_str()
+                .map(str::to_string)
+        })?;
+    // §9d.8 bound — provisioning must not invent or smuggle a bad value.
+    if endpoint.is_empty()
+        || endpoint.len() > 256
+        || endpoint.bytes().any(|b| b < 0x20 || b == 0x7f)
+    {
+        return None;
+    }
+    Some(PairChannel {
+        desktop_endpoint: endpoint,
+        desktop_public_key_b64: desktop_pair_key_b64(credentials)?,
+    })
 }
 
 fn configured_sandbox(data_dir: &Path) -> Arc<dyn kiwi_sandbox::SandboxProvider> {

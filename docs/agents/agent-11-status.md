@@ -584,3 +584,112 @@ refused globally).
   new convention — §13.4 documents them; ratify or amend.
 - `system-admin` arrives only via the header scaffold (§12.2 DEV-AUTH) —
   never grantable into `user_org_roles` (CHECK would reject it).
+
+## T-269 — kiwi-pair wired as canonical pair engine (DONE)
+
+`docs/audits/pair-impl-gap-1.md` implemented end-to-end: the five
+canonical §9d commands are registered and `PairEngine` (persisted
+`pair.db`) is the sole device/ticket/challenge/replay authority —
+`DeviceRegistry`/`ChallengeBook` stand-ins deleted from `AppState`.
+
+### kiwi-pair (schema v1→v2)
+
+- `pairing_tickets.device_id` link column + migration on open;
+  `TicketRow`/`TicketStatus`/`TicketState` exported.
+- `ticket_status(ticket, now)` — read-only, never consumes; claimed
+  rows survive ticket expiry, expired-unlinked rows pruned;
+  consumed-but-unlinked → `InvalidTicket` (non-oracle).
+- `claim_ticket_and_register` — consume + pending-device insert +
+  link in ONE tx (partial consumption impossible); label from ticket.
+- `verify_response` — checks `consume_challenge_and_activate`'s atomic
+  boolean: zero-row UPDATE → `AlreadyConsumed` (two-engine race closed);
+  pairing activation commits in the same tx. Input bounds added.
+- `issue_challenge` — nonce+challenge insert is one tx (no burned
+  nonces); `(Active, DevicePairing)` arm removed — pairing requires
+  `pending` per §9d.
+- `list_devices(limit)` — `ORDER BY registered_unix, device_id` total
+  order, SQL-enforced bound; live unclaimed tickets capped at 64.
+- `live_label_taken` — normalized (trim+lowercase) duplicate live
+  labels → `DeviceLabelConflict`; revoked labels released.
+
+### kiwi-app
+
+- `Cargo.toml` dep added; `state.rs`: `Mutex<PairEngine>` +
+  `PairChannel` (backend-owned endpoint from `KIWI_PAIR_ENDPOINT` or
+  `<profile>/pairing-channel.json`; desktop Ed25519 key via credstore
+  `kiwi.pair.desktop-key`, emitted `ed25519:<b64>`) + `Mutex<Option<
+  PairFlow>>` (flow binds to the live ticket; dies at its expiry).
+  `refresh_trust` reads the endpoint device row from `pair.db`
+  (pending→NewDeviceUnverified, suspended→Suspended, revoked→Revoked).
+- `commands/pair.rs`: `pair_begin` (fails closed `pair-unavailable`
+  without provisioned channel; canonical `ed25519:`+padded-b64 32-byte
+  key check; TOFU baseline audit on first device — evidence only),
+  `pair_status` (bound-ticket matching while locked), `unlock_challenge`
+  (fixed `unlock`, boot session, `nonceB64` 32B, 120s TTL),
+  `device_list` (500-cap, PairDeviceView w/ fingerprint+keystoreRef+
+  revokedUnix, no raw key), `device_revoke` (audits both transition and
+  idempotent retry). `pair_gate`: unlocked passes; locked requires live
+  flow; status requires the bound ticket.
+- `commands/system.rs`/`devices.rs` — `kiwi_request_challenge` /
+  `kiwi_submit_challenge` / `kiwi_list_devices` / `kiwi_revoke_device` /
+  `kiwi_register_device` are thin aliases over the same impls.
+  `verifier.rs` deleted (engine owns Ed25519 verify).
+- `error.rs` — full §9d.9 `PairError`→IPC mapping incl.
+  `DeviceLabelConflict`→`conflict`; messages never echo ids/tickets.
+- Frontend (`ipc.ts`/`kiwi.ts`): `pairBegin`/`pairStatus`/
+  `unlockChallenge` canonical wrappers; `listDevices`/`revokeDevice`
+  call `device_list`/`device_revoke`; `requestChallenge`/`registerDevice`
+  kept as compat; `DeviceView` gains `fingerprint`/`keystoreRef`/
+  `revokedUnix`; App.tsx unlock uses `unlockChallenge`; settings shows
+  fp tail + revoked date. `PairBeginView`/`PairStatusView` typed.
+
+### Contracts
+
+- `ipc.md`: §1 registered-names note, §2 exempt list + flow-scoped
+  pair exemption, §4 alias markers, §9 aliases + DeviceView fields,
+  §9d header implemented, §9d.1 binding table (`ticket_status`,
+  `list_devices(limit)`), §9d.3/§9d.4/§9d.5 implemented notes, §9d.9
+  reachability, §9d.10 consume-check, §9d.11 statuses (1-3,5 landed;
+  4 partial — LAN listener is future work, claim path exercised only
+  via `claim_ticket_and_register`; 6 deferred to admin §14).
+- `pair.md`: v2 — new APIs, atomicity rules, ordering/caps, schema v2
+  + migration, `DeviceLabelConflict`, one-authority invariant.
+
+### Verified
+
+- `cargo test -p kiwi-pair`: **20/20** — new: ticket_status state
+  machine (awaiting/claimed/expired/invalid), poll-never-consumes,
+  atomic claim+link, expired/consumed claim rejection, two-engine
+  consume race → `AlreadyConsumed`, reopen persistence
+  (revoke→drop→reopen→still revoked), ordering tie-break, label
+  conflict.
+- `cargo test -p kiwi-app`: all green except two `e2e_send_*` tests
+  blocked mid-DATA by T-262's in-flight send-path debug (their
+  `[t262-dbg]`/`SERVE_TIMEOUT` instrumentation is live in
+  `dispatch.rs`/`server.rs`/`e2e.rs` — not this task's code). My 7 new
+  IPC tests: canonical unlock wire while locked (nonceB64=32B,
+  fixed event), fail-closed begin, flow-scoped gating incl.
+  bound-ticket binding + expired-flow `locked`, lifecycle poll/claim/
+  expired projection, ordering+fields, `conflict` mapping,
+  AppState-level revoke→reopen persistence.
+- `cargo clippy -p kiwi-pair -p kiwi-app --all-targets`: clean.
+- `cargo fmt`: clean on all T-269 files.
+- `tsc --noEmit` + `npm run build`: green.
+
+### Environment note
+
+The workspace test exe (`kiwi_app_lib-*.exe`) was repeatedly killed
+externally mid-run (AV quarantine pattern — file busy/0xffffffff) and
+`kiwi-mail`/`e2e.rs` churned under me by T-262/T-273/T-264 owners; the
+full suite was validated in module chunks instead.
+
+### Flags for Lead
+
+- `pair-unavailable` is a NEW IPC code (fail-closed when no trusted
+  channel provisioned) — needs a §11 row if ratified.
+- LAN claim transport still absent by design; `pair_begin`/`pair_status`
+  exercise ticket issue + read-back today. When the listener lands it
+  calls `claim_ticket_and_register` — no wire change needed.
+- `pair_flow` holds the active ticket (backend-owned, expiry-bounded)
+  for the flow exemption — it is a capability binding, not a ticket
+  cache; `pair.db` remains the only ticket store.

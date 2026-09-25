@@ -204,6 +204,15 @@ pub async fn kiwi_session_detail(
     })
 }
 
+/// Evidence marker (forensics §8): protected transport, no auth exchange
+/// observed. `SecuritySession` carries no resumption or unknown-transport
+/// state, so `kex-unobserved`/`transport-unknown` cannot be substantiated
+/// on the live path and are not emitted here.
+fn protected_without_auth(session: &kiwi_core::session::SecuritySession) -> bool {
+    session.transport != kiwi_core::session::TransportSecurity::Plaintext
+        && session.auth_mechanism == kiwi_core::session::AuthMechanism::None
+}
+
 /// Deterministic security report over the retained findings —
 /// `kiwi.forensics/1` shape with score + limitations (KIWI-UI-010 export).
 #[tauri::command]
@@ -225,48 +234,60 @@ pub async fn kiwi_security_report(
             .cloned()
             .collect()
     };
-    let sessions_observed = {
+    let (sessions_observed, auth_unobserved) = {
         let sessions = state.sessions.lock().await;
-        sessions
-            .iter()
-            .filter(|r| {
-                account_id
-                    .as_ref()
-                    .is_none_or(|a| r.session.account_id.as_deref() == Some(a.as_str()))
-            })
-            .count() as u32
+        let filtered = sessions.iter().filter(|r| {
+            account_id
+                .as_ref()
+                .is_none_or(|a| r.session.account_id.as_deref() == Some(a.as_str()))
+        });
+        let mut observed = 0u32;
+        let mut auth_unobserved = 0u32;
+        for r in filtered {
+            observed += 1;
+            if protected_without_auth(&r.session) {
+                auth_unobserved += 1;
+            }
+        }
+        (observed, auth_unobserved)
     };
     let scope = account_id
         .as_ref()
         .map(|a| format!("account:{a}"))
         .unwrap_or_else(|| "client".into());
-        let sandbox_sessions = state.sandbox_sessions.lock().await;
-        let sandbox_observations = sandbox_sessions.len() as u32;
-        let sandbox_reason_codes = sandbox_sessions
-            .iter()
-            .flat_map(|session| {
-                std::iter::once(session.session_id.clone())
-                    .chain(std::iter::once(session.target.clone()))
-                    .chain(session.evidence_reasons.iter().cloned())
-            })
-            .take(256)
-            .collect::<Vec<_>>();
-        let sandbox_report = sandbox_sessions
-            .back()
-            .map(|session| {
-                format!(
-                    "exit={:?},timed_out={},incomplete={}",
-                    session.report.exit_code, session.report.timed_out, session.report.incomplete
-                )
-            })
-            .unwrap_or_else(|| "none".into());
-        drop(sandbox_sessions);
+    let sandbox_sessions = state.sandbox_sessions.lock().await;
+    let sandbox_observations = sandbox_sessions.len() as u32;
+    let sandbox_reason_codes = sandbox_sessions
+        .iter()
+        .flat_map(|session| {
+            std::iter::once(session.session_id.clone())
+                .chain(std::iter::once(session.target.clone()))
+                .chain(session.evidence_reasons.iter().cloned())
+        })
+        .take(256)
+        .collect::<Vec<_>>();
+    let sandbox_report = sandbox_sessions
+        .back()
+        .map(|session| {
+            format!(
+                "exit={:?},timed_out={},incomplete={}",
+                session.report.exit_code, session.report.timed_out, session.report.incomplete
+            )
+        })
+        .unwrap_or_else(|| "none".into());
+    drop(sandbox_sessions);
     let mut builder = ReportBuilder::new(&scope, "live")
         .add_session_findings(sessions_observed, findings)
         .limitation(Limitation::new(
             "scope",
             "covers live client and sandbox-open observations only; no pcap, logs, or fixture input",
         ));
+    if auth_unobserved > 0 {
+        builder = builder.limitation(Limitation::new(
+            kiwi_forensics::report::limitation_codes::AUTH_UNOBSERVED,
+            &format!("{auth_unobserved} protected session(s) showed no authentication exchange."),
+        ));
+    }
     if !sandbox_reason_codes.is_empty() {
         builder = builder.limitation(Limitation::new(
             "sandbox-open-reasons",
@@ -408,6 +429,25 @@ mod tests {
             .filter(|id| id != &fid1)
             .collect();
         assert_eq!(siblings, vec!["KIWI-AUTH-001|imap:imap.x.test:993"]);
+    }
+
+    #[test]
+    fn protected_without_auth_classifies_auth_unobserved() {
+        // FOR-10: the live report's auth-unobserved marker fires only on a
+        // protected transport with no observed authentication exchange.
+        let mut rec = session_record("sess-p", vec![]);
+        rec.session.auth_mechanism = kiwi_core::session::AuthMechanism::None;
+        rec.session.auth_succeeded = None;
+        assert!(protected_without_auth(&rec.session));
+
+        // Plaintext transport is not "protected" — no marker.
+        rec.session.transport = kiwi_core::session::TransportSecurity::Plaintext;
+        assert!(!protected_without_auth(&rec.session));
+
+        // Protected transport with a real auth mechanism — no marker.
+        rec.session.transport = kiwi_core::session::TransportSecurity::Tls;
+        rec.session.auth_mechanism = kiwi_core::session::AuthMechanism::Login;
+        assert!(!protected_without_auth(&rec.session));
     }
 
     #[test]

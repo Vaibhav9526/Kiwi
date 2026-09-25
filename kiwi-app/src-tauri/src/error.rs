@@ -51,6 +51,17 @@ impl IpcError {
     pub fn sandbox_failed(why: impl Into<String>) -> Self {
         Self::new("sandbox-failed", why)
     }
+
+    pub fn sandbox_required() -> Self {
+        Self::new(
+            "sandbox-required",
+            "risky message link must be opened through kiwi_sandbox_open_link",
+        )
+    }
+
+    pub fn link_denied() -> Self {
+        Self::new("link-denied", "message link is not allowed by policy")
+    }
 }
 
 impl From<kiwi_mail::error::MailError> for IpcError {
@@ -108,6 +119,57 @@ impl From<kiwi_core::challenge::ChallengeError> for IpcError {
                 "response binding does not match the issued challenge",
             ),
             InvalidSignature => Self::new("invalid-signature", "response signature invalid"),
+        }
+    }
+}
+
+impl From<kiwi_pair::PairError> for IpcError {
+    /// The §9d.9 mapping is normative: semantic names survive the boundary,
+    /// payloads never echo device ids, tickets, or key material. Store/Io
+    /// displays can contain object names/paths → fixed generic messages.
+    fn from(e: kiwi_pair::PairError) -> Self {
+        use kiwi_core::challenge::ChallengeError as CE;
+        use kiwi_pair::PairError::*;
+        match e {
+            Challenge(CE::UnknownChallenge) => {
+                Self::new("unknown-challenge", "unknown challenge id")
+            }
+            Challenge(CE::Expired) => Self::new("challenge-expired", "challenge expired"),
+            Challenge(CE::AlreadyConsumed) => Self::new(
+                "already-consumed",
+                "challenge already consumed (replay rejected)",
+            ),
+            Challenge(CE::BindingMismatch) => Self::new(
+                "binding-mismatch",
+                "response binding does not match the issued challenge",
+            ),
+            Challenge(CE::InvalidSignature) => {
+                Self::new("invalid-signature", "response signature invalid")
+            }
+            DeviceNotFound(_) => Self::not_found("unknown device"),
+            DeviceNotActive(status) => Self::new(
+                "device-not-active",
+                format!("challenge requires an active device (status {status:?})"),
+            ),
+            DeviceRevoked(_) => Self::new("device-revoked", "device is revoked (terminal)"),
+            DeviceExists(_) => Self::new("device-exists", "device id already registered"),
+            DeviceLabelConflict(_) => {
+                Self::new("conflict", "a live device already uses that label")
+            }
+            ReplayDetected => Self::new("replay-detected", "challenge nonce collision"),
+            UnsupportedAlgorithm(_) => {
+                Self::new("unsupported-algorithm", "unsupported key algorithm")
+            }
+            BadKeyLength(n) => {
+                Self::invalid(format!("publicKey must be exactly 32 bytes, got {n}"))
+            }
+            InvalidField { field, reason } => Self::invalid(format!("{field}: {reason}")),
+            InvalidTicket => Self::new("pairing-ticket-invalid", "pairing ticket invalid"),
+            TicketConsumed => Self::new("pairing-ticket-consumed", "pairing ticket consumed"),
+            TicketExpired => Self::new("pairing-ticket-expired", "pairing ticket expired"),
+            Entropy(_) => Self::new("internal", "randomness unavailable"),
+            Store(_) => Self::new("store-error", "pairing store error"),
+            Io(_) => Self::new("io-error", "local file/IO error"),
         }
     }
 }

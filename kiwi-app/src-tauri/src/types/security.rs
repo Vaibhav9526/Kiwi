@@ -114,6 +114,16 @@ pub struct SandboxOpenView {
     pub report: kiwi_sandbox::AnalysisReport,
 }
 
+/// Backend policy for one clicked message link. Reasons are bounded stable
+/// evidence codes; the target URL itself is not persisted.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkClickVerdict {
+    /// `allow | requireConfirm | requireSandbox | deny`.
+    pub action: String,
+    pub reasons: Vec<String>,
+}
+
 fn kex(k: &KeyExchangeGroup) -> String {
     match k {
         KeyExchangeGroup::X25519 => "x25519".into(),

@@ -20,7 +20,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
 use crate::crypto::{Ed25519Verifier, algorithm_supported};
-use crate::store::{ChallengeRow, DeviceRow, PairStore};
+use crate::store::{ChallengeRow, ClaimDevice, DeviceRow, PairStore, TicketRow};
 use crate::{PairError, Result};
 use kiwi_core::challenge::{
     Challenge, ChallengeError, ChallengeEvent, ChallengeResponse, ChallengeSpec, SignatureVerifier,
@@ -51,6 +51,28 @@ pub struct PairingTicket {
     pub expires_unix: i64,
 }
 
+/// `pair_status` wire states (ipc.md §9d.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TicketState {
+    /// Ticket exists, unclaimed, unexpired — QR still on screen.
+    AwaitingPhone,
+    /// The claim transaction committed a linked device row.
+    Claimed,
+    /// No linked device and `now >= expires_unix` — expiry outranks a
+    /// consumed-but-unlinked flag (a claimant never wins by expiring).
+    Expired,
+}
+
+/// Read-only ticket status — the non-mutating lookup §9d.3 requires.
+/// `device_id` is `Some` iff `state == Claimed` (the row the ticket
+/// claimed into); the ticket string itself is never echoed back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TicketStatus {
+    pub state: TicketState,
+    pub device_id: Option<String>,
+    pub expires_unix: i64,
+}
+
 fn event_name(e: ChallengeEvent) -> &'static str {
     match e {
         ChallengeEvent::Unlock => "unlock",
@@ -78,6 +100,29 @@ fn check_field(field: &'static str, v: &str, max: usize) -> Result<()> {
         });
     }
     Ok(())
+}
+
+/// §9d.3 state machine — order matters: a link wins over expiry, expiry
+/// wins over a consumed-but-unlinked flag, and consumed-but-unlinked is an
+/// invalid (non-oracle) ticket rather than a claimable or expired one —
+/// `None` means "refuse as `InvalidTicket`".
+fn ticket_status_of(row: &TicketRow, now: i64) -> Option<TicketStatus> {
+    let state = if row.device_id.is_some() {
+        TicketState::Claimed
+    } else if now >= row.expires_unix {
+        TicketState::Expired
+    } else if row.consumed {
+        // Consumed without a device link — a pre-v2 consume or a claim
+        // that never committed. Same refusal as an unknown ticket.
+        return None;
+    } else {
+        TicketState::AwaitingPhone
+    };
+    Some(TicketStatus {
+        state,
+        device_id: row.device_id.clone(),
+        expires_unix: row.expires_unix,
+    })
 }
 
 fn status_of(d: &DeviceRow) -> crate::DeviceStatus {
@@ -119,6 +164,11 @@ impl PairEngine {
         now: i64,
     ) -> Result<PairingTicket> {
         check_field("device_label", device_label, MAX_LABEL_LEN)?;
+        // Fail the label now rather than letting a phone claim a ticket
+        // whose registration would conflict at commit time.
+        if self.store.live_label_taken(device_label)? {
+            return Err(PairError::DeviceLabelConflict(device_label.into()));
+        }
         let ticket = URL_SAFE_NO_PAD.encode(rand); // 43 chars, [A-Za-z0-9_-]
         let t = PairingTicket {
             ticket,
@@ -131,8 +181,17 @@ impl PairEngine {
 
     /// Validate + consume a ticket presented on the pairing channel.
     /// Single-use and expiry-bounded; returns the label bound at issue.
+    /// New callers should prefer `claim_ticket_and_register` — consuming
+    /// without linking leaves an unlinked-consumed row that `pair_status`
+    /// must then refuse as `InvalidTicket`.
     pub fn consume_pairing_ticket(&mut self, ticket: &str, now: i64) -> Result<String> {
         // Contract §3.1 charset + length gate before any store touch.
+        Self::check_ticket_shape(ticket)?;
+        self.store.consume_ticket(ticket, now)
+    }
+
+    /// Ticket charset/length gate shared by consume/status paths.
+    fn check_ticket_shape(ticket: &str) -> Result<()> {
         if ticket.len() < 8
             || ticket.len() > 128
             || !ticket
@@ -141,7 +200,58 @@ impl PairEngine {
         {
             return Err(PairError::InvalidTicket);
         }
-        self.store.consume_ticket(ticket, now)
+        Ok(())
+    }
+
+    /// Non-mutating ticket status for `pair_status` polls (ipc.md §9d.3).
+    /// Unknown, malformed, and consumed-but-unlinked tickets all collapse
+    /// to `InvalidTicket` — polling must never be a live-ticket oracle.
+    /// This method never consumes; `claim_ticket_and_register` is the only
+    /// path that links a ticket to a device.
+    pub fn ticket_status(&self, ticket: &str, now: i64) -> Result<TicketStatus> {
+        Self::check_ticket_shape(ticket)?;
+        let Some(row) = self.store.ticket_row(ticket)? else {
+            return Err(PairError::InvalidTicket);
+        };
+        ticket_status_of(&row, now).ok_or(PairError::InvalidTicket)
+    }
+
+    /// Atomic ticket claim + device registration + ticket→device link —
+    /// the ONE transaction the trusted pairing channel calls when the
+    /// phone presents its ticket and key (ipc.md §9d.3). The label comes
+    /// from the ticket (bound at `pair_begin`); the phone supplies
+    /// `device_id`, `public_key`, and `keystore_ref`. The device lands
+    /// `pending` — only a successful `device-pairing` challenge activates.
+    pub fn claim_ticket_and_register(
+        &mut self,
+        ticket: &str,
+        device_id: &str,
+        algorithm: KeyAlgorithm,
+        public_key: &[u8],
+        keystore_ref: Option<&str>,
+        now: i64,
+    ) -> Result<DeviceRow> {
+        Self::check_ticket_shape(ticket)?;
+        check_field("device_id", device_id, MAX_ID_LEN)?;
+        if let Some(r) = keystore_ref {
+            check_field("keystore_ref", r, MAX_KEYSTORE_REF_LEN)?;
+        }
+        if !algorithm_supported(algorithm) {
+            return Err(PairError::UnsupportedAlgorithm(format!("{algorithm:?}")));
+        }
+        if public_key.len() != 32 {
+            return Err(PairError::BadKeyLength(public_key.len()));
+        }
+        self.store.claim_ticket_and_register(
+            ticket,
+            &ClaimDevice {
+                device_id,
+                algorithm: "ed25519",
+                public_key,
+                keystore_ref,
+            },
+            now,
+        )
     }
 
     /// §3.1 QR payload — compact JSON, fixed field set, no secrets.
@@ -200,6 +310,9 @@ impl PairEngine {
         if self.store.get_device(device_id)?.is_some() {
             return Err(PairError::DeviceExists(device_id.into()));
         }
+        if self.store.live_label_taken(label)? {
+            return Err(PairError::DeviceLabelConflict(label.into()));
+        }
         self.store.insert_device(&DeviceRow {
             device_id: device_id.into(),
             label: label.into(),
@@ -241,8 +354,10 @@ impl PairEngine {
         Ok(())
     }
 
-    pub fn list_devices(&self) -> Result<Vec<DeviceRow>> {
-        self.store.list_devices()
+    /// Devices in the contract's total order (`registered_unix`, then
+    /// `device_id` — ipc.md §9d.5). `limit` is the §9d.11 resource bound.
+    pub fn list_devices(&self, limit: u32) -> Result<Vec<DeviceRow>> {
+        self.store.list_devices(limit)
     }
 
     /// Display fingerprint of a registered device's public key.
@@ -285,22 +400,34 @@ impl PairEngine {
                 return Err(PairError::DeviceRevoked(spec.device_id));
             }
             (crate::DeviceStatus::Pending, ChallengeEvent::DevicePairing) => {}
+            // Pairing challenges are exclusively for pending devices
+            // (ipc.md §9d.4: an active device cannot re-pair under the
+            // same id — PAIR-1 fix).
+            (crate::DeviceStatus::Active, ChallengeEvent::DevicePairing) => {
+                return Err(PairError::DeviceNotActive(crate::DeviceStatus::Active));
+            }
             (crate::DeviceStatus::Active, _) => {}
             (other, _) => return Err(PairError::DeviceNotActive(other)),
         }
-        if !self.store.record_nonce(&spec.nonce, now)? {
+        // Nonce + challenge insert are one transaction (PAIR-8): a failed
+        // insert cannot burn the nonce, and a replayed nonce cannot leave
+        // a half-written challenge.
+        if !self.store.record_nonce_and_insert_challenge(
+            &spec.nonce,
+            now,
+            &ChallengeRow {
+                challenge_id: spec.challenge_id.clone(),
+                device_id: spec.device_id.clone(),
+                session_id: spec.session_id.clone(),
+                event: event_name(spec.event).into(),
+                nonce: spec.nonce.to_vec(),
+                issued_unix: now,
+                expires_unix: now + ttl_secs as i64,
+                consumed: false,
+            },
+        )? {
             return Err(PairError::ReplayDetected);
         }
-        self.store.insert_challenge(&ChallengeRow {
-            challenge_id: spec.challenge_id.clone(),
-            device_id: spec.device_id.clone(),
-            session_id: spec.session_id.clone(),
-            event: event_name(spec.event).into(),
-            nonce: spec.nonce.to_vec(),
-            issued_unix: now,
-            expires_unix: now + ttl_secs as i64,
-            consumed: false,
-        })?;
         // Rehydrate the kiwi-core Challenge so canonical_bytes() stays the
         // authoritative encoding — byte-for-byte contract §4.1.
         let mut book = kiwi_core::challenge::ChallengeBook::new();
@@ -309,20 +436,34 @@ impl PairEngine {
     }
 
     /// Verify a device response. Order per contract §6.2 / ChallengeBook:
-    /// device not revoked → challenge exists → unexpired → unconsumed →
-    /// binding fields match → Ed25519 over canonical bytes → consume.
+    /// challenge exists → linked device exists and not revoked →
+    /// unexpired → unconsumed → binding fields match → Ed25519 over
+    /// canonical bytes → consume (+ pairing activation) atomically.
     /// A successful `device-pairing` verification auto-activates the
     /// device (contract §3.2 step 3). Failed verification never consumes.
     pub fn verify_response(&mut self, resp: &ChallengeResponse, now: i64) -> Result<()> {
+        // §9d.8 bounds on the response strings before any store touch.
+        check_field("challenge_id", &resp.challenge_id, MAX_ID_LEN)?;
+        check_field("device_id", &resp.device_id, MAX_ID_LEN)?;
+        check_field("session_id", &resp.session_id, MAX_SESSION_LEN)?;
+        if resp.signature.is_empty() || resp.signature.len() > 512 {
+            return Err(PairError::InvalidField {
+                field: "signature",
+                reason: "must be 1..=512 bytes".into(),
+            });
+        }
         let row = self
             .store
             .get_challenge(&resp.challenge_id)?
             .ok_or(ChallengeError::UnknownChallenge)?;
 
+        // The challenge's linked device is required — a missing row is a
+        // missing DEVICE (`not-found` semantics, PAIR-4), not an unknown
+        // challenge; the challenge id demonstrably existed.
         let dev = self
             .store
             .get_device(&row.device_id)?
-            .ok_or(ChallengeError::UnknownChallenge)?;
+            .ok_or_else(|| PairError::DeviceNotFound(row.device_id.clone()))?;
         if dev.status == "revoked" {
             return Err(PairError::DeviceRevoked(row.device_id));
         }
@@ -365,11 +506,18 @@ impl PairEngine {
             return Err(ChallengeError::InvalidSignature.into());
         }
 
-        // Single-use — atomic consume, then post-verification transition.
-        self.store.consume_challenge(&row.challenge_id)?;
-        if event == ChallengeEvent::DevicePairing {
-            self.store
-                .set_device_status(&row.device_id, "active", now)?;
+        // Single-use — consume AND (for pairing) activate in one
+        // transaction. The atomic UPDATE must report a flip: a false
+        // return means another engine instance consumed the row between
+        // our read and our write — that is AlreadyConsumed, NOT success
+        // (PAIR-5 / §9d.11.3).
+        let activate =
+            (event == ChallengeEvent::DevicePairing).then_some((row.device_id.as_str(), now));
+        if !self
+            .store
+            .consume_challenge_and_activate(&row.challenge_id, activate)?
+        {
+            return Err(ChallengeError::AlreadyConsumed.into());
         }
         Ok(())
     }

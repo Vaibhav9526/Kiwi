@@ -2,12 +2,14 @@
 //!
 //! Rules for every command:
 //! - **Lock gate first** unless the command is in the exempt set (ipc.md
-//!   §lock-gate): ping, app info, security status, lock, challenge
-//!   request/submit, endpoint-signal collection.
+//!   §lock-gate + §9d.7): ping, app info, security status, lock, challenge
+//!   request/submit (`unlock_challenge` — always exempt), endpoint-signal
+//!   collection; `pair_begin`/`pair_status` are exempt only while a
+//!   backend-owned pairing flow is live (see `pair.rs::pair_gate`).
 //! - **Validate input** — every string bounded, every enum parsed, no panics
 //!   on renderer input (SECURITY.md B2: webview is untrusted).
 //! - **Delegate** — no business logic here; decisions live in kiwi-mail /
-//!   kiwi-core / kiwi-forensics.
+//!   kiwi-core / kiwi-forensics / kiwi-pair.
 //! - Errors are `IpcError { code, message }` — codes are the contract.
 
 pub mod accounts;
@@ -16,9 +18,14 @@ pub mod contacts;
 pub mod devices;
 pub mod endpoint;
 pub mod integrations;
+pub mod link;
 pub mod mail;
 pub mod message;
+/// OAuth2 plus the generic gated system-browser handoff. Message-link policy
+/// enforcement lives in `commands::link`; the command remains here for the
+/// existing OAuth2 API grouping.
 pub mod oauth2;
+pub mod pair;
 pub mod prefs;
 pub mod rules;
 pub mod sandbox;

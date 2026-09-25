@@ -54,7 +54,8 @@ pub(crate) async fn list_folders_impl(
     let mut out = Vec::new();
     for e in entries {
         if let Some(meta) = store.folder_meta(e.id)? {
-            out.push(FolderView::from(&meta));
+            let stats = store.folder_stats(e.id)?;
+            out.push(FolderView::from_meta(&meta, stats));
         }
     }
     Ok(out)
@@ -1139,6 +1140,99 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-264: `kiwi_list_folders` emits real store counts — `exists` is the
+    /// row total and `unseen` counts rows without `\Seen`; both travel with
+    /// moves and survive flag ops (never fabricated zeros).
+    #[tokio::test(flavor = "current_thread")]
+    async fn list_folders_reports_exists_and_unseen() {
+        let dir = std::env::temp_dir().join(format!(
+            "kiwi-foldstats-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let state = AppState::open_test(dir.clone()).unwrap();
+        let acct = MailAccount {
+            account_id: "a1".into(),
+            display_name: "A".into(),
+            email: "a@x.test".into(),
+            incoming: kiwi_mail::account::IncomingAccount {
+                protocol: IncomingProtocol::Pop3,
+                server: kiwi_mail::account::ServerConfig {
+                    host: "pop.x.test".into(),
+                    port: 995,
+                    security: kiwi_mail::transport::SocketSecurity::ImplicitTls,
+                },
+                username: "a".into(),
+                auth: kiwi_mail::account::AuthRef::None,
+            },
+            outgoing: kiwi_mail::account::OutgoingAccount {
+                server: kiwi_mail::account::ServerConfig {
+                    host: "smtp.x.test".into(),
+                    port: 465,
+                    security: kiwi_mail::transport::SocketSecurity::ImplicitTls,
+                },
+                username: "a".into(),
+                auth: kiwi_mail::account::AuthRef::None,
+            },
+        };
+        let meta = |uid: u64, seen: bool| NewMessageMeta {
+            uid,
+            message_id: Some(format!("<f{uid}@x>")),
+            subject: Some("s".into()),
+            from_addr: Some("b@y.test".into()),
+            to_addrs: None,
+            date_unix: Some(1_700_000_000),
+            size: None,
+            flags: if seen { vec!["\\Seen".into()] } else { vec![] },
+            has_attachments: false,
+            snippet: None,
+            category: Default::default(),
+            unsub_http: None,
+            unsub_mailto: None,
+            unsub_oneclick: false,
+        };
+        let fid = {
+            let store = state.store.lock().await;
+            store.upsert_account(&acct).unwrap();
+            let fid = store.ensure_folder("a1", "INBOX").unwrap();
+            let junk = store.ensure_folder("a1", "Junk").unwrap();
+            store
+                .upsert_message(fid, &meta(1, true), now_unix())
+                .unwrap();
+            store
+                .upsert_message(fid, &meta(2, false), now_unix())
+                .unwrap();
+            store
+                .upsert_message(fid, &meta(3, false), now_unix())
+                .unwrap();
+            store.mark_junk(fid, &[3]).unwrap(); // junk ≠ unseen change
+            drop(store);
+            let mut index = state.index.lock().await;
+            index.remember_folder("a1", fid, "INBOX");
+            index.remember_folder("a1", junk, "Junk");
+            index.save(&state.data_dir).unwrap();
+            fid
+        };
+        let folders = list_folders_impl(&state, "a1").await.unwrap();
+        let inbox = folders.iter().find(|f| f.name == "INBOX").unwrap();
+        assert_eq!((inbox.exists, inbox.unseen), (3, 2));
+        let junk = folders.iter().find(|f| f.name == "Junk").unwrap();
+        assert_eq!((junk.exists, junk.unseen), (0, 0), "no rows yet");
+
+        // Read one → unseen drops; exists unchanged.
+        {
+            let store = state.store.lock().await;
+            store.set_flag(fid, &[2], "\\Seen", true).unwrap();
+        }
+        let folders = list_folders_impl(&state, "a1").await.unwrap();
+        let inbox = folders.iter().find(|f| f.name == "INBOX").unwrap();
+        assert_eq!((inbox.exists, inbox.unseen), (3, 1));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

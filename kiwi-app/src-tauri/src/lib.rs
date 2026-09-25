@@ -22,7 +22,6 @@ mod signals;
 mod state;
 mod syncer;
 mod types;
-mod verifier;
 
 use tauri::Manager;
 
@@ -32,9 +31,11 @@ use commands::contacts::*;
 use commands::devices::*;
 use commands::endpoint::*;
 use commands::integrations::*;
+use commands::link::kiwi_link_click;
 use commands::mail::*;
 use commands::message::*;
 use commands::oauth2::*;
+use commands::pair::*;
 use commands::prefs::*;
 use commands::rules::*;
 use commands::sandbox::*;
@@ -74,6 +75,12 @@ pub fn run() {
             kiwi_lock,
             kiwi_request_challenge,
             kiwi_submit_challenge,
+            // pairing engine (§9d — canonical names; kiwi_* above are aliases)
+            pair_begin,
+            pair_status,
+            unlock_challenge,
+            device_list,
+            device_revoke,
             // accounts (gated)
             kiwi_list_accounts,
             kiwi_add_account,
@@ -106,6 +113,7 @@ pub fn run() {
             // sandbox-open (gated, fail closed)
             kiwi_sandbox_open_link,
             kiwi_sandbox_open_attachment,
+            kiwi_link_click,
             // snooze (gated — T-255, F-feature)
             kiwi_message_snooze,
             kiwi_message_unsnooze,
