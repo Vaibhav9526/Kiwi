@@ -1,6 +1,7 @@
 //! Security data commands: findings feed, event journal, per-session
 //! detail (finding dialog / cert viewer), and the deterministic report.
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tauri::State;
@@ -10,7 +11,7 @@ use kiwi_forensics::report::{Limitation, ReportBuilder};
 
 use super::{bounded, gate};
 use crate::error::{CmdResult, IpcError};
-use crate::state::AppState;
+use crate::state::{AppState, now_unix};
 use crate::types::{EventRow, SessionDetailView, SessionView, SignalView};
 
 /// `list_findings` — contract forensics.md §11. Full `Finding` objects
@@ -302,6 +303,167 @@ pub async fn kiwi_security_report(
     Ok(builder.build())
 }
 
+/// Serialized artifact ceiling. The report builder's own bounds keep real
+/// reports far below this; it exists so a pathological report cannot produce
+/// an unbounded write.
+const MAX_REPORT_EXPORT_BYTES: usize = 32 * 1024 * 1024;
+
+/// `kiwi_forensics_export { sessionId, destPath }` → `ForensicsExportView`.
+///
+/// Save the deterministic `kiwi_forensics` report for one retained session to
+/// a caller-chosen path, wrapped in a **self-verifying integrity envelope**
+/// (T-320): the artifact carries the SHA-256 of its own canonical report
+/// bytes, plus the versions those bytes were produced under, so a reader can
+/// detect tampering with no external trust store — re-serialize `report`, hash,
+/// compare (`kiwi_forensics::report::ExportEnvelope::verify_bytes`).
+///
+/// Deliberate semantics, matching the mbox-export sibling (T-316):
+/// - **Atomic.** Built beside the destination and renamed over it, so a crash
+///   never leaves a truncated artifact at the chosen path.
+/// - **Bounded.** `MAX_REPORT_EXPORT_BYTES` caps the serialized artifact
+///   (report-builder inputs are already bounded; this guards the file write);
+///   destination must be a writable file inside an existing directory — a
+///   directory, missing parent, or the app's own data dir is `invalid-input`
+///   rather than an io-detail leak.
+/// - **Audited as ids + counts only.** Never the path, never a subject, never
+///   a finding-id list.
+/// - `sessionId` must name a retained session; an unknown id is `not-found`,
+///   never an empty report that would read as a clean bill of health.
+#[tauri::command]
+pub async fn kiwi_forensics_export(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    dest_path: String,
+) -> CmdResult<crate::types::ForensicsExportView> {
+    gate(state.inner()).await?;
+    forensics_export_impl(state.inner(), &session_id, &dest_path).await
+}
+
+pub(crate) async fn forensics_export_impl(
+    state: &AppState,
+    session_id: &str,
+    dest_path: &str,
+) -> CmdResult<crate::types::ForensicsExportView> {
+    bounded("sessionId", session_id, 128)?;
+    bounded("destPath", dest_path, 4096)?;
+    if dest_path.trim().is_empty() {
+        return Err(IpcError::invalid("destPath is empty"));
+    }
+
+    // The session must be real. A missing id is `not-found`, not an empty
+    // report: an empty artifact would read as "nothing was found".
+    let exists = {
+        let sessions = state.sessions.lock().await;
+        sessions.iter().any(|r| r.session.session_id == session_id)
+    };
+    if !exists {
+        return Err(IpcError::not_found("unknown session id"));
+    }
+
+    // Scope the report to this one session's findings, using the same builder
+    // the live report uses — so the exported bytes are a real `Report`.
+    let findings: Vec<Finding> = {
+        let map = state.findings.lock().await;
+        map.values()
+            .filter(|f| f.subject.session_id.as_str() == session_id)
+            .cloned()
+            .collect()
+    };
+    let report = ReportBuilder::new(&format!("session:{session_id}"), "live-session-export")
+        .add_session_findings(1, findings.clone())
+        .limitation(Limitation::new(
+            "scope",
+            "covers one retained client session and its findings only; no pcap, logs, or fixture input",
+        ))
+        .build();
+
+    let generated_at_unix = now_unix();
+    let envelope = kiwi_forensics::report::ExportEnvelope::seal(report, generated_at_unix);
+    let bytes = serde_json::to_vec_pretty(&envelope)
+        .map_err(|e| IpcError::new("internal", format!("report serialize: {e}")))?;
+    if bytes.len() > MAX_REPORT_EXPORT_BYTES {
+        return Err(IpcError::invalid("report export exceeds 32 MiB bound"));
+    }
+
+    write_export_atomically(state, dest_path, &bytes)?;
+
+    let size = bytes.len() as u64;
+    state.audit.lock().await.record(
+        "forensics-exported",
+        &format!(
+            "session {session_id}: findings {} bytes {size} sha256 {}",
+            findings.len(),
+            envelope.sha256,
+        ),
+        now_unix(),
+    )?;
+    Ok(crate::types::ForensicsExportView {
+        path: dest_path.to_string(),
+        bytes: size,
+        sha256: envelope.sha256,
+        report_contract_version: envelope.report_contract_version,
+        findings: findings.len(),
+        generated_at_unix,
+    })
+}
+
+/// Destination validation + temp→rename. Split out so the path rules read as
+/// one block: directory, existing parent, a real file name, and never inside
+/// the app's own data dir (mail store, audit log, bodies).
+fn write_export_atomically(state: &AppState, dest_path: &str, bytes: &[u8]) -> CmdResult<()> {
+    let dest = Path::new(dest_path);
+    if dest.is_dir() {
+        return Err(IpcError::invalid("destPath is a directory"));
+    }
+    match dest.parent() {
+        Some(p) if p.as_os_str().is_empty() => {}
+        Some(p) if p.is_dir() => {}
+        Some(_) => return Err(IpcError::not_found("destination directory not found")),
+        None => return Err(IpcError::invalid("destPath has no parent directory")),
+    }
+    if dest.file_name().is_none() {
+        return Err(IpcError::invalid("destPath names no file"));
+    }
+    let canon_data = state
+        .data_dir
+        .canonicalize()
+        .unwrap_or_else(|_| state.data_dir.clone());
+    // Resolve the *parent* (the file need not exist yet) and refuse anything
+    // under the app data dir, so an export can never overwrite mail.db, the
+    // audit log, or a stored body.
+    let parent = dest.parent().unwrap_or(dest);
+    let resolved_parent = parent
+        .canonicalize()
+        .unwrap_or_else(|_| parent.to_path_buf());
+    if resolved_parent.starts_with(&canon_data) {
+        return Err(IpcError::invalid(
+            "destPath inside the app data dir is refused",
+        ));
+    }
+
+    let tmp = PathBuf::from(format!("{dest_path}.kiwi-part"));
+    if let Err(e) = std::fs::write(&tmp, bytes) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(IpcError::invalid(format!("write: {e}")));
+    }
+    // Temp → destination. On Windows rename refuses an existing target; the
+    // user chose this path, so a prior export is replaced — remove and retry
+    // once (the only portable overwrite path).
+    if let Err(e) = std::fs::rename(&tmp, dest) {
+        if dest.exists() {
+            let _ = std::fs::remove_file(dest);
+            if let Err(e2) = std::fs::rename(&tmp, dest) {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(IpcError::invalid(format!("rename: {e2}")));
+            }
+        } else {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(IpcError::invalid(format!("rename: {e}")));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -519,5 +681,158 @@ mod tests {
         // Limit applies after the binding sort.
         let top = block_on(security_findings_impl(&state, None, None, Some(1))).unwrap();
         assert_eq!(top[0].rule_id, "KIWI-AUTH-001");
+    }
+
+    // -- T-320 forensic report export -------------------------------------
+
+    fn export_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "kiwi-fx-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn seeded(tag: &str) -> (AppState, PathBuf) {
+        let state = test_state(tag);
+        let dir = export_dir(tag);
+        let f = finding("KIWI-TLS-001", "sess-x");
+        block_on(async {
+            state
+                .findings
+                .lock()
+                .await
+                .insert(f.finding_id(), f.clone());
+            state
+                .sessions
+                .lock()
+                .await
+                .push_back(session_record("sess-x", vec![f]));
+        });
+        (state, dir)
+    }
+
+    /// Verify-by-construction: the file the command writes round-trips through
+    /// the crate's own reader and verifies with no external trust store.
+    #[test]
+    fn export_writes_a_self_verifying_artifact() {
+        use kiwi_forensics::report::{ExportEnvelope, ExportVerification};
+        let (state, dir) = seeded("ok");
+        let dest = dir.join("report.json");
+        let view = block_on(forensics_export_impl(
+            &state,
+            "sess-x",
+            dest.to_str().unwrap(),
+        ))
+        .unwrap();
+        assert_eq!(view.findings, 1);
+        assert_eq!(view.sha256.len(), 64);
+        assert!(view.bytes > 0);
+
+        // No temp file left behind.
+        assert!(!PathBuf::from(format!("{}.kiwi-part", dest.display())).exists());
+
+        let bytes = std::fs::read(&dest).unwrap();
+        match ExportEnvelope::verify_bytes(&bytes) {
+            ExportVerification::Valid(env) => {
+                // The payload is a real Report with this session's finding.
+                assert_eq!(env.report.findings.len(), 1);
+                assert_eq!(env.report.scope, "session:sess-x");
+                assert_eq!(env.report.generated_from, "live-session-export");
+                assert_eq!(env.sha256, view.sha256);
+                // And the report round-trips through the existing parser.
+                let back = kiwi_forensics::report::Report::from_json(&env.report.to_json())
+                    .expect("embedded report parses");
+                assert_eq!(back, env.report);
+            }
+            other => panic!("exported artifact must self-verify, got {other:?}"),
+        }
+        // Audit recorded ids + counts, never the path.
+        let audited = std::fs::read_to_string(state.data_dir.join("audit.jsonl")).unwrap();
+        assert!(audited.contains("forensics-exported"));
+        assert!(audited.contains("sess-x"));
+        assert!(!audited.contains(&dir.display().to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn export_refuses_unknown_session_and_bad_destinations() {
+        let (state, dir) = seeded("bad");
+
+        // Unknown session is not-found — never a clean-looking empty report.
+        let err = block_on(forensics_export_impl(
+            &state,
+            "sess-nope",
+            dir.join("r.json").to_str().unwrap(),
+        ))
+        .unwrap_err();
+        assert_eq!(err.code, "not-found");
+
+        // A directory.
+        assert_eq!(
+            block_on(forensics_export_impl(
+                &state,
+                "sess-x",
+                &dir.display().to_string()
+            ))
+            .unwrap_err()
+            .code,
+            "invalid-input"
+        );
+        // Missing parent directory.
+        assert_eq!(
+            block_on(forensics_export_impl(
+                &state,
+                "sess-x",
+                dir.join("no-such-dir/r.json").to_str().unwrap()
+            ))
+            .unwrap_err()
+            .code,
+            "not-found"
+        );
+        // Empty path.
+        assert_eq!(
+            block_on(forensics_export_impl(&state, "sess-x", "  "))
+                .unwrap_err()
+                .code,
+            "invalid-input"
+        );
+        // Inside the app data dir — must never overwrite mail.db/audit log.
+        let inside = state.data_dir.join("pwned.json");
+        assert_eq!(
+            block_on(forensics_export_impl(
+                &state,
+                "sess-x",
+                inside.to_str().unwrap()
+            ))
+            .unwrap_err()
+            .code,
+            "invalid-input"
+        );
+        assert!(!inside.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn export_overwrites_a_previous_artifact_at_the_same_path() {
+        let (state, dir) = seeded("over");
+        let dest = dir.join("r.json");
+        std::fs::write(&dest, b"stale").unwrap();
+        let v = block_on(forensics_export_impl(
+            &state,
+            "sess-x",
+            dest.to_str().unwrap(),
+        ))
+        .unwrap();
+        assert!(v.bytes > 0);
+        let bytes = std::fs::read(&dest).unwrap();
+        assert!(kiwi_forensics::report::ExportEnvelope::verify_bytes(&bytes).verify_ok());
+        assert_ne!(bytes, b"stale");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -252,6 +252,135 @@ impl Report {
     }
 }
 
+/// Envelope contract for a saved report artifact (T-320).
+pub const EXPORT_ENVELOPE_VERSION: &str = "kiwi.forensics-export/1";
+
+/// Deterministic integrity envelope wrapped around an exported [`Report`].
+///
+/// The artifact is **self-verifying**: it carries the SHA-256 of the report's
+/// own canonical bytes, so a reader needs no external trust store, signature,
+/// or second file to detect tampering — re-serialize the embedded `report`,
+/// hash it, compare. The envelope is derived data about the payload
+/// (versions + digest + size); it never alters the report it wraps, so the
+/// embedded bytes are exactly what `Report::to_json` would render and the
+/// payload still round-trips through [`Report::from_json`] unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExportEnvelope {
+    /// [`EXPORT_ENVELOPE_VERSION`] — the envelope's own contract version.
+    pub envelope_version: String,
+    /// Report contract version (`kiwi.forensics/2`) — copied, not re-derived.
+    pub report_contract_version: String,
+    /// Rule-catalog + scoring versions the digest was taken under, so a
+    /// verifier can tell "modified" from "produced by a different engine".
+    pub rule_catalog_version: u16,
+    /// Scoring-model version string — the other half of the engine identity
+    /// (`rule_catalog_version` covers the catalog, this the scorer).
+    pub scoring_model_version: String,
+    /// Unix seconds the artifact was written. Provenance metadata only —
+    /// deliberately NOT covered by `sha256` (which digests the report payload
+    /// alone), because a clock is not a content fact: baking it in would make
+    /// the digest change on every re-export of otherwise identical evidence.
+    pub generated_at_unix: i64,
+    /// Lowercase hex SHA-256 over the canonical bytes of `report` exactly as
+    /// embedded below.
+    pub sha256: String,
+    /// Byte length of the canonical report JSON (the digested payload),
+    /// excluding this envelope.
+    pub report_bytes: u64,
+    /// The report, rendered by [`Report::to_json`] (canonical, pretty).
+    pub report: Report,
+}
+
+impl ExportEnvelope {
+    /// Canonical bytes of the report payload — the exact bytes `sha256`
+    /// covers. `Report::to_json` is total (its fallback is `"{}"`), so this
+    /// cannot fail.
+    pub fn canonical_report_bytes(&self) -> String {
+        self.report.to_json()
+    }
+
+    /// Recompute the digest over the embedded report's canonical bytes.
+    pub fn computed_sha256(&self) -> String {
+        sha256_hex(self.canonical_report_bytes().as_bytes())
+    }
+
+    /// True when the embedded report still hashes to the recorded digest.
+    pub fn verify(&self) -> bool {
+        self.sha256 == self.computed_sha256()
+            && self.report_bytes == self.canonical_report_bytes().len() as u64
+    }
+}
+
+/// Lowercase hex SHA-256 — the digest form used by the export envelope and
+/// the artifact procedure in forensics.md.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(bytes);
+    let mut out = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        out.push_str(&format!("{byte:02x}"));
+    }
+    out
+}
+
+/// Outcome of verifying a saved artifact (T-320 verify-by-construction).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExportVerification {
+    /// Digest and length both match; `report` is the parsed payload.
+    Valid(Box<ExportEnvelope>),
+    /// The envelope parsed but its digest/length do not match the embedded
+    /// report — the payload was modified after export.
+    DigestMismatch,
+    /// The file is not an export envelope at all.
+    Unrecognized,
+}
+
+impl ExportVerification {
+    /// True only for a fully verified artifact — the boolean form callers
+    /// want when they just need "can I trust this file?".
+    #[must_use]
+    pub fn verify_ok(&self) -> bool {
+        matches!(self, Self::Valid(_))
+    }
+}
+
+impl ExportEnvelope {
+    /// Wrap a report into an envelope for writing.
+    pub fn seal(report: Report, generated_at_unix: i64) -> Self {
+        let report_bytes = report.to_json();
+        let sha256 = sha256_hex(report_bytes.as_bytes());
+        Self {
+            envelope_version: EXPORT_ENVELOPE_VERSION.to_string(),
+            report_contract_version: report.contract_version.clone(),
+            rule_catalog_version: report.rule_catalog_version,
+            scoring_model_version: report.scoring_model_version.clone(),
+            generated_at_unix,
+            sha256,
+            report_bytes: report_bytes.len() as u64,
+            report,
+        }
+    }
+
+    /// Verify saved artifact bytes — the reader side. Tolerant by design: a
+    /// tampered, truncated, or foreign file is a *verdict*, never a panic.
+    pub fn verify_bytes(bytes: &[u8]) -> ExportVerification {
+        let Ok(text) = std::str::from_utf8(bytes) else {
+            return ExportVerification::Unrecognized;
+        };
+        let Ok(envelope) = serde_json::from_str::<ExportEnvelope>(text) else {
+            return ExportVerification::Unrecognized;
+        };
+        if envelope.envelope_version != EXPORT_ENVELOPE_VERSION {
+            return ExportVerification::Unrecognized;
+        }
+        if envelope.verify() {
+            ExportVerification::Valid(Box::new(envelope))
+        } else {
+            ExportVerification::DigestMismatch
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -333,6 +462,81 @@ mod tests {
                 .iter()
                 .any(|l| l.code == limitation_codes::AI_UNCITED_KEYS),
             "drop recorded as limitation"
+        );
+    }
+
+    // -- T-320 export envelope: verify-by-construction -------------------
+
+    #[test]
+    fn exported_artifact_round_trips_and_self_verifies() {
+        let report = ReportBuilder::new("account:test", "test-fixture")
+            .add_session_findings(1, vec![finding()])
+            .build();
+        let sealed = ExportEnvelope::seal(report.clone(), 1_758_000_000);
+        let bytes = serde_json::to_string_pretty(&sealed).expect("envelope serializes");
+
+        // The saved file verifies with no external trust store: re-serialize
+        // the embedded report, hash, compare.
+        match ExportEnvelope::verify_bytes(bytes.as_bytes()) {
+            ExportVerification::Valid(back) => {
+                // And the payload is still a real, parseable Report.
+                assert_eq!(back.report, report);
+                assert_eq!(back.report_contract_version, report.contract_version);
+                assert_eq!(back.generated_at_unix, 1_758_000_000);
+                assert_eq!(back.sha256.len(), 64, "lowercase hex sha256");
+                assert!(back.sha256.chars().all(|c| c.is_ascii_hexdigit()));
+            }
+            other => panic!("sealed artifact must verify, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tampered_artifact_fails_the_digest_check() {
+        let report = ReportBuilder::new("account:test", "test-fixture")
+            .add_session_findings(1, vec![finding()])
+            .build();
+        let sealed = ExportEnvelope::seal(report, 1);
+        let mut tampered = sealed.clone();
+        // Bump the score as if the file had been edited after export.
+        tampered.report.score.score = 100;
+        assert!(!tampered.verify(), "modified payload must not verify");
+        assert_eq!(
+            ExportEnvelope::verify_bytes(
+                serde_json::to_string_pretty(&tampered).unwrap().as_bytes()
+            ),
+            ExportVerification::DigestMismatch
+        );
+        // The untouched one still verifies — the check is content-bound.
+        assert!(sealed.verify());
+    }
+
+    #[test]
+    fn foreign_or_truncated_files_are_unrecognized_not_panics() {
+        assert_eq!(
+            ExportEnvelope::verify_bytes(b"not json at all"),
+            ExportVerification::Unrecognized
+        );
+        assert_eq!(
+            ExportEnvelope::verify_bytes(&[0xff, 0xfe, 0x00]),
+            ExportVerification::Unrecognized,
+            "non-UTF-8 is a verdict, not a panic"
+        );
+        // A bare Report (no envelope) is not an export artifact.
+        let report = ReportBuilder::new("account:test", "test-fixture").build();
+        assert_eq!(
+            ExportEnvelope::verify_bytes(report.to_json().as_bytes()),
+            ExportVerification::Unrecognized
+        );
+    }
+
+    #[test]
+    fn envelope_version_is_enforced() {
+        let report = ReportBuilder::new("account:test", "test-fixture").build();
+        let mut sealed = ExportEnvelope::seal(report, 1);
+        sealed.envelope_version = "kiwi.forensics-export/99".into();
+        assert_eq!(
+            ExportEnvelope::verify_bytes(serde_json::to_string_pretty(&sealed).unwrap().as_bytes()),
+            ExportVerification::Unrecognized
         );
     }
 
