@@ -178,5 +178,4 @@ No `kiwi-autoconfig` source or contract file was changed by Agent 23 in this ver
 
 ### Handoff
 
-- Required terminal DONE command: `orca terminal send --terminal term_c20c6737-9b80-4911-bcd2-38aa5113e4d7 --text 'DONE: Agent-23 T-278 — result' --enter`.
-
+- Terminal DONE command sent: `orca terminal send --terminal term_c20c6737-9b80-4911-bcd2-38aa5113e4d7 --text 'DONE: Agent-23 T-278 — result' --enter`; Orca returned `input_accepted` and reported provider delivery as unsupported.

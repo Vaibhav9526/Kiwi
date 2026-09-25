@@ -167,7 +167,19 @@ Sync trait (`dns::DnsResolver`): `lookup_txt/host/mx/ptr` or
 `Temp`/`NxDomain`. `MockResolver` (builders `with_txt/host/mx/ptr/
 temp_fail`) is the ONLY test resolver — suite runs fully offline.
 `HickoryResolver::system()` is the live adapter (private Tokio
-runtime, blocking facade).
+runtime, blocking facade). Bounds: `with_bounds(timeout, attempts)`
+— `system()` uses 2 s × 2 attempts per query; `attempts` clamps
+≥ 1. The private runtime + resolver build lazily on first lookup
+and memoize failure as `Temp` (no rebuild loop on DNS-less hosts).
+`block_on` runs on a scoped thread so the sync facade is safe to
+call from inside an async runtime (Tauri command handlers). The
+app wires it via a shared `OnceLock` (`commands/mail.rs
+auth_sealer()`) into `sync_pop3_with_auth` and the lazy IMAP body
+ingest; `SmtpReceipt` is `None` on both — POP3/IMAP cannot know
+the client IP or envelope sender, so SPF records `none` there.
+NXDOMAIN **and** NODATA map to `NxDomain`; every other failure
+(transport, timeout, config, lookup panic) maps to `Temp` —
+fail-closed, never `fail`.
 
 ## 7. Determinism
 

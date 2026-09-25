@@ -308,3 +308,49 @@ Full per-site mapping in `src/components/icons/README.md`.
   trust-boundary list.
 - A concurrent agent touched `App.tsx` (T-231 FTS wiring) during this
   task — my edits were additive only, no overlap.
+
+## T-283 — Agenda rail real content (GTD + security summary)
+
+### Files
+- `src/components/chrome.tsx` — new `AgendaSecurity` prop type +
+  `SecuritySummaryCard` mounted at the T-267 rail seam (above task groups,
+  below Add-task); `AgendaRail` now takes `security?: AgendaSecurity`.
+- `src/App.tsx` — rail prop wired: `trust`, `lockReason` (locked only),
+  `findings.length`, `smartUnread["unread"]`, `flagged`/`unreplied` (demo
+  only), `activeDevices` (live only), `demo`.
+- `src/prefs.ts` — `kiwi.agenda` added to `PREF_KEYS` (backend sync push).
+- `src/shell.css` — `.em-security-*` block (card, head, score, demo tag,
+  lock reason, count rows, Security Center link).
+
+### Data provenance (real only — no mocks)
+- Verdict: `useSession()` trust → `severityLabel(trust.trust)` /
+  "Locked" + `score/100` when non-null; lock reason shown while locked.
+- Open findings = real `findings.length` (kiwi_security_findings live;
+  DEMO_FINDINGS in demo — `demo` chip tags fixture-derived numbers).
+- Unread = `smartUnread["unread"]` — real `unseen` sum from folder list.
+- Flagged/Unreplied = shown **only in demo** (computed from DEMO_MESSAGES);
+  live has no store-wide aggregate in `accounts.ts` (hardcoded 0) → row
+  omitted, never presented as real.
+- Active devices = `devices.filter(status==="active").length`, live only.
+- **Noted gap:** pending sandbox-open sessions have no list IPC — row
+  intentionally absent until a real source exists (commented at the seam).
+
+### Tasks persistence (existing mechanism kept — documented choice)
+- No tasks backend exists (`kiwi_tasks`/tasks IPC: not found). Tasks were
+  already persisted via `loadPref/savePref` under `kiwi.agenda` —
+  add/checkbox/flag/delete all flow through `setTasks` → `savePref` →
+  localStorage source-of-truth offline; added to `PREF_KEYS` so the bag
+  also backend-syncs. Date groups (No Date/Today/Tomorrow) preserved;
+  `kiwi.rail` collapse pref unchanged; A24 layout contract intact.
+
+### Verification
+- `npx tsc` — 0 errors repo-wide (prior `rules.tsx` residuals resolved by
+  their owner — T-281 landed concurrently; `RulesView` + `folderLists`
+  settings changes preserved untouched).
+- `npm run build` — green.
+- `node src/plugins/e2e/run.mjs` — 30/30 (one transient 28/2 on a cold
+  esbuild run; clean on re-runs).
+- CDP screenshot pass (`artifacts/t283/`): card renders with severity
+  icon + "Unknown/demo" verdict + 4 real rows; collapse hides rail;
+  live DOM add-task → `kiwi.agenda` localStorage persistence proven
+  end-to-end.
