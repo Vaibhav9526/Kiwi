@@ -29,6 +29,11 @@ pub const MAX_MX_ADDR_LOOKUPS: usize = 10;
 pub const MAX_PTR_ADDR_LOOKUPS: usize = 10;
 /// Max expanded domain-spec length (bounded evidence).
 pub const MAX_EXPANDED_LEN: usize = 253;
+/// Fail-closed sentinel for an invalid macro expansion. `%` is not a legal
+/// character in a DNS label (RFC 1035 LDH), so any spec containing it is
+/// rejected by [`DomainName::parse`] and the mechanism becomes `permerror`
+/// instead of matching an unintended name.
+const INVALID_MACRO: &str = "%";
 
 /// SPF verdict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -655,7 +660,13 @@ fn eval_ptr<R: DnsResolver>(
         }
         Ok(n) => n,
     };
-    let want = DomainName::parse(&expand_macros(ctx, use_spec)).unwrap_or_else(|_| current.clone());
+    // A malformed / unparseable expanded spec is a syntax error, not an
+    // invitation to silently fall back to the current domain (which would
+    // authorize a zone the record never named).
+    let want = match DomainName::parse(&expand_macros(ctx, use_spec)) {
+        Ok(d) => d,
+        Err(_) => return MechOutcome::Error(SpfResult::PermError),
+    };
     // RFC 7208 §4.6.4: evaluation of each "PTR" record MUST NOT result in
     // querying more than 10 address records. If this limit is exceeded, all
     // records other than the first 10 MUST be ignored.
@@ -859,7 +870,9 @@ fn expand_one<R: DnsResolver>(ctx: &Ctx<R>, inner: &str) -> String {
     let letter = chars.next().unwrap_or('x');
     let is_uppercase = letter.is_ascii_uppercase();
     let letter = letter.to_ascii_lowercase();
-    // Optional digit(s): keep-LABELS count.
+    // Optional digit(s): keep-LABELS count. RFC 7208 §7.3: "If a DIGIT is
+    // specified, the value MUST be nonzero" — so an explicit 0 is a syntax
+    // error, not "keep everything".
     let mut digits = String::new();
     for c in chars.clone() {
         if c.is_ascii_digit() {
@@ -867,6 +880,12 @@ fn expand_one<R: DnsResolver>(ctx: &Ctx<R>, inner: &str) -> String {
         } else {
             break;
         }
+    }
+    if !digits.is_empty() && digits.parse::<usize>().unwrap_or(0) == 0 {
+        // Fail closed: a sentinel that can never parse as a domain name, so
+        // the mechanism becomes `permerror` instead of silently expanding to
+        // the full (wrong) value.
+        return INVALID_MACRO.to_string();
     }
     let keep: usize = if digits.is_empty() {
         0
@@ -931,9 +950,7 @@ fn expand_one<R: DnsResolver>(ctx: &Ctx<R>, inner: &str) -> String {
     // by one or more of the specified delimiter characters. After performing
     // any reversal operation and/or removal of left-hand parts, the parts
     // are rejoined using '.' and not the original splitting characters."
-    let mut parts: Vec<&str> = raw
-        .split(|c| delims.contains(&c))
-        .collect();
+    let mut parts: Vec<&str> = raw.split(|c| delims.contains(&c)).collect();
     if reverse {
         parts.reverse();
     }
@@ -1136,10 +1153,8 @@ mod tests {
     /// `permerror` (NOT neutral/pass).
     #[test]
     fn include_none_produces_permerror() {
-        let dns = MockResolver::new().with_txt(
-            "example.com",
-            &["v=spf1 include:missing.example -all"],
-        );
+        let dns =
+            MockResolver::new().with_txt("example.com", &["v=spf1 include:missing.example -all"]);
         let o = evaluate(&dns, &input("example.com", "192.0.2.1")).unwrap();
         assert_eq!(o.result, SpfResult::PermError);
     }
@@ -1148,10 +1163,7 @@ mod tests {
     /// result is `permerror` (NOT neutral/none).
     #[test]
     fn redirect_target_missing_record_produces_permerror() {
-        let dns = MockResolver::new().with_txt(
-            "example.com",
-            &["v=spf1 redirect=missing.example"],
-        );
+        let dns = MockResolver::new().with_txt("example.com", &["v=spf1 redirect=missing.example"]);
         let o = evaluate(&dns, &input("example.com", "192.0.2.1")).unwrap();
         assert_eq!(o.result, SpfResult::PermError);
     }
@@ -1213,7 +1225,10 @@ mod tests {
             depth: 0,
         };
         // Table in §7.4:
-        assert_eq!(expand_macros(&ctx_ip4, "%{s}"), "strong-bad@email.example.com");
+        assert_eq!(
+            expand_macros(&ctx_ip4, "%{s}"),
+            "strong-bad@email.example.com"
+        );
         assert_eq!(expand_macros(&ctx_ip4, "%{o}"), "email.example.com");
         assert_eq!(expand_macros(&ctx_ip4, "%{d}"), "email.example.com");
         assert_eq!(expand_macros(&ctx_ip4, "%{d4}"), "email.example.com");
@@ -1256,4 +1271,108 @@ mod tests {
         );
     }
 
+    /// Include and redirect cycles must terminate: the recursion bound turns
+    /// them into `permerror` rather than hanging (RFC 7208 §4.6.4 loop
+    /// protection; documented MAX_RECURSION).
+    #[test]
+    fn include_and_redirect_loops_are_permerror() {
+        let dns = MockResolver::new()
+            .with_txt("loop-a.example", &["v=spf1 include:loop-b.example -all"])
+            .with_txt("loop-b.example", &["v=spf1 include:loop-a.example -all"])
+            .with_txt("rloop-a.example", &["v=spf1 redirect=rloop-b.example"])
+            .with_txt("rloop-b.example", &["v=spf1 redirect=rloop-a.example"]);
+        assert_eq!(
+            evaluate(&dns, &input("loop-a.example", "192.0.2.1"))
+                .unwrap()
+                .result,
+            SpfResult::PermError
+        );
+        assert_eq!(
+            evaluate(&dns, &input("rloop-a.example", "192.0.2.1"))
+                .unwrap()
+                .result,
+            SpfResult::PermError
+        );
+    }
+
+    /// RFC 7208 §5.1: mechanisms after `all` are never tested, and any
+    /// `redirect` modifier is ignored when an `all` mechanism is present,
+    /// regardless of ordering.
+    #[test]
+    fn all_wins_over_redirect_and_later_terms() {
+        let dns = MockResolver::new()
+            .with_txt(
+                "example.com",
+                &["v=spf1 ip4:192.0.2.1 -all redirect=other.example"],
+            )
+            .with_txt("other.example", &["v=spf1 ip4:192.0.2.99 -all"]);
+        let o = evaluate(&dns, &input("example.com", "192.0.2.99")).unwrap();
+        // `-all` decided (the IP is authorized only by the redirect target,
+        // which must NOT be consulted) -> fail, not pass.
+        assert_eq!(o.result, SpfResult::Fail);
+        assert_eq!(o.decided_by.as_deref(), Some("-all"));
+    }
+
+    /// RFC 7208 §7.3: "A '%' character not followed by a '{', '%', '-' or '_'
+    /// character is a syntax error", and the published example record must
+    /// yield `permerror`.
+    #[test]
+    fn macro_syntax_error_is_permerror() {
+        let dns = MockResolver::new()
+            .with_txt("example.com", &["v=spf1 exists:%(ir).sbl.example.org -all"]);
+        let o = evaluate(&dns, &input("example.com", "192.0.2.1")).unwrap();
+        assert_eq!(o.result, SpfResult::PermError);
+    }
+
+    /// A DIGIT transformer of zero is not permitted (RFC 7208 §7.3: "If a
+    /// DIGIT is specified, the value MUST be nonzero").
+    #[test]
+    fn zero_digit_transformer_is_permerror() {
+        let dns =
+            MockResolver::new().with_txt("example.com", &["v=spf1 exists:%{d0}.example.org -all"]);
+        let o = evaluate(&dns, &input("example.com", "192.0.2.1")).unwrap();
+        assert_eq!(o.result, SpfResult::PermError);
+    }
+
+    /// RFC 7208 §7.3: "Uppercase macros expand exactly as their lowercase
+    /// equivalents, and are then URL escaped." The escaping itself is verified
+    /// directly, and the end-to-end path documents a real limitation: this
+    /// crate's [`DomainName`] grammar is strict LDH (`[A-Za-z0-9_-]`), so a
+    /// percent escape (`%20`) is not a legal label. An escaped macro
+    /// therefore fails closed with `permerror` rather than resolving a name
+    /// the author did not intend — a `permerror`/`fail` outcome, never a
+    /// silent match against the wrong zone.
+    #[test]
+    fn uppercase_macros_url_escape() {
+        let ctx = Ctx {
+            dns: &MockResolver::new(),
+            input: {
+                let mut i = input("example.com", "192.0.2.1");
+                i.sender_local = "we ird".to_string();
+                i
+            },
+            lookups: 0,
+            voids: 0,
+            ptr_used: false,
+            depth: 0,
+        };
+        // Lowercase: no escaping.
+        assert_eq!(expand_one(&ctx, "l"), "we ird");
+        // Uppercase: same value, URL escaped.
+        assert_eq!(expand_one(&ctx, "L"), "we%20ird");
+
+        // End to end: an escaped label cannot pass the strict name grammar.
+        let dns = MockResolver::new()
+            .with_txt("example.com", &["v=spf1 exists:%{L}._spf.example.com -all"]);
+        let mut i = input("example.com", "192.0.2.1");
+        i.sender_local = "we ird".to_string();
+        let o = evaluate(&dns, &i).unwrap();
+        assert_eq!(o.result, SpfResult::PermError, "{}", o.explanation);
+
+        // An unescaped space in a label is likewise rejected (fail closed).
+        let dns2 = MockResolver::new()
+            .with_txt("example.com", &["v=spf1 exists:%{l}._spf.example.com -all"]);
+        let o2 = evaluate(&dns2, &i).unwrap();
+        assert_eq!(o2.result, SpfResult::PermError, "{}", o2.explanation);
+    }
 }

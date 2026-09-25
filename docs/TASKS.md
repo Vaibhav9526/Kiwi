@@ -109,7 +109,7 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-180 | Phase C1: kiwi-mail file splits — freeze window required | Agent 10 | in-progress | `kiwi-mail/src/` | — |
 | T-181 | Phase C2: src-tauri splits verified+finished (types/ + commands/{message,send}/) | Agent 15 | done | `kiwi-app/src-tauri/` | — |
 | T-182 | Phase C3: App.tsx split | Agent 5 | SUPERSEDED by T-191 rebuild | `kiwi-app/src/` | — |
-| T-183 | kiwi-mailauth hardening: DKIM canonicalization, SPF lookup limits, DMARC alignment | Agent 8 (Nemotron 3 Ultra) | in-progress | `kiwi-mailauth/` | T-178 |
+| T-183 | kiwi-mailauth RFC hardening — 14 real defects fixed, fail-opens removed | Agent 16 | done (63/63) | `kiwi-mailauth/` | T-178 |
 | T-184 | Finish T-172 items (lint, transport decision, wording) | Agent 6 (handoff) | done (lint 0/0 + tests/typecheck green; 4x S10 items in contract) | `mobile/`, `docs/contracts/authenticator.md` | T-172 |
 | T-185 | kiwi-admin defect-hunt review → admin-review-1.md | Agent 9 | done (findings pending Lead rulings) | `kiwi-admin/` (read-only) | T-149 |
 | T-186 | Mail filters UI | Agent 5 | done | `kiwi-app/src/` | — |
@@ -169,7 +169,7 @@ rebuild context. Lead handle is now term_c20c6737.
 | 13 | Muse Spark 1.3 xhigh | e5adf4d9 | T-193 admin H1-H8 + M fixes |
 | 14 | OpenCode Zen xhigh | e26f119b | T-202 done → T-212 F13 junk marking |
 | 15 | Devin Pro | c47aa1d7 | T-181 done → T-228 rules engine core |
-| 16 | DeepSeek V4.1 Flash | 87c46343 | T-183 mailauth hardening |
+| 16 | DeepSeek V4.1 Flash | 87c46343 | T-183 done → T-232 auth-results stamping |
 | 17 | DeepSeek V4.1 Flash | 71a0b324 | T-194 mobile authenticator screens |
 | 18 | Space Bunny Free | f7e88089 | T-188 done → T-229 oauth2 contract review |
 | 19 | Devin Pro | e84c9837 | T-195 done → T-230 OAuth2 IPC + wizard seam |
@@ -189,3 +189,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-229 | Review oauth2.md contract for drift vs Agent 19 impl when it lands | Agent 18 | queued | `docs/contracts/` | T-195 |
 | T-230 | OAuth2 IPC commands (begin/poll/status) + account-wizard seam (autoconfig oauth2 → flow → CredentialStore) | Agent 19 | open | `kiwi-app/src-tauri/`, `ipc.md` | T-195 |
 | T-231 | Live-data wiring: category tabs UI (F2), search→real IPC, contacts view→IPC, unsubscribe chip | Agent 12 | open | `kiwi-app/src/` | T-192,T-201,T-202 |
+| T-232 | Authentication-Results stamping on ingest (RFC 8601) + verdict field on MessageView | Agent 16 | open | `kiwi-mail/` | T-183 |

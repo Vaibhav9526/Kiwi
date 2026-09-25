@@ -705,7 +705,12 @@ fn empty_b_value(field_value: &str) -> String {
         }
         // Tag start iff the previous non-WSP/non-CRLF char is ';' or the value start.
         let mut j = i;
-        while j > 0 && (bytes[j - 1] == b' ' || bytes[j - 1] == b'\t' || bytes[j - 1] == b'\r' || bytes[j - 1] == b'\n') {
+        while j > 0
+            && (bytes[j - 1] == b' '
+                || bytes[j - 1] == b'\t'
+                || bytes[j - 1] == b'\r'
+                || bytes[j - 1] == b'\n')
+        {
             j -= 1;
         }
         if j != 0 && bytes[j - 1] != b';' {
@@ -715,7 +720,9 @@ fn empty_b_value(field_value: &str) -> String {
         // Skip FWS between the tag name and '='. The `b` in `bh=` is not a
         // tag start (the next non-WSP char is 'h', not '=').
         let mut eq = i + 1;
-        while eq < bytes.len() && (bytes[eq] == b' ' || bytes[eq] == b'\t' || bytes[eq] == b'\r' || bytes[eq] == b'\n') {
+        while eq < bytes.len()
+            && (bytes[eq] == b' ' || bytes[eq] == b'\t' || bytes[eq] == b'\r' || bytes[eq] == b'\n')
+        {
             eq += 1;
         }
         if eq >= bytes.len() || bytes[eq] != b'=' {
@@ -914,7 +921,10 @@ mod tests {
         // SHA-256 as 47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=).
         let relaxed = canon_body_bytes(CanonBody::Relaxed, b"", None);
         assert_eq!(relaxed, b"");
-        assert_eq!(b64(&relaxed), "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=");
+        assert_eq!(
+            b64(&relaxed),
+            "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="
+        );
     }
 
     /// Empty-body / whitespace-only body variants (RFC 6376 §3.4.3, §3.4.4)
@@ -927,8 +937,14 @@ mod tests {
         assert_eq!(canon_body_bytes(CanonBody::Relaxed, b"", None), b"");
         // Whitespace-only lines collapse: relaxed drops trailing WSP per line
         // and then the trailing empty line, leaving nothing.
-        assert_eq!(canon_body_bytes(CanonBody::Relaxed, b"   \t  \r\n", None), b"");
-        assert_eq!(canon_body_bytes(CanonBody::Relaxed, b"\t\r\n \r\n", None), b"");
+        assert_eq!(
+            canon_body_bytes(CanonBody::Relaxed, b"   \t  \r\n", None),
+            b""
+        );
+        assert_eq!(
+            canon_body_bytes(CanonBody::Relaxed, b"\t\r\n \r\n", None),
+            b""
+        );
         // simple changes nothing but trailing empty lines: WSP is data.
         assert_eq!(
             canon_body_bytes(CanonBody::Simple, b"   \t  \r\n", None),
@@ -937,8 +953,14 @@ mod tests {
         // CRLF-only bodies.
         assert_eq!(canon_body_bytes(CanonBody::Simple, b"\r\n", None), b"\r\n");
         assert_eq!(canon_body_bytes(CanonBody::Relaxed, b"\r\n", None), b"");
-        assert_eq!(canon_body_bytes(CanonBody::Simple, b"\r\n\r\n\r\n", None), b"\r\n");
-        assert_eq!(canon_body_bytes(CanonBody::Relaxed, b"\r\n\r\n\r\n", None), b"");
+        assert_eq!(
+            canon_body_bytes(CanonBody::Simple, b"\r\n\r\n\r\n", None),
+            b"\r\n"
+        );
+        assert_eq!(
+            canon_body_bytes(CanonBody::Relaxed, b"\r\n\r\n\r\n", None),
+            b""
+        );
         // Multiple trailing empty lines are stripped by both algorithms.
         assert_eq!(
             canon_body_bytes(CanonBody::Simple, b"Hi\r\n\r\n\r\n", None),
@@ -954,22 +976,58 @@ mod tests {
     #[test]
     fn canon_body_trailing_crlf() {
         // Simple: ensure exactly one trailing CRLF
-        assert_eq!(canon_body_bytes(CanonBody::Simple, b"NoCRLF", None), b"NoCRLF\r\n");
-        assert_eq!(canon_body_bytes(CanonBody::Simple, b"HasCRLF\r\n", None), b"HasCRLF\r\n");
-        assert_eq!(canon_body_bytes(CanonBody::Simple, b"Multiple\r\n\r\n", None), b"Multiple\r\n");
-        
+        assert_eq!(
+            canon_body_bytes(CanonBody::Simple, b"NoCRLF", None),
+            b"NoCRLF\r\n"
+        );
+        assert_eq!(
+            canon_body_bytes(CanonBody::Simple, b"HasCRLF\r\n", None),
+            b"HasCRLF\r\n"
+        );
+        assert_eq!(
+            canon_body_bytes(CanonBody::Simple, b"Multiple\r\n\r\n", None),
+            b"Multiple\r\n"
+        );
+
         // Relaxed: exactly one trailing CRLF after WSP compression
-        assert_eq!(canon_body_bytes(CanonBody::Relaxed, b"NoCRLF", None), b"NoCRLF\r\n");
-        assert_eq!(canon_body_bytes(CanonBody::Relaxed, b"HasCRLF\r\n", None), b"HasCRLF\r\n");
-        assert_eq!(canon_body_bytes(CanonBody::Relaxed, b"Multiple\r\n\r\n", None), b"Multiple\r\n");
-        
+        assert_eq!(
+            canon_body_bytes(CanonBody::Relaxed, b"NoCRLF", None),
+            b"NoCRLF\r\n"
+        );
+        assert_eq!(
+            canon_body_bytes(CanonBody::Relaxed, b"HasCRLF\r\n", None),
+            b"HasCRLF\r\n"
+        );
+        assert_eq!(
+            canon_body_bytes(CanonBody::Relaxed, b"Multiple\r\n\r\n", None),
+            b"Multiple\r\n"
+        );
+
         // Mixed line endings normalization
-        assert_eq!(canon_body_bytes(CanonBody::Simple, b"LF\nonly", None), b"LF\r\nonly\r\n");
-        assert_eq!(canon_body_bytes(CanonBody::Simple, b"CR\ronly", None), b"CR\r\nonly\r\n");
-        assert_eq!(canon_body_bytes(CanonBody::Simple, b"CRLF\r\nonly", None), b"CRLF\r\nonly\r\n");
-        assert_eq!(canon_body_bytes(CanonBody::Relaxed, b"LF\nonly", None), b"LF\r\nonly\r\n");
-        assert_eq!(canon_body_bytes(CanonBody::Relaxed, b"CR\ronly", None), b"CR\r\nonly\r\n");
-        assert_eq!(canon_body_bytes(CanonBody::Relaxed, b"CRLF\r\nonly", None), b"CRLF\r\nonly\r\n");
+        assert_eq!(
+            canon_body_bytes(CanonBody::Simple, b"LF\nonly", None),
+            b"LF\r\nonly\r\n"
+        );
+        assert_eq!(
+            canon_body_bytes(CanonBody::Simple, b"CR\ronly", None),
+            b"CR\r\nonly\r\n"
+        );
+        assert_eq!(
+            canon_body_bytes(CanonBody::Simple, b"CRLF\r\nonly", None),
+            b"CRLF\r\nonly\r\n"
+        );
+        assert_eq!(
+            canon_body_bytes(CanonBody::Relaxed, b"LF\nonly", None),
+            b"LF\r\nonly\r\n"
+        );
+        assert_eq!(
+            canon_body_bytes(CanonBody::Relaxed, b"CR\ronly", None),
+            b"CR\r\nonly\r\n"
+        );
+        assert_eq!(
+            canon_body_bytes(CanonBody::Relaxed, b"CRLF\r\nonly", None),
+            b"CRLF\r\nonly\r\n"
+        );
     }
 
     /// `l=` (body length count) — RFC 6376 §3.5, §3.4.5, §3.7: the count is
@@ -991,8 +1049,14 @@ mod tests {
             b"Hello World\r\n"
         );
         // Mid-line truncation of the canonicalized body.
-        assert_eq!(canon_body_bytes(CanonBody::Simple, body, Some(11)), b"Hello World");
-        assert_eq!(canon_body_bytes(CanonBody::Relaxed, body, Some(11)), b"Hello World");
+        assert_eq!(
+            canon_body_bytes(CanonBody::Simple, body, Some(11)),
+            b"Hello World"
+        );
+        assert_eq!(
+            canon_body_bytes(CanonBody::Relaxed, body, Some(11)),
+            b"Hello World"
+        );
         // l= larger than the body -> no effect.
         assert_eq!(
             canon_body_bytes(CanonBody::Simple, body, Some(100)),
@@ -1002,10 +1066,17 @@ mod tests {
             canon_body_bytes(CanonBody::Relaxed, body, Some(100)),
             b"Hello World\r\n"
         );
-        // l= with a multi-line body.
+        // l= with a multi-line body: "Line1\r\nLi" is only 9 octets, so l=10
+        // reaches the first character of the second line.
         let multi = b"Line1\r\nLine2\r\nLine3\r\n";
-        assert_eq!(canon_body_bytes(CanonBody::Simple, multi, Some(10)), b"Line1\r\nLi");
-        assert_eq!(canon_body_bytes(CanonBody::Relaxed, multi, Some(10)), b"Line1\r\nLi");
+        assert_eq!(
+            canon_body_bytes(CanonBody::Simple, multi, Some(10)),
+            b"Line1\r\nLin"
+        );
+        assert_eq!(
+            canon_body_bytes(CanonBody::Relaxed, multi, Some(10)),
+            b"Line1\r\nLin"
+        );
     }
 
     /// Ordering proof: at the same `l=` the two body algorithms yield
@@ -1029,12 +1100,12 @@ mod tests {
     #[test]
     fn canon_header_body_combinations() {
         let body = b"  Hello \t World  \r\n\r\n";
-        
+
         // relaxed/simple
         let h = canon_body_bytes(CanonBody::Simple, body, None);
         let h_relaxed = canon_body_bytes(CanonBody::Relaxed, body, None);
         assert_ne!(h, h_relaxed);
-        
+
         // Verify simple preserves internal WSP
         assert!(h.windows(2).any(|w| w == b"  "));
         // Verify relaxed compresses WSP
@@ -1106,6 +1177,140 @@ mod tests {
         );
         assert_eq!(out.result, DkimResult::TempError);
     }
+
+    /// `t=` / `x=` semantics: `x=` is the explicit expiry (RFC 6376 §3.5);
+    /// without it, KIWI's documented 14-day freshness policy applies
+    /// (contract §4). Expiry runs before the body hash and before any DNS.
+    #[test]
+    fn timestamp_age_policy_and_expiry() {
+        use base64::Engine;
+        let empty_hash = base64::engine::general_purpose::STANDARD.encode(sha256(b"\r\n"));
+        let dns = MockResolver::new().with_temp_fail("sel._domainkey.example.com");
+        let run = |v: &str| {
+            verify(
+                &dns,
+                &DkimInput {
+                    signature_header: format!("DKIM-Signature: {v}"),
+                    headers: vec![("From".to_string(), "a@b.c".to_string())],
+                    body: vec![],
+                    now_unix: NOW,
+                },
+            )
+        };
+
+        // t= older than MAX_SIG_AGE_SECS -> fail, no DNS needed.
+        let old_t = NOW - MAX_SIG_AGE_SECS - 1;
+        let out = run(&format!(
+            "v=1; a=rsa-sha256; d=example.com; s=sel; h=from; t={old_t}; \
+             bh={empty_hash}; b=AAECAw=="
+        ));
+        assert_eq!(out.result, DkimResult::Fail);
+        assert!(out.explanation.contains("too old"), "{}", out.explanation);
+
+        // t= fresh -> age gate cleared; the next failure is the (injected)
+        // DNS error, which proves the check passed without touching the network.
+        let fresh_t = NOW - 60;
+        let out2 = run(&format!(
+            "v=1; a=rsa-sha256; d=example.com; s=sel; h=from; t={fresh_t}; \
+             bh={empty_hash}; b=AAECAw=="
+        ));
+        assert_eq!(out2.result, DkimResult::TempError, "{}", out2.explanation);
+
+        // x= in the future short-circuits the age policy entirely.
+        let out3 = run(&format!(
+            "v=1; a=rsa-sha256; d=example.com; s=sel; h=from; t={old_t}; x={}; \
+             bh={empty_hash}; b=AAECAw==",
+            NOW + 3600
+        ));
+        assert_eq!(out3.result, DkimResult::TempError, "{}", out3.explanation);
+
+        // x= in the past -> explicit expiry, decided before DNS.
+        let out4 = run(&format!(
+            "v=1; a=rsa-sha256; d=example.com; s=sel; h=from; t={}; x={}; \
+             bh={empty_hash}; b=AAECAw==",
+            NOW - 100,
+            NOW - 1
+        ));
+        assert_eq!(out4.result, DkimResult::Fail);
+        assert!(out4.explanation.contains("expired"), "{}", out4.explanation);
+    }
+
+    /// RFC 6376 §3.5: "The value of the `x=` tag MUST be greater than the
+    /// value of the `t=` tag if both are present."
+    #[test]
+    fn x_must_be_greater_than_t() {
+        assert!(
+            parse_signature(
+                "v=1; a=rsa-sha256; d=example.com; s=sel; h=from; t=1000; x=1000; \
+                 bh=eA==; b=AQ=="
+            )
+            .is_err()
+        );
+        assert!(
+            parse_signature(
+                "v=1; a=rsa-sha256; d=example.com; s=sel; h=from; t=2000; x=1000; \
+                 bh=eA==; b=AQ=="
+            )
+            .is_err()
+        );
+        // x= after t= parses.
+        assert!(
+            parse_signature(
+                "v=1; a=rsa-sha256; d=example.com; s=sel; h=from; t=1000; x=2000; \
+                 bh=eA==; b=AQ=="
+            )
+            .is_ok()
+        );
+    }
+
+    /// RFC 6376 §3.4.5: "A body length count of zero means that the body is
+    /// completely unsigned" — `l=0` hashes the empty canonicalized input even
+    /// when the transmitted body is not empty.
+    #[test]
+    fn l_zero_leaves_body_unsigned() {
+        use base64::Engine;
+        let bh = base64::engine::general_purpose::STANDARD.encode(sha256(b""));
+        let v = format!(
+            "v=1; a=rsa-sha256; c=relaxed/relaxed; d=example.com; s=sel; h=from; \
+             l=0; bh={bh}; b=AAECAw=="
+        );
+        let dns = MockResolver::new().with_temp_fail("sel._domainkey.example.com");
+        let out = verify(
+            &dns,
+            &DkimInput {
+                signature_header: format!("DKIM-Signature: {v}"),
+                headers: vec![("From".to_string(), "a@b.c".to_string())],
+                body: b"a body that is definitely longer than zero\r\n".to_vec(),
+                now_unix: NOW,
+            },
+        );
+        // Body hash matched (else "body hash mismatch"); the failure is DNS.
+        assert_eq!(out.result, DkimResult::TempError, "{}", out.explanation);
+    }
+
+    /// An `l=` longer than the canonicalized body is treated as no
+    /// truncation, so a signature made over the whole body still verifies.
+    #[test]
+    fn l_longer_than_body_is_no_truncation() {
+        use base64::Engine;
+        let body = b"Hello world\r\n";
+        let bh = base64::engine::general_purpose::STANDARD.encode(sha256(body));
+        let v = format!(
+            "v=1; a=rsa-sha256; c=simple/simple; d=example.com; s=sel; h=from; \
+             l=9999; bh={bh}; b=AAECAw=="
+        );
+        let dns = MockResolver::new().with_temp_fail("sel._domainkey.example.com");
+        let out = verify(
+            &dns,
+            &DkimInput {
+                signature_header: format!("DKIM-Signature: {v}"),
+                headers: vec![("From".to_string(), "a@b.c".to_string())],
+                body: body.to_vec(),
+                now_unix: NOW,
+            },
+        );
+        assert_eq!(out.result, DkimResult::TempError, "{}", out.explanation);
+    }
 }
 
 #[cfg(test)]
@@ -1136,12 +1341,15 @@ mod roundtrip_tests {
             ("From".to_string(), "alice@example.com".to_string()),
             ("Subject".to_string(), "hello".to_string()),
         ];
+        // The field is transmitted as "DKIM-Signature: <tags>"; simple
+        // canonicalization must not change that space (§3.4.1), so sign over
+        // exactly the value `verify` will re-canonicalize from `signature_header`.
         let signed = header_hash_input(
             CanonHeader::Simple,
             &hdrs,
             &["from".to_string(), "subject".to_string()],
             "DKIM-Signature",
-            &v_nosig,
+            &format!(" {v_nosig}"),
         );
         use rsa::pkcs1v15::SigningKey;
         use rsa::signature::RandomizedSigner;
@@ -1197,12 +1405,14 @@ mod roundtrip_tests {
             ("From".to_string(), "alice@example.com".to_string()),
             ("Subject".to_string(), "hello".to_string()),
         ];
+        // Same transmitted-form note as the RSA test (relaxed happens to trim
+        // the leading WSP, but sign the value `verify` will canonicalize).
         let signed = header_hash_input(
             CanonHeader::Relaxed,
             &hdrs,
             &["from".to_string(), "subject".to_string()],
             "DKIM-Signature",
-            &v_nosig,
+            &format!(" {v_nosig}"),
         );
         let sig = signing.sign(&signed);
         let v = format!(
@@ -1253,198 +1463,203 @@ mod roundtrip_tests {
     }
     impl rand_core::CryptoRng for SimpleRng {}
 
-///
-/// Header canonicalization + hash-step-2 composition (RFC 6376 §3.4.1,
-/// §3.4.2, §3.4.5, §3.5, §3.7, §5.4.2).
-#[cfg(test)]
-mod header_canon_tests {
-    use crate::dkim::{CanonHeader, empty_b_value, header_hash_input, push_canon_header};
+    ///
+    /// Header canonicalization + hash-step-2 composition (RFC 6376 §3.4.1,
+    /// §3.4.2, §3.4.5, §3.5, §3.7, §5.4.2).
+    #[cfg(test)]
+    mod header_canon_tests {
+        use crate::dkim::{CanonHeader, empty_b_value, header_hash_input, push_canon_header};
 
-    /// RFC 6376 §3.4.5 Example 1: relaxed canonicalization of
-    /// `A: <SP> X`, `B <SP> : <SP> Y <HTAB><CRLF><HTAB> Z <SP><SP>`
-    /// is `a:X` and `b:Y <SP> Z`.
-    #[test]
-    fn rfc_6376_example1_relaxed_headers() {
-        let mut out = Vec::new();
-        push_canon_header(&mut out, CanonHeader::Relaxed, "A", " X ", true);
-        push_canon_header(&mut out, CanonHeader::Relaxed, "B ", " Y \t\r\n\t Z  ", true);
-        assert_eq!(out, b"a:X\r\nb:Y Z\r\n");
-    }
+        /// RFC 6376 §3.4.5 Example 1: relaxed canonicalization of
+        /// `A: <SP> X`, `B <SP> : <SP> Y <HTAB><CRLF><HTAB> Z <SP><SP>`
+        /// is `a:X` and `b:Y <SP> Z`.
+        #[test]
+        fn rfc_6376_example1_relaxed_headers() {
+            let mut out = Vec::new();
+            push_canon_header(&mut out, CanonHeader::Relaxed, "A", " X ", true);
+            push_canon_header(
+                &mut out,
+                CanonHeader::Relaxed,
+                "B ",
+                " Y \t\r\n\t Z  ",
+                true,
+            );
+            assert_eq!(out, b"a:X\r\nb:Y Z\r\n");
+        }
 
-    /// RFC 6376 §3.4.5 Example 2: simple canonicalization leaves the field
-    /// name case, the WSP before the colon and the folding untouched.
-    #[test]
-    fn rfc_6376_example2_simple_headers() {
-        let mut out = Vec::new();
-        push_canon_header(&mut out, CanonHeader::Simple, "A", " X ", true);
-        push_canon_header(&mut out, CanonHeader::Simple, "B ", " Y \t\r\n\t Z  ", true);
-        assert_eq!(out, b"A: X \r\nB : Y \t\r\n\t Z  \r\n");
-    }
+        /// RFC 6376 §3.4.5 Example 2: simple canonicalization leaves the field
+        /// name case, the WSP before the colon and the folding untouched.
+        #[test]
+        fn rfc_6376_example2_simple_headers() {
+            let mut out = Vec::new();
+            push_canon_header(&mut out, CanonHeader::Simple, "A", " X ", true);
+            push_canon_header(&mut out, CanonHeader::Simple, "B ", " Y \t\r\n\t Z  ", true);
+            assert_eq!(out, b"A: X \r\nB : Y \t\r\n\t Z  \r\n");
+        }
 
-    /// A trailing CRLF in the stored value is not duplicated, and the field
-    /// terminator can be suppressed (§3.7 step 2 hashes the DKIM-Signature
-    /// field *without* a trailing CRLF).
-    #[test]
-    fn trailing_crlf_is_normalized_and_optional() {
-        let mut out = Vec::new();
-        push_canon_header(&mut out, CanonHeader::Simple, "X", "v\r\n\r\n", true);
-        assert_eq!(out, b"X:v\r\n");
-        let mut out = Vec::new();
-        push_canon_header(&mut out, CanonHeader::Relaxed, "X", "  v  ", false);
-        assert_eq!(out, b"x:v");
-    }
+        /// A trailing CRLF in the stored value is not duplicated, and the field
+        /// terminator can be suppressed (§3.7 step 2 hashes the DKIM-Signature
+        /// field *without* a trailing CRLF).
+        #[test]
+        fn trailing_crlf_is_normalized_and_optional() {
+            let mut out = Vec::new();
+            push_canon_header(&mut out, CanonHeader::Simple, "X", "v\r\n\r\n", true);
+            assert_eq!(out, b"X:v\r\n");
+            let mut out = Vec::new();
+            push_canon_header(&mut out, CanonHeader::Relaxed, "X", "  v  ", false);
+            assert_eq!(out, b"x:v");
+        }
 
-    /// §3.7 step 2: the DKIM-Signature field under verification is hashed
-    /// **after** the `h=` fields and **without** a trailing CRLF.
-    #[test]
-    fn sig_field_is_appended_last_without_crlf() {
-        let headers = vec![
-            ("From".to_string(), "alice@example.com".to_string()),
-            ("Subject".to_string(), "hello".to_string()),
-        ];
-        let out = header_hash_input(
-            CanonHeader::Relaxed,
-            &headers,
-            &["from".to_string(), "subject".to_string()],
-            "DKIM-Signature",
-            "v=1; d=example.com; b=AAECAw==",
-        );
-        assert_eq!(
-            out,
-            b"from:alice@example.com\r\nsubject:hello\r\ndkim-signature:v=1; d=example.com; b="
-        );
-        assert!(!out.ends_with(b"\r\n"));
-    }
+        /// §3.7 step 2: the DKIM-Signature field under verification is hashed
+        /// **after** the `h=` fields and **without** a trailing CRLF.
+        #[test]
+        fn sig_field_is_appended_last_without_crlf() {
+            let headers = vec![
+                ("From".to_string(), "alice@example.com".to_string()),
+                ("Subject".to_string(), "hello".to_string()),
+            ];
+            let out = header_hash_input(
+                CanonHeader::Relaxed,
+                &headers,
+                &["from".to_string(), "subject".to_string()],
+                "DKIM-Signature",
+                "v=1; d=example.com; b=AAECAw==",
+            );
+            assert_eq!(
+                out,
+                b"from:alice@example.com\r\nsubject:hello\r\ndkim-signature:v=1; d=example.com; b="
+            );
+            assert!(!out.ends_with(b"\r\n"));
+        }
 
+        /// §3.7 step 1: fields are hashed in `h=` order, not message order.
+        #[test]
+        fn h_order_wins_over_message_order() {
+            let headers = vec![
+                ("From".to_string(), "alice@example.com".to_string()),
+                ("Subject".to_string(), "hello".to_string()),
+            ];
+            let out = header_hash_input(
+                CanonHeader::Relaxed,
+                &headers,
+                &["subject".to_string(), "from".to_string()],
+                "DKIM-Signature",
+                "v=1; b=",
+            );
+            assert_eq!(
+                out,
+                b"subject:hello\r\nfrom:alice@example.com\r\ndkim-signature:v=1; b="
+            );
+        }
 
-    /// §3.7 step 1: fields are hashed in `h=` order, not message order.
-    #[test]
-    fn h_order_wins_over_message_order() {
-        let headers = vec![
-            ("From".to_string(), "alice@example.com".to_string()),
-            ("Subject".to_string(), "hello".to_string()),
-        ];
-        let out = header_hash_input(
-            CanonHeader::Relaxed,
-            &headers,
-            &["subject".to_string(), "from".to_string()],
-            "DKIM-Signature",
-            "v=1; b=",
-        );
-        assert_eq!(
-            out,
-            b"subject:hello\r\nfrom:alice@example.com\r\ndkim-signature:v=1; b="
-        );
-    }
+        /// §3.5: names in `h=` that do not exist in the message contribute
+        /// nothing (the null input) — they are not an error.
+        #[test]
+        fn missing_h_entries_contribute_nothing() {
+            let headers = vec![("From".to_string(), "alice@example.com".to_string())];
+            let out = header_hash_input(
+                CanonHeader::Relaxed,
+                &headers,
+                &[
+                    "x-absent".to_string(),
+                    "from".to_string(),
+                    "x-also-absent".to_string(),
+                ],
+                "DKIM-Signature",
+                "v=1; b=",
+            );
+            assert_eq!(out, b"from:alice@example.com\r\ndkim-signature:v=1; b=");
+        }
 
-    /// §3.5: names in `h=` that do not exist in the message contribute
-    /// nothing (the null input) — they are not an error.
-    #[test]
-    fn missing_h_entries_contribute_nothing() {
-        let headers = vec![("From".to_string(), "alice@example.com".to_string())];
-        let out = header_hash_input(
-            CanonHeader::Relaxed,
-            &headers,
-            &[
-                "x-absent".to_string(),
-                "from".to_string(),
-                "x-also-absent".to_string(),
-            ],
-            "DKIM-Signature",
-            "v=1; b=",
-        );
-        assert_eq!(out, b"from:alice@example.com\r\ndkim-signature:v=1; b=");
-    }
+        /// §5.4.2: repeated `h=` names select the physically last unused
+        /// instances, bottom-up — the RFC's three-`Received` example signs
+        /// `<C>` then `<B>`.
+        #[test]
+        fn repeated_h_names_take_last_unused_bottom_up() {
+            let headers = vec![
+                ("Received".to_string(), "A".to_string()),
+                ("Received".to_string(), "B".to_string()),
+                ("Received".to_string(), "C".to_string()),
+            ];
+            let out = header_hash_input(
+                CanonHeader::Relaxed,
+                &headers,
+                &["received".to_string(), "received".to_string()],
+                "DKIM-Signature",
+                "v=1; b=",
+            );
+            assert_eq!(out, b"received:C\r\nreceived:B\r\ndkim-signature:v=1; b=");
+        }
 
-    /// §5.4.2: repeated `h=` names select the physically last unused
-    /// instances, bottom-up — the RFC's three-`Received` example signs
-    /// `<C>` then `<B>`.
-    #[test]
-    fn repeated_h_names_take_last_unused_bottom_up() {
-        let headers = vec![
-            ("Received".to_string(), "A".to_string()),
-            ("Received".to_string(), "B".to_string()),
-            ("Received".to_string(), "C".to_string()),
-        ];
-        let out = header_hash_input(
-            CanonHeader::Relaxed,
-            &headers,
-            &["received".to_string(), "received".to_string()],
-            "DKIM-Signature",
-            "v=1; b=",
-        );
-        assert_eq!(out, b"received:C\r\nreceived:B\r\ndkim-signature:v=1; b=");
-    }
+        /// More `h=` occurrences than instances: the extra ones are the null
+        /// input (this is what lets a signer detect added fields).
+        #[test]
+        fn more_h_occurrences_than_instances() {
+            let headers = vec![("Received".to_string(), "A".to_string())];
+            let out = header_hash_input(
+                CanonHeader::Relaxed,
+                &headers,
+                &["received".to_string(), "received".to_string()],
+                "DKIM-Signature",
+                "v=1; b=",
+            );
+            assert_eq!(out, b"received:A\r\ndkim-signature:v=1; b=");
+        }
 
-    /// More `h=` occurrences than instances: the extra ones are the null
-    /// input (this is what lets a signer detect added fields).
-    #[test]
-    fn more_h_occurrences_than_instances() {
-        let headers = vec![("Received".to_string(), "A".to_string())];
-        let out = header_hash_input(
-            CanonHeader::Relaxed,
-            &headers,
-            &["received".to_string(), "received".to_string()],
-            "DKIM-Signature",
-            "v=1; b=",
-        );
-        assert_eq!(out, b"received:A\r\ndkim-signature:v=1; b=");
-    }
-
-    /// §3.5: `h=dkim-signature` refers to *other* DKIM-Signature fields —
-    /// never the one under verification, which §3.7 appends separately.
-    #[test]
-    fn h_dkim_signature_selects_other_signatures() {
-        let headers = vec![
-            (
-                "DKIM-Signature".to_string(),
-                "v=1; d=example.com; b=ORIGINAL".to_string(),
-            ),
-            ("From".to_string(), "alice@example.com".to_string()),
-            (
-                "DKIM-Signature".to_string(),
-                "v=1; d=example.com; b=SELFTEST".to_string(),
-            ),
-        ];
-        let out = header_hash_input(
-            CanonHeader::Relaxed,
-            &headers,
-            &["dkim-signature".to_string(), "from".to_string()],
-            "DKIM-Signature",
-            "v=1; d=example.com; b=SELFTEST",
-        );
-        assert_eq!(
-            out,
-            b"dkim-signature:v=1; d=example.com; b=ORIGINAL\r\nfrom:alice@example.com\r\n\
+        /// §3.5: `h=dkim-signature` refers to *other* DKIM-Signature fields —
+        /// never the one under verification, which §3.7 appends separately.
+        #[test]
+        fn h_dkim_signature_selects_other_signatures() {
+            let headers = vec![
+                (
+                    "DKIM-Signature".to_string(),
+                    "v=1; d=example.com; b=ORIGINAL".to_string(),
+                ),
+                ("From".to_string(), "alice@example.com".to_string()),
+                (
+                    "DKIM-Signature".to_string(),
+                    "v=1; d=example.com; b=SELFTEST".to_string(),
+                ),
+            ];
+            let out = header_hash_input(
+                CanonHeader::Relaxed,
+                &headers,
+                &["dkim-signature".to_string(), "from".to_string()],
+                "DKIM-Signature",
+                "v=1; d=example.com; b=SELFTEST",
+            );
+            assert_eq!(
+                out,
+                b"dkim-signature:v=1; d=example.com; b=ORIGINAL\r\nfrom:alice@example.com\r\n\
               dkim-signature:v=1; d=example.com; b="
-        );
-    }
+            );
+        }
 
-    /// §3.7: the `b=` value (with its surrounding whitespace) is the only
-    /// tag value removed, and the tag structure is preserved.
-    #[test]
-    fn b_value_emptying() {
-        assert_eq!(
-            empty_b_value("v=1; a=rsa-sha256; d=example.com; b=AAECAw=="),
-            "v=1; a=rsa-sha256; d=example.com; b="
-        );
-        assert_eq!(empty_b_value("v=1; b=AAECAw==; x=2000"), "v=1; b=; x=2000");
-        // `bh=` is not the signature tag.
-        assert_eq!(
-            empty_b_value("v=1; bh=AAECAw==; b=SIG"),
-            "v=1; bh=AAECAw==; b="
-        );
-        // FWS around the `=` (sig-b-tag = %x62 [FWS] "=" [FWS] data).
-        assert_eq!(empty_b_value("v=1; b = AAECAw=="), "v=1; b =");
-        // The `b=` value folded across lines goes away with its WSP.
-        assert_eq!(
-            empty_b_value("v=1;\r\n b=AAAA\r\n BBBB;\r\n d=example.com"),
-            "v=1;\r\n b=;\r\n d=example.com"
-        );
-        // No `b=` tag at all: unchanged (callers report it as a parse error).
-        assert_eq!(empty_b_value("v=1; d=example.com"), "v=1; d=example.com");
-        // A "b=" inside another tag's value is not a tag start.
-        assert_eq!(empty_b_value("v=1; d=b.com; b=SIG"), "v=1; d=b.com; b=");
+        /// §3.7: the `b=` value (with its surrounding whitespace) is the only
+        /// tag value removed, and the tag structure is preserved.
+        #[test]
+        fn b_value_emptying() {
+            assert_eq!(
+                empty_b_value("v=1; a=rsa-sha256; d=example.com; b=AAECAw=="),
+                "v=1; a=rsa-sha256; d=example.com; b="
+            );
+            assert_eq!(empty_b_value("v=1; b=AAECAw==; x=2000"), "v=1; b=; x=2000");
+            // `bh=` is not the signature tag.
+            assert_eq!(
+                empty_b_value("v=1; bh=AAECAw==; b=SIG"),
+                "v=1; bh=AAECAw==; b="
+            );
+            // FWS around the `=` (sig-b-tag = %x62 [FWS] "=" [FWS] data).
+            assert_eq!(empty_b_value("v=1; b = AAECAw=="), "v=1; b =");
+            // The `b=` value folded across lines goes away with its WSP.
+            assert_eq!(
+                empty_b_value("v=1;\r\n b=AAAA\r\n BBBB;\r\n d=example.com"),
+                "v=1;\r\n b=;\r\n d=example.com"
+            );
+            // No `b=` tag at all: unchanged (callers report it as a parse error).
+            assert_eq!(empty_b_value("v=1; d=example.com"), "v=1; d=example.com");
+            // A "b=" inside another tag's value is not a tag start.
+            assert_eq!(empty_b_value("v=1; d=b.com; b=SIG"), "v=1; d=b.com; b=");
+        }
     }
-}
 }

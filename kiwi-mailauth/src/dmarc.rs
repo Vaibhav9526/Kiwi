@@ -279,7 +279,6 @@ fn fetch_dmarc_at<R: DnsResolver>(
     Ok(Some(valid_records.into_iter().next().unwrap()))
 }
 
-
 /// Evaluate DMARC (RFC 7489 §6.6):
 ///
 /// 1. Policy discovery (§6.6.3): query `_dmarc.<from_domain>`. If no DMARC
@@ -542,14 +541,8 @@ mod tests {
     fn policy_discovery_queries_from_domain_then_org_domain() {
         // Record published on subdomain directly overrides the org record.
         let dns = MockResolver::new()
-            .with_txt(
-                "_dmarc.sub.example.com",
-                &["v=DMARC1; p=none"],
-            )
-            .with_txt(
-                "_dmarc.example.com",
-                &["v=DMARC1; p=reject"],
-            );
+            .with_txt("_dmarc.sub.example.com", &["v=DMARC1; p=none"])
+            .with_txt("_dmarc.example.com", &["v=DMARC1; p=reject"]);
         let mut i = base("sub.example.com");
         i.spf_pass = false; // unaligned -> policy applies
         let out = evaluate(&dns, &i);
@@ -557,10 +550,8 @@ mod tests {
         assert_eq!(out.policy_applied, DmarcPolicy::None);
 
         // Fallback to org domain when no record on subdomain:
-        let dns2 = MockResolver::new().with_txt(
-            "_dmarc.example.com",
-            &["v=DMARC1; p=reject; sp=quarantine"],
-        );
+        let dns2 = MockResolver::new()
+            .with_txt("_dmarc.example.com", &["v=DMARC1; p=reject; sp=quarantine"]);
         let out2 = evaluate(&dns2, &i);
         // Discovered at org domain for a subdomain -> sp=quarantine applied
         assert_eq!(out2.policy_applied, DmarcPolicy::Quarantine);
@@ -570,10 +561,8 @@ mod tests {
     /// subdomain.
     #[test]
     fn sp_ignored_on_subdomain_direct_record() {
-        let dns = MockResolver::new().with_txt(
-            "_dmarc.mail.example.com",
-            &["v=DMARC1; p=none; sp=reject"],
-        );
+        let dns = MockResolver::new()
+            .with_txt("_dmarc.mail.example.com", &["v=DMARC1; p=none; sp=reject"]);
         let mut i = base("mail.example.com");
         i.spf_pass = false;
         let out = evaluate(&dns, &i);
@@ -591,5 +580,68 @@ mod tests {
         );
         let out = evaluate(&dns, &base("example.com"));
         assert_eq!(out.result, DmarcVerdict::PermError);
+    }
+
+    /// RFC 7489 §6.3 `aspf=s`: strict SPF alignment needs an exact RFC5322.From
+    /// match; relaxed (the default) only needs the same Organizational Domain.
+    #[test]
+    fn strict_aspf_requires_exact_match() {
+        let dns =
+            MockResolver::new().with_txt("_dmarc.strict.example", &["v=DMARC1; p=reject; aspf=s"]);
+        // Subdomain SPF identity -> strict means no alignment.
+        let mut i = base("a.strict.example");
+        i.from_domain = DomainName::parse("a.strict.example").unwrap();
+        i.spf_domain = DomainName::parse("strict.example").unwrap();
+        i.org_override = Some(DomainName::parse("strict.example").unwrap());
+        let out = evaluate(&dns, &i);
+        assert!(!out.spf_aligned);
+        assert_eq!(out.result, DmarcVerdict::Fail);
+        assert_eq!(out.policy_applied, DmarcPolicy::Reject);
+
+        // Exact identity -> strict alignment holds and DMARC passes.
+        let mut e = base("strict.example");
+        e.from_domain = DomainName::parse("strict.example").unwrap();
+        e.spf_domain = DomainName::parse("strict.example").unwrap();
+        e.org_override = Some(DomainName::parse("strict.example").unwrap());
+        let out2 = evaluate(&dns, &e);
+        assert!(out2.spf_aligned);
+        assert_eq!(out2.result, DmarcVerdict::Pass);
+    }
+
+    /// RFC 7489 §6.3 `adkim`: relaxed (default) permits an organizational-
+    /// domain match; strict requires an exact match.
+    #[test]
+    fn adkim_relaxed_permits_subdomain_strict_does_not() {
+        let mut i = base("mail.example.com");
+        i.spf_pass = false; // isolate DKIM alignment
+        i.dkim_pass = true;
+        i.dkim_domain = Some(DomainName::parse("example.com").unwrap());
+
+        let dns_relaxed =
+            MockResolver::new().with_txt("_dmarc.example.com", &["v=DMARC1; p=reject; adkim=r"]);
+        let out = evaluate(&dns_relaxed, &i);
+        assert!(out.dkim_aligned);
+        assert_eq!(out.result, DmarcVerdict::Pass);
+
+        let dns_strict =
+            MockResolver::new().with_txt("_dmarc.example.com", &["v=DMARC1; p=reject; adkim=s"]);
+        let out2 = evaluate(&dns_strict, &i);
+        assert!(!out2.dkim_aligned);
+        assert_eq!(out2.result, DmarcVerdict::Fail);
+        assert_eq!(out2.policy_applied, DmarcPolicy::Reject);
+    }
+
+    /// Alignment requires BOTH an authenticated pass and an identifier match:
+    /// a passing SPF whose domain is unrelated never aligns.
+    #[test]
+    fn unaligned_pass_never_aligns() {
+        let dns = MockResolver::new().with_txt("_dmarc.example.com", &["v=DMARC1; p=quarantine"]);
+        let mut i = base("example.com");
+        i.spf_domain = DomainName::parse("evil.example").unwrap();
+        let out = evaluate(&dns, &i);
+        assert!(i.spf_pass, "SPF itself still passed");
+        assert!(!out.spf_aligned, "but it is unaligned with From");
+        assert_eq!(out.result, DmarcVerdict::Fail);
+        assert_eq!(out.policy_applied, DmarcPolicy::Quarantine);
     }
 }
