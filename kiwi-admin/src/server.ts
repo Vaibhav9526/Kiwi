@@ -275,6 +275,15 @@ async function route(
       send(res, 200, { items: await container.orgs.listDevices(actor, orgId, numParam(url, "limit", 50)) });
       return;
     }
+    // GET /audit/export — §13.6 org-scoped artifact (T-259): only the path
+    // org's rows, `scope_state` trailer (never a whole-chain claim), signed
+    // like the global export. `audit.export` on the path org — i.e. the
+    // caller's own org only; the global chain is system-admin's surface.
+    if (rest[2] === "audit" && rest[3] === "export" && rest.length === 4 && method === "GET") {
+      const exported = await container.audit.exportOrg(actor, orgId, { now, key: exportKey });
+      sendNdjson(res, 200, exported.ndjson);
+      return;
+    }
     // PUT /users/:user/role
     if (rest[2] === "users" && typeof rest[3] === "string" && rest[4] === "role" && rest.length === 5 && method === "PUT") {
       const body = (await readJson(req)) as Record<string, unknown>;

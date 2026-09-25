@@ -13,6 +13,7 @@ import {
   buildAuditExport,
   auditExportKeyId,
   AUDIT_EXPORT_VERSION,
+  ORG_AUDIT_EXPORT_VERSION,
   type AuditExportChainState,
   type AuditExportHeader,
   type AuditExportSignature,
@@ -209,12 +210,17 @@ describe("buildAuditExport — chain state is reported, not assumed", () => {
 describe("AuditService.export — access control", () => {
   let container: ServiceContainer;
   let orgId: string;
+  // §13 (T-188/T-259): the GLOBAL export is the distinct platform role
+  // `system-admin`; org_admin keeps `audit.export` only org-scoped now.
+  const sysadmin: Actor = { subject: "export-admin@acme.test", roles: ["system-admin"], orgId: null };
   const admin: Actor = { subject: "export-admin@acme.test", roles: ["org_admin"], orgId: null };
   const secAdmin: Actor = { subject: "export-sec@acme.test", roles: ["security_admin"], orgId: null };
   const viewer: Actor = { subject: "export-view@acme.test", roles: ["viewer"], orgId: null };
 
   beforeAll(async () => {
     container = await createServiceContainer(makeTempDbPath());
+    // org_admin seeds the org — system-admin deliberately holds ONLY
+    // `audit.export` (minimal platform role), never `org.create`/`audit.read`.
     orgId = (await container.orgs.createOrg(admin, "export-acme.test", 900)).id;
   });
 
@@ -222,11 +228,13 @@ describe("AuditService.export — access control", () => {
     await container.close();
   });
 
-  it("lets org_admin export the whole chain, signed", async () => {
+  it("lets system-admin export the whole chain, signed", async () => {
     // Read the log BEFORE exporting: the export appends its own audit row, so
-    // a post-export read would be one row ahead of the snapshot.
+    // a post-export read would be one row ahead of the snapshot. (The
+    // org-agnostic read is the unbound org_admin's — system-admin has no
+    // audit.read by design.)
     const all = await container.audit.query(admin, { limit: 1000 });
-    const out = await container.audit.export({ ...admin, orgId }, { now: 1234, key: KEY });
+    const out = await container.audit.export(sysadmin, { now: 1234, key: KEY });
     expect(out.rows).toBeGreaterThan(0);
     expect(out.chainState.valid).toBe(true);
     expect(out.signature.signed).toBe(true);
@@ -237,15 +245,25 @@ describe("AuditService.export — access control", () => {
     expect(out.header.last_seq).toBe(all[all.length - 1]?.seq);
   });
 
-  it("refuses security_admin and viewer even though both hold audit.read", async () => {
+  it("refuses org_admin, security_admin and viewer — only system-admin may export globally", async () => {
     // The distinction this test exists for: audit.read is broad, audit.export
-    // is org_admin only.
-    for (const actor of [secAdmin, viewer]) {
+    // is narrower, and the GLOBAL export is narrower still — org_admin holds
+    // audit.export org-scoped but must NOT satisfy the global route (§13).
+    for (const actor of [admin, secAdmin, viewer]) {
       await expect(container.audit.export({ ...actor, orgId }, { now: 1, key: KEY })).rejects.toThrow(
         AuthorizationDeniedError,
       );
       await expect(container.audit.export(actor, { now: 1, key: KEY })).rejects.toThrow(AuthorizationDeniedError);
     }
+  });
+
+  it("audits a refused global export (ADM-T250-06)", async () => {
+    // §13.4: denial rows for export — read back via the platform audit.read.
+    const r = await apiAuditDenied(container, admin);
+    const denial = r.filter(
+      (row) => row.action === "audit.export" && row.outcome === "denied" && row.org_id === null,
+    );
+    expect(denial.length).toBeGreaterThan(0);
   });
 
   it("refuses a role-less actor", async () => {
@@ -258,7 +276,7 @@ describe("AuditService.export — access control", () => {
     // a trace. It is appended after the snapshot, so the artifact covers the
     // chain as it stood immediately before its own record.
     const before = await container.audit.verify(admin, { limit: 1000 });
-    const out = await container.audit.export({ ...admin, orgId }, { now: 99, key: KEY });
+    const out = await container.audit.export(sysadmin, { now: 99, key: KEY });
     expect(out.header.last_seq).toBe(before.checked);
     expect(out.rows).toBe(before.checked);
 
@@ -270,5 +288,97 @@ describe("AuditService.export — access control", () => {
     // The record names the key by fingerprint only.
     expect(last?.details).not.toContain(KEY);
     expect(last?.details).toContain(auditExportKeyId(KEY));
+  });
+});
+
+/** Trigger a denied global export, then return the log rows (platform read). */
+async function apiAuditDenied(container: ServiceContainer, reader: Actor) {
+  const denied: Actor = { subject: "denied-admin", roles: ["org_admin"], orgId: null };
+  await expect(container.audit.export(denied, { now: 1, key: KEY })).rejects.toThrow(AuthorizationDeniedError);
+  return container.audit.query(reader, { limit: 1000 });
+}
+
+describe("AuditService.exportOrg — org-scoped export (T-259/ADM-T250-07)", () => {
+  let container: ServiceContainer;
+  let orgA: string;
+  let orgB: string;
+  const bootstrap: Actor = { subject: "seed", roles: ["org_admin"], orgId: null };
+  const adminA: Actor = { subject: "admin-a@test", roles: ["org_admin"], orgId: "" };
+  const reader: Actor = { subject: "reader@test", roles: ["org_admin"], orgId: null };
+
+  beforeAll(async () => {
+    container = await createServiceContainer(makeTempDbPath());
+    orgA = (await container.orgs.createOrg(bootstrap, "exp-org-a.test", 900)).id;
+    orgB = (await container.orgs.createOrg(bootstrap, "exp-org-b.test", 901)).id;
+    adminA.orgId = orgA;
+    // Seed org-scoped rows in BOTH orgs so the slice is provably filtered.
+    await container.orgs.createUser({ ...bootstrap, orgId: orgA }, orgA, "a@exp-org-a.test", 1000);
+    await container.orgs.createUser({ ...bootstrap, orgId: orgB }, orgB, "b@exp-org-b.test", 1001);
+  });
+
+  afterAll(async () => {
+    await container.close();
+  });
+
+  it("returns only the path org's rows, signed, with an honest scope_state", async () => {
+    const out = await container.audit.exportOrg(adminA, orgA, { now: 555, key: KEY });
+    const lines = parseLines(out.ndjson);
+    const header = lines[0] as {
+      type: string; version: string; scope: string; org_id: string; exported_at: number; rows: number;
+    };
+    expect(header.type).toBe("header");
+    expect(header.version).toBe(ORG_AUDIT_EXPORT_VERSION);
+    expect(header.scope).toBe("org");
+    expect(header.org_id).toBe(orgA);
+    expect(header.exported_at).toBe(555);
+
+    // Every record line belongs to orgA — orgB's rows never appear.
+    const records = lines.slice(1, -2) as { org_id: string | null }[];
+    expect(records.length).toBeGreaterThan(0);
+    expect(records.every((r) => r.org_id === orgA)).toBe(true);
+    expect(records.some((r) => r.org_id === orgB)).toBe(false);
+
+    // The trailer is scope_state — it claims NO chain verdict, explicitly.
+    const scope = lines[lines.length - 2] as { type: string; org_id: string; chain_claim: string };
+    expect(scope.type).toBe("scope_state");
+    expect(scope.org_id).toBe(orgA);
+    expect(scope.chain_claim).toBe("none");
+    expect(JSON.stringify(lines)).not.toContain('"chain_state"');
+
+    // Signed over header + records + scope_state, like the global artifact.
+    const sig = lines[lines.length - 1] as { type: string; alg: string; signed: boolean; signature: string };
+    expect(sig.type).toBe("signature");
+    expect(sig.alg).toBe("hmac-sha256");
+    expect(sig.signature).toBe(hmac(signedBodyOf(out.ndjson)));
+    expect(out.ndjson).not.toContain(KEY);
+  });
+
+  it("records the export with org_id = the path org (§13.4)", async () => {
+    const out = await container.audit.exportOrg(adminA, orgA, { now: 556, key: KEY });
+    const all = await container.audit.query(reader, { limit: 1000 });
+    const last = all[all.length - 1];
+    expect(last?.action).toBe("audit.export");
+    expect(last?.outcome).toBe("allowed");
+    expect(last?.org_id).toBe(orgA); // never a null/global row (§13.4)
+    expect(last?.details).toContain('"scope":"org"');
+    // Snapshot-first: the artifact's last row precedes its own self-audit row.
+    expect(out.header.last_seq).not.toBeNull();
+    expect(last?.seq).toBeGreaterThan(out.header.last_seq as number);
+  });
+
+  it("denies org_admin a foreign org and audits the denial", async () => {
+    await expect(container.audit.exportOrg(adminA, orgB, { now: 1, key: KEY })).rejects.toThrow(
+      AuthorizationDeniedError,
+    );
+    const all = await container.audit.query(reader, { limit: 1000 });
+    const denial = all.filter((r) => r.action === "audit.export" && r.outcome === "denied" && r.org_id === orgB);
+    expect(denial.length).toBeGreaterThan(0);
+  });
+
+  it("denies the unbound system-admin on the org route (its surface is global)", async () => {
+    const sysadmin: Actor = { subject: "sys", roles: ["system-admin"], orgId: null };
+    await expect(container.audit.exportOrg(sysadmin, orgA, { now: 1, key: KEY })).rejects.toThrow(
+      AuthorizationDeniedError,
+    );
   });
 });

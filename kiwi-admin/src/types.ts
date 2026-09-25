@@ -1,8 +1,26 @@
 /** Shared KIWI admin types. Wire-shape names follow docs/contracts/admin-api.md (v1). */
 
-export type OrgRole = "org_admin" | "security_admin" | "viewer";
+export type OrgRole = "org_admin" | "security_admin" | "viewer" | "system-admin";
 
+/**
+ * Every role an actor's headers may claim. `system-admin` (admin-api.md §13)
+ * is a platform role: it exists so the global audit export can be gated on a
+ * distinct identity rather than the org-wide `audit.export` grant.
+ */
 export const ALL_ORG_ROLES: readonly OrgRole[] = [
+  "org_admin",
+  "security_admin",
+  "viewer",
+  "system-admin",
+] as const;
+
+/**
+ * Roles that may be granted into `user_org_roles` (the org-scoped role
+ * table's CHECK allows only these). `system-admin` is a platform identity,
+ * never an org membership — `grantRole` must reject it or the row write
+ * fails a constraint as a 500.
+ */
+export const GRANTABLE_ORG_ROLES: readonly OrgRole[] = [
   "org_admin",
   "security_admin",
   "viewer",

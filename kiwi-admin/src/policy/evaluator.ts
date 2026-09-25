@@ -33,13 +33,13 @@ export function evaluatePolicy(policy: PolicyDefinition, input: PolicyInput): Po
   const reasons: PolicyReason[] = [];
 
   if (!policy.enabled) {
-    return decide({ reasons: [{ code: REASON_CODES.NO_POLICY_ENABLED }], evaluatedPolicyId: policy.id });
+    return decide({ reasons: [{ code: REASON_CODES.NO_POLICY_ENABLED }], policyId: policy.id });
   }
 
   const recipientDomain = emailDomain(input.recipient);
   if (recipientDomain === null || !recipientDomain.includes(".")) {
     reasons.push({ code: REASON_CODES.RECIPIENT_UNPARSEABLE, detail: input.recipient });
-    return decide({ reasons, evaluatedPolicyId: policy.id });
+    return decide({ reasons, policyId: policy.id });
   }
 
   const normalizedRecipient = normalizeDomain(recipientDomain);
@@ -49,7 +49,7 @@ export function evaluatePolicy(policy: PolicyDefinition, input: PolicyInput): Po
   );
   if (blocked) {
     reasons.push({ code: REASON_CODES.RECIPIENT_DOMAIN_BLOCKED, detail: normalizedRecipient });
-    return decide({ reasons, evaluatedPolicyId: policy.id });
+    return decide({ reasons, policyId: policy.id });
   }
 
   const allowed = policy.domainRules.find(
@@ -59,7 +59,7 @@ export function evaluatePolicy(policy: PolicyDefinition, input: PolicyInput): Po
   if (input.direction === "outbound") {
     if (!allowed && policy.externalRecipients === "block") {
       reasons.push({ code: REASON_CODES.RECIPIENT_DOMAIN_BLOCKED, detail: `${normalizedRecipient} (external-recipient=block)` });
-      return decide({ reasons, evaluatedPolicyId: policy.id });
+      return decide({ reasons, policyId: policy.id });
     }
     if (!allowed && policy.externalRecipients === "warn") {
       reasons.push({ code: REASON_CODES.EXTERNAL_RECIPIENT, detail: normalizedRecipient });
@@ -84,5 +84,5 @@ export function evaluatePolicy(policy: PolicyDefinition, input: PolicyInput): Po
     reasons.push({ code: REASON_CODES.RECIPIENT_DOMAIN_ALLOWED, detail: normalizedRecipient });
   }
 
-  return decide({ reasons, evaluatedPolicyId: policy.id });
+  return decide({ reasons, policyId: policy.id });
 }

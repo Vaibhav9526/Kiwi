@@ -149,7 +149,12 @@ describe("List methods (T-134 admin UI reads)", () => {
 
     const policies = await container.policies.listPolicies(actor, orgId);
     expect(policies.length).toBeGreaterThanOrEqual(1);
-    expect(policies[0]).toHaveProperty("domainRules");
+    // §5.1 wire shape (T-259/ADM-T250-01): the full snake_case PolicyObject —
+    // org_id + name + snake_case fields, not the internal camelCase def.
+    expect(policies[0]).toMatchObject({ org_id: orgId });
+    for (const key of ["id", "org_id", "name", "enabled", "min_tls", "external_recipients", "domain_rules"]) {
+      expect(policies[0]).toHaveProperty(key);
+    }
   });
 
   it("denies cross-org listing", async () => {

@@ -169,3 +169,116 @@ export function buildAuditExport(
     rows: records.length,
   };
 }
+
+/**
+ * Org-scoped export format identifier (admin-api.md §13.6, T-259). Distinct
+ * from `kiwi.audit-export/1` because the artifact differs: the third-from-last
+ * line is `scope_state`, not `chain_state` — a filtered slice of the global
+ * chain can never carry a whole-chain verdict, so it claims none.
+ */
+export const ORG_AUDIT_EXPORT_VERSION = "kiwi.audit-export-org/1";
+
+export interface OrgAuditExportHeader {
+  type: "header";
+  version: string;
+  /** Explicit scope marker — this artifact is a filtered slice. */
+  scope: "org";
+  org_id: string;
+  exported_at: number;
+  rows: number;
+  first_seq: number | null;
+  last_seq: number | null;
+}
+
+export interface OrgAuditExportScopeState {
+  type: "scope_state";
+  org_id: string;
+  rows: number;
+  first_seq: number | null;
+  last_seq: number | null;
+  /**
+   * `none` is the honest claim: verifyChain only validates over a contiguous
+   * run of every row, and an org-filtered slice has gaps. Each record still
+   * carries `entry_hash`/`prev_hash`, so a holder of the global export can
+   * recompute any row's position in the full chain.
+   */
+  chain_claim: "none";
+  note: string;
+}
+
+export interface OrgAuditExport {
+  ndjson: string;
+  header: OrgAuditExportHeader;
+  scopeState: OrgAuditExportScopeState;
+  signature: AuditExportSignature;
+  rows: number;
+}
+
+/**
+ * Build the signed NDJSON export for ONE org's slice of the chain
+ * (admin-api.md §13.6). The caller passes the org-filtered rows in seq order;
+ * the trailer is `scope_state`, never a whole-chain `chain_state` claim.
+ * The signature still covers header + records + scope_state, so the scope
+ * itself cannot be re-labeled in transit.
+ */
+export function buildOrgAuditExport(
+  records: readonly AuditRecord[],
+  orgId: string,
+  opts: BuildAuditExportOptions,
+): OrgAuditExport {
+  const firstSeq = records.length > 0 ? records[0]!.seq : null;
+  const lastSeq = records.length > 0 ? records[records.length - 1]!.seq : null;
+  const header: OrgAuditExportHeader = {
+    type: "header",
+    version: ORG_AUDIT_EXPORT_VERSION,
+    scope: "org",
+    org_id: orgId,
+    exported_at: opts.now,
+    rows: records.length,
+    first_seq: firstSeq,
+    last_seq: lastSeq,
+  };
+  const scopeState: OrgAuditExportScopeState = {
+    type: "scope_state",
+    org_id: orgId,
+    rows: records.length,
+    first_seq: firstSeq,
+    last_seq: lastSeq,
+    chain_claim: "none",
+    note: "org-filtered slice of the global chain; rows carry entry_hash/prev_hash but continuity is only verifiable on the full export",
+  };
+
+  const signedLines = [
+    JSON.stringify(header),
+    ...records.map((r) => JSON.stringify(r)),
+    JSON.stringify(scopeState),
+  ];
+  const signedBody = signedLines.join("\n");
+
+  const key = (opts.key ?? "").trim();
+  const signature: AuditExportSignature = key
+    ? {
+        type: "signature",
+        alg: "hmac-sha256",
+        signed: true,
+        key_id: auditExportKeyId(key),
+        signature: createHmac("sha256", key).update(signedBody).digest("hex"),
+        covers_through: signedLines.length,
+      }
+    : {
+        type: "signature",
+        alg: "none",
+        signed: false,
+        key_id: null,
+        signature: null,
+        covers_through: null,
+      };
+
+  return {
+    ndjson: `${signedBody}\n${JSON.stringify(signature)}\n`,
+    header,
+    scopeState,
+    signature,
+    rows: records.length,
+  };
+}

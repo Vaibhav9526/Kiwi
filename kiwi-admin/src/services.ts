@@ -99,7 +99,7 @@ class KiwiServiceContainer implements ServiceContainer {
     this.db = wiring.db;
     this.audit = new AuditService({ audit: wiring.repos.audit });
     this.orgs = new OrgService({ orgs: wiring.repos.orgs }, this);
-    this.policies = new PolicyService({ policies: wiring.repos.policies }, this);
+    this.policies = new PolicyService({ policies: wiring.repos.policies, orgs: wiring.repos.orgs }, this);
     this.mailflow = new MailflowService({ mailflow: wiring.repos.mailflow }, this);
   }
 

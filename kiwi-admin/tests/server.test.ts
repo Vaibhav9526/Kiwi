@@ -34,6 +34,9 @@ async function apiRaw(path: string, headers: Record<string, string>): Promise<{ 
 }
 
 const adminHeaders = { "x-kiwi-subject": "tester", "x-kiwi-roles": "org_admin" };
+// §13 (T-259): the platform role — the only identity the GLOBAL audit
+// export accepts. Unbound to any org.
+const systemAdminHeaders = { "x-kiwi-subject": "sysadmin", "x-kiwi-roles": "system-admin" };
 const viewerHeaders = { "x-kiwi-subject": "viewer", "x-kiwi-roles": "viewer", "x-kiwi-org": "__ORG__" };
 // Org-bound admin (T-193/H2): null-org actors hold no org scope, so every
 // org-scoped call below binds the org. `adminHeaders` stays platform-null
@@ -230,7 +233,7 @@ describe("server transport", () => {
   });
 
   it("exports the audit log as signed NDJSON", async () => {
-    const r = await apiRaw("/api/v1/audit/export", adminHeaders);
+    const r = await apiRaw("/api/v1/audit/export", systemAdminHeaders);
     expect(r.status).toBe(200);
     // NDJSON, not JSON — a JSON response would mean the newlines survived as
     // escapes and the line structure was destroyed.
@@ -266,11 +269,11 @@ describe("server transport", () => {
     expect(r.text).not.toContain(EXPORT_KEY);
   });
 
-  it("refuses audit export for everyone but org_admin", async () => {
-    // `audit.read` is broad (all three roles hold it) and `audit.export` is not:
-    // this is the test that keeps the two from being conflated.
+  it("refuses the global audit export for everyone but system-admin", async () => {
+    // §13/T-259: org_admin holds `audit.export` only org-scoped — the global
+    // whole-chain route denies it too. `audit.read` stays broad.
     const securityAdmin = { "x-kiwi-subject": "sec", "x-kiwi-roles": "security_admin" };
-    for (const headers of [viewerHeaders, securityAdmin, { "x-kiwi-subject": "anonymous" }]) {
+    for (const headers of [viewerHeaders, securityAdmin, adminHeaders, boundHeaders, { "x-kiwi-subject": "anonymous" }]) {
       const r = await apiRaw("/api/v1/audit/export", headers);
       expect(r.status).toBe(403);
     }
@@ -499,5 +502,166 @@ describe("device inventory (T-253, §14)", () => {
     const r = await api(`/api/v1/orgs/${devOrg}/devices`, { headers: devHeaders });
     const labels = (r.json.items as { label: string }[]).map((i) => i.label);
     expect(labels.filter((l) => l.toLowerCase() === "dup phone").length).toBe(2);
+  });
+});
+
+describe("admin-drift fixes (T-259, ADM-T250-*)", () => {
+  it("evaluates a single policy with the canonical `policyId` field (ADM-T250-12/13)", async () => {
+    const created = await api(`/api/v1/orgs/${orgId}/policies`, {
+      method: "POST",
+      body: {
+        name: "t259-eval",
+        enabled: true,
+        min_tls: null,
+        external_recipients: "allow",
+        domain_rules: [],
+      },
+      headers: boundHeaders,
+    });
+    expect(created.status).toBe(201);
+    const pid = (created.json as { id: string }).id;
+    const single = await api(`/api/v1/policies/${pid}/evaluate`, {
+      method: "POST",
+      body: { direction: "outbound", sender: "a@http.test", recipient: "b@x.test", tlsVersion: null },
+      headers: boundHeaders,
+    });
+    expect(single.status).toBe(200);
+    // One canonical name across single-evaluate and the §10 outbound bridge.
+    expect(single.json).toHaveProperty("policyId", pid);
+    expect(single.json).not.toHaveProperty("evaluatedPolicyId");
+  });
+
+  it("lists policies as the full §5.1 snake_case PolicyObject (ADM-T250-01)", async () => {
+    const listed = await api(`/api/v1/orgs/${orgId}/policies`, { headers: boundHeaders });
+    expect(listed.status).toBe(200);
+    const items = listed.json.items as Record<string, unknown>[];
+    expect(items.length).toBeGreaterThan(0);
+    const p = items[0]!;
+    for (const key of ["id", "org_id", "name", "enabled", "min_tls", "external_recipients", "domain_rules"]) {
+      expect(p).toHaveProperty(key);
+    }
+    expect(p.org_id).toBe(orgId);
+    expect(typeof p.name).toBe("string");
+    // The internal camelCase projection must not leak onto the wire.
+    expect(p).not.toHaveProperty("minTls");
+    expect(p).not.toHaveProperty("domainRules");
+  });
+
+  it("maps writes on a nonexistent org to 404 not.found, not an FK 500 (ADM-T250-13)", async () => {
+    const ghost = "org-00000000-0000-0000-0000-000000000000";
+    // The actor must be BOUND to the ghost org — an unbound caller is denied
+    // by RBAC before the existence check runs (orgId null ≠ non-null target).
+    const ghostHeaders = { "x-kiwi-subject": "ghost-admin", "x-kiwi-roles": "org_admin", "x-kiwi-org": ghost };
+    const user = await api(`/api/v1/orgs/${ghost}/users`, {
+      method: "POST",
+      body: { email: "ghost@x.test" },
+      headers: ghostHeaders,
+    });
+    expect(user.status).toBe(404);
+    expect(user.json.error.code).toBe("not.found");
+
+    const policy = await api(`/api/v1/orgs/${ghost}/policies`, {
+      method: "POST",
+      body: { name: "ghost", enabled: true, min_tls: null, external_recipients: "allow", domain_rules: [] },
+      headers: ghostHeaders,
+    });
+    expect(policy.status).toBe(404);
+    expect(policy.json.error.code).toBe("not.found");
+  });
+
+  it("returns the FULL audit record, hash fields included (ADM-T250-02)", async () => {
+    const q = await api(`/api/v1/audit?limit=5`, { headers: adminHeaders });
+    expect(q.status).toBe(200);
+    const row = (q.json.items as Record<string, unknown>[])[0]!;
+    for (const key of [
+      "seq", "ts", "actor_subject", "actor_roles", "org_id", "action",
+      "resource", "outcome", "request_id", "details", "prev_hash", "entry_hash",
+    ]) {
+      expect(row).toHaveProperty(key);
+    }
+    expect(typeof row.entry_hash).toBe("string");
+  });
+
+  it("marks a truncated verify window with complete:false and refuses to claim valid (ADM-T250-03)", async () => {
+    const partial = await api(`/api/v1/audit/verify?limit=1`, { headers: adminHeaders });
+    expect(partial.status).toBe(200);
+    expect(partial.json.complete).toBe(false);
+    expect(partial.json.valid).toBe(false);
+    const full = await api(`/api/v1/audit/verify?limit=10000`, { headers: adminHeaders });
+    expect(full.json.complete).toBe(true);
+    expect(full.json.valid).toBe(true);
+  });
+
+  it("audits a read denial — the refused caller leaves a denied row (ADM-T250-04)", async () => {
+    const other = await api("/api/v1/orgs", { method: "POST", body: { name: "t259-deny.test" }, headers: adminHeaders });
+    const otherId = (other.json as { id: string }).id;
+    const denied = await api(`/api/v1/orgs/${otherId}/users`, { headers: boundHeaders });
+    expect(denied.status).toBe(403);
+    const rows = handle.container.db!.all(
+      `SELECT action, outcome, org_id, actor_subject FROM audit_log WHERE action = 'user.list' AND outcome = 'denied'`,
+    ) as { action: string; outcome: string; org_id: string | null; actor_subject: string }[];
+    expect(rows.some((r) => r.org_id === otherId && r.actor_subject === "tester")).toBe(true);
+  });
+
+  it("serves the org-scoped audit export (ADM-T250-07, §13.6)", async () => {
+    const r = await apiRaw(`/api/v1/orgs/${orgId}/audit/export`, boundHeaders);
+    expect(r.status).toBe(200);
+    expect(r.contentType).toContain("application/x-ndjson");
+    const lines = r.text.split("\n").filter((l) => l.length > 0);
+    const header = JSON.parse(lines[0]!) as { type: string; version: string; scope: string; org_id: string };
+    expect(header.type).toBe("header");
+    expect(header.version).toBe("kiwi.audit-export-org/1");
+    expect(header.scope).toBe("org");
+    expect(header.org_id).toBe(orgId);
+    const scope = JSON.parse(lines[lines.length - 2]!) as { type: string; org_id: string; chain_claim: string };
+    expect(scope.type).toBe("scope_state");
+    expect(scope.org_id).toBe(orgId);
+    expect(scope.chain_claim).toBe("none");
+    // Every record line is this org's — the artifact can never mix orgs.
+    const records = lines.slice(1, -2).map((l) => JSON.parse(l) as { org_id: string | null });
+    expect(records.every((rec) => rec.org_id === orgId)).toBe(true);
+    const sig = JSON.parse(lines[lines.length - 1]!) as { type: string; signed: boolean; signature: string };
+    expect(sig.type).toBe("signature");
+    expect(sig.signed).toBe(true);
+    expect(sig.signature).toBe(
+      createHmac("sha256", EXPORT_KEY).update(lines.slice(0, -1).join("\n")).digest("hex"),
+    );
+    // Org-scoped self-audit row, per §13.4.
+    const own = await api(`/api/v1/audit?org=${orgId}&limit=1000`, { headers: boundHeaders });
+    const items = own.json.items as { action: string; outcome: string; org_id: string | null }[];
+    expect(items.some((i) => i.action === "audit.export" && i.outcome === "allowed" && i.org_id === orgId)).toBe(true);
+  });
+
+  it("denies the org-scoped export cross-org and to the global-only system-admin", async () => {
+    const other = await api("/api/v1/orgs", { method: "POST", body: { name: "t259-exp-b.test" }, headers: adminHeaders });
+    const otherId = (other.json as { id: string }).id;
+    // Org-bound admin aimed at a foreign org.
+    const cross = await apiRaw(`/api/v1/orgs/${otherId}/audit/export`, boundHeaders);
+    expect(cross.status).toBe(403);
+    // The platform role on the org route — its surface is the global route.
+    const sys = await apiRaw(`/api/v1/orgs/${orgId}/audit/export`, systemAdminHeaders);
+    expect(sys.status).toBe(403);
+    // The cross-org denial is audited with the target org's id.
+    const rows = handle.container.db!.all(
+      `SELECT action, outcome, org_id FROM audit_log WHERE action = 'audit.export' AND outcome = 'denied'`,
+    ) as { action: string; outcome: string; org_id: string | null }[];
+    expect(rows.some((r) => r.org_id === otherId)).toBe(true);
+  });
+
+  it("rejects granting the platform-only system-admin role into an org (T-259)", async () => {
+    // GRANTABLE_ORG_ROLES excludes it — a grant would fail the table CHECK.
+    const u = await api(`/api/v1/orgs/${orgId}/users`, {
+      method: "POST",
+      body: { email: "grant-target@http.test" },
+      headers: boundHeaders,
+    });
+    const uid = (u.json as { id: string }).id;
+    const grant = await api(`/api/v1/orgs/${orgId}/users/${uid}/role`, {
+      method: "PUT",
+      body: { role: "system-admin" },
+      headers: boundHeaders,
+    });
+    expect(grant.status).toBe(400);
+    expect(grant.json.error.code).toBe("validation.failed");
   });
 });

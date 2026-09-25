@@ -221,7 +221,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-256 | sandbox.md enumeration (sandbox-drift-1.md, 138L, honest WSL2 scoping) | Agent 22 | done |
 | T-257 | Add-account->sync e2e PROVEN (scripted loopback TLS IMAP, 98/98 + fail branches) | Agent 19 | done |
 | T-258 | mailauth post-T-183 verification (14 groups + 3 deviations documented) | Agent 22 | done |
-| T-259 | Admin code-side drift fixes: ADM-01 policy projection, ADM-13 evaluate shape, ADM-14 not.found | Agent 11 | open | `kiwi-admin/` | T-250 |
+| T-259 | Admin code-side drift fixes ALL landed (ADM-01..15, 126 tests) | Agent 11 | done |
 | T-260 | security-session.md contract-vs-impl enumeration (TrustMachine/lock gates) | Agent 22 | open | `docs/audits/` | T-196 |
 | T-261 | LinkRisk hints (linkrisk.rs 459L, 203/203, wired to TS) | Agent 21 | done |
 | T-262 | Send-path e2e: compose->outbox->scripted SMTP->sent (fail branches: reject/undo/no-STARTTLS) | Agent 19 | open | `src-tauri/`, `kiwi-mail/` testutil | T-257 |
@@ -234,5 +234,5 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-268 | SVG icon set + theme packages + plugin scaffold (sideload v1, trusted-code alpha) | Agent 25 (new Devin, 8bda6be5) | open | `components/icons`, `themes/`, `plugins/` | planner ITEM B |
 
 <!-- PLANNER PLAN accepted: ITEM A eM-client layout (light default supersedes flagship-dark default), ITEM B themes+plugins alpha=trusted-code (isolation deferred — accepted risk recorded in THREAT-MODEL by A25 + post-alpha hardening task). -->
-| T-269 | CRITICAL: wire kiwi-pair canonical — pair_status read API + atomic consume/link txn + 9d commands + persistent revocation (per pair-impl-gap-1.md) | queued (strong rust agent) | high | `kiwi-pair/`, `src-tauri/` | T-235 |
+| T-269 | CRITICAL: wire kiwi-pair canonical — persistent revocation + 9d commands + atomic txn | Agent 11 | in-progress | `kiwi-pair/`, `src-tauri/` | T-235 |
 | T-270 | authenticator.md vs mobile/ + kiwi-pair primitives enumeration | Agent 23 | open | `docs/audits/`, `mobile/` (read) | T-235 |
