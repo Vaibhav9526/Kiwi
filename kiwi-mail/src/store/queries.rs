@@ -631,11 +631,13 @@ impl MailStore {
             "dkim": stamp.dkim_explanation,
             "dmarc": stamp.dmarc_explanation,
         });
+        let upstream_json = serde_json::to_string(&stamp.upstream)
+            .map_err(|_| MailError::Store(rusqlite::Error::InvalidQuery))?;
         let n = self.conn.execute(
             "INSERT OR REPLACE INTO message_auth
                 (folder_id, uid, spf, dkim, dmarc, dmarc_policy, dkim_domain,
-                 key_query, dmarc_record, header_value, evidence_json)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                 key_query, dmarc_record, header_value, evidence_json, upstream_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 folder_id,
                 uid as i64,
@@ -648,6 +650,7 @@ impl MailStore {
                 stamp.dmarc_record,
                 stamp.header_value,
                 evidence.to_string(),
+                upstream_json,
             ],
         )?;
         Ok(n > 0)
@@ -657,7 +660,7 @@ impl MailStore {
     pub fn get_auth(&self, folder_id: i64, uid: u64) -> Result<Option<AuthMeta>> {
         let mut stmt = self.conn.prepare(
             "SELECT spf, dkim, dmarc, dmarc_policy, dkim_domain, key_query,
-                    dmarc_record, header_value, evidence_json
+                    dmarc_record, header_value, evidence_json, upstream_json
              FROM message_auth WHERE folder_id = ?1 AND uid = ?2",
         )?;
         let mut rows = stmt.query(params![folder_id, uid as i64])?;
@@ -675,6 +678,13 @@ impl MailStore {
             dmarc_record: row.get(6)?,
             header_value: row.get(7)?,
             evidence: evidence.and_then(|e| serde_json::from_str(&e).ok()),
+            upstream: row
+                .get::<_, Option<String>>(9)?
+                .and_then(|e| serde_json::from_str(&e).ok())
+                .unwrap_or_else(|| UpstreamAuthEvidence {
+                    untrusted_relay: true,
+                    ..Default::default()
+                }),
         }))
     }
 
@@ -690,7 +700,7 @@ impl MailStore {
         }
         let mut stmt = self.conn.prepare(
             "SELECT uid, spf, dkim, dmarc, dmarc_policy, dkim_domain, key_query,
-                    dmarc_record, header_value, evidence_json
+                    dmarc_record, header_value, evidence_json, upstream_json
              FROM message_auth WHERE folder_id = ?1",
         )?;
         let rows = stmt.query_map(params![folder_id], |r| {
@@ -708,6 +718,13 @@ impl MailStore {
                     evidence: r
                         .get::<_, Option<String>>(9)?
                         .and_then(|e| serde_json::from_str(&e).ok()),
+                    upstream: r
+                        .get::<_, Option<String>>(10)?
+                        .and_then(|e| serde_json::from_str(&e).ok())
+                        .unwrap_or_else(|| UpstreamAuthEvidence {
+                            untrusted_relay: true,
+                            ..Default::default()
+                        }),
                 },
             ))
         })?;

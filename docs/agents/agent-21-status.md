@@ -95,10 +95,11 @@ and a **v6→v7 migration test**. All offline.
 ## 2026-09-25 — T-240 upstream Authentication-Results evidence
 
 **Status:** COMPLETE. Offline parser, persistence, ingest integration, and `AuthView`
-wire surface are implemented. Verification: `cargo test -p kiwi-mail --lib` =
+wire surface are implemented. Verification: `cargo test -p kiwi-mail --all-targets` =
 169 passed / 0 failed; `cargo clippy -p kiwi-mail --all-targets -- -D warnings`
-clean; `cargo check -p kiwi-app` clean; `cargo fmt --all -- --check` clean; frontend
-`npx tsc --noEmit` clean.
+clean; `cargo check -p kiwi-app` clean; task-file `rustfmt --check` clean;
+frontend `npx tsc --noEmit` clean. (Workspace-wide `cargo fmt --check` is
+currently blocked by another owner's pre-existing unformatted `commands/mail.rs`.)
 
 **Files changed (7):**
 - `kiwi-mail/src/authstamp.rs` — bounded RFC 8601 A-R parser, authserv-id/verdict
@@ -107,7 +108,8 @@ clean; `cargo check -p kiwi-app` clean; `cargo fmt --all -- --check` clean; fron
 - `kiwi-mail/src/store/mod.rs` — typed upstream evidence models + v7→v8 migration.
 - `kiwi-mail/src/store/queries.rs` — upstream JSON persistence/read/list attachment.
 - `kiwi-app/src-tauri/src/types/mail.rs` — `AuthView.upstream` + `discrepancy`.
-- `kiwi-app/src/kiwi.ts` — matching camelCase TypeScript evidence types.
+- `kiwi-app/src/kiwi.ts` — matching camelCase TypeScript evidence contract
+  (already present in the shared working tree when T-240 was finalized).
 - `docs/agents/agent-21-status.md` — this entry.
 
 **Design decisions:**

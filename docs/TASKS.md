@@ -200,7 +200,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-237 | Drift fixes batch: prefs IPC renames + contracts index + admin-api post-T-193 + challenge-expired ruling | Agent 20 | open | `kiwi-app/src/ipc.ts`, `docs/contracts/` | T-196 |
 | T-238 | Forensics serde vocab proposal — FSV-1 RATIFIED | Agent 22 | done | `docs/audits/` | T-196 FOR-1/2 |
 | T-239 | Wire-shape reconciliation + SS-1 required_action fix + serde posture note | Agent 20 | done |
-| T-240 | Upstream Authentication-Results parse + our-verdict discrepancy flag on AuthView | Agent 21 | open | `kiwi-mail/` | T-232 |
+| T-240 | Upstream A-R parse + discrepancy evidence (169/169) | Agent 21 | done |
 | T-241 | ipc.md completeness + missing/divergent table (7 findings queued for wire owner) | Agent 22 | done |
 | T-242 | Integrations UI (TempMail panel, deliverability view, unsub chip) | Agent 11 | done |
 | T-243 | OAuth2 wizard UI branch: provider sign-in, device-code display, poll states, needsRefresh re-auth | Agent 19 | open | `kiwi-app/src/` | T-230 |
@@ -209,3 +209,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 <!-- QUEUE: ACFG-3..10 autoconfig-parser drift (ex-Agent-8 items) — assign when autoconfig owner frees. authstamp clippy -> A21 in-flight. -->
 | T-246 | ACFG-3..10 autoconfig-parser drift enumeration + proposed resolutions | Agent 22 | open | `docs/audits/` | T-196 |
 | T-247 | Wire-shape batch 2: FolderView/MessageView/vcardText/evidenceRef drift (IPC-T241-2..5) | queued (A20 after T-245) | backlog | `types/`, `ipc.md` | T-241 |
+| T-249 | auth_risk derived enum on AuthView (clean/noted/failed table, hint-not-finding) | Agent 21 | open | `kiwi-mail/` | T-240 |

@@ -31,6 +31,7 @@ use kiwi_mailauth::dns::DnsResolver;
 use kiwi_mailauth::spf::{SpfInput, SpfResult};
 
 use crate::mime::ParsedMessage;
+use crate::store::{AuthVerdictComparison, UpstreamAuthEvidence, UpstreamAuthVerdict};
 
 /// Value KIWI advertises in the `authserv-id` position of the stamped header.
 pub const AUTH_SERV_ID: &str = "kiwi";
@@ -42,6 +43,25 @@ const MAX_HEADER_LEN: usize = 900;
 
 /// Cap on a single evidence comment embedded in the header.
 const MAX_COMMENT_LEN: usize = 120;
+
+/// Caps for untrusted upstream A-R evidence. Captured header values are already
+/// bounded, but repeated fields/methods must not grow memory or the UI row.
+const MAX_UPSTREAM_HEADERS: usize = 32;
+const MAX_UPSTREAM_VERDICTS_PER_METHOD: usize = 32;
+const MAX_AUTHSERV_ID_LEN: usize = 128;
+const MAX_UPSTREAM_VERDICT_LEN: usize = 32;
+
+/// Authentication-Results method verdict values defined by RFC 8601 §2.5.
+const RFC8601_VERDICTS: &[&str] = &[
+    "none",
+    "pass",
+    "fail",
+    "softfail",
+    "neutral",
+    "temperror",
+    "permerror",
+    "hardfail",
+];
 
 /// Per-message verdicts + evidence, persisted alongside the message row.
 ///
@@ -70,6 +90,9 @@ pub struct AuthStamp {
     pub dmarc_explanation: String,
     /// Full RFC 8601 header value that was stamped (or would be).
     pub header_value: String,
+    /// Authentication-Results received from upstream MTAs before this stamp
+    /// (T-240). Evidence only; never treated as trusted or as a finding.
+    pub upstream: UpstreamAuthEvidence,
 }
 
 impl AuthStamp {
@@ -143,6 +166,145 @@ fn first_dkim_header(parsed: &ParsedMessage) -> Option<String> {
         .iter()
         .find(|(n, _)| n.eq_ignore_ascii_case("dkim-signature"))
         .map(|(_, v)| format!("DKIM-Signature: {v}"))
+}
+
+/// Split an RFC 8601 field on semicolons outside comments and quoted strings.
+/// This prevents a hostile comment/value from manufacturing extra methods.
+fn split_auth_results(value: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut start = 0;
+    let mut comment_depth = 0_u32;
+    let mut quoted = false;
+    let mut escaped = false;
+    for (i, c) in value.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if quoted && c == '\\' {
+            escaped = true;
+            continue;
+        }
+        match c {
+            '"' if comment_depth == 0 => quoted = !quoted,
+            '(' if !quoted => comment_depth = comment_depth.saturating_add(1),
+            ')' if !quoted => comment_depth = comment_depth.saturating_sub(1),
+            ';' if !quoted && comment_depth == 0 => {
+                parts.push(value[start..i].trim().to_string());
+                start = i + c.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    parts.push(value[start..].trim().to_string());
+    parts
+}
+
+fn verdict_token(value: &str) -> Option<String> {
+    let token = value
+        .split_whitespace()
+        .next()?
+        .trim_matches('"')
+        .to_ascii_lowercase();
+    (RFC8601_VERDICTS.contains(&token.as_str()) && token.len() <= MAX_UPSTREAM_VERDICT_LEN)
+        .then_some(token)
+}
+
+/// Parse every top-level Authentication-Results field captured before KIWI's
+/// own in-memory stamp. The parser intentionally makes no trust decision: any
+/// authserv-id may contribute evidence, while malformed/unknown values remain
+/// bounded absence-of-evidence.
+pub fn parse_upstream_auth_results(headers: &[(String, String)]) -> UpstreamAuthEvidence {
+    let mut out = UpstreamAuthEvidence {
+        untrusted_relay: true,
+        ..Default::default()
+    };
+    for (_name, value) in headers
+        .iter()
+        .filter(|(n, _)| n.eq_ignore_ascii_case("authentication-results"))
+        .take(MAX_UPSTREAM_HEADERS)
+    {
+        out.present = true;
+        let parts = split_auth_results(value);
+        let id = parts
+            .first()
+            .and_then(|s| s.split_whitespace().next())
+            .filter(|s| {
+                !s.is_empty() && s.len() <= MAX_AUTHSERV_ID_LEN && !s.contains(['\r', '\n'])
+            });
+        let Some(id) = id else {
+            out.malformed_headers = out.malformed_headers.saturating_add(1);
+            continue;
+        };
+        let owned = id.eq_ignore_ascii_case(AUTH_SERV_ID);
+        let mut recognized = owned;
+        if !out.authserv_ids.iter().any(|known| known == id) {
+            out.authserv_ids.push(id.to_string());
+        }
+        for part in parts.iter().skip(1) {
+            let Some((method, result)) = part.split_once('=') else {
+                continue;
+            };
+            let method = method.trim().to_ascii_lowercase();
+            if !matches!(method.as_str(), "spf" | "dkim" | "dmarc") {
+                continue;
+            }
+            let Some(verdict) = verdict_token(result) else {
+                continue;
+            };
+            if owned {
+                continue;
+            }
+            recognized = true;
+            let target = match method.as_str() {
+                "spf" => &mut out.spf,
+                "dkim" => &mut out.dkim,
+                "dmarc" => &mut out.dmarc,
+                _ => unreachable!(),
+            };
+            if target.len() < MAX_UPSTREAM_VERDICTS_PER_METHOD {
+                target.push(UpstreamAuthVerdict {
+                    authserv_id: id.to_string(),
+                    verdict,
+                });
+            }
+        }
+        if !recognized {
+            out.malformed_headers = out.malformed_headers.saturating_add(1);
+        }
+    }
+    if out.present {
+        out.untrusted_relay = false;
+    }
+    out
+}
+
+/// Add one comparison row for each upstream result. Only exact pass/fail
+/// opposites are discrepancies; `none`, softfail, and errors are not silently
+/// promoted to pass or failure.
+pub fn compare_upstream_verdicts(
+    upstream: &mut UpstreamAuthEvidence,
+    local_spf: &str,
+    local_dkim: &str,
+    local_dmarc: &str,
+) {
+    for (method, verdicts, local) in [
+        ("spf", &upstream.spf, local_spf),
+        ("dkim", &upstream.dkim, local_dkim),
+        ("dmarc", &upstream.dmarc, local_dmarc),
+    ] {
+        for result in verdicts {
+            upstream.comparisons.push(AuthVerdictComparison {
+                method: method.to_string(),
+                upstream_verdict: result.verdict.clone(),
+                local_verdict: local.to_string(),
+                discrepancy: matches!(
+                    (result.verdict.as_str(), local),
+                    ("pass", "fail") | ("fail", "pass")
+                ),
+            });
+        }
+    }
 }
 
 /// Evaluate SPF/DKIM/DMARC for one message and build the stamp.
@@ -259,6 +421,16 @@ pub fn evaluate<R: DnsResolver>(
         &dkim_out.explanation,
         &dmarc_expl,
     );
+    // Parse the pre-existing A-R fields before constructing KIWI's in-memory
+    // stamp. Raw .eml bytes are never rewritten, so DKIM-covered bytes remain
+    // byte-for-byte intact.
+    let mut upstream = parse_upstream_auth_results(&parsed.headers);
+    compare_upstream_verdicts(
+        &mut upstream,
+        spf_result.as_str(),
+        dkim_out.result.as_str(),
+        dmarc_out.result.as_str(),
+    );
 
     AuthStamp {
         spf: spf_result.as_str().to_string(),
@@ -272,6 +444,7 @@ pub fn evaluate<R: DnsResolver>(
         dkim_explanation: clip(&dkim_out.explanation, 500),
         dmarc_explanation: clip(&dmarc_expl, 500),
         header_value,
+        upstream,
     }
 }
 
@@ -333,29 +506,14 @@ fn render_header(
     clip(&v, MAX_HEADER_LEN)
 }
 
-/// Prepend `Authentication-Results` to raw message bytes.
+/// Prepend KIWI's `Authentication-Results` to a copy of the raw message.
 ///
-/// Returns the bytes unchanged when a stamp is already present, so a
-/// re-ingest cannot accumulate duplicate security headers. Insertion happens
-/// after any mbox `From ` separator and before the first existing header, so
-/// the result is a valid RFC 5322 message. Every inbound byte is untrusted
-/// (rule 9), so the stamp is built from our own verdict strings, never by
-/// echoing attacker-controlled text into a header position unescaped.
+/// Existing upstream A-R fields are deliberately preserved. KIWI's field goes
+/// first, so consumers applying RFC 8601 precedence encounter our stamp before
+/// upstream claims. An attacker pre-seeded A-R field can never suppress ours.
+/// The ingest path does not call this on stored `.eml` bytes; it persists the
+/// returned header value as evidence and leaves the received bytes untouched.
 pub fn stamp_raw_bytes(raw: &[u8], header_value: &str) -> Vec<u8> {
-    // Detect an existing stamp by field NAME, not whole-line equality: the
-    // value follows the colon, so comparing the full line never matches.
-    let already = raw.split(|b| *b == b'\n').take(64).any(|line| {
-        let l = line.trim_ascii_end();
-        match l.iter().position(|b| *b == b':') {
-            Some(i) => l[..i]
-                .trim_ascii()
-                .eq_ignore_ascii_case(b"Authentication-Results"),
-            None => false,
-        }
-    });
-    if already {
-        return raw.to_vec();
-    }
     let mut out = Vec::with_capacity(raw.len() + header_value.len() + 32);
     let mut rest = raw;
     // Preserve an mbox `From ` separator line if present.
@@ -398,6 +556,111 @@ mod tests {
             helo: "mail.example.com".into(),
             sender_local: "a".into(),
         }
+    }
+
+    #[test]
+    fn parses_authserv_id_and_all_supported_verdicts() {
+        let headers = vec![(
+            "authentication-results".into(),
+            "mx.example.net; spf=pass smtp.mailfrom=a.example; dkim=pass header.d=a.example; dmarc=fail (p=reject)".into(),
+        )];
+        let got = parse_upstream_auth_results(&headers);
+        assert!(got.present);
+        assert!(!got.untrusted_relay);
+        assert_eq!(got.authserv_ids, ["mx.example.net"]);
+        assert_eq!(got.spf[0].verdict, "pass");
+        assert_eq!(got.dkim[0].verdict, "pass");
+        assert_eq!(got.dmarc[0].verdict, "fail");
+        assert_eq!(got.malformed_headers, 0);
+    }
+
+    #[test]
+    fn pass_fail_conflicts_are_evidence_rows_not_findings() {
+        let headers = vec![
+            (
+                "Authentication-Results".into(),
+                "mx.one; spf=fail; dkim=pass".into(),
+            ),
+            (
+                "authentication-results".into(),
+                "mx.two; dkim=fail; dmarc=pass".into(),
+            ),
+        ];
+        let mut got = parse_upstream_auth_results(&headers);
+        compare_upstream_verdicts(&mut got, "none", "pass", "fail");
+        assert_eq!(got.authserv_ids, ["mx.one", "mx.two"]);
+        let conflicts: Vec<_> = got.comparisons.iter().filter(|c| c.discrepancy).collect();
+        assert_eq!(conflicts.len(), 2);
+        assert!(conflicts.iter().any(|c| c.method == "dkim"
+            && c.upstream_verdict == "fail"
+            && c.local_verdict == "pass"));
+        assert!(conflicts.iter().any(|c| c.method == "dmarc"
+            && c.upstream_verdict == "pass"
+            && c.local_verdict == "fail"));
+        assert!(got.has_discrepancy());
+    }
+
+    #[test]
+    fn honest_none_temperror_and_softfail_are_not_discrepancies() {
+        let headers = vec![(
+            "authentication-results".into(),
+            "mx.example; spf=pass; dkim=temperror; dmarc=softfail".into(),
+        )];
+        let mut got = parse_upstream_auth_results(&headers);
+        compare_upstream_verdicts(&mut got, "none", "temperror", "fail");
+        assert!(!got.has_discrepancy());
+        assert_eq!(got.comparisons.len(), 3, "both verdicts remain visible");
+    }
+
+    #[test]
+    fn missing_header_is_notable_untrusted_relay_evidence() {
+        let got = parse_upstream_auth_results(&[]);
+        assert!(!got.present);
+        assert!(got.untrusted_relay);
+        assert!(got.comparisons.is_empty());
+        assert!(!got.has_discrepancy());
+    }
+
+    #[test]
+    fn malformed_and_comment_injection_are_bounded() {
+        let headers = vec![
+            ("authentication-results".into(), "; spf=pass".into()),
+            (
+                "authentication-results".into(),
+                "mx.example; dkim=not-a-verdict; comment=(ignored; text); dmarc=fail; spf=pass"
+                    .into(),
+            ),
+        ];
+        let got = parse_upstream_auth_results(&headers);
+        assert!(got.present);
+        assert_eq!(got.malformed_headers, 1, "one header had no authserv-id");
+        assert_eq!(got.spf.len(), 1, "comment semicolon did not split");
+        assert_eq!(got.dkim.len(), 0);
+        assert_eq!(got.dmarc[0].verdict, "fail");
+    }
+
+    #[test]
+    fn evaluate_preserves_raw_bytes_while_parsing_existing_header() {
+        let raw = raw_with(
+            &[
+                ("Authentication-Results", "mx.example; spf=pass"),
+                ("From", "a@example.com"),
+            ],
+            "body\n",
+        );
+        let stamp = evaluate(&MockResolver::new(), &parsed_of(&raw), &raw, NOW, None);
+        assert_eq!(stamp.spf, "none");
+        assert_eq!(stamp.upstream.spf[0].verdict, "pass");
+        assert!(
+            !stamp.upstream.has_discrepancy(),
+            "client SPF none must not contradict MTA SPF pass"
+        );
+        let original = raw.clone();
+        let stamped = stamp_raw_bytes(&raw, &stamp.header_value);
+        assert_eq!(raw, original, "received bytes are not rewritten");
+        let stamped = String::from_utf8(stamped).unwrap();
+        assert!(stamped.starts_with("Authentication-Results: kiwi;"));
+        assert!(stamped.contains("\r\nAuthentication-Results: mx.example; spf=pass\r\n"));
     }
 
     #[test]
@@ -507,11 +770,13 @@ mod tests {
     }
 
     #[test]
-    fn stamp_is_idempotent() {
-        let raw = b"Subject: x\r\n\r\nbody\r\n";
-        let once = stamp_raw_bytes(raw, "kiwi; spf=none");
-        let twice = stamp_raw_bytes(&once, "kiwi; spf=none");
-        assert_eq!(once, twice, "re-ingest must not duplicate the header");
+    fn preseeded_ar_cannot_suppress_our_stamp() {
+        let raw = b"Authentication-Results: attacker; spf=pass\r\nSubject: x\r\n\r\nbody\r\n";
+        let out = stamp_raw_bytes(raw, "kiwi; spf=none");
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.starts_with("Authentication-Results: kiwi; spf=none\r\n"));
+        assert!(s.contains("\r\nAuthentication-Results: attacker; spf=pass\r\n"));
+        assert!(s.ends_with("body\r\n"), "body preserved verbatim");
     }
 
     #[test]

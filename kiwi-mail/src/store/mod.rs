@@ -82,6 +82,69 @@ pub struct AuthMeta {
     pub header_value: Option<String>,
     /// Bounded evidence: explanations + evidence refs, as JSON.
     pub evidence: Option<serde_json::Value>,
+    /// Bounded upstream MTA Authentication-Results and local/upstream
+    /// comparisons (T-240). This is evidence, never a finding or trust claim.
+    pub upstream: UpstreamAuthEvidence,
+}
+
+/// One verdict emitted by an upstream authentication service.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamAuthVerdict {
+    pub authserv_id: String,
+    pub verdict: String,
+}
+
+/// One local/upstream comparison. A discrepancy is true only for an exact
+/// pass/fail contradiction; inconclusive verdicts never manufacture one.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthVerdictComparison {
+    pub method: String,
+    pub upstream_verdict: String,
+    pub local_verdict: String,
+    pub discrepancy: bool,
+}
+
+/// Authentication-Results observed before KIWI's in-memory stamp (T-240).
+///
+/// Multiple A-R fields and repeated method results are retained as bounded
+/// evidence. `untrusted_relay` is set when the message had no A-R header at
+/// all; this is a provenance limitation, not a finding.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamAuthEvidence {
+    pub present: bool,
+    pub untrusted_relay: bool,
+    pub malformed_headers: u32,
+    pub authserv_ids: Vec<String>,
+    pub spf: Vec<UpstreamAuthVerdict>,
+    pub dkim: Vec<UpstreamAuthVerdict>,
+    pub dmarc: Vec<UpstreamAuthVerdict>,
+    pub comparisons: Vec<AuthVerdictComparison>,
+}
+
+impl Default for UpstreamAuthEvidence {
+    fn default() -> Self {
+        Self {
+            present: false,
+            untrusted_relay: true,
+            malformed_headers: 0,
+            authserv_ids: Vec::new(),
+            spf: Vec::new(),
+            dkim: Vec::new(),
+            dmarc: Vec::new(),
+            comparisons: Vec::new(),
+        }
+    }
+}
+
+impl UpstreamAuthEvidence {
+    /// True when at least one extracted verdict directly contradicts KIWI's
+    /// local pass/fail result. Absence and inconclusive states are not conflicts.
+    pub fn has_discrepancy(&self) -> bool {
+        self.comparisons.iter().any(|c| c.discrepancy)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -210,6 +273,11 @@ pub(crate) fn migrate_conn(conn: &Connection, root: &Path) -> Result<()> {
                 ensure_unsub_columns(conn)?;
                 backfill_unsub(conn, root)?;
             }
+            // Pre-v8 database: retain pre-existing MTA A-R evidence in the
+            // same auth table without touching the shared `messages` table.
+            if v < 8 {
+                ensure_upstream_auth_column(conn)?;
+            }
         }
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     }
@@ -227,6 +295,21 @@ fn ensure_category_column(conn: &Connection) -> Result<()> {
         }
     }
     conn.execute_batch("ALTER TABLE messages ADD COLUMN category TEXT NOT NULL DEFAULT 'primary'")?;
+    Ok(())
+}
+
+/// Add the T-240 upstream evidence column idempotently. Existing rows remain
+/// NULL: no backfill is possible without the original received header context,
+/// and inventing one would fabricate provenance evidence.
+fn ensure_upstream_auth_column(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare("PRAGMA table_info(message_auth)")?;
+    let cols = stmt.query_map([], |r| r.get::<_, String>(1))?;
+    for col in cols {
+        if col? == "upstream_json" {
+            return Ok(());
+        }
+    }
+    conn.execute_batch("ALTER TABLE message_auth ADD COLUMN upstream_json TEXT")?;
     Ok(())
 }
 
@@ -1060,6 +1143,7 @@ mod tests {
                 dkim_explanation: "body hash mismatch".into(),
                 dmarc_explanation: "no aligned identifier".into(),
                 header_value: "kiwi; spf=none; dkim=pass; dmarc=pass".into(),
+                upstream: Default::default(),
             }
         }
 
@@ -1095,6 +1179,25 @@ mod tests {
             );
             let ev = got.evidence.expect("evidence json");
             assert_eq!(ev["dkim"], "body hash mismatch");
+            assert!(got.upstream.untrusted_relay);
+        }
+
+        #[test]
+        fn upstream_evidence_and_discrepancy_roundtrip() {
+            let (s, folder) = store_with_message(8);
+            let mut auth = stamp("pass", "fail");
+            auth.upstream = crate::authstamp::parse_upstream_auth_results(&[(
+                "Authentication-Results".into(),
+                "mx.example; spf=pass; dkim=fail; dmarc=pass".into(),
+            )]);
+            crate::authstamp::compare_upstream_verdicts(&mut auth.upstream, "none", "pass", "fail");
+            s.set_auth(folder, 8, &auth).unwrap();
+            let got = s.get_auth(folder, 8).unwrap().unwrap();
+            assert_eq!(got.upstream.authserv_ids, ["mx.example"]);
+            assert_eq!(got.upstream.comparisons.len(), 3);
+            assert!(got.upstream.has_discrepancy());
+            let listed = s.list_messages(folder, 10).unwrap().remove(0);
+            assert!(listed.auth.unwrap().upstream.has_discrepancy());
         }
 
         #[test]
@@ -1151,27 +1254,46 @@ mod tests {
         }
 
         #[test]
-        fn v6_to_v7_migration_creates_auth_table() {
+        fn v7_to_v8_migration_preserves_local_auth_without_backfill() {
             let conn = Connection::open_in_memory().unwrap();
             conn.execute_batch(DDL).unwrap();
-            // Simulate a v6 database: the auth table is not yet present.
-            conn.execute_batch("DROP TABLE message_auth; PRAGMA user_version = 6")
-                .unwrap();
-            let root = std::env::temp_dir().join(format!("kiwi-mig-auth-{}", std::process::id()));
+            conn.execute_batch(
+                "CREATE TABLE message_auth_v7 (
+                    folder_id INTEGER NOT NULL,
+                    uid INTEGER NOT NULL,
+                    spf TEXT NOT NULL DEFAULT 'none',
+                    dkim TEXT NOT NULL DEFAULT 'none',
+                    dmarc TEXT NOT NULL DEFAULT 'none',
+                    dmarc_policy TEXT NOT NULL DEFAULT 'none',
+                    dkim_domain TEXT,
+                    key_query TEXT,
+                    dmarc_record TEXT,
+                    header_value TEXT,
+                    evidence_json TEXT,
+                    PRIMARY KEY (folder_id, uid)
+                 );
+                 INSERT INTO message_auth_v7 VALUES
+                    (1, 7, 'none', 'pass', 'pass', 'none', NULL, NULL, NULL, 'kiwi; dkim=pass', NULL);
+                 DROP TABLE message_auth;
+                 ALTER TABLE message_auth_v7 RENAME TO message_auth;
+                 PRAGMA user_version = 7;",
+            )
+            .unwrap();
+            let root =
+                std::env::temp_dir().join(format!("kiwi-mig-auth-v8-{}", std::process::id()));
             migrate_conn(&conn, &root).unwrap();
             let v: u32 = conn
                 .query_row("PRAGMA user_version", [], |r| r.get(0))
                 .unwrap();
-            assert_eq!(v, SCHEMA_VERSION, "v6 database migrates forward");
-            let n: i64 = conn
+            assert_eq!(v, SCHEMA_VERSION);
+            let upstream: Option<String> = conn
                 .query_row(
-                    "SELECT COUNT(*) FROM sqlite_master
-                     WHERE type = 'table' AND name = 'message_auth'",
+                    "SELECT upstream_json FROM message_auth WHERE folder_id = 1 AND uid = 7",
                     [],
                     |r| r.get(0),
                 )
                 .unwrap();
-            assert_eq!(n, 1, "message_auth exists after migration");
+            assert!(upstream.is_none(), "old rows are not backfilled");
         }
     }
 

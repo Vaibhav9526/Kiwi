@@ -1,7 +1,7 @@
 //! SQLite schema — DDL + version. Migrations are explicit and
 //! append-only; `user_version` is the source of truth.
 
-pub(crate) const SCHEMA_VERSION: u32 = 7;
+pub(crate) const SCHEMA_VERSION: u32 = 8;
 
 pub(crate) const DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS accounts (
@@ -115,6 +115,10 @@ CREATE TABLE IF NOT EXISTS message_auth (
     dmarc_record   TEXT,
     header_value   TEXT,
     evidence_json  TEXT,
+    -- T-240: bounded RFC 8601 Authentication-Results received from upstream
+    -- MTAs. This is evidence, not authority: the object retains authserv-id,
+    -- all extracted verdicts, and pass<->fail comparisons with KIWI's stamp.
+    upstream_json   TEXT,
     PRIMARY KEY (folder_id, uid)
 );
 "#;
