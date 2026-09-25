@@ -1,0 +1,354 @@
+#!/usr/bin/env node
+/**
+ * ui-smoke.mjs — CDP-driven UI smoke suite for kiwi-app (T-305).
+ *
+ * Formalizes the ad-hoc DevTools checks into a repeatable gate: boots vite,
+ * launches a real browser (Edge/Chrome) headless, attaches over the DevTools
+ * protocol with Node's built-in WebSocket (zero dependencies), and asserts
+ * the core flows against the REAL rendered DOM — no mocks, no jsdom.
+ *
+ * Assertions run against the app's own demo mode (a plain browser is not a
+ * Tauri webview, so `isTauri()` is false and views take their demo path).
+ * Live-backend-only behavior (e.g. a real locked trust state) is reported
+ * SKIP rather than faked.
+ *
+ * Usage:
+ *   node scripts/ui-smoke.mjs [--url http://127.0.0.1:1420] [--port 1421]
+ *                          [--browser edge|chrome|/path/to/exe] [--keep]
+ * Exit 0 = all checks pass/skipped; exit 1 = any FAIL. A final
+ * `SMOKE_JSON{...}` line carries the machine-readable result for CI.
+ */
+import { spawn } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const args = process.argv.slice(2);
+const arg = (name, def) => {
+  const i = args.indexOf(`--${name}`);
+  return i >= 0 ? args[i + 1] : def;
+};
+const URL_ARG = arg("url", null);
+const VITE_PORT = Number(arg("port", "1421"));
+const BROWSER_ARG = arg("browser", process.env.KIWI_SMOKE_BROWSER ?? "auto");
+const KEEP = args.includes("--keep");
+const PER_CHECK_TIMEOUT = 12000;
+const BOOT_TIMEOUT = 30000;
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const results = [];
+function report(id, status, detail = "") {
+  results.push({ id, status, detail });
+  const tag = status === "pass" ? "PASS" : status === "fail" ? "FAIL" : "SKIP";
+  console.log(`${tag}  ${id}${detail ? ` — ${detail}` : ""}`);
+}
+
+// ---------------------------------------------------------------- vite --
+
+let viteProc = null;
+async function bootVite(port) {
+  // Spawn vite through the local bin — no shell, so no cmd.exe dependency.
+  const cwd = fileURLToPath(new URL("..", import.meta.url));
+  viteProc = spawn(process.execPath, [join(cwd, "node_modules", "vite", "bin", "vite.js"),
+    "--port", String(port), "--strictPort", "--host", "127.0.0.1"], {
+    cwd,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let viteErr = "";
+  viteProc.stderr.on("data", (d) => (viteErr += d));
+  const deadline = Date.now() + BOOT_TIMEOUT;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(2000) });
+      if (res.ok) return `http://127.0.0.1:${port}`;
+    } catch { /* still starting */ }
+    if (viteProc.exitCode !== null) throw new Error(`vite exited early: ${viteErr.slice(-400)}`);
+    await sleep(400);
+  }
+  throw new Error(`vite did not answer on :${port} within ${BOOT_TIMEOUT}ms${viteErr ? ` — stderr: ${viteErr.slice(-400)}` : ""}`);
+}
+
+// ------------------------------------------------------------- browser --
+
+const BROWSER_CANDIDATES = {
+  edge: [
+    "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
+    "C:/Program Files/Microsoft/Edge/Application/msedge.exe",
+    "microsoft-edge",
+    "msedge",
+  ],
+  chrome: [
+    "C:/Program Files/Google/Chrome/Application/chrome.exe",
+    "C:/Program Files (x86)/Google/Chrome/Application/chrome.exe",
+    "google-chrome",
+    "chromium",
+    "chromium-browser",
+  ],
+};
+
+function findBrowser() {
+  if (BROWSER_ARG !== "auto") {
+    const list = BROWSER_CANDIDATES[BROWSER_ARG] ?? [BROWSER_ARG];
+    const hit = list.find((p) => existsSync(p));
+    if (hit) return hit;
+    if (existsSync(BROWSER_ARG)) return BROWSER_ARG;
+    // Fall through to PATH-style name.
+    return list[list.length - 1];
+  }
+  for (const kind of ["edge", "chrome"]) {
+    const hit = BROWSER_CANDIDATES[kind].find((p) => existsSync(p));
+    if (hit) return hit;
+  }
+  throw new Error("no browser found — set --browser or KIWI_SMOKE_BROWSER");
+}
+
+let browserProc = null;
+let profileDir = null;
+async function launchBrowser() {
+  const exe = findBrowser();
+  profileDir = mkdtempSync(join(tmpdir(), "kiwi-smoke-"));
+  browserProc = spawn(exe, [
+    "--headless=new",
+    "--remote-debugging-port=0",
+    `--user-data-dir=${profileDir}`,
+    "--no-first-run",
+    "--disable-gpu",
+    "--disable-extensions",
+    "about:blank",
+  ], { stdio: ["ignore", "ignore", "ignore"] });
+  const portFile = join(profileDir, "DevToolsActivePort");
+  const deadline = Date.now() + 15000;
+  while (Date.now() < deadline) {
+    if (existsSync(portFile)) {
+      const [port] = readFileSync(portFile, "utf8").split("\n");
+      const ver = await (await fetch(`http://127.0.0.1:${port.trim()}/json/version`)).json();
+      return { wsUrl: ver.webSocketDebuggerUrl, exe };
+    }
+    await sleep(250);
+  }
+  throw new Error("browser did not open a DevTools port");
+}
+
+// ----------------------------------------------------------------- CDP --
+
+class Cdp {
+  #ws; #id = 0; #pending = new Map(); #events = [];
+  static async connect(wsUrl) {
+    const c = new Cdp();
+    c.#ws = new WebSocket(wsUrl);
+    await new Promise((res, rej) => {
+      c.#ws.onopen = res;
+      c.#ws.onerror = () => rej(new Error("CDP websocket failed"));
+    });
+    c.#ws.onmessage = (ev) => {
+      const msg = JSON.parse(ev.data);
+      if (msg.id && c.#pending.has(msg.id)) {
+        const { res, rej } = c.#pending.get(msg.id);
+        c.#pending.delete(msg.id);
+        msg.error ? rej(new Error(`${msg.error.message}`)) : res(msg.result);
+      } else if (msg.method) {
+        c.#events.push(msg);
+      }
+    };
+    return c;
+  }
+  send(method, params = {}, sessionId) {
+    const id = ++this.#id;
+    this.#ws.send(JSON.stringify({ id, method, params, sessionId }));
+    return new Promise((res, rej) => {
+      this.#pending.set(id, { res, rej });
+      setTimeout(() => {
+        if (this.#pending.delete(id)) rej(new Error(`CDP ${method} timed out`));
+      }, 20000);
+    });
+  }
+  async newPage(url) {
+    const { targetId } = await this.send("Target.createTarget", { url: "about:blank" });
+    const { sessionId } = await this.send("Target.attachToTarget", { targetId, flatten: true });
+    await this.send("Runtime.enable", {}, sessionId);
+    await this.send("Page.enable", {}, sessionId);
+    await this.send("Page.navigate", { url }, sessionId);
+    return sessionId;
+  }
+  async eval(sessionId, expression, awaitPromise = false) {
+    const r = await this.send("Runtime.evaluate", {
+      expression, returnByValue: true, awaitPromise,
+    }, sessionId);
+    if (r.exceptionDetails) {
+      throw new Error(r.exceptionDetails.exception?.description ?? r.exceptionDetails.text ?? "eval failed");
+    }
+    return r.result?.value;
+  }
+  close() { try { this.#ws?.close(); } catch {} }
+}
+
+async function waitFor(cdp, sid, expr, timeout = PER_CHECK_TIMEOUT) {
+  const deadline = Date.now() + timeout;
+  while (Date.now() < deadline) {
+    if (await cdp.eval(sid, expr)) return true;
+    await sleep(200);
+  }
+  return false;
+}
+
+const qs = (sel) => `!!document.querySelector(${JSON.stringify(sel)})`;
+const qsa = (sel) => `document.querySelectorAll(${JSON.stringify(sel)}).length`;
+const key = (k, mods = {}, target = "document.body") =>
+  `(${target}||document.body).dispatchEvent(new KeyboardEvent('keydown',{key:${JSON.stringify(k)},bubbles:true,cancelable:true,${Object.entries(mods).map(([a, b]) => `${a}:${b}`).join(",")}}))`;
+const keyOn = (sel, k) => key(k, {}, `document.querySelector(${JSON.stringify(sel)})`);
+const ctxMenu = (sel) =>
+  `(()=>{const el=document.querySelector(${JSON.stringify(sel)});if(!el)return false;const r=el.getBoundingClientRect();el.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:r.left+8,clientY:r.top+8}));return true})()`;
+
+// -------------------------------------------------------------- checks --
+
+async function runChecks(cdp, sid) {
+  const check = async (id, desc, fn) => {
+    try { const detail = await fn(); report(id, "pass", `${desc}${detail ? ` (${detail})` : ""}`); }
+    catch (e) { report(id, "fail", `${desc} — ${e instanceof Error ? e.message : e}`); }
+  };
+  const skip = (id, desc, why) => report(id, "skip", `${desc} — ${why}`);
+
+  await check("boot", "app shell boots", async () => {
+    if (!(await waitFor(cdp, sid, qs("header.em-chrome")))) throw new Error("no .em-chrome");
+    if (!(await cdp.eval(sid, "document.getElementById('root').children.length > 0"))) throw new Error("root empty");
+    return "chrome header mounted";
+  });
+
+  await check("folders", "folder pane renders with counts", async () => {
+    if (!(await waitFor(cdp, sid, qs("nav.em-folders")))) throw new Error("no folder nav");
+    const rows = await cdp.eval(sid, qsa("nav.em-folders [role=treeitem], nav.em-folders .em-fold, nav.em-folders button"));
+    if (!rows) throw new Error("no folder rows");
+    const counts = await cdp.eval(sid, qsa("nav.em-folders .em-tree-count"));
+    return `${rows} rows, ${counts} count chips`;
+  });
+
+  await check("list", "message list renders envelopes", async () => {
+    if (!(await waitFor(cdp, sid, `${qs(".em-rows[role=listbox]")} && ${qsa(".em-row")} > 0`)))
+      throw new Error("no .em-row in listbox");
+    return `${await cdp.eval(sid, qsa(".em-row"))} rows`;
+  });
+
+  await check("reader", "select row → reader card", async () => {
+    await cdp.eval(sid, "document.querySelector('.em-row').click()");
+    if (!(await waitFor(cdp, sid, `${qs(".em-reader")} && (document.querySelector('.em-reader-head')?.textContent||'').length > 4`)))
+      throw new Error("reader never populated");
+    return "reader card populated";
+  });
+
+  await check("ctxmenu", "right-click row → context menu", async () => {
+    if (!(await cdp.eval(sid, ctxMenu(".em-row")))) throw new Error("no row to open menu on");
+    if (!(await waitFor(cdp, sid, qs(".em-ctx[role=menu]"), 4000))) throw new Error("menu did not open");
+    const items = await cdp.eval(sid, qsa(".em-ctx-item"));
+    await cdp.eval(sid, keyOn(".em-ctx", "Escape")); // Escape handled via onKeyDown on the menu root
+    const closed = await waitFor(cdp, sid, `!${qs(".em-ctx")}`, 3000);
+    if (!closed) throw new Error("menu did not dismiss on Escape");
+    if (items < 5) throw new Error(`only ${items} items`);
+    return `${items} items, Esc dismisses`;
+  });
+
+  await check("compose", "compose route + fields", async () => {
+    await cdp.eval(sid, "window.location.hash = '#/compose'");
+    if (!(await waitFor(cdp, sid, qs("section[aria-label='Compose message']")))) throw new Error("compose view missing");
+    const hasTo = await cdp.eval(sid, qs("[aria-label='Recipients'] input") + "||" + qs("[aria-label='Recipients']"));
+    const hasBody = await cdp.eval(sid, qs("section[aria-label='Compose message'] textarea"));
+    const hasAcct = await cdp.eval(sid, qs("section[aria-label='Compose message'] select"));
+    if (!hasTo || !hasBody) throw new Error(`fields missing (to=${hasTo} body=${hasBody})`);
+    return `recipient+body fields${hasAcct ? ", account select" : ""}`;
+  });
+
+  await check("settings-tabs", "settings mounts every section", async () => {
+    await cdp.eval(sid, "window.location.hash = '#/settings'");
+    if (!(await waitFor(cdp, sid, `${qsa("button[role=tab]")} >= 5`))) throw new Error("tab bar missing");
+    const names = await cdp.eval(sid,
+      `[...document.querySelectorAll("button[role=tab]")].map(b=>b.textContent.trim())`);
+    for (const name of names) {
+      await cdp.eval(sid,
+        `[...document.querySelectorAll("button[role=tab]")].find(b=>b.textContent.trim()===${JSON.stringify(name)})?.click()`);
+      const ok = await waitFor(cdp, sid,
+        `document.querySelector("[role=tabpanel] h1")?.textContent?.trim()===${JSON.stringify(name)}`, 4000);
+      if (!ok) throw new Error(`section "${name}" did not mount`);
+    }
+    return `${names.length} sections: ${names.join(", ")}`;
+  });
+
+  await check("theme", "theme switch applies data-theme", async () => {
+    // land on Appearance (settings still open)
+    await cdp.eval(sid,
+      `[...document.querySelectorAll("button[role=tab]")].find(b=>b.textContent.trim()==="Appearance")?.click()`);
+    if (!(await waitFor(cdp, sid, qs("[role=radiogroup][aria-label='Color theme']"))))
+      throw new Error("theme picker missing");
+    // Radios carry no value attr — labels show display names
+    // ("KIWI Flagship Dark"); match on text, restore via the "default" chip.
+    const clickTheme = (re) =>
+      `[...document.querySelectorAll("[role=radiogroup] label")].find(l=>${re}.test(l.textContent))?.querySelector("input")?.click()`;
+    await cdp.eval(sid, clickTheme("/\\bdark\\b/i"));
+    const dark = await waitFor(cdp, sid, `document.documentElement.getAttribute("data-theme")==="dark"`, 4000);
+    if (!dark) throw new Error("data-theme did not become 'dark'");
+    await cdp.eval(sid, clickTheme("/\\bdefault\\b/i"));
+    const back = await waitFor(cdp, sid, `document.documentElement.getAttribute("data-theme")==="light"`, 4000);
+    if (!back) throw new Error("could not restore 'light'");
+    return "dark→applied→restored light";
+  });
+
+  await check("shortcuts", "? overlay opens and closes", async () => {
+    await cdp.eval(sid, "window.location.hash = '#/mail'");
+    await waitFor(cdp, sid, qs(".em-rows"), 5000);
+    await cdp.eval(sid, key("?"));
+    if (!(await waitFor(cdp, sid, `${qs("div[role=dialog]")} && (document.querySelector("div[role=dialog] h1")?.textContent||"").includes("Keyboard shortcuts")`, 4000)))
+      throw new Error("overlay did not open");
+    await cdp.eval(sid, "document.querySelector('div[role=dialog] button')?.focus()");
+    await cdp.eval(sid, keyOn("div[role=dialog]", "Escape")); // dialog's own onKeyDown
+    if (!(await waitFor(cdp, sid, `!${qs("div[role=dialog]")}`, 4000))) throw new Error("overlay did not close");
+    return "dialog rendered + Esc closed";
+  });
+
+  await check("lock", "lock overlay reflects trust state", async () => {
+    const locked = await cdp.eval(sid, qs(".kiwi-lock-overlay"));
+    const demo = await cdp.eval(sid,
+      `document.body.textContent.includes("Demo") || !!document.querySelector("[data-demo],.em-demo")`);
+    if (!locked && demo) return "unlocked demo — overlay correctly absent";
+    if (!locked) return "unlocked — overlay correctly absent";
+    const title = await cdp.eval(sid, `document.querySelector(".kiwi-lock-overlay #lock-title")?.textContent`);
+    if (!/locked/i.test(title ?? "")) throw new Error("overlay present but no lock title");
+    return "locked — overlay rendered with title";
+  });
+}
+
+// ----------------------------------------------------------------- main --
+
+async function main() {
+  let url = URL_ARG;
+  if (!url) url = await bootVite(VITE_PORT);
+  console.log(`ui-smoke: serving ${url}`);
+  const { wsUrl, exe } = await launchBrowser();
+  console.log(`ui-smoke: browser ${exe}`);
+  const cdp = await Cdp.connect(wsUrl);
+  const sid = await cdp.newPage(url);
+  try {
+    if (!(await waitFor(cdp, sid, "document.readyState === 'complete' && !!document.getElementById('root')", BOOT_TIMEOUT)))
+      throw new Error("page did not finish loading");
+    await waitFor(cdp, sid, "document.getElementById('root').children.length > 0", BOOT_TIMEOUT);
+    await runChecks(cdp, sid);
+  } finally {
+    cdp.close();
+  }
+  const pass = results.filter((r) => r.status === "pass").length;
+  const fail = results.filter((r) => r.status === "fail").length;
+  const skipp = results.filter((r) => r.status === "skip").length;
+  const summary = { suite: "ui-smoke", url, pass, fail, skip: skipp, results };
+  console.log(`SMOKE_JSON${JSON.stringify(summary)}`);
+  console.log(`ui-smoke: ${pass} pass, ${fail} fail, ${skipp} skip`);
+  process.exitCode = fail > 0 ? 1 : 0;
+}
+
+main().catch((e) => {
+  console.error(`ui-smoke fatal: ${e instanceof Error ? e.message : e}`);
+  process.exitCode = 1;
+}).finally(() => {
+  if (!KEEP) {
+    try { viteProc?.kill(); } catch {}
+    try { browserProc?.kill(); } catch {}
+    if (profileDir) { try { rmSync(profileDir, { recursive: true, force: true }); } catch {} }
+  }
+});

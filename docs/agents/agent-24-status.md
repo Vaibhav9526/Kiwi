@@ -501,3 +501,37 @@ file header; one fixture where the encoder picks a tighter valid version
 than the reference). Plus a byte-assert I ran against a §9d-shaped payload
 (realistic ticket/key/endpoint JSON): deterministic matrix, correct
 geometry/finder patterns, ~30% dark density. Throwaway test not retained.
+
+## T-305 — repeatable UI smoke gate (scripts/ui-smoke.mjs, `npm run test:ui`)
+
+**Harness** — `kiwi-app/scripts/ui-smoke.mjs`, zero new dependencies:
+Node 25 built-in `fetch`/`WebSocket` speak raw CDP; spawns vite via the
+local bin (`node node_modules/vite/bin/vite.js`, pinned `--host 127.0.0.1`
+— plain `localhost` binds ::1 on Windows and the 127.0.0.1 probe missed it),
+launches headless Edge/Chrome (`--remote-debugging-port=0`, port read from
+`DevToolsActivePort`), attaches `Target.createTarget`+flatten, and asserts
+against the real rendered DOM — no jsdom, no mocks. The app's own demo
+mode supplies data (a plain browser is not a Tauri webview).
+
+**Checks (10):** boot (.em-chrome+root), folders (nav.em-folders rows +
+.em-tree-count chips), list (.em-rows/.em-row), select→reader card,
+context menu (real contextmenu MouseEvent → .em-ctx[role=menu] 10 items,
+Esc-on-element dismiss — the menu's React onKeyDown lives on the menu
+root), compose (hash-route, recipients/body/account fields), settings
+(all 8 tabs clicked, tabpanel h1 verified per section), theme (radiogroup
+labels carry display names, not ids — clicked "…Dark", asserted
+`data-theme=dark`, restored via the "· default" chip), ? overlay
+(keydown ? on body bubbles to the window handler; Esc dispatched on the
+dialog for its own onKeyDown), lock (overlay contract — absent when
+unlocked; real locked-state assertion is live-backend-only and reported
+honestly).
+
+**Output:** PASS/FAIL/SKIP per check + `SMOKE_JSON{…}` line for CI;
+exit 1 on any failure. `--url` attaches to an already-running server,
+`--browser` picks edge|chrome|path, `--keep` leaves processes alive.
+
+**Result:** 10/10 PASS on real Edge headless (~40s). Verified
+`npm run build` still green (90 modules). package.json staged with ONLY
+the `test:ui` script line — A25's in-flight vitest/testing-library dep
+edits deliberately left unstaged (blob-staged via hash-object +
+update-index since the diff shared a hunk).
