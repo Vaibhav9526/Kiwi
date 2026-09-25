@@ -49,9 +49,34 @@ pub const MAX_SANDBOX_SESSIONS: usize = 128;
 #[derive(Clone)]
 pub struct SandboxSessionRecord {
     pub session_id: String,
+    /// What was detonated: `link` or `attachment` (T-300).
+    pub kind: SandboxSessionKind,
     pub target: String,
+    /// Local risk hint that produced `evidence_reasons`; `None` when no
+    /// message evidence matched the target (honest absence, never "clean").
+    pub risk_verdict: Option<&'static str>,
     pub evidence_reasons: Vec<String>,
     pub report: kiwi_sandbox::AnalysisReport,
+    /// When the open was recorded (unix seconds).
+    pub opened_at_unix: i64,
+}
+
+/// Which T-266 entry point produced a sandbox session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SandboxSessionKind {
+    Link,
+    Attachment,
+}
+
+impl SandboxSessionKind {
+    /// Stable wire spelling (ipc.md §6g).
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Link => "link",
+            Self::Attachment => "attachment",
+        }
+    }
 }
 
 /// Backend-provisioned pairing-channel identity (ipc.md §9d.2). The
@@ -185,8 +210,9 @@ impl SingleAttemptBook {
         let list: Vec<&String> = self.ids.iter().collect();
         std::fs::write(
             &self.path,
-            serde_json::to_vec(&list)
-                .map_err(|e| IpcError::new("internal", format!("encode single-attempt ids: {e}")))?,
+            serde_json::to_vec(&list).map_err(|e| {
+                IpcError::new("internal", format!("encode single-attempt ids: {e}"))
+            })?,
         )?;
         Ok(())
     }
@@ -824,10 +850,7 @@ impl AppState {
             }
         };
         for row in rows {
-            let single_attempt = self
-                .single_attempt
-                .get_mut()
-                .contains(&row.queue_id);
+            let single_attempt = self.single_attempt.get_mut().contains(&row.queue_id);
             if single_attempt {
                 if let Err(e) = self.store.get_mut().outbox_delete(&row.queue_id) {
                     eprintln!("[kiwi-app] single-attempt drop {e}");
@@ -837,7 +860,10 @@ impl AppState {
                 }
                 if let Err(e) = self.audit.get_mut().record(
                     "send-abandoned-no-retry",
-                    &format!("{} abandoned after restart: single-attempt class", row.queue_id),
+                    &format!(
+                        "{} abandoned after restart: single-attempt class",
+                        row.queue_id
+                    ),
                     now_unix(),
                 ) {
                     eprintln!("[kiwi-app] single-attempt audit failed: {e}");
@@ -1152,10 +1178,7 @@ impl HttpClient for OfflineHttp {
     async fn request(
         &self,
         _req: kiwi_integrations::http::HttpRequest,
-    ) -> Result<
-        kiwi_integrations::http::HttpResponse,
-        kiwi_integrations::IntegrationError,
-    > {
+    ) -> Result<kiwi_integrations::http::HttpResponse, kiwi_integrations::IntegrationError> {
         self.attempts.fetch_add(1, Ordering::Relaxed);
         Err(kiwi_integrations::IntegrationError::Transport {
             kind: kiwi_integrations::TransportKind::Connect,

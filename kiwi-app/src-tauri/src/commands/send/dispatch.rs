@@ -111,7 +111,10 @@ pub async fn outbox_loop(app: tauri::AppHandle) {
 /// Deliver one queued send: connect → auth → policy bridge → DATA →
 /// observe (via `run_mail_io` — client futures are `!Send`). On a Held
 /// outcome with attempts remaining, the item is re-enqueued with linear
-/// backoff inside this function — callers only journal the outcome.
+/// backoff inside this function — callers only journal the outcome. An
+/// item in the single-attempt class (a deliverability reservation, which
+/// accepts exactly one message) is never re-enqueued, whatever the relay
+/// reports.
 pub(crate) async fn deliver(
     state: Arc<AppState>,
     item: QueuedSend,

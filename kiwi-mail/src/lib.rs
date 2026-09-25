@@ -32,6 +32,7 @@ pub mod error;
 pub mod imap;
 pub mod lines;
 pub mod linkrisk;
+pub mod mbox;
 pub mod mime;
 pub mod pop3;
 pub mod rules;

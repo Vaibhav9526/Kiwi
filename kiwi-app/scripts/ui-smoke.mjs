@@ -236,6 +236,34 @@ async function runChecks(cdp, sid) {
     return "reader card populated";
   });
 
+  await check("quickfilter", "filter chips narrow the loaded list honestly", async () => {
+    // Flatten to list mode so .em-row count == visible message count.
+    await cdp.eval(sid, `(() => { const b=[...document.querySelectorAll('[role=switch]')].find(x=>x.getAttribute('aria-checked')==='true'); if(b) b.click(); })()`);
+    await waitFor(cdp, sid, `[...document.querySelectorAll('[role=switch]')].every(x=>x.getAttribute('aria-checked')==='false')`);
+    const total = await cdp.eval(sid, qsa(".em-row"));
+    // 'From sender' first (unfiltered): the selected row always matches its
+    // own sender, so ≥1 row is guaranteed and ≤total is the honest bound.
+    await cdp.eval(sid, `[...document.querySelectorAll('.em-chip')].find(x=>x.textContent.trim().startsWith('From sender'))?.click()`);
+    await new Promise((r) => setTimeout(r, 150));
+    const senderRows = await cdp.eval(sid, qsa(".em-row"));
+    if (senderRows < 1 || senderRows > total) throw new Error(`sender chip gave ${senderRows} rows of ${total}`);
+    await cdp.eval(sid, `document.querySelector('.em-chip-clear')?.click()`);
+    await waitFor(cdp, sid, `${qsa(".em-row")} === ${total}`);
+    const chipTxt = `(() => { const c=[...document.querySelectorAll('.em-chip')].find(x=>x.textContent.trim().startsWith('Unread')); if(!c) return -1; c.click(); return parseInt(c.querySelector('.em-chip-n')?.textContent||'-1'); })()`;
+    const expected = await cdp.eval(sid, chipTxt);
+    if (expected < 1) throw new Error("Unread chip missing or count<1");
+    if (!(await waitFor(cdp, sid, `${qsa(".em-row")} === ${expected} && (document.querySelector('.em-filterbar-status')?.textContent||'').includes('${expected} of ${total} shown')`)))
+      throw new Error(`rows did not narrow to ${expected}`);
+    if (expected >= total) throw new Error(`no filtering happened (${expected}==${total})`);
+    // Clear restores the full list and empties the status line.
+    await cdp.eval(sid, `document.querySelector('.em-chip-clear')?.click()`);
+    if (!(await waitFor(cdp, sid, `${qsa(".em-row")} === ${total} && (document.querySelector('.em-filterbar-status')?.textContent||'')===''`)))
+      throw new Error("clear did not restore rows");
+    // Restore threads mode for subsequent checks.
+    await cdp.eval(sid, `document.querySelector('[role=switch]')?.click()`);
+    return `${expected}/${total} unread, sender→${senderRows}, clear restores`;
+  });
+
   await check("ctxmenu", "right-click row → context menu", async () => {
     if (!(await cdp.eval(sid, ctxMenu(".em-row")))) throw new Error("no row to open menu on");
     if (!(await waitFor(cdp, sid, qs(".em-ctx[role=menu]"), 4000))) throw new Error("menu did not open");

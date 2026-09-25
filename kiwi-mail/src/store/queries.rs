@@ -865,6 +865,34 @@ impl MailStore {
         Ok(n > 0)
     }
 
+    /// Highest uid in a folder (0 when empty) — the local minting base for
+    /// import/move rows that carry no server identity.
+    pub fn max_uid(&self, folder_id: i64) -> Result<i64> {
+        Ok(self.conn.query_row(
+            "SELECT COALESCE(MAX(uid), 0) FROM messages WHERE folder_id = ?1",
+            params![folder_id],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// True when the account already stores this RFC822 `Message-ID` in any
+    /// folder (T-309 mbox-import dedup). `message_id` is nullable on the row —
+    /// callers only ask about present values.
+    pub fn account_has_message_id(&self, account_id: &str, message_id: &str) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM messages m
+                    JOIN folders f ON f.id = m.folder_id
+                    WHERE f.account_id = ?1 AND m.message_id = ?2
+                )",
+                params![account_id, message_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|exists| exists != 0)?)
+    }
+
     /// True when the exact folder-scoped message row exists.
     pub fn message_exists(&self, folder_id: i64, uid: u64) -> Result<bool> {
         Ok(self

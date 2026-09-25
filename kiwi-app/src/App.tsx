@@ -167,6 +167,7 @@ export default function App() {
   const [searchHits, setSearchHits] = useState<SearchHit[] | null>(null);
   const [searchBusy, setSearchBusy] = useState(false);
   const [searchNote, setSearchNote] = useState<string | null>(null);
+  const [sandboxOpens, setSandboxOpens] = useState<number | null>(null);
   const [findingIndex, setFindingIndex] = useState<number | null>(null);
   const [findingDetail, setFindingDetail] = useState<FindingDetailView | null>(null);
   const [findingDetailError, setFindingDetailError] = useState<string | null>(null);
@@ -462,9 +463,10 @@ export default function App() {
   const loadSecurity = useCallback(async () => {
     if (demo) return;
     try {
-      const [f, e] = await Promise.all([api.securityFindings(), api.securityEvents(100)]);
+      const [f, e, s] = await Promise.all([api.securityFindings(), api.securityEvents(100), api.sandboxSessions()]);
       setFindings(f.map((x, i) => findingToInfo(x as never, i)));
       setEvents(e.map((x) => eventToRow(x as never, (id) => (id ? (emailById.get(id) ?? id) : "—"))));
+      setSandboxOpens(s.sessions.length);
     } catch {
       // Security panels keep last-known values; errors surface in-view on demand.
     }
@@ -1396,6 +1398,9 @@ export default function App() {
                 flagged: demo ? (smartUnread["flagged"] ?? null) : null,
                 unreplied: demo ? (smartUnread["unreplied"] ?? null) : null,
                 activeDevices: demo ? null : devices.filter((d) => d.status === "active").length,
+                // T-312: real count from kiwi_sandbox_sessions (bounded,
+                // completed opens). null in demo — never a fixture.
+                sandboxOpens: demo ? null : sandboxOpens,
                 demo,
               }}
             />

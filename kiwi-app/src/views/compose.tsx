@@ -298,6 +298,20 @@ export function ComposeView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draftKey]);
 
+  // T-312: one-shot "Write" handoff from the Contacts detail card. Runs
+  // after draft restore (mount-effect order) so a restored draft's
+  // recipients merge with, and are never clobbered by, the handoff.
+  useEffect(() => {
+    try {
+      const addr = window.sessionStorage.getItem("kiwi.composeTo");
+      if (!addr) return;
+      window.sessionStorage.removeItem("kiwi.composeTo");
+      setRecipients((r) => (r.includes(addr) ? r : [...r, addr]));
+    } catch {
+      // storage denied — nothing to seed.
+    }
+  }, []);
+
   useEffect(() => {
     const t = window.setTimeout(() => {
       if (recipients.length === 0 && ccRecipients.length === 0 && !subject && !body) return;

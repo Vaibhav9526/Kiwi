@@ -43,6 +43,8 @@ CREATE TABLE IF NOT EXISTS messages (
     UNIQUE (folder_id, uid)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_folder ON messages(folder_id, uid);
+-- T-309: mbox import dedups on the RFC822 identity account-wide.
+CREATE INDEX IF NOT EXISTS idx_messages_mid ON messages(message_id);
 CREATE TABLE IF NOT EXISTS pop3_seen (
     account_id TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
     uidl       TEXT NOT NULL,

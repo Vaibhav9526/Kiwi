@@ -167,7 +167,42 @@ export function MailboxView(props: MailboxProps) {
     [allMessages, catTab],
   );
   const otherCount = useMemo(() => allMessages.filter((m) => (m.category ?? "primary") !== "primary").length, [allMessages]);
-  const selected = messages.find((m) => m.id === selectedId) ?? messages[0];
+  const preFilterSelected = messages.find((m) => m.id === selectedId) ?? messages[0];
+
+  // T-313 quick-filter chips — client-side view filtering over the rows
+  // already fetched for this folder+tab. Chips AND-combine; `sender`
+  // captures the selected row's From address when toggled on. Resets on
+  // folder switch (folder-keyed state is wrong across folders — flags
+  // survive but the sender address doesn't transfer meaningfully).
+  type Chip = "unread" | "starred" | "attach" | "sender";
+  const [chips, setChips] = useState<Set<Chip>>(new Set());
+  const [senderFilter, setSenderFilter] = useState<string | null>(null);
+  useEffect(() => {
+    setChips(new Set());
+    setSenderFilter(null);
+  }, [folder]);
+  const toggleChip = (c: Chip) => {
+    setChips((prev) => {
+      const next = new Set(prev);
+      if (next.has(c)) next.delete(c);
+      else next.add(c);
+      return next;
+    });
+    if (c === "sender") {
+      setSenderFilter((prev) => (prev ? null : (preFilterSelected?.from ?? null)));
+    }
+  };
+  const filtered = useMemo(() => {
+    if (chips.size === 0) return messages;
+    return messages.filter((m) => {
+      if (chips.has("unread") && !m.unread) return false;
+      if (chips.has("starred") && !m.starred) return false;
+      if (chips.has("attach") && !m.hasAttachments) return false;
+      if (chips.has("sender") && senderFilter && m.from !== senderFilter) return false;
+      return true;
+    });
+  }, [messages, chips, senderFilter]);
+  const selected = filtered.find((m) => m.id === selectedId) ?? filtered[0];
 
   // Bulk selection (T-162): explicit id list + range anchor. Cleared on
   // folder/tab change (ids are folder-scoped) and after move actions.
@@ -187,11 +222,11 @@ export function MailboxView(props: MailboxProps) {
 
   const togglePick = (id: string, range: boolean) => {
     if (range && anchorRef.current) {
-      const a = messages.findIndex((m) => m.id === anchorRef.current);
-      const b = messages.findIndex((m) => m.id === id);
+      const a = filtered.findIndex((m) => m.id === anchorRef.current);
+      const b = filtered.findIndex((m) => m.id === id);
       if (a >= 0 && b >= 0) {
         const [lo, hi] = a < b ? [a, b] : [b, a];
-        const span = messages.slice(lo, hi + 1).map((m) => m.id);
+        const span = filtered.slice(lo, hi + 1).map((m) => m.id);
         setPicked((prev) => Array.from(new Set([...prev, ...span])));
         return;
       }
@@ -200,7 +235,7 @@ export function MailboxView(props: MailboxProps) {
     setPicked((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   };
 
-  const allPicked = messages.length > 0 && picked.length >= messages.length;
+  const allPicked = filtered.length > 0 && picked.length >= filtered.length;
   useEffect(() => {
     if (selectAllRef.current) {
       selectAllRef.current.indeterminate = picked.length > 0 && !allPicked;
@@ -323,7 +358,7 @@ export function MailboxView(props: MailboxProps) {
   // Conversation threads (T-165): grouped from the visible list, newest
   // activity first. Thread rows carry the count badge; the reader stacks
   // the thread's messages as cards.
-  const threads = useMemo(() => buildThreads(messages), [messages]);
+  const threads = useMemo(() => buildThreads(filtered), [filtered]);
   const [threadMode, setThreadMode] = useState(() => loadPref("kiwi.threadMode", "threads"));
   useEffect(() => savePref("kiwi.threadMode", threadMode), [threadMode]);
   const [groupsOpen, setGroupsOpen] = useState<Record<string, boolean>>({});
@@ -334,9 +369,9 @@ export function MailboxView(props: MailboxProps) {
     const flat: RowEntry[] =
       threadMode === "threads"
         ? threads.map((t) => ({ kind: "thread", t }))
-        : messages.map((m) => ({ kind: "msg", m }));
+        : filtered.map((m) => ({ kind: "msg", m }));
     return flat;
-  }, [threadMode, threads, messages]);
+  }, [threadMode, threads, filtered]);
   const [todayRows, olderRows] = useMemo(() => {
     const now = new Date();
     const today: RowEntry[] = [];
@@ -372,9 +407,9 @@ export function MailboxView(props: MailboxProps) {
   }, [folder]);
 
   const stepSelection = (dir: 1 | -1) => {
-    if (!selected || messages.length === 0) return;
-    const i = messages.findIndex((m) => m.id === selected.id);
-    const next = messages[(i + dir + messages.length) % messages.length];
+    if (!selected || filtered.length === 0) return;
+    const i = filtered.findIndex((m) => m.id === selected.id);
+    const next = filtered[(i + dir + filtered.length) % filtered.length];
     if (next) navigate({ name: "mail", folder, messageId: next.id });
   };
 
@@ -392,7 +427,7 @@ export function MailboxView(props: MailboxProps) {
             <small className="em-pane-sub">
               {searching
                 ? `(${searchHits.length} hit(s) — “${props.searchQuery.trim()}”)`
-                : `(${folder === "outbox" ? props.outbox.length : `${messages.length} of ${allMessages.length}`})`}
+                : `(${folder === "outbox" ? props.outbox.length : chips.size > 0 ? `${filtered.length} of ${messages.length} filtered` : `${messages.length} of ${allMessages.length}`})`}
             </small>
           </h1>
           {folder === "outbox" && (
@@ -440,11 +475,11 @@ export function MailboxView(props: MailboxProps) {
                     setPicked([]);
                     anchorRef.current = null;
                   } else {
-                    setPicked(messages.map((m) => m.id));
-                    anchorRef.current = messages[messages.length - 1]?.id ?? null;
+                    setPicked(filtered.map((m) => m.id));
+                    anchorRef.current = filtered[filtered.length - 1]?.id ?? null;
                   }
                 }}
-                aria-label={allPicked ? `Deselect all ${messages.length} messages` : `Select all ${messages.length} messages in folder`}
+                aria-label={allPicked ? `Deselect all ${filtered.length} shown messages` : `Select all ${filtered.length} shown messages`}
               />
               <button
                 type="button"
@@ -465,6 +500,58 @@ export function MailboxView(props: MailboxProps) {
               >
                 <IconFilter size={13} />
               </button>
+            </span>
+          </div>
+        )}
+        {folder !== "outbox" && !searching && allMessages.length > 0 && (
+          <div className="em-filterbar" role="group" aria-label="Quick filters — narrow the loaded list">
+            {(
+              [
+                { id: "unread", label: "Unread", count: messages.filter((m) => m.unread).length },
+                { id: "starred", label: "Starred", count: messages.filter((m) => m.starred).length },
+                { id: "attach", label: "Attachments", count: messages.filter((m) => m.hasAttachments).length },
+              ] as { id: Chip; label: string; count: number }[]
+            ).map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                className={`em-chip${chips.has(c.id) ? " is-on" : ""}`}
+                aria-pressed={chips.has(c.id)}
+                onClick={() => toggleChip(c.id)}
+              >
+                {c.label} <span className="em-chip-n">{c.count}</span>
+              </button>
+            ))}
+            <button
+              type="button"
+              className={`em-chip${chips.has("sender") ? " is-on" : ""}`}
+              aria-pressed={chips.has("sender")}
+              disabled={!preFilterSelected}
+              title={
+                preFilterSelected
+                  ? chips.has("sender")
+                    ? `Showing only mail from ${senderFilter}`
+                    : `Show only mail from ${preFilterSelected.from}`
+                  : "Select a message first — filters to its sender"
+              }
+              onClick={() => toggleChip("sender")}
+            >
+              From sender
+            </button>
+            {chips.size > 0 && (
+              <button
+                type="button"
+                className="em-chip em-chip-clear"
+                onClick={() => {
+                  setChips(new Set());
+                  setSenderFilter(null);
+                }}
+              >
+                Clear
+              </button>
+            )}
+            <span role="status" className="em-filterbar-status">
+              {chips.size > 0 ? `${filtered.length} of ${messages.length} shown` : ""}
             </span>
           </div>
         )}
@@ -545,7 +632,7 @@ export function MailboxView(props: MailboxProps) {
                 <small>{props.messagesError}</small>
               </div>
             )}
-            {messages.length === 0 && !props.messagesLoading && !props.hasAccounts && !props.demo && (
+            {filtered.length === 0 && !props.messagesLoading && !props.hasAccounts && !props.demo && (
               <div className="kiwi-empty">
                 <span className="kiwi-empty-icon em-empty-icon" aria-hidden="true">
                   <IconMail size={28} />
@@ -559,18 +646,40 @@ export function MailboxView(props: MailboxProps) {
                 </button>
               </div>
             )}
-            {messages.length === 0 && !props.messagesLoading && (props.hasAccounts || props.demo) && (
+            {filtered.length === 0 && !props.messagesLoading && (props.hasAccounts || props.demo) && (
               <div className="kiwi-empty">
                 <span className="kiwi-empty-icon em-empty-icon" aria-hidden="true">
                   <IconMail size={28} />
                 </span>
-                <strong>Nothing here</strong>
-                <br />
-                <small>
-                  {allMessages.length === 0
-                    ? "No messages in this folder yet."
-                    : `No ${catTab === "primary" ? "Primary" : "Other"} messages in the loaded list.`}
-                </small>
+                {chips.size > 0 && allMessages.length > 0 ? (
+                  <>
+                    <strong>No matches</strong>
+                    <br />
+                    <small>Nothing in {folderLabel} passes the active filter chips.</small>
+                    <br />
+                    <button
+                      type="button"
+                      className="ms-btn"
+                      style={{ marginTop: "0.5rem" }}
+                      onClick={() => {
+                        setChips(new Set());
+                        setSenderFilter(null);
+                      }}
+                    >
+                      Clear filters
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <strong>Nothing here</strong>
+                    <br />
+                    <small>
+                      {allMessages.length === 0
+                        ? "No messages in this folder yet."
+                        : `No ${catTab === "primary" ? "Primary" : "Other"} messages in the loaded list.`}
+                    </small>
+                  </>
+                )}
               </div>
             )}
             <div

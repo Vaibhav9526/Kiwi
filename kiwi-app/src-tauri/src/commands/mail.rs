@@ -407,7 +407,7 @@ pub(crate) async fn load_body_raw(
 /// never blocks on DNS, and shared so hickory's answer cache stays warm
 /// across syncs. A host with no working DNS memoizes the failed build —
 /// lookups then return `Temp` instead of panicking or retrying forever.
-fn auth_sealer() -> &'static HickoryResolver {
+pub(crate) fn auth_sealer() -> &'static HickoryResolver {
     static SEALER: std::sync::OnceLock<HickoryResolver> = std::sync::OnceLock::new();
     SEALER.get_or_init(HickoryResolver::system)
 }

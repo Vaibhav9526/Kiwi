@@ -41,14 +41,7 @@ pub(crate) async fn send_impl(
     message: ComposeInput,
     options: Option<SendOptions>,
 ) -> CmdResult<SendReceipt> {
-    send_impl_class(
-        state,
-        account_id,
-        message,
-        options,
-        OutboxClass::Ordinary,
-    )
-    .await
+    send_impl_class(state, account_id, message, options, OutboxClass::Ordinary).await
 }
 
 pub(crate) async fn send_impl_class(

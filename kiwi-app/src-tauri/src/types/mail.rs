@@ -353,6 +353,46 @@ pub struct MessageSourceView {
     pub truncated: bool,
 }
 
+/// One per-message failure inside an mbox import — the ordinal in the file
+/// plus a bounded reason. Never a whole-message body or a filename.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MboxImportIssueView {
+    /// 1-based member index inside the mbox file.
+    pub index: u64,
+    pub detail: String,
+}
+
+/// `kiwi_import_mbox` report (T-309). `imported + skippedDuplicates +
+/// skippedExpunged + failed` equals the members processed
+/// (`min(messagesFound, MAX_MBOX_MESSAGES)`); `issues` is the bounded failure
+/// detail (cap `MAX_IMPORT_ISSUES`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MboxImportView {
+    pub account_id: String,
+    pub folder: String,
+    pub folder_id: i64,
+    /// `From ` separators found (parsed or not).
+    pub messages_found: u64,
+    /// Stored as real rows.
+    pub imported: u64,
+    /// Same `Message-ID` already present on the account — skipped, not
+    /// re-imported.
+    pub skipped_duplicates: u64,
+    /// Thunderbird `Expunged` (deleted, uncompacted) members — skipped
+    /// deliberately; importing them would resurrect deleted mail.
+    pub skipped_expunged: u64,
+    /// Parse/store failures — each one also listed in `issues` (bounded).
+    pub failed: u64,
+    /// Members beyond `MAX_MBOX_MESSAGES` were not parsed at all.
+    pub truncated: bool,
+    /// Ingest-rule failures on imported rows (like `ruleFailures` on sync);
+    /// never counted in `failed` — the message itself landed.
+    pub rule_failures: u64,
+    pub issues: Vec<MboxImportIssueView>,
+}
+
 /// `kiwi://mail-changed` event payload — emitted by the live-sync worker
 /// (T-157) after a sync pass changed stored mail. `folder`/`folderId` are
 /// set for folder-scoped passes (IDLE wake, poll); `null` marks the full

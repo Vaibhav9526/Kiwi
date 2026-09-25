@@ -17,6 +17,7 @@ pub mod autoconfig;
 pub mod contacts;
 pub mod devices;
 pub mod endpoint;
+pub mod import;
 pub mod integrations;
 pub mod link;
 pub mod mail;

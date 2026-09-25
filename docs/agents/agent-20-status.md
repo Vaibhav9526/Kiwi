@@ -905,3 +905,43 @@ clippy `await_holding_lock` fix. Interim fills I made (session literals,
 `.clone()` on a Drop type, std::sync::Mutex initializers) were all
 mechanical; the owners landed their canonical versions and every fix
 converged — final tree is theirs, not mine.
+
+## T-311 — Authenticator contract rulings (8 draft rulings, T-270 audit)
+
+**Status: DONE — PROPOSED, pending owner/Lead ratification.** A23's
+authenticator-drift-1 audit tabled 8 contract contradictions blocking
+T-194; I drafted one proposed ruling per row, grounded in existing code +
+threat model, each marked proposed/pending sign-off.
+
+- `docs/DECISIONS.md` — ADR-013 with 8 independently-ratifiable rulings:
+  - **R1 desktop-key encoding:** `ed25519:` + canonical padded std Base64
+    → exactly 32 B + re-encode equality (fix the 64→44-char example;
+    `check_desktop_key` is the reference impl; mobile must decode+reencode,
+    not prefix-check).
+  - **R2 TLS pin identity:** pin = leaf-cert SPKI byte-equality with the
+    QR Ed25519 key — cert key IS the pairing identity; no CA/hostname/
+    fingerprint. Ed25519-cert fallback (ECDSA + in-channel proof) flagged
+    for Agent 6, not pre-authorized.
+  - **R3 pairing scheme:** ratify `wss://` as sole production scheme;
+    scanners reject ws/http/https/userinfo/query/fragment; `http://` is
+    T-304-dev-flag-only. Fixes the `ws://` example.
+  - **R4 casing/version:** two vocabularies + one adapter — camelCase
+    `nonceB64` stays ratified IPC; snake_case + `schema_version` stays the
+    phone transport wire; never dual spellings in one payload.
+  - **R5 session form:** `boot-` for unlock/device-pairing, `x-tx:` for
+    recovery/elevated; enforce event↔form pairing; fix the `x-tx:`-unlock
+    examples.
+  - **R6 approval context:** add display-only `desktop_label` (≤128 B,
+    sanitized; unsigned, non-trust) — closes §6.1's context gap without a
+    canonical-byte/version bump.
+  - **R7 timeout audit:** §6.3 wins — timeout = absence of decision, no
+    audit row unless a late response arrives; fix §7 + §10 item-4 stale
+    "DONE" pointer.
+  - **R8 QR secrecy:** reword to "no PRIVATE KEY material"; ticket is
+    short-lived bearer material — never logged/persisted/echoed, renderer
+    display-only per the §9d exception.
+- `docs/proposals/t311-authenticator-rulings.md` — per-row contract-diff
+  sketch (exact authenticator.md/ipc.md edits pending sign-off) +
+  audit-row→ruling→code-consumer map.
+- No normative contract text amended; no code changed (R1's mobile-side
+  check and R6's field are ratification-gated implementation notes).

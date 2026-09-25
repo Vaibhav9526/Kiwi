@@ -290,4 +290,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-310 | reader polish: quote collapse, splitQuotedText, in-reply-to jump, sig muted | Agent 24 | done |
 | T-311 | draft rulings for 8 authenticator contract contradictions (T-270 table) → DECISIONS.md proposals for owner ratification | Agent 20 | open | `docs/` | T-270,T-194 |
 | T-312 | contacts depth (detail/edit or honest gap) + rail sandbox-pending row once T-300 lands | Agent 25 | open | `kiwi-app/src` | T-231,T-300 |
-| T-313 | quick-filter chips on message list (unread/starred/attachments; client-side over fetched rows) | Agent 24 | open | `mailbox.tsx` | |
+| T-313 | quick-filter chips on message list (unread/starred/attachments + sender; client-side over fetched rows) | Agent 24 | done | `mailbox.tsx` | |

@@ -124,6 +124,7 @@ pub fn run() {
             // sandbox-open (gated, fail closed)
             kiwi_sandbox_open_link,
             kiwi_sandbox_open_attachment,
+            kiwi_sandbox_sessions,
             kiwi_link_click,
             // snooze (gated — T-255, F-feature)
             kiwi_message_snooze,

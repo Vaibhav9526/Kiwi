@@ -620,3 +620,35 @@ backs `parseSandboxSessions` in kiwi.ts.
 directly on 8 cases (collapse: preamble+quotes, run-to-EOM, sig+quote;
 refuse: interleaved, quote-only, stray `>`, bare preamble, plain).
 Swept into `6ee4daf` mid-session — final content verified in HEAD.
+
+## T-313 — quick-filter chips on the message list
+
+**Chip bar** (`.em-filterbar`, mailbox.tsx) — client-side view filtering
+over the already-fetched rows; zero new IPC:
+
+- **Unread / Starred / Attachments** chips AND-combine, each with a live
+  count scoped to the current tab's loaded set. **From sender** captures
+  the selected row's From address when toggled (disabled with honest
+  tooltip when no selection exists; title names the captured address).
+- `filtered` memo sits between the category-tab filter and thread
+  grouping — threading, range-select, select-all, keyboard nav, and
+  "selected" fallback all operate on the narrowed set consistently.
+- **Reset on folder switch** (chips + sender address cleared together);
+  chips compose with search honestly by disappearing while `searching`
+  (search drives its own result list — stacking the two would lie about
+  scope).
+- **Counts**: header reads "N of M filtered" while chips are active;
+  a `role=status` span announces "N of M shown" for AT; chips are
+  `aria-pressed` buttons inside a labelled `role=group`.
+- **No-matches state** is distinct from empty-folder: "No matches —
+  nothing passes the active filter chips" + a Clear filters button.
+
+**Shortcut:** none added — chips are ordinary focusable buttons and `/`
+already focuses search; inventing one would collide with the T-291 map.
+Documented, not faked.
+
+**Verification:** `tsc && vite build` green; the T-305 suite gained a
+`quickfilter` check — flattens to list mode, asserts `.em-row` count
+equals the Unread chip's declared count AND the status line reads
+"N of M shown", sender chip narrows 1..total, Clear restores full rows +
+empty status. **12/12 PASS** on real Edge headless.

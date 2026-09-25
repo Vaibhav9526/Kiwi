@@ -5,10 +5,12 @@
 //!
 //! Two disclosures ride every response:
 //! - `publicInboxNotice` on every temp-mail answer — the binding warning
-//!   from `kiwi-integrations::tempmail::PUBLIC_INBOX_NOTICE`, forwarded
+//!   from `kiwi_integrations::tempmail::PUBLIC_INBOX_NOTICE`, forwarded
 //!   verbatim so the copy can never drift or be omitted by a view.
-//! - `consentNotice` on `deliverability_begin` — what the consent token
-//!   gates; the token itself is verified backend-side (§9e).
+//! - `consentNotice` on `deliverability_begin` — the third-party
+//!   disclosure plus what the capability token is (a single-use replay
+//!   guard, not proof of a trusted user gesture); the token itself is
+//!   verified backend-side (§9e).
 
 use std::collections::BTreeMap;
 
@@ -25,12 +27,14 @@ fn public_inbox_notice() -> &'static str {
     kiwi_integrations::tempmail::PUBLIC_INBOX_NOTICE
 }
 
-/// Mandatory consent copy for the deliverability send flow — the backend
-/// enforces it via the single-use token; this text is what the UI shows
-/// before the user hands the token back.
+/// Mandatory copy for the deliverability send flow: the third-party
+/// disclosure, plus the honest description of what the token is. The token
+/// is a single-use anti-replay capability verified backend-side — it is not
+/// evidence of a human decision, and the copy must not claim otherwise.
 pub const DELIVERABILITY_CONSENT_NOTICE: &str = "Sending the test message transmits it through a \
-     third-party service (email-spam-tester.com) via your configured relay. Consent is a \
-     single-use token minted by the backend; the send cannot proceed without it.";
+     third-party service (email-spam-tester.com) via your configured relay. The backend's \
+     single-use token is a replay guard for this one send, not proof of your approval — send only \
+     when you intend the message to leave your relay.";
 
 // ---------------------------------------------------------------------------
 // Temp mail
@@ -564,7 +568,10 @@ mod tests {
         let unknown_cat = DeliverabilityReportView::from_report(
             "dtest-6",
             report(
-                vec![check("spf", "auth", "pass"), check("x", "brand-new", "fail")],
+                vec![
+                    check("spf", "auth", "pass"),
+                    check("x", "brand-new", "fail"),
+                ],
                 false,
             ),
         );
@@ -617,9 +624,11 @@ mod tests {
             true,
             None,
         );
-        assert!(serde_json::to_value(&plain)
-            .unwrap()
-            .get("retryAfterMs")
-            .is_none());
+        assert!(
+            serde_json::to_value(&plain)
+                .unwrap()
+                .get("retryAfterMs")
+                .is_none()
+        );
     }
 }

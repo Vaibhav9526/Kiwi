@@ -817,6 +817,123 @@ async fn e2e_send_starttls_refusal_fails_closed() {
         .expect("server consumed greeting+EHLO only");
 }
 
+/// Transcript for a session whose only recipient is rejected: the DATA
+/// phase never runs, and the client resets + quits.
+fn smtp_session_all_rejected() -> String {
+    String::from(
+        "S: 220 e2e.test ESMTP TestServer\n\
+         C: EHLO kiwi.local\n\
+         S: 250-e2e.test greets you\n\
+         S: 250-STARTTLS\n\
+         S: 250 SIZE 10485760\n\
+         C: STARTTLS\n\
+         S: 220 2.0.0 Ready to start TLS\n\
+         # TLS handshake\n\
+         C: EHLO kiwi.local\n\
+         S: 250-e2e.test greets you\n\
+         S: 250-AUTH PLAIN LOGIN\n\
+         S: 250 SIZE 10485760\n\
+         C: AUTH PLAIN\n\
+         S: 235 2.7.0 Authentication successful\n\
+         C: MAIL FROM:<u@e2e.test>\n\
+         S: 250 2.1.0 Ok\n\
+         C: RCPT TO:<bob@e2e.test>\n\
+         S: 550 5.1.1 No such user here\n\
+         C: RSET\n\
+         S: 250 2.0.0 Ok\n\
+         C: QUIT\n\
+         S: 221 2.0.0 Bye\n",
+    )
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn e2e_send_no_recipient_accepted_is_never_journaled_as_sent() {
+    let (acceptor, _der) = testutil::tls_acceptor(&["e2e.test"]);
+    let (smtp_l, smtp_port) = bind_listener().await;
+    let state = test_state("send-allrejected", MockNet::new());
+    let view = add_account_impl(&state, send_input(smtp_port, 9))
+        .await
+        .unwrap();
+    send_impl(
+        &state,
+        &view.id,
+        compose(),
+        Some(SendOptions {
+            send_at_unix: None,
+            undo_grace_secs: Some(0),
+        }),
+    )
+    .await
+    .unwrap();
+    let item = state.send_queue.lock().await.due(i64::MAX).remove(0);
+    let meta = state.outbox_meta.lock().await.get(&item.queue_id).cloned();
+
+    let smtp = spawn_sessions(
+        smtp_l,
+        vec![smtp_session_all_rejected()],
+        Proto::Smtp,
+        Some(acceptor),
+    );
+
+    // An SMTP transaction that accepted nobody is not a delivery: it is a
+    // server rejection, retryable for an ordinary send.
+    let outcome = deliver(state.clone(), item, meta).await;
+    assert_eq!(outcome, Delivered::Held);
+    let audit = audit_actions(&state);
+    assert!(audit.contains("send-attempt-failed"));
+    assert!(!audit.contains("send-sent"), "{audit}");
+    assert!(!audit.contains("send-partially-rejected"), "{audit}");
+    smtp.await.unwrap().expect("smtp transcript replayed fully");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn e2e_single_attempt_send_is_never_retried() {
+    let (acceptor, _der) = testutil::tls_acceptor(&["e2e.test"]);
+    let (smtp_l, smtp_port) = bind_listener().await;
+    let state = test_state("send-single", MockNet::new());
+    let view = add_account_impl(&state, send_input(smtp_port, 9))
+        .await
+        .unwrap();
+    let receipt = send_impl(
+        &state,
+        &view.id,
+        compose(),
+        Some(SendOptions {
+            send_at_unix: None,
+            undo_grace_secs: Some(0),
+        }),
+    )
+    .await
+    .unwrap();
+    // Promote the queued send to the deliverability class: one attempt,
+    // never re-enqueued, whatever the relay says.
+    {
+        let mut metas = state.outbox_meta.lock().await;
+        metas.get_mut(&receipt.queue_id).unwrap().class = crate::state::OutboxClass::SingleAttempt;
+    }
+    let item = state.send_queue.lock().await.due(i64::MAX).remove(0);
+    let meta = state.outbox_meta.lock().await.get(&item.queue_id).cloned();
+
+    let smtp = spawn_sessions(
+        smtp_l,
+        vec![smtp_session_all_rejected()],
+        Proto::Smtp,
+        Some(acceptor),
+    );
+
+    let outcome = deliver(state.clone(), item, meta).await;
+    assert_eq!(
+        outcome,
+        Delivered::Failed,
+        "a single-use sink is not retried"
+    );
+    assert_eq!(state.send_queue.lock().await.pending_count(), 0);
+    let audit = audit_actions(&state);
+    assert!(audit.contains("send-single-attempt-abandoned"), "{audit}");
+    assert!(!audit.contains("send-sent"), "{audit}");
+    smtp.await.unwrap().expect("smtp transcript replayed fully");
+}
+
 // ---------------------------------------------------------------------------
 // T-285 — POP3 E2E (mirror of T-257 IMAP / T-262 SMTP): account-add →
 // sync → scripted loopback POP3 (real TCP + implicit TLS, same testutil

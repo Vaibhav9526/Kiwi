@@ -4,7 +4,9 @@ use serde::Serialize;
 
 use kiwi_core::session::{ChainValidation, KeyExchangeGroup, SecuritySession};
 
-use super::{SignalView, auth_mechanism, protocol, tls_version, transport};
+use super::{
+    SignalView, auth_mechanism, protocol, session_source, tls_version, transport,
+};
 
 /// One observed connection (session detail / cert viewer, KIWI-UI-003/008).
 #[derive(Debug, Clone, Serialize)]
@@ -114,6 +116,53 @@ pub struct SandboxOpenView {
     pub report: kiwi_sandbox::AnalysisReport,
 }
 
+/// One recorded sandbox open (T-300). `target` is the sanitized display
+/// target: a redacted URL for links, the `attachment:f<id>/u<uid>` coordinate
+/// for attachments — never a raw path, filename, or payload.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SandboxSessionView {
+    pub session_id: String,
+    /// `link | attachment`.
+    pub kind: &'static str,
+    pub target: String,
+    /// `clean | noted | failed`, or `null` when no message evidence matched
+    /// the target (absent evidence, never a fabricated "clean").
+    pub risk_verdict: Option<&'static str>,
+    /// Bounded stable evidence reason codes; never the matched target text.
+    pub evidence_reasons: Vec<String>,
+    pub opened_at_unix: i64,
+    /// `completed` — a T-266 open always tears down before it is recorded, so
+    /// there is no live guest and no expiry to report.
+    pub state: &'static str,
+    /// Always `null` for a torn-down session (no guest to expire). Reserved
+    /// so a future live-session provider can populate it without a wire change.
+    pub expires_at_unix: Option<i64>,
+}
+
+impl From<&crate::state::SandboxSessionRecord> for SandboxSessionView {
+    fn from(record: &crate::state::SandboxSessionRecord) -> Self {
+        Self {
+            session_id: record.session_id.clone(),
+            kind: record.kind.as_str(),
+            target: record.target.clone(),
+            risk_verdict: record.risk_verdict,
+            evidence_reasons: record.evidence_reasons.clone(),
+            opened_at_unix: record.opened_at_unix,
+            state: "completed",
+            expires_at_unix: None,
+        }
+    }
+}
+
+/// Bounded list of recorded sandbox sessions, newest first. `sessions` is
+/// empty when nothing has been opened — absence is not an error.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SandboxSessionsView {
+    pub sessions: Vec<SandboxSessionView>,
+}
+
 /// Backend policy for one clicked message link. Reasons are bounded stable
 /// evidence codes; the target URL itself is not persisted.
 #[derive(Debug, Clone, Serialize)]
@@ -189,12 +238,7 @@ impl From<&SecuritySession> for SessionView {
             auth_mechanism: auth_mechanism(&s.auth_mechanism),
             auth_succeeded: s.auth_succeeded,
             established_unix: s.established_unix,
-            source: match s.source {
-                kiwi_core::session::SessionSource::ThunderbirdHook => "live-client",
-                kiwi_core::session::SessionSource::ForensicPcap => "forensic-pcap",
-                kiwi_core::session::SessionSource::TestFixture => "test-fixture",
-            }
-            .to_string(),
+            source: session_source(s.source).to_string(),
         }
     }
 }

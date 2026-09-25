@@ -17,8 +17,20 @@ owns the *live-session view* and the *trust decision*.
   payload (SECURITY.md rules 6, 9).
 - Every trust-reducing signal carries `evidence_ref` pointing at a persisted
   evidence/finding record — never a free-text-only conclusion.
-- Unknown enum values / new fields must be ignored, not fatal
-  (API_CONTRACTS.md cross-cutting invariants).
+- **`unknown-value` tolerance is at the view boundary, not a serde derive.**
+  kiwi-core carries no serde derives (deliberate — the enum→wire mappers live
+  once in `kiwi-app`'s `types/mod.rs`). Consequently there is no derived
+  `Deserialize` that could reject an unknown variant: `SecuritySession` is
+  produced internally, never parsed from the wire. Renderer-supplied enum
+  fields are `String` in the input views and go through explicit
+  `invalid-input` parsers (`parse_security`, `parse_challenge_event`) that
+  fail closed on an unrecognized spelling. Output is emitted from the typed
+  core enums, so an unknown *future* value is a compile error at the mapper,
+  not a runtime surprise. Consumers ignore unknown fields.
+- **Session-view enum spellings are mapped explicitly and are pinned by
+  tests** — they are cross-component view vocabulary, distinct from the
+  forensics FSV-1 serde tags (see ipc.md §3, forensics.md §12). `source` is
+  `live-client`, not the pre-pivot `thunderbird-hook` (T-260/SS-2 ruling).
 - `schema_version` is an integer; producers emit `1`. A consumer that sees a
   higher major version must not assume field semantics.
 
@@ -46,7 +58,7 @@ Canonical shape (JSON field names; Rust types in `kiwi-core::session`):
 | `auth_mechanism` | `"none" \| "plain" \| "login" \| "cram-md5" \| "scram-sha-1" \| "scram-sha-256" \| "xoauth2" \| "oauthbearer" \| "ntlm" \| "gssapi" \| "client-cert" \| "other:<name>" \| "unknown"` | |
 | `auth_succeeded` | bool \| null | `false` on observed failure; `null` if not attempted |
 | `established_unix` | i64 | session establishment, seconds since epoch |
-| `source` | `"thunderbird-hook" \| "forensic-pcap" \| "test-fixture"` | provenance — never guessed |
+| `source` | `"live-client" \| "forensic-pcap" \| "test-fixture"` | provenance — never guessed. `live-client` supersedes the pre-pivot `thunderbird-hook`: KIWI is a standalone client, so a live observation has no Thunderbird hook behind it (T-260 ruling, SS-2). `forensic-pcap` is what kiwi-forensics produces |
 
 `CertificateSummary`: `{subject_dn, issuer_dn, serial_hex, not_before_unix,
 not_after_unix, signature_algorithm, public_key_algorithm, public_key_bits,

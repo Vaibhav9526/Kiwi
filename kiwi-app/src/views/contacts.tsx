@@ -17,6 +17,7 @@ import type { CSSProperties } from "react";
 import type { ContactInput, ContactView } from "../kiwi";
 import { contactLabel, contactPrimaryEmail, parseContact } from "../kiwi";
 import { api } from "../ipc";
+import { navigate } from "../router";
 import { Icon } from "../components/icons/index";
 import {
   deleteLocal,
@@ -87,6 +88,10 @@ export function ContactsView({
   const [source, setSource] = useState<"server" | "local">("local");
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
+  // T-312: server-side hits — the loaded list is capped at 500, so a real
+  // book needs kiwi_search_contacts; null = use the client filter.
+  const [serverHits, setServerHits] = useState<ContactView[] | null>(null);
+  const [searchBusy, setSearchBusy] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -137,8 +142,48 @@ export function ContactsView({
     };
   }, [demo]);
 
-  const filtered = useMemo(() => filterContacts(contacts, query), [contacts, query]);
-  const selected = contacts.find((c) => c.id === selectedId) ?? null;
+  // Debounced live search: kiwi_search_contacts queries the whole book —
+  // the client filter only sees the first 500 loaded. A failure falls back
+  // to the client filter AND surfaces the error (no silent degradation).
+  useEffect(() => {
+    const q = query.trim();
+    if (demo || !q) {
+      setServerHits(null);
+      setSearchBusy(false);
+      return;
+    }
+    setSearchBusy(true);
+    const t = window.setTimeout(() => {
+      void (async () => {
+        try {
+          setServerHits(await api.searchContacts(q, 500));
+        } catch (e) {
+          setServerHits(null);
+          setError(`Server search failed (showing loaded contacts): ${e instanceof Error ? e.message : String(e)}`);
+        } finally {
+          setSearchBusy(false);
+        }
+      })();
+    }, 250);
+    return () => window.clearTimeout(t);
+  }, [demo, query]);
+
+  const filtered = useMemo(
+    () => (query.trim() && serverHits ? serverHits : filterContacts(contacts, query)),
+    [contacts, query, serverHits],
+  );
+  const selected = contacts.find((c) => c.id === selectedId) ?? serverHits?.find((c) => c.id === selectedId) ?? null;
+
+  /** One-shot handoff to the composer — sessionStorage carries the address
+    * across the route change; ComposeView consumes and deletes it. */
+  const composeTo = (address: string) => {
+    try {
+      window.sessionStorage.setItem("kiwi.composeTo", address);
+    } catch {
+      // storage denied — still navigate; the composer opens empty.
+    }
+    navigate({ name: "compose" });
+  };
 
   const startEdit = () => {
     if (!selected) return;
@@ -383,6 +428,7 @@ export function ContactsView({
               aria-label="Search contacts"
             />
           </label>
+          {searchBusy && <small role="status"> searching…</small>}
         </p>
         <p>
           <button type="button" className="kiwi-btn-primary" onClick={startCreate}>
@@ -579,7 +625,16 @@ export function ContactsView({
                 <ul>
                   {selected.emails.map((e) => (
                     <li key={e.address}>
-                      {e.address}{e.label && <small> ({e.label})</small>}
+                      {e.address}{e.label && <small> ({e.label})</small>}{" "}
+                      <button
+                        type="button"
+                        className="em-quote-toggle"
+                        title={`Compose to ${e.address}`}
+                        aria-label={`Compose to ${e.address}`}
+                        onClick={() => composeTo(e.address)}
+                      >
+                        Write
+                      </button>
                     </li>
                   ))}
                 </ul>
@@ -611,6 +666,18 @@ export function ContactsView({
               </>
             )}
             <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap" }}>
+              <button
+                type="button"
+                className="kiwi-btn-primary"
+                onClick={() => {
+                  const addr = contactPrimaryEmail(selected);
+                  if (addr) composeTo(addr);
+                }}
+                disabled={!contactPrimaryEmail(selected)}
+                title={contactPrimaryEmail(selected) ? `Compose to ${contactPrimaryEmail(selected)}` : "No email address on this card"}
+              >
+                <Icon name="compose" size={12} /> Write
+              </button>
               <button type="button" onClick={startEdit}>Edit</button>
               {confirmDelete ? (
                 <>

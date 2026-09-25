@@ -679,6 +679,8 @@ export interface AgendaSecurity {
   unreplied?: number | null;
   /** Active paired devices (kiwi_list_devices); null in demo/none loaded. */
   activeDevices?: number | null;
+  /** Recorded sandbox opens (kiwi_sandbox_sessions, T-300); null in demo. */
+  sandboxOpens?: number | null;
   demo?: boolean;
 }
 
@@ -692,6 +694,8 @@ function SecuritySummaryCard({ security }: { security: AgendaSecurity }) {
   if (security.unreplied != null) rows.push({ icon: "mail-open", label: "Unreplied", value: security.unreplied });
   if (security.activeDevices != null)
     rows.push({ icon: "device", label: "Active devices", value: security.activeDevices });
+  if (security.sandboxOpens != null)
+    rows.push({ icon: "shield", label: "Sandbox opens", value: security.sandboxOpens });
   return (
     <section className="em-security-card" aria-label="Security summary">
       <div className="em-security-head">
@@ -716,8 +720,6 @@ function SecuritySummaryCard({ security }: { security: AgendaSecurity }) {
           ))}
         </ul>
       )}
-      {/* Gap (honest absence): pending sandbox-open sessions have no list
-          IPC yet — the row appears once a real source exists. */}
       <button type="button" className="em-security-link" onClick={() => navigate({ name: "security" })}>
         Security Center →
       </button>

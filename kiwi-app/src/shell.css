@@ -2708,3 +2708,48 @@ pre.em-quote-region {
   margin-top: 0.2rem;
   color: var(--kiwi-text-secondary, #666);
 }
+
+/* T-313: quick-filter chips — client-side narrowing of the loaded list. */
+.em-filterbar {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.6rem;
+  border-bottom: 1px solid var(--kiwi-border, #ddd);
+  flex-wrap: wrap;
+}
+.em-chip {
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0.12rem 0.55rem;
+  border: 1px solid var(--kiwi-border, #ccc);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--kiwi-text-secondary, #555);
+  cursor: pointer;
+}
+.em-chip:hover:not(:disabled) {
+  border-color: var(--kiwi-accent, #3b6ea5);
+  color: var(--kiwi-text, #222);
+}
+.em-chip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.em-chip.is-on {
+  background: var(--kiwi-accent, #3b6ea5);
+  border-color: var(--kiwi-accent, #3b6ea5);
+  color: #fff;
+}
+.em-chip-n {
+  opacity: 0.75;
+  font-size: 0.85em;
+}
+.em-chip-clear {
+  border-style: dashed;
+}
+.em-filterbar-status {
+  margin-left: auto;
+  font-size: 0.78rem;
+  color: var(--kiwi-text-secondary, #666);
+}

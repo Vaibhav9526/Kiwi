@@ -41,7 +41,9 @@ pub use send::*;
 pub use system::*;
 pub use templates::*;
 
-use kiwi_core::session::{AuthMechanism, Protocol, TlsVersion, TransportSecurity};
+use kiwi_core::session::{
+    AuthMechanism, Protocol, SessionSource, TlsVersion, TransportSecurity,
+};
 use kiwi_core::trust::{RequiredAction, SignalKind, SignalSeverity, TrustState};
 use kiwi_mail::transport::SocketSecurity;
 
@@ -136,6 +138,19 @@ pub fn socket_security(s: SocketSecurity) -> &'static str {
         SocketSecurity::Plaintext => "plaintext",
         SocketSecurity::StartTls => "starttls",
         SocketSecurity::ImplicitTls => "tls",
+    }
+}
+
+/// `SessionView.source` spelling — provenance, never guessed
+/// (security-session.md §2). `live-client` supersedes the pre-pivot
+/// `thunderbird-hook`: KIWI is a standalone client, so a live observation has
+/// no Thunderbird hook behind it and emitting that name would be a false
+/// provenance claim. `ForensicPcap`/`TestFixture` are unchanged.
+pub fn session_source(s: SessionSource) -> &'static str {
+    match s {
+        SessionSource::ThunderbirdHook => "live-client",
+        SessionSource::ForensicPcap => "forensic-pcap",
+        SessionSource::TestFixture => "test-fixture",
     }
 }
 
