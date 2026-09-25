@@ -272,6 +272,21 @@ async function runChecks(cdp, sid) {
     return `${names.length} sections: ${names.join(", ")}`;
   });
 
+  await check("devices", "Identity → Devices surface honest in demo", async () => {
+    await cdp.eval(sid,
+      `[...document.querySelectorAll("button[role=tab]")].find(b=>b.textContent.trim()==="Identity")?.click()`);
+    if (!(await waitFor(cdp, sid, `document.querySelector("[role=tabpanel] h1")?.textContent?.trim()==="Identity"`, 4000)))
+      throw new Error("Identity section did not mount");
+    const pairBtn = await cdp.eval(sid,
+      `(()=>{const b=[...document.querySelectorAll("[role=tabpanel] button")].find(x=>/pair new device/i.test(x.textContent));return b?{exists:true,disabled:b.disabled}:{exists:false}})()`);
+    if (!pairBtn?.exists) throw new Error("no 'Pair new device…' button");
+    // Demo has no backend — the button must be disabled and the section must
+    // say so rather than rendering fake devices.
+    const text = await cdp.eval(sid, `document.querySelector("[role=tabpanel]").textContent`);
+    const honest = /needs the (Tauri )?backend|No paired devices/i.test(text);
+    return `pair button ${pairBtn.disabled ? "disabled" : "live"}; empty-state ${honest ? "honest" : "UNCLEAR"}`;
+  });
+
   await check("theme", "theme switch applies data-theme", async () => {
     // land on Appearance (settings still open)
     await cdp.eval(sid,
