@@ -172,8 +172,13 @@ rebuild context. Lead handle is now term_c20c6737.
 | 16 | DeepSeek V4.1 Flash | 87c46343 | T-183 mailauth hardening |
 | 17 | DeepSeek V4.1 Flash | 71a0b324 | T-194 mobile authenticator screens |
 | 18 | Space Bunny Free | f7e88089 | T-188 pair/challenge + admin contracts |
+| 19 | Pi | 0135ee79 | T-195 OAuth2 spec + impl |
+| 20 | Pi | 290216b7 | T-196 contract-drift audit |
+| 21 | Space Bunny Alpha | 12f55a82 | T-197 license/secret scan |
 | Watcher | Space Bunny Alpha | 30e63397 | tools/watcher/watcher.py loop |
 | Planner | Devin | 621f9265 | plans |
 | Lead | Devin (SWE-2) | c20c6737 | orchestration + ledger |
 
 Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c6737.
+| T-196 | Contract-drift audit: every contracts/*.md vs actual code → docs/audits/contract-drift-1.md | Agent 20 | open | `docs/`, read-only | — |
+| T-197 | License-compliance + secret scan (GPL boundary, secrets, dep licenses) → docs/audits/license-secret-scan-1.md | Agent 21 | open | repo-wide, read-only | — |
