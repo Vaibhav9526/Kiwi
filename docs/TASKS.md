@@ -211,7 +211,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-247 | Wire-shape batch 2 (IPC-6/7/8/9 + FOR-3/4/5; found+fixed dead unsub chip) | Agent 20 | done |
 | T-249 | AuthRisk derived enum (clean/noted/failed truth table, authrisk.rs, 178/178) | Agent 21 | done |
 | T-250 | admin-api enumeration (admin-drift-1.md; ADM-08 §14 unimpl, ADM-01 projection gap) | Agent 22 | done |
-| T-251 | ACFG-7/8/9 parser hardening (PI whitelist, root strict, no fallback; 97/97) | Agent 19 | done |
+| T-251 | ACFG-7/8/9 parser hardening verified (impl in 9a11c47), FINDINGS rows→fixed | Agent 23 | done |
 | T-248 | Repo hygiene sweep (junk cleanup + gitignore + gate verify) | Watcher | done | repo-wide | — |
 | T-249w | Standing gate-watch loop (fmt/tsc/overlap/secrets, report NEW failures only) | Watcher | standing | fast gates | T-248 |
 | T-252 | FINDINGS.md master register (deduped, owner/status mapped) | Agent 22 | done |
@@ -255,3 +255,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-275 | T-268 seam land: ThemePicker mount + useTheme swap + emoji sweep + visual pass | Agent 25 (A24 terminal expired — files transferred) | open | `kiwi-app/src` | T-267,T-268 |
 | T-276 | ACFG-4 GoDaddy: resolved inline — removed from ISPDB_FIXTURES roster (correctly MX_HINTS-only, no fixed domains) | Lead | done |
 | T-277 | Fix e2e_send_* hang: root-cause blocking point + bounded timeout, keep deterministic | Agent 21 | open | `kiwi-app/src-tauri/src/e2e.rs`, `kiwi-mail` seams | T-262,T-273 |
+| T-278 | integrations.md ↔ kiwi-integrations drift audit (last unaudited domain) — findings only | Agent 23 | open | `kiwi-integrations`, `docs/contracts/integrations.md` | T-196 program |

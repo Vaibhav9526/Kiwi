@@ -79,9 +79,9 @@ provenance, not remediation assignments.
 | ACFG-4 | M | GoDaddy is promised as an ISPdb fixture but only appears as an MX hint; offline support is a decision gate. | `autoconfig-drift-1.md:40`; `contract-drift-1.md:113` | T-246/contract owner | open |
 | ACFG-5 | L | `pphosted.com` is a stale/non-normative MX example; code has `secureserver.net`. | `autoconfig-drift-1.md:41`; `contract-drift-1.md:114` | T-246/contract owner | open |
 | ACFG-6 | L | Oversize XML returns `Error::TooLong`, not `MalformedXml`, while stage behavior remains malformed. | `autoconfig-drift-1.md:42`; `contract-drift-1.md:115` | T-246/contract owner | open |
-| ACFG-7 | M | Parser silently skips arbitrary processing instructions, not just the XML declaration. | `autoconfig-drift-1.md:43`; `contract-drift-1.md:116` | T-251 | queued |
-| ACFG-8 | M | Bare `emailProvider` root is accepted despite required `clientConfig` root. | `autoconfig-drift-1.md:44`; `contract-drift-1.md:117` | T-251 | queued |
-| ACFG-9 | M | Domain selection falls through to provider id and first provider when no domain matches. | `autoconfig-drift-1.md:45`; `contract-drift-1.md:118` | T-251 | queued |
+| ACFG-7 | M | Parser silently skips arbitrary processing instructions, not just the XML declaration. | `autoconfig-drift-1.md:43`; `9a11c47`; `autoconfig_xml.rs:102-140`; `autoconfig.md:126-132` | T-251 | fixed |
+| ACFG-8 | M | Bare `emailProvider` root is accepted despite required `clientConfig` root. | `autoconfig-drift-1.md:44`; `9a11c47`; `autoconfig_xml.rs:368-389`; `autoconfig.md:135-141` | T-251 | fixed |
+| ACFG-9 | M | Domain selection falls through to provider id and first provider when no domain matches. | `autoconfig-drift-1.md:45`; `9a11c47`; `autoconfig_xml.rs:390-403`; `autoconfig.md:135-141` | T-251 | fixed |
 | ACFG-10 | L | `%EMAILDOMAIN%` is expanded although only two placeholders are documented. | `autoconfig-drift-1.md:46`; `contract-drift-1.md:119` | T-246/contract owner | open |
 | ACFG-11 | M | Auth parser accepts `oauthbearer`, empty auth, and `cram-md5` outside the documented mapping. | `contract-drift-1.md:120` | T-251/contract owner | open |
 | ACFG-12 | M | Autoconfig security enum lacks the promised snake_case serde spelling. | `contract-drift-1.md:121` | T-251/contract owner | open |
@@ -187,13 +187,13 @@ provenance, not remediation assignments.
   T-245 FSV-1 forensics serde (FOR-1/2/6); T-247 wire batch 2
   (IPC-6/7/8/9 + FOR-3/4/5); T-265 register batch (IPC-11..14 +
   FOR-7/8/9); T-271 (IPC-5, IPC-16 listener, FOR-6 §1 reconciliation,
-  FOR-11/12 contract amends); T-230/T-195 ACFG-1/2 and IPC-10; T-258
-  verified MAUTH-2/3 resolved.
+  FOR-11/12 contract amends); T-230/T-195 ACFG-1/2 and IPC-10; T-251
+  ACFG-7/8/9 parser hardening and contract exceptions; T-258 verified
+  MAUTH-2/3 resolved.
 - **In-flight:** T-193/T-250 admin residual findings; T-231/T-145 UI
   wrapper work; T-266 sandbox-open IPC (build churn observed during
   T-271); T-267 4-pane rebuild (App.tsx/chrome/Icon tsc churn).
-- **Queued:** T-251 ACFG-7/8/9 parser hardening; T-269 canonical
-  pair-wire; T-270 authenticator enum.
+- **Queued:** T-269 canonical pair-wire; T-270 authenticator enum.
 - **Open/unassigned:** remaining contract/implementation rows require
   Lead assignment or a contract-owner ruling.
 

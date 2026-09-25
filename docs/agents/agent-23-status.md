@@ -122,3 +122,32 @@ was not modified.
 - Completion report sent/enqueued to Lead terminal `term_c20c6737-9b80-4911-bcd2-38aa5113e4d7`: message `msg_09b80bd39fca`, request `5e73a569-d842-414e-bd76-9e26feb2a5b9`.
 - `orca orchestration check --terminal term_c20c6737-9b80-4911-bcd2-38aa5113e4d7 --json` observed the report in the Lead mailbox.
 - Orca warned that this legacy terminal-only mailbox is not durable after the terminal closes; the report was not falsely marked as acknowledged.
+
+## 2026-09-25 — T-251: ACFG-7/8/9 autoconfig parser hardening verification
+
+**Status:** done (implementation already landed in commit `9a11c47`; verified without duplicating source changes).
+
+### Files changed
+
+- `docs/audits/FINDINGS.md` — ACFG-7/8/9 changed from `queued` to `fixed` with current source, contract, commit, and test evidence; queue summary updated.
+- `docs/agents/agent-23-status.md` — this entry.
+
+No `kiwi-autoconfig` source or contract file was changed by Agent 23 in this verification pass. The code and contract amendments are already present in the current HEAD via `9a11c47`.
+
+### Findings closed
+
+- **ACFG-7:** only one `<?xml ...?>` declaration is accepted in the prolog; all other processing instructions, including prolog/epilog/second declarations, fail as `MalformedXml`; regression cases cover declaration, comments, and unterminated PI.
+- **ACFG-8:** `ClientConfig::parse` accepts only the `clientConfig` root; a bare `emailProvider` root is rejected.
+- **ACFG-9:** exact `<domain>` match wins, then the explicitly documented provider-`id` compatibility source; no first-provider fallback remains, so a foreign document falls through as malformed.
+- `docs/contracts/autoconfig.md` documents both intentional compatibility exceptions and the fail-closed result.
+
+### Verification
+
+- `cargo test -p kiwi-autoconfig` — **97 passed, 0 failed**; all network-dependent discovery coverage uses deterministic `MockNet` fixtures and performs no live DNS.
+- `cargo clippy -p kiwi-autoconfig --all-targets -- -D warnings` — passed.
+- `cargo fmt -p kiwi-autoconfig -- --check` — passed.
+- `git diff --check -- docs/audits/FINDINGS.md docs/agents/agent-23-status.md` — passed (only the expected Windows LF/CRLF warning).
+
+### Handoff
+
+- Terminal DONE command sent: `orca terminal send --terminal term_c20c6737-9b80-4911-bcd2-38aa5113e4d7 --text 'DONE: Agent-23 T-251 — result' --enter`; Orca returned `input_accepted` and reported provider delivery as unsupported.
