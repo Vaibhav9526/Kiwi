@@ -1,7 +1,7 @@
 //! SQLite schema — DDL + version. Migrations are explicit and
 //! append-only; `user_version` is the source of truth.
 
-pub(crate) const SCHEMA_VERSION: u32 = 15;
+pub(crate) const SCHEMA_VERSION: u32 = 16;
 
 pub(crate) const DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS accounts (
@@ -63,6 +63,10 @@ CREATE TABLE IF NOT EXISTS outbox (
     not_before_unix INTEGER NOT NULL,
     undo_until_unix INTEGER NOT NULL,
     attempts        INTEGER NOT NULL DEFAULT 0,
+    -- T-298: sanitized reason for the most recent failed attempt
+    -- (IpcError code+message). NULL = never failed — absence is honest,
+    -- a queued send has nothing to report.
+    last_error      TEXT,
     created_unix    INTEGER NOT NULL
 );
 -- Inbox rules (F1 groundwork, T-228): durable storage only — the engine

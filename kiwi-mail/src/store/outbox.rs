@@ -9,6 +9,10 @@ use crate::error::{MailError, Result};
 
 use super::MailStore;
 
+/// Byte cap on the persisted failure reason (T-298) — the text is already
+/// an `IpcError`-sanitized message; the bound keeps the column small.
+pub const MAX_OUTBOX_ERROR_LEN: usize = 512;
+
 /// One persisted queued send (T-142). `mime` is the fully built RFC 5322
 /// message — kept in-row so a queued send is one atomic write. Callers
 /// bound `mime` before insert (kiwi-app caps at 32 MiB).
@@ -27,6 +31,10 @@ pub struct OutboxRow {
     /// Undo-send cancel deadline. `0` = already committed.
     pub undo_window_until_unix: i64,
     pub attempts: u32,
+    /// Sanitized reason for the most recent failed attempt (T-298).
+    /// `None` until the first failure — honest absence, not a
+    /// cleared-after-success flag (success deletes the row).
+    pub last_error: Option<String>,
     pub created_unix: i64,
 }
 
@@ -42,8 +50,8 @@ impl MailStore {
             "INSERT OR REPLACE INTO outbox
                (queue_id, account_id, from_addr, to_addrs, subject,
                 message_id, mime, not_before_unix, undo_until_unix,
-                attempts, created_unix)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                attempts, last_error, created_unix)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
             params![
                 row.queue_id,
                 row.account_id,
@@ -55,6 +63,7 @@ impl MailStore {
                 row.not_before_unix,
                 row.undo_window_until_unix,
                 row.attempts as i64,
+                row.last_error.as_deref(),
                 row.created_unix,
             ],
         )?;
@@ -68,7 +77,7 @@ impl MailStore {
         let mut stmt = self.conn.prepare(
             "SELECT queue_id, account_id, from_addr, to_addrs, subject,
                     message_id, mime, not_before_unix, undo_until_unix,
-                    attempts, created_unix
+                    attempts, last_error, created_unix
              FROM outbox ORDER BY created_unix, queue_id LIMIT ?1",
         )?;
         let rows = stmt.query_map(params![limit as i64], |r| {
@@ -83,7 +92,8 @@ impl MailStore {
                 r.get::<_, i64>(7)?,
                 r.get::<_, i64>(8)?,
                 r.get::<_, i64>(9)? as u32,
-                r.get::<_, i64>(10)?,
+                r.get::<_, Option<String>>(10)?,
+                r.get::<_, i64>(11)?,
             ))
         })?;
         let mut out = Vec::new();
@@ -99,6 +109,7 @@ impl MailStore {
                 not_before_unix,
                 undo_window_until_unix,
                 attempts,
+                last_error,
                 created_unix,
             ) = row?;
             let Ok(to_addrs) = serde_json::from_str::<Vec<String>>(&to_json) else {
@@ -115,24 +126,36 @@ impl MailStore {
                 not_before_unix,
                 undo_window_until_unix,
                 attempts,
+                last_error,
                 created_unix,
             });
         }
         Ok(out)
     }
 
-    /// Update dispatch timing + attempt count (retry backoff, send-later
-    /// reschedule). Returns false when the row is gone.
+    /// Update dispatch timing + attempt count + failure reason (retry
+    /// backoff, send-later reschedule). `last_error` is bounded to 512 B
+    /// at the store boundary — callers pass already-sanitized text; a
+    /// reschedule passes `None` to clear a stale reason. Returns false
+    /// when the row is gone.
     pub fn outbox_set_timing(
         &self,
         queue_id: &str,
         not_before_unix: i64,
         attempts: u32,
+        last_error: Option<&str>,
     ) -> Result<bool> {
+        let bounded_err = last_error.map(|e| {
+            let mut end = e.len().min(MAX_OUTBOX_ERROR_LEN);
+            while !e.is_char_boundary(end) {
+                end -= 1;
+            }
+            e[..end].to_string()
+        });
         let n = self.conn.execute(
-            "UPDATE outbox SET not_before_unix = ?2, attempts = ?3
+            "UPDATE outbox SET not_before_unix = ?2, attempts = ?3, last_error = ?4
              WHERE queue_id = ?1",
-            params![queue_id, not_before_unix, attempts as i64],
+            params![queue_id, not_before_unix, attempts as i64, bounded_err],
         )?;
         Ok(n > 0)
     }
@@ -144,7 +167,7 @@ impl MailStore {
         let mut stmt = self.conn.prepare(
             "SELECT queue_id, account_id, from_addr, to_addrs, subject,
                     message_id, mime, not_before_unix, undo_until_unix,
-                    attempts, created_unix
+                    attempts, last_error, created_unix
              FROM outbox WHERE not_before_unix <= ?1
              ORDER BY not_before_unix, queue_id LIMIT ?2",
         )?;
@@ -160,7 +183,8 @@ impl MailStore {
                 r.get::<_, i64>(7)?,
                 r.get::<_, i64>(8)?,
                 r.get::<_, i64>(9)? as u32,
-                r.get::<_, i64>(10)?,
+                r.get::<_, Option<String>>(10)?,
+                r.get::<_, i64>(11)?,
             ))
         })?;
         let mut out = Vec::new();
@@ -176,6 +200,7 @@ impl MailStore {
                 not_before_unix,
                 undo_window_until_unix,
                 attempts,
+                last_error,
                 created_unix,
             ) = row?;
             let Ok(to_addrs) = serde_json::from_str::<Vec<String>>(&to_json) else {
@@ -192,6 +217,7 @@ impl MailStore {
                 not_before_unix,
                 undo_window_until_unix,
                 attempts,
+                last_error,
                 created_unix,
             });
         }

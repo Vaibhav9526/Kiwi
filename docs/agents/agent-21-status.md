@@ -1,5 +1,39 @@
 # Agent 21 — Status Log
 
+
+## 2026-09-25 — T-244 orphaned rules-engine completion
+
+**Status:** COMPLETE in the shared tree; Lead handoff pending final app-tree
+verification blocked by unrelated concurrent `kiwi-integrations` compile errors.
+
+Implemented:
+- `kiwi_rules_preview` remains a pure dry-run (no actions, hits, flags, or
+  watermarks), and now returns `conditionHits` with stable AST paths/kinds for
+  true predicate leaves.
+- Added schema v14 rule health columns: cumulative `failureCount`, bounded
+  `lastError`, and `lastFailureUnix`; application failures increment every
+  matched rule and are exposed through `RuleView` for UI badging.
+- Envelope-stage body/header/attachment predicates now use honest three-valued
+  deferral. Unknown block rules and unknown disposition-bearing regular rules
+  defer disposition; full evaluation re-runs once the body lands. The on-view
+  body loader remains unhooked.
+- Added regression tests for condition evidence, dry-run immutability,
+  nonfatal failure accounting, envelope deferral, and v13→v14 migration.
+
+Files: `kiwi-mail/src/rules/{eval,apply,mod}.rs`,
+`kiwi-mail/src/store/{schema,mod,queries}.rs`,
+`kiwi-app/src-tauri/src/types/rules.rs`,
+`kiwi-app/src-tauri/src/commands/rules.rs`, `kiwi-app/src/kiwi.ts`,
+`docs/contracts/rules.md`, `docs/contracts/ipc.md`.
+
+Verification: `cargo test -p kiwi-mail --lib --no-fail-fast -- --test-threads=1`
+= **219 passed, 0 failed**; `cargo clippy -p kiwi-mail --all-targets -- -D warnings`
+clean. `cargo check/clippy -p kiwi-app` is currently blocked before app code by
+unrelated shared-tree `kiwi-integrations/src/secret.rs` type error and an
+unused `std::sync::Mutex` import in `kiwi-integrations/src/http.rs`.
+`cargo fmt --all -- --check` reports only unrelated concurrent formatting in
+`kiwi-app/src-tauri/src/commands/mail.rs` and `kiwi-integrations/src/lib.rs`.
+
 > Append dated entries: status, files changed, commands run, tests, assumptions, risks.
 
 ## 2026-09-25 — T-232 Authentication-Results stamping (inherited from Agent 16)

@@ -243,14 +243,23 @@ ApplyNowReport {
 Body-predicate rules are **lazy** in KIWI. Sync never fetches a message body
 just to decide a rule. IMAP metadata sync may evaluate envelope-stage rules on
 new INBOX messages, but header-, body-, and attachment-predicate facts are
-absent at that stage and do not match. A full rule evaluation happens when
-`kiwi_rules_apply_now` scans stored bodies, or when a normal ingest/body
-refinement path already has a parseable body available. POP3's full download
-has a body at ingest and can evaluate all predicates immediately. A body
-already stored may therefore be refined during the next normal evaluation
+absent at that stage. Those leaves are three-valued **deferred**, not treated as
+false: an `all`/`any` tree can therefore distinguish unknown from a mismatch.
+A block rule with unknown facts, or any unknown rule carrying a folder
+disposition, defers the message's envelope application; known flag-only effects
+may be applied safely. A full rule evaluation happens when `kiwi_rules_apply_now`
+scans stored bodies, when a normal body-ingest refinement path already has a
+parseable body, or on the next sync deferred sweep after the body arrives. POP3's
+full download has a body at ingest and can evaluate all predicates immediately. A
+body already stored may therefore be refined during the next normal evaluation
 path; a missing body is not downloaded solely for rules. This is a deliberate
 bandwidth policy: rule evaluation must not turn metadata sync into an eager
 body-fetch operation.
+
+A deferred envelope evaluation is still watermarked as `envelope`; the full
+sweep re-evaluates it against the complete predicate set. The on-view body
+loader itself is not a rule hook, so opening a message cannot move it while the
+reader is open.
 
 ### 4.3 Audit persistence
 
@@ -327,7 +336,7 @@ message may echo a password, token, secret, or unrestricted renderer value.
 
 ## 6. Persistence contract (T-228)
 
-Schema version is `6`. The `rules` table is:
+Schema v14 adds the `rules` health columns:
 
 ```text
 rules(
@@ -337,9 +346,17 @@ rules(
   enabled INTEGER NOT NULL DEFAULT 1,
   position INTEGER NOT NULL,
   is_block INTEGER NOT NULL DEFAULT 0,
-  spec_json TEXT NOT NULL
+  spec_json TEXT NOT NULL,
+  failure_count INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT NULL,
+  last_failure_unix INTEGER NULL
 )
 ```
+
+`failure_count` is cumulative sync-time apply failures attributed to the rule;
+`last_error` and `last_failure_unix` identify the most recent incident. Errors
+are newline-collapsed and bounded to 512 bytes before persistence. Rule edits
+do not erase this history.
 
 `idx_rules_scope(account_id, position)` supports scoped reads. `account_id
 NULL` means global. The store API is:

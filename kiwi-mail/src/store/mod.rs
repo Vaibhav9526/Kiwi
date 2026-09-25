@@ -350,6 +350,12 @@ pub(crate) fn migrate_conn(conn: &Connection, root: &Path) -> Result<()> {
             if v < 14 {
                 ensure_rule_failure_columns(conn)?;
             }
+            // Pre-v16 database: existing queued sends have no recorded
+            // failure reason — NULL is the honest state (nothing failed
+            // yet, or the reason predates the column and is unknowable).
+            if v < 16 {
+                ensure_outbox_error_column(conn)?;
+            }
         }
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     }
@@ -418,6 +424,21 @@ fn ensure_rule_failure_columns(conn: &Connection) -> Result<()> {
          ALTER TABLE rules ADD COLUMN last_error TEXT;
          ALTER TABLE rules ADD COLUMN last_failure_unix INTEGER",
     )?;
+    Ok(())
+}
+
+/// T-298: `outbox.last_error` — sanitized reason for the most recent
+/// failed attempt. Existing rows stay NULL; a reason that predates the
+/// column cannot be reconstructed without fabricating.
+fn ensure_outbox_error_column(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare("PRAGMA table_info(outbox)")?;
+    let cols = stmt.query_map([], |r| r.get::<_, String>(1))?;
+    for col in cols {
+        if col? == "last_error" {
+            return Ok(());
+        }
+    }
+    conn.execute_batch("ALTER TABLE outbox ADD COLUMN last_error TEXT")?;
     Ok(())
 }
 
@@ -642,18 +663,30 @@ mod tests {
             not_before_unix: 200,
             undo_window_until_unix: 110,
             attempts: 0,
+            last_error: None,
             created_unix: 100,
         };
         store.outbox_put(&row).unwrap();
         let rows = store.outbox_list(10).unwrap();
         assert_eq!(rows, vec![row.clone()]);
 
-        // retry backoff update
-        assert!(store.outbox_set_timing("send-q1", 230, 1).unwrap());
+        // retry backoff update records the sanitized reason (T-298)
+        assert!(
+            store
+                .outbox_set_timing("send-q1", 230, 1, Some("server-reject: 421 try later"))
+                .unwrap()
+        );
         let rows = store.outbox_list(10).unwrap();
         assert_eq!(rows[0].not_before_unix, 230);
         assert_eq!(rows[0].attempts, 1);
-        assert!(!store.outbox_set_timing("send-gone", 1, 1).unwrap());
+        assert_eq!(
+            rows[0].last_error.as_deref(),
+            Some("server-reject: 421 try later")
+        );
+        // a reschedule clears the stale reason
+        assert!(store.outbox_set_timing("send-q1", 240, 1, None).unwrap());
+        assert_eq!(store.outbox_list(10).unwrap()[0].last_error, None);
+        assert!(!store.outbox_set_timing("send-gone", 1, 1, None).unwrap());
 
         // limit bounds the read
         assert_eq!(store.outbox_list(0).unwrap().len(), 0);
@@ -709,6 +742,7 @@ mod tests {
             not_before_unix: not_before,
             undo_window_until_unix: undo_until,
             attempts: 0,
+            last_error: None,
             created_unix: 100,
         }
     }
@@ -1403,6 +1437,45 @@ mod tests {
             )
             .unwrap();
         assert_eq!(kept, "a@x.test");
+        let v: u32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn v15_to_v16_adds_outbox_last_error_preserving_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(DDL).unwrap();
+        // Model a pre-v16 database: drop the column (fresh DDL already
+        // has it), pin v15, and seed a queued send to prove the column
+        // add is additive, not a rebuild.
+        conn.execute_batch(
+            "ALTER TABLE outbox DROP COLUMN last_error;
+             INSERT INTO accounts (account_id, display_name, email, config_json)
+                VALUES ('a1', 'A', 'a@x.test', '{}');
+             INSERT INTO outbox (queue_id, account_id, from_addr, to_addrs,
+                                 subject, message_id, mime, not_before_unix,
+                                 undo_until_unix, attempts, created_unix)
+                VALUES ('send-old', 'a1', 'a@x', '[\"b@y\"]', 's', '<m@x>',
+                        X'00', 100, 0, 0, 90);
+             PRAGMA user_version = 15",
+        )
+        .unwrap();
+        let root = std::env::temp_dir().join(format!("kiwi-mig-obx-{}", std::process::id()));
+        migrate_conn(&conn, &root).unwrap();
+        let (attempts, last_error): (i64, Option<String>) = conn
+            .query_row(
+                "SELECT attempts, last_error FROM outbox WHERE queue_id = 'send-old'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(attempts, 0, "row preserved");
+        assert_eq!(
+            last_error, None,
+            "pre-column sends have no reason — NULL, never fabricated"
+        );
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();

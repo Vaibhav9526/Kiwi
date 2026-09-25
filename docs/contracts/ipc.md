@@ -625,7 +625,8 @@ only. `accountId` bound: ≤128 chars.
 
 ```jsonc
 [{ "id": "r1", "accountId": "a1" | null, "name": "…", "enabled": true,
-   "position": 0, "isBlock": false,
+   "position": 0, "isBlock": false, "failureCount": 0,
+   "lastError": null, "lastFailureUnix": null,
    "when": { "kind": "sender", "op": "domain", "value": "corp.example" },
    "then": [{ "do": "move", "folder": "Work" }] }]
 ```
@@ -688,12 +689,15 @@ The candidate runs the same `Rule::validate` gate as `upsert` —
 ```jsonc
 { "scanned": 48, "skippedNoBody": 2, "matched": 3,
   "hits": [ { "folderId": 1, "uid": 9, "folder": "INBOX",
-              "subject": "…", "messageId": "…" } ] }
+              "subject": "…", "messageId": "…",
+              "conditionHits": [ { "path": "$.children[0]", "kind": "sender" } ] } ] }
 ```
 
 Candidates without a parseable stored body are `skippedNoBody` (a rule
 that *would* match an unfetched body does not appear — preview reports
-what stored evidence shows, never guesses).
+what stored evidence shows, never guesses). `conditionHits` lists only true
+predicate leaves using stable AST paths (`$`, `$.children[n]`, `$.child`); it
+never returns the matched address, header, or body value.
 
 ### Ingest-time application (sync path — no IPC entry)
 The same engine runs automatically during sync: IMAP `sync_folder`
@@ -706,7 +710,10 @@ ingest — `apply_now` is the deliberate re-run. A UIDVALIDITY reset wipes
 the folder's eval watermarks along with its messages (a new UID epoch
 can't inherit stale stage records). Apply errors inside a pass are
 swallowed and counted on `SyncReportView.ruleFailures`; the unwritten
-watermark makes the retry automatic.
+watermark makes the retry automatic. Each failed application also increments
+`failureCount` and stores the bounded `lastError`/`lastFailureUnix` on every
+matched rule; list views expose these store-owned fields so the UI can badge a
+broken rule. `rules_upsert` ignores renderer-supplied health fields.
 
 ## 6g. Commands — sandbox open **[gated]** (T-266)
 
@@ -1002,13 +1009,29 @@ Envelope metadata only (never bodies):
 ```jsonc
 { "queueId": "…", "accountId": "…" | null, "from": "…", "to": ["…"],
   "subject": "…", "notBeforeUnix": 0, "undoWindowUntilUnix": 0,
-  "attempts": 0, "cancelable": true }
+  "attempts": 0, "cancelable": true,
+  "state": "queued" | "held", "lastError": "…" | null }
 ```
 `accountId` is always set by `kiwi_list_outbox` today — the field is
 `Option` headroom for queue rows that predate account binding; clients
 must tolerate `null` (render "unbound"), never assume an account.
 `cancelable` mirrors the `kiwi_cancel_send` rule (undo window open or
 send-later slot still ahead).
+
+**`state` (T-298)** — derived from persisted row fields, never stored
+as a label: `attempts > 0` means a dispatch attempt already failed and
+the row only survives because retries remain → `"held"`; `attempts == 0`
+→ `"queued"` (covers send-later slots and undo-grace). The wire
+vocabulary is `queued | sending | held | cancelled | sent`, but the
+list only ever emits the first pair — `sending` is a sub-second
+in-memory transient not derivable from the row, and terminal outcomes
+(`sent`, `cancelled`, retry-exhausted `failed`) delete the row, so they
+are observable only via the `kiwi://outbox` event below.
+
+**`lastError`** — sanitized `code: message` of the most recent failed
+attempt (persisted on the row, survives restart, ≤512 B at the store
+boundary). `null` until the first failure — a queued send has nothing
+to report. Cleared when a human reschedules (a recommit, not a retry).
 
 ### `kiwi_flush_outbox() → { sent, failed, held }`
 Force-drain everything (explicit "send now" — skips remaining grace).

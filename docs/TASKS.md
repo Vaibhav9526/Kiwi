@@ -204,7 +204,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-241 | ipc.md completeness + missing/divergent table (7 findings queued for wire owner) | Agent 22 | done |
 | T-242 | Integrations UI (TempMail panel, deliverability view, unsub chip) | Agent 11 | done |
 | T-243 | OAuth2 wizard UI + re-auth badge + kiwi_open_external (91/91) | Agent 19 | done |
-| T-244 | rules preview + per-rule failure counter + deferred body-predicate semantics | Agent 21 (reassigned from A15) | open | `kiwi-mail`, `commands/rules*` | T-233,T-281 |
+| T-244 | rules completion: preview conditionHits + persisted failure telemetry + honest deferral | Agent 21 | done |
 | T-245 | FSV-1 implemented (kiwi.forensics/2, dual-read, sentinel, 120 tests) | Agent 20 | done |
 <!-- QUEUE: ACFG-3..10 autoconfig-parser drift (ex-Agent-8 items) — assign when autoconfig owner frees. authstamp clippy -> A21 in-flight. -->
 | T-246 | ACFG-3..10 enumerated (autoconfig-drift-1.md; 7/8/9 = code-owner hardening) | Agent 22 | done |
@@ -277,3 +277,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-297 | no-mock UI audit: every surface classified working|dead|mocked|gap → ui-honesty-1.md | Agent 25 | open | `kiwi-app/src` + CDP | final QA |
 | T-298 | OutboxItem state+lastError fields (held-vs-failed) — backend gap | Agent 20 | open | `kiwi-mail`, `commands/`, kiwi.ts | T-296 |
 | T-299 | right-click context menus: message list + folder tree, all items real IPC, state-aware | Agent 24 | open | `kiwi-app/src` | eM/Thunderbird parity |
+| T-300 | kiwi_sandbox_sessions IPC (live/pending sessions for rail security card) — gap from T-283 | Agent 21 | open | `kiwi-sandbox`, `commands/`, ipc.ts | T-266,T-283 |
