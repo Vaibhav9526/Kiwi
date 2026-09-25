@@ -434,3 +434,35 @@ Full per-site mapping in `src/components/icons/README.md`.
 - The Settings crash found here was a T-280 latent defect (uncached
   external-store snapshot), not a T-290 regression — fixed in runtime.ts,
   Settings renders 8 tabs again.
+
+## T-293 — Resizable panes (eM-style splitters)
+
+### Files
+- `src/state/panes.ts` — `usePaneWidth(prefKey, fallback, min, max)`:
+  clamped state, `kiwi.pane.*` pref persistence (save on change, load on
+  mount), `reset()`.
+- `src/components/chrome.tsx` — `PaneSplitter` (role=separator,
+  aria-orientation=vertical, valuemin/max/now, tabIndex, pointer-capture
+  drag, ±10/±25 arrow keys, Home/End, Enter/dbl-click reset, `invert` for
+  the right-edge rail) + AppShell wires folders + rail splitters.
+- `src/views/mailbox.tsx` — list-column splitter between list/reader.
+- `src/shell.css` — `.em-main`/`.em-mailbox` grids gain 5px splitter
+  columns; widths via `clamp(min, var(--kiwi-pane-*), max)`;
+  `.em-splitter` hairline→accent-on-hover/drag/focus; `.em-rail-wrap`;
+  splitter hidden while rail collapsed (`:has(.em-rail-collapsed)`).
+- `src/prefs.ts` — `kiwi.pane.folders|list|rail` in PREF_KEYS.
+
+### Constraints
+- Folders 180–400 (def 216), list 280–600 (def 320; unset = 26% fluid as
+  before), rail 180–480 (def 232). Double clamp: JS on set/load + CSS
+  `clamp()` so a bad stored value can't break the grid.
+- Reader flexes (`minmax(0,1fr)`) — it never gets a splitter; it reflows.
+
+### CDP verification (artifacts/t293/) — real pointer drags
+- 3 separators present; folders +80 → 296 (pref `296`); list −60 → 280
+  (min-clamped from 260); rail left-drag −60 → 292 (invert correct).
+- Keyboard: → +10, Shift+→ +25 (331 total); End→400 max, Home→180 min,
+  Enter→216 reset; double-click→216.
+- Reload → stored widths applied (216/280/292 after resets).
+- Screenshots show no layout breakage; list stays usable at 280px floor.
+- `tsc` 0 errors; `vite build` green; plugin e2e 30/30.

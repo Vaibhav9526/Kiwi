@@ -9,12 +9,13 @@
  * All glyphs are stub stroke icons — TODO(icon) swap to components/icons (T-268).
  */
 import { useEffect, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import type { Severity, SnoozePreset, TrustState } from "../kiwi";
 import { severityGlyph, severityLabel } from "../kiwi";
 import { Icon, SEVERITY_ICON } from "./icons/index";
 import { navigate } from "../router";
 import { loadPref, savePref } from "../prefs";
+import { usePaneWidth } from "../state/panes";
 import { useTheme } from "../themes";
 import {
   IconArchive,
@@ -940,6 +941,82 @@ export function StatusStrip({
 
 /* ---------------- shell ---------------- */
 
+/* ---------------- pane splitter (T-293: pointer + keyboard resize) ---------------- */
+
+export function PaneSplitter({
+  label,
+  value,
+  min,
+  max,
+  invert,
+  onResize,
+  onReset,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  /** Rail splitter grows leftward (drag left = wider). */
+  invert?: boolean;
+  onResize: (px: number) => void;
+  onReset: () => void;
+}) {
+  const [dragging, setDragging] = useState(false);
+  const start = useRef<{ x: number; w: number } | null>(null);
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={label}
+      aria-valuenow={value}
+      aria-valuemin={min}
+      aria-valuemax={max}
+      tabIndex={0}
+      className={`em-splitter${dragging ? " is-drag" : ""}`}
+      title={`${label} — drag to resize, ←→ keys (10px, Shift 25px), double-click resets`}
+      onPointerDown={(e) => {
+        e.preventDefault();
+        e.currentTarget.setPointerCapture(e.pointerId);
+        start.current = { x: e.clientX, w: value };
+        setDragging(true);
+      }}
+      onPointerMove={(e) => {
+        if (!start.current) return;
+        onResize(start.current.w + (invert ? -1 : 1) * (e.clientX - start.current.x));
+      }}
+      onPointerUp={(e) => {
+        if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+        start.current = null;
+        setDragging(false);
+      }}
+      onPointerCancel={() => {
+        start.current = null;
+        setDragging(false);
+      }}
+      onDoubleClick={onReset}
+      onKeyDown={(e) => {
+        const step = e.shiftKey ? 25 : 10;
+        if (e.key === "ArrowLeft") {
+          e.preventDefault();
+          onResize(value + (invert ? step : -step));
+        } else if (e.key === "ArrowRight") {
+          e.preventDefault();
+          onResize(value + (invert ? -step : step));
+        } else if (e.key === "Home") {
+          e.preventDefault();
+          onResize(min);
+        } else if (e.key === "End") {
+          e.preventDefault();
+          onResize(max);
+        } else if (e.key === "Enter") {
+          e.preventDefault();
+          onReset();
+        }
+      }}
+    />
+  );
+}
+
 export function AppShell({
   sidebar,
   children,
@@ -951,12 +1028,43 @@ export function AppShell({
   rail: ReactNode;
   status: ReactNode;
 }) {
+  const folders = usePaneWidth("kiwi.pane.folders", 216, 180, 400);
+  const railW = usePaneWidth("kiwi.pane.rail", 232, 180, 480);
   return (
     <>
-      <div className="em-main">
+      <div
+        className="em-main"
+        style={
+          {
+            "--kiwi-pane-folders": `${folders.px}px`,
+            "--kiwi-pane-rail": `${railW.px}px`,
+          } as CSSProperties
+        }
+      >
         {sidebar}
+        <PaneSplitter
+          label="Folders pane width"
+          value={folders.px}
+          min={180}
+          max={400}
+          onResize={folders.set}
+          onReset={folders.reset}
+        />
         <div className="em-center">{children}</div>
-        {rail}
+        {rail && (
+          <div className="em-rail-wrap">
+            <PaneSplitter
+              label="Agenda rail width"
+              value={railW.px}
+              min={180}
+              max={480}
+              invert
+              onResize={railW.set}
+              onReset={railW.reset}
+            />
+            {rail}
+          </div>
+        )}
       </div>
       {status}
     </>

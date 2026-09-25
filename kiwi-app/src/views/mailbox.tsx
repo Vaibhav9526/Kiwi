@@ -563,6 +563,14 @@ export function MailboxView(props: MailboxProps) {
           </>
         )}
       </section>
+      <PaneSplitter
+        label="Message list width"
+        value={listW.px}
+        min={280}
+        max={600}
+        onResize={listW.set}
+        onReset={listW.reset}
+      />
       <section
         key={selected?.id ?? "none"}
         className="em-reader ms-ready"

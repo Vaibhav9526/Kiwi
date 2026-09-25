@@ -270,6 +270,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-290 | high-contrast theme: 22-pair scripted contrast verify + T-280 pane-snapshot crash fix | Agent 25 | done |
 | T-291 | keyboard nav real: list/reader bindings to real IPC, typing guards, ?-overlay reconciled | Agent 24 | done |
 | T-292 | print CSS + view-source (parsed headers/parts via real IPC); raw-RFC822 IPC gap filed | Agent 24 | done |
-| T-293 | resizable panes: drag splitters folder|list|reader, min/max, persisted widths, a11y separators | Agent 25 | open | `kiwi-app/src` layout | T-267 |
+| T-293 | resizable panes: a11y separators, keyboard+drag, persisted widths, CDP-verified | Agent 25 | done |
 | T-294 | drag-drop+p paste attachments in composer via real attach IPC, ≤25MiB UI cap | Agent 24 | open | `kiwi-app/src` compose | T-267 |
 | T-295 | kiwi_message_source IPC (raw RFC822/eml bytes for view-source) — backend contract gap from T-292 | unassigned (Rust) | open | `kiwi-mail`, `commands/mail.rs`, ipc.md | T-292 |
+| T-296 | outbox/scheduled-send view: real queue w/ sendAt, cancel/reschedule/retry via IPC | Agent 25 | open | `kiwi-app/src` | T-262 |

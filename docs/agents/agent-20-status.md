@@ -727,3 +727,29 @@ under T-281 — reported, not touched.)
 deferred pass is still unwired — bodies are lazy-fetch-only by design;
 the syncer never bulk-downloads. IMAP messages already stored before
 this change keep no stamp (ingest-time evidence is not backfilled).
+
+### Coordination follow-up (T-277 rerun unblock)
+
+Coordinator reported dns.rs breaking kiwi-app/kiwi-mail gates — that was
+a pre-commit mid-flight snapshot; T-279 landed complete at `301fd0e` and
+green (`builder_tokio`, HRTB+boxed future, `answers()`, `txt_data`
+field). Actual tree breakage on rerun was **T-244's in-flight hunks**,
+repaired mechanically (all forced by compilation, zero semantic
+choices): `SCHEMA_VERSION` dedup (13/14), `use crate::rules::Rule`
+hoisted out of `NewMessageMeta`'s body, `PreviewHit.condition_hits`
+wired to existing `eval::condition_hits(&rule.when, ..)`, `mut leaf`
+closure, misplaced `#[test]` extracted from inside
+`collect_condition_hits` into `mod tests`, missing `}` closing the CRUD
+test + stray `}` removed, `Result` alias → `std::result::Result` in the
+migration test, and the v13→v14 test seeded with the "existing row" its
+doc comment promised (it rebuilt `rules` empty, so the health SELECT
+found no rows). **A21/T-244 owner should review** — fixes were forced,
+but semantics are theirs.
+
+Post-repair: clippy `-D warnings --all-targets` clean on
+mailauth/mail/app; kiwi-mail 209 green incl. both new T-244 tests;
+kiwi-mailauth 66 + `hickory_live` ignored-test (manual live-DNS path —
+passes under `--ignored`); kiwi-app 129/130 — sole failure is A19's
+T-285 `e2e_pop3_delete_after_download_sends_dele`, still actively
+in-flight (file was mid-keystroke this session; same hang class T-277
+fixed). fmt clean.
