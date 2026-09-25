@@ -26,6 +26,54 @@ exist, run, and pass — with evidence recorded in the owning agent's
 
 ## 2. Per-crate / per-service commands (run from repo root)
 
+### One command — the local equivalent of CI (T-344, Agent 26)
+
+CI runs fmt/clippy/test + tsc/vitest/build + the CDP UI smoke + the static
+tools. These two scripts run **the same gate set, in the same order**, so a
+developer can reproduce a green pipeline locally without remembering eight
+commands:
+
+```powershell
+.\scripts\gates.ps1                 # Windows (repo primary)
+```
+
+```bash
+./scripts/gates.sh                  # Linux / macOS (the platform CI uses)
+```
+
+Gate keys, in execution order: `rust.fmt`, `rust.test`, `rust.clippy`,
+`app.typecheck`, `app.test`, `app.build`, `app.ui`,
+`py.secret_scan`, `py.copy_overlap`, `py.check_fixtures`, `py.check_csp`,
+`py.check_encoding`, `py.compose_static`.
+
+Every gate prints **PASS / FAIL / SKIP** with its own header, and the run ends
+with a `gates: N run, X PASS, Y FAIL, Z SKIP` summary line. The script exits
+**non-zero if any gate FAILs** (and `2` if the filter matched no gate).
+
+**SKIP is reserved for genuinely absent tooling** — no `cargo`, no
+`npm`/`node`, no `python`, or no headless Chrome/Edge/Chromium for the
+browser smoke. A check that ran and failed is always **FAIL**, never SKIP:
+`app.ui` uses the same probe as the `ui-smoke` CI job and mirrors its honest
+`SKIP browser — no usable browser` (exit 0, `pass: 0`) result rather than
+reporting a skip as a pass.
+
+Subsets for a faster inner loop (prefix match on the keys above):
+
+```powershell
+.\scripts\gates.ps1 -Only rust,py     # groups
+.\scripts\gates.ps1 -Only app.ui      # a single gate
+```
+
+```bash
+GATES_ONLY=rust,py ./scripts/gates.sh
+GATES_ONLY=app.ui ./scripts/gates.sh
+```
+
+The scripts install nothing: run `npm ci` in `kiwi-app` (and in the other Node
+packages) once beforehand. The compose/infra leg stays manual — CI's
+`infra-live` job needs a live Docker daemon, which is not something a local
+gate script should start behind your back.
+
 ### Rust workspace (`kiwi-core`, `kiwi-forensics`, `kiwi-mail`, `kiwi-app/src-tauri`)
 
 ```powershell

@@ -322,5 +322,5 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-341 | conversation/thread mute: per-conversation flag, suppresses counts+notify, unmute restores | Agent 15b | open | `kiwi-mail/store`, `commands/`, `notify.rs` | |
 | T-342 | UI pass#2 (planner): disposable-inbox sidebar promo + density + radius tokens — LIVE | Agent 25 | in-progress | `chrome.tsx`, `tokens.css` | owner-directed |
 | T-343 | Gmail floating compose dock — LIVE (post-T-335) | Agent 24 | in-progress | `compose.tsx`, `App.tsx` | owner-directed |
-| T-344 | local gates script (ps1+sh) mirroring CI gates + TESTING.md doc | Agent 26 | open | `scripts/`, `docs/TESTING.md` | T-336 |
+| T-344 | local gates script ps1+sh (mirrors CI, honest SKIP, surfaced 3 in-flight breakages) | Agent 26 | done |
 | T-345 | system tray: icon+unread tooltip, show/compose/quit menu, close-to-tray pref, honest degrade | Agent 20 | open | `src-tauri` setup, `tauri.conf` | |
