@@ -416,3 +416,45 @@ Static trace to registered commands: update/snooze/move/delete/set_junk/
 list_messages all in lib.rs. No UI driver in-repo — verified by trace +
 build per convention. A25's T-296 (onScheduleSend) was already in HEAD
 (3c29e3a) — no conflicts; one transient os-error-1224 file lock retried.
+
+## T-301 — templates UI over the T-288 backend (ipc.md §6i)
+
+**New `views/templates.tsx` — `TemplatesManager`** mounted at Settings →
+Appearance → "Message templates" (replaced the localStorage `kiwi.templates`
+name-only stub — it was placeholder cruft, removed cleanly with its
+`savePref`/`schedulePush` deps):
+
+- List: real `kiwi_templates_list` rows — name, subject, body preview,
+  updated date; detected `{{name}}` placeholders rendered as code chips
+  (display regex mirrors the §6i grammar — server stays authority).
+- Editor: name ≤128B / subject ≤998B / bodyText ≤64KiB fields bounded to the
+  contract caps; optional bodyHtml behind `<details>` (plaintext composer
+  ignores it — stated inline).
+- Preview: per-saved-row — detected placeholders get test-value inputs,
+  "Render preview" → real `kiwi_templates_render(id, vars)` → rendered
+  subject + body shown; `missingVars` chips surfaced verbatim ("stay
+  verbatim + flagged on insert"). Preview only offered on saved rows — the
+  contract renders by id.
+- Create ("New template…" → `kiwi_templates_create`), Edit (full-replace
+  `kiwi_templates_update`), Delete (inline confirm → `kiwi_templates_delete`).
+- Empty state ("No templates yet — save one from the composer or create
+  here"), loading note, error banner + Retry, demo → labeled note.
+
+**Composer (views/compose.tsx):** the old `TEMPLATES` const + marker-insert
+select replaced —
+- Real picker `<select>`: lazy `kiwi_templates_list` on first focus, real
+  names, "No saved templates" empty state; disabled+demo tooltip.
+- Pick → `kiwi_templates_render(id, vars)` with honest caller vars
+  (`from_name`, `from_email` from the selected account, `to` = first
+  recipient, `date` = today ISO) → rendered subject applied when non-empty,
+  rendered bodyText appended after a blank-line gap. `missingVars` →
+  status note naming the unfilled `{{var}}`s (left verbatim per contract).
+- "Save as template…" → inline name field → `kiwi_templates_create` with
+  the current subject+body (empty fields omitted per §6i optionality);
+  picker reloads lazily. "Manage…" → settings route.
+- Errors → `kiwi-banner error`; insert/save notes → `em-note` status.
+
+**Verification:** `npm run build` (typecheck + vite) green, 87 modules.
+All five §6i commands registered in lib.rs:177-181; wrappers used verbatim.
+No UI driver — static trace per convention. `kiwi.templates` localStorage
+key no longer read/written (stub removed).

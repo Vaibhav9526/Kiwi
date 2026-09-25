@@ -278,5 +278,5 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-298 | OutboxItem state+lastError fields (held-vs-failed) — backend gap | Agent 20 | open | `kiwi-mail`, `commands/`, kiwi.ts | T-296 |
 | T-299 | context menus real: shared menu, message+folder actions on real IPC, state-aware | Agent 24 | done |
 | T-300 | kiwi_sandbox_sessions IPC (live/pending sessions for rail security card) — gap from T-283 | Agent 21 | open | `kiwi-sandbox`, `commands/`, ipc.ts | T-266,T-283 |
-| T-301 | templates UI: composer picker+insert, save-as-template, Settings manager, {{var}} UX | Agent 24 | open | `kiwi-app/src` compose/settings | T-288 |
+| T-301 | templates UI: composer picker+insert, save-as-template, Settings manager, {{var}} UX | Agent 24 | done | `kiwi-app/src` compose/settings | T-288 |
 | T-302 | plugin capability hosts: message-list-read (bounded snapshot) + composer-action (toolbar button→event) — last 2 declared caps | Agent 25 | open | `kiwi-app/src/plugins/` | T-297,T-274 |

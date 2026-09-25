@@ -17,6 +17,7 @@ import { EDIT_HANDOFF_KEY, localAutoconfigGuess } from "./setup";
 import { FiltersView } from "./filters";
 import { IntegrationsView } from "./integrations";
 import { RulesView } from "./rules";
+import { TemplatesManager } from "./templates";
 import { SHORTCUT_ROWS } from "../components/shortcuts";
 import { Icon, isIconName } from "../components/icons/index";
 import { ThemePicker, useTheme } from "../themes";
@@ -68,8 +69,6 @@ export function SettingsView({
   const pluginPanes = usePluginPanes();
   const [grace, setGrace] = useState(() => loadPref("kiwi.grace", "10"));
   const [minTls, setMinTls] = useState(() => loadPref("kiwi.minTls", "tls1.2"));
-  const [templates, setTemplates] = useState<string[]>(() => loadPref("kiwi.templates", ["Status update", "Meeting request"]));
-  const [newTemplate, setNewTemplate] = useState("");
   const [devices, setDevices] = useState<DeviceView[]>([]);
   const [devicesError, setDevicesError] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<Record<string, VerifyResult[]>>({});
@@ -102,7 +101,6 @@ export function SettingsView({
 
   useEffect(() => savePref("kiwi.grace", grace), [grace]);
   useEffect(() => savePref("kiwi.minTls", minTls), [minTls]);
-  useEffect(() => savePref("kiwi.templates", templates), [templates]);
   useEffect(() => savePref("kiwi.poll", poll), [poll]);
   useEffect(() => savePref("kiwi.defaultAccount", defaultId), [defaultId]);
   useEffect(() => {
@@ -136,7 +134,7 @@ export function SettingsView({
       })();
     }, 600);
   };
-  useEffect(() => schedulePush(), [themeDefault, grace, minTls, templates, poll, defaultId, accent, density, toasts, sound, mutedIds, syncFreq, signatures, mode]);
+  useEffect(() => schedulePush(), [themeDefault, grace, minTls, poll, defaultId, accent, density, toasts, sound, mutedIds, syncFreq, signatures, mode]);
   useEffect(() => () => {
     if (pushTimer.current !== null) window.clearTimeout(pushTimer.current);
   }, []);
@@ -152,7 +150,6 @@ export function SettingsView({
         // theme state re-syncs via the kiwi-theme event applyPrefsBag emits.
         setGrace(loadPref("kiwi.grace", "10"));
         setMinTls(loadPref("kiwi.minTls", "tls1.2"));
-        setTemplates(loadPref("kiwi.templates", ["Status update", "Meeting request"]));
         setPoll(loadPref("kiwi.poll", "manual"));
         setDefaultId(loadPref("kiwi.defaultAccount", ""));
         setAccent(loadPref("kiwi.accent", "standard"));
@@ -810,32 +807,8 @@ export function SettingsView({
 
         {section === "Appearance" && (
           <>
-            <h2>Templates</h2>
-            <ul>
-              {templates.map((t) => (
-                <li key={t}>
-                  {t}{" "}
-                  <button type="button" onClick={() => setTemplates((x) => x.filter((y) => y !== t))} aria-label={`Delete template ${t}`}>
-                    Delete
-                  </button>
-                </li>
-              ))}
-            </ul>
-            <p>
-              <label>
-                New template: <input type="text" value={newTemplate} onChange={(e) => setNewTemplate(e.target.value)} />{" "}
-                <button
-                  type="button"
-                  disabled={!newTemplate.trim()}
-                  onClick={() => {
-                    setTemplates((x) => [...x, newTemplate.trim()]);
-                    setNewTemplate("");
-                  }}
-                >
-                  Add
-                </button>
-              </label>
-            </p>
+            <h2>Message templates</h2>
+            <TemplatesManager live={mode === "live"} />
           </>
         )}
 

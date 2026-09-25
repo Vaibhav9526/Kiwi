@@ -14,7 +14,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ClipboardEvent, DragEvent } from "react";
-import type { PolicyBannerVerdict } from "../kiwi";
+import type { PolicyBannerVerdict, TemplateView } from "../kiwi";
 import type { ContactView } from "../kiwi";
 import { contactLabel, contactPrimaryEmail } from "../kiwi";
 import { accountPref, loadPref } from "../prefs";
@@ -22,8 +22,8 @@ import { api, IpcError } from "../ipc";
 import { filterContacts, loadLocalBook } from "../contacts";
 import { PolicyBanner } from "../components/security";
 import { Icon } from "../components/icons/index";
+import { navigate } from "../router";
 
-const TEMPLATES = ["Status update", "Meeting request", "Out of office"];
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
 interface Attachment {
@@ -220,6 +220,14 @@ export function ComposeView({
   const [attachError, setAttachError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const dragDepth = useRef(0);
+  // T-301: real template store (kiwi_templates_*). Rows load lazily on first
+  // picker open; render is server-side so {{var}} semantics stay tested once.
+  const [tplRows, setTplRows] = useState<TemplateView[] | null>(null);
+  const [tplBusy, setTplBusy] = useState(false);
+  const [tplError, setTplError] = useState<string | null>(null);
+  const [tplNote, setTplNote] = useState<string | null>(null);
+  const [saveTplOpen, setSaveTplOpen] = useState(false);
+  const [saveTplName, setSaveTplName] = useState("");
   const [draftNote, setDraftNote] = useState<string | null>(null);
   const [includeSig, setIncludeSig] = useState(true);
   const bodyRef = useRef<HTMLTextAreaElement | null>(null);
@@ -571,6 +579,70 @@ export function ComposeView({
     });
   };
 
+  /* ---- T-301 templates (kiwi_templates_*). The picker loads lazily; render
+   * is server-side — the composer supplies honest context vars (from_*,
+   * to, date) and surfaces `missingVars` verbatim rather than guessing. ---- */
+  const templateVars = (): Record<string, string> => {
+    const acc = accounts.find((a) => a.id === accountId);
+    const vars: Record<string, string> = { date: new Date().toISOString().slice(0, 10) };
+    if (acc) {
+      vars.from_name = acc.displayName;
+      vars.from_email = acc.email;
+    }
+    if (recipients[0]) vars.to = recipients[0];
+    return vars;
+  };
+
+  const loadTemplates = async () => {
+    setTplBusy(true);
+    setTplError(null);
+    try {
+      setTplRows(await api.templatesList());
+    } catch (e) {
+      setTplError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTplBusy(false);
+    }
+  };
+
+  const applyTemplate = async (id: string) => {
+    setTplBusy(true);
+    setTplError(null);
+    setTplNote(null);
+    try {
+      const r = await api.templatesRender(id, templateVars());
+      if (r.subject) setSubject(r.subject);
+      setBody((b) => (b ? `${b.replace(/\s+$/, "")}\n\n${r.bodyText}` : r.bodyText));
+      setTplNote(
+        r.missingVars.length > 0
+          ? `Template inserted — fill these placeholders before sending: ${r.missingVars.map((v) => `{{${v}}}`).join(", ")}.`
+          : "Template inserted.",
+      );
+    } catch (e) {
+      setTplError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTplBusy(false);
+    }
+  };
+
+  const saveAsTemplate = async () => {
+    const name = saveTplName.trim();
+    if (!name) return;
+    setTplBusy(true);
+    setTplError(null);
+    try {
+      const created = await api.templatesCreate({ name, subject: subject || undefined, bodyText: body || undefined });
+      setTplNote(`Saved template “${created.name}”.`);
+      setSaveTplOpen(false);
+      setSaveTplName("");
+      setTplRows(null); // lazily reload on next picker open
+    } catch (e) {
+      setTplError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTplBusy(false);
+    }
+  };
+
   // DOM drop target (T-294): dragDepth tracks nested enter/leave so the veil
   // doesn't flicker over children. Paste attaches clipboard files too.
   const dragHandlers = {
@@ -692,21 +764,77 @@ export function ComposeView({
           Template:{" "}
           <select
             aria-label="Insert template"
+            disabled={mode !== "live" || tplBusy}
+            title={mode !== "live" ? "Templates need the Tauri backend" : undefined}
             defaultValue=""
+            onFocus={() => {
+              if (tplRows === null && !tplBusy) void loadTemplates();
+            }}
             onChange={(e) => {
-              if (e.target.value) setBody((b) => `${b}\n[${e.target.value} template inserted]`);
+              if (e.target.value) void applyTemplate(e.target.value);
               e.target.value = "";
             }}
           >
-            <option value="">Insert template…</option>
-            {TEMPLATES.map((t) => (
-              <option key={t} value={t}>
-                {t}
+            <option value="">
+              {tplBusy ? "Loading…" : tplRows === null ? "Insert template…" : tplRows.length === 0 ? "No saved templates" : "Insert template…"}
+            </option>
+            {(tplRows ?? []).map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
               </option>
             ))}
           </select>
-        </label>
+        </label>{" "}
+        <button
+          type="button"
+          disabled={mode !== "live"}
+          title={mode !== "live" ? "Templates need the Tauri backend" : "Save the current subject + body as a template"}
+          onClick={() => {
+            setSaveTplOpen((o) => !o);
+            setTplError(null);
+          }}
+          aria-expanded={saveTplOpen}
+        >
+          Save as template…
+        </button>{" "}
+        <button type="button" onClick={() => navigate({ name: "settings" })} title="Manage templates in Settings → Appearance">
+          Manage…
+        </button>
       </p>
+      {saveTplOpen && (
+        <p role="group" aria-label="Save as template">
+          <label>
+            Template name:{" "}
+            <input
+              type="text"
+              value={saveTplName}
+              maxLength={128}
+              onChange={(e) => setSaveTplName(e.target.value)}
+              placeholder="e.g. Status update"
+              autoFocus
+            />
+          </label>{" "}
+          <button type="button" className="kiwi-btn-primary" disabled={!saveTplName.trim() || tplBusy} onClick={() => void saveAsTemplate()}>
+            Save
+          </button>{" "}
+          <button type="button" onClick={() => setSaveTplOpen(false)}>
+            Cancel
+          </button>{" "}
+          <small style={{ color: "var(--kiwi-text-secondary)" }}>
+            saves the current subject + body verbatim (placeholders like {"{{name}}"} included)
+          </small>
+        </p>
+      )}
+      {tplError && (
+        <div className="kiwi-banner error" role="alert">
+          <small>{tplError}</small>
+        </div>
+      )}
+      {tplNote && (
+        <p className="em-note" role="status">
+          <small>{tplNote}</small>
+        </p>
+      )}
       <p>
         <label htmlFor="compose-body">Body</label>{" "}
         <small style={{ color: "var(--kiwi-text-secondary)" }}>
