@@ -319,3 +319,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-338 | audit-integrity UI: strip indicator + corrupt surface (consumes T-331 signal) | Agent 25 | open | `chrome.tsx` strip, security-center | T-331 | audit-corruption visible: tri-state probe, banner+pill, withheld-rows, no fake-green | Agent 21 | done |
 | T-339 | lazy attachment fetch: BODYSTRUCTURE-first sync + on-demand BODY.PEEK part fetch | Agent 19 | open | `kiwi-mail/imap`, store schema | sync depth |
 | T-340 | lock-gate coverage audit: classify every command, findings for ungated-by-omission | Agent 21 | open | `lib.rs`, `commands/`, `docs/audits/` | T-269 |
+| T-341 | conversation/thread mute: per-conversation flag, suppresses counts+notify, unmute restores | Agent 15b | open | `kiwi-mail/store`, `commands/`, `notify.rs` | |
