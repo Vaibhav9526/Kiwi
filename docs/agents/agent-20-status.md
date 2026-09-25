@@ -708,12 +708,20 @@ ownership note, UIS-13/14/17 wrapper-landed annotations, sweep bullets).
 - `hickory_resolver_fits_the_resolver_seam`: `Send + Sync + DnsResolver`
   compile assertion (the `AuthSealer` blanket impl follows).
 - `with_bounds_clamps_zero_attempts`.
+- `hickory_live_dns_smoke` (`#[ignore]`): manual live-DNS verification —
+  real `lookup_mx("gmail.com")` + `lookup_host` through `system()`;
+  documented in `mailauth.md` §6 (`cargo test -p kiwi-mailauth
+  hickory_live -- --ignored`).
 
-**Verification:** `cargo test -p kiwi-mailauth` — **66 green**; `cargo
-test -p kiwi-app --lib` — **125 green** (T-277's e2e_send fix landed;
-previous hang gone); `clippy -p kiwi-mailauth --all-targets -D warnings`
-clean; `cargo fmt` clean on touched files; `cargo check -p kiwi-app`
-green.
+**Verification:** `cargo test -p kiwi-mailauth` — **66 green** + 1
+ignored (the live smoke); `cargo test -p kiwi-app --lib` — **125 green**
+(T-277's e2e_send fix landed; previous hang gone); `clippy -p
+kiwi-mailauth --all-targets -D warnings` clean; `cargo fmt` clean on
+touched files; `cargo check -p kiwi-app` green. Re-verified post-landing
+by second pass: mailauth suite/clippy/fmt clean; `cargo check -p
+kiwi-app` green with the wiring in place. (Transient foreign red during
+re-verify: `kiwi-mail` `store/schema.rs` + `rules/eval.rs` mid-migration
+under T-281 — reported, not touched.)
 
 **Not done (scope note):** a mass `fetch_missing_bodies_with_auth`
 deferred pass is still unwired — bodies are lazy-fetch-only by design;

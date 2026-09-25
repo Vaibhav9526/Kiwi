@@ -264,6 +264,6 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-284 | security-surface regression done: link-gate wired, evidence pill all-3, canonical unlock, useMailbox zombie deleted | Agent 24 | done |
 | T-285 | POP3 e2e: scripted loopback POP3 server, add→sync→ingest green + failure branches + delete-policy | Agent 19 | open | `kiwi-app/src-tauri/src/e2e.rs`, testutil | T-257,T-262 |
 | T-286 | implement T-278 findings by severity — H consent-bypass server-side first, then 11M, 7L; apply own rulings | Agent 23 | open | `kiwi-integrations`, `commands/`, contracts | T-278 |
-| T-287 | UI hardening sweep: real error/empty/offline states, keyboard-help overlay-or-remove, a11y pass | Agent 25 | open | `kiwi-app/src` | T-267 |
+| T-287 | UI hardening sweep: real error/empty/offline states, keyboard-help overlay-or-remove, a11y pass | Agent 25 | done | `kiwi-app/src` | T-267 |
 | T-288 | message templates: backend (Agent 20: store+IPC+contract) then composer UI (A25) | Agent 20 backend / A25 UI | open | `kiwi-mail`, `commands/`, `kiwi.ts`/`ipc.ts`, composer | Mailspring parity |
 | T-289 | account-add+OAuth2 flow in new shell: device-code display, polling states, needsRefresh, error paths, first-run | Agent 24 | open | `kiwi-app/src` | T-243,T-230 |

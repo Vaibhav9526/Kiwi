@@ -2282,6 +2282,7 @@ dependencies = [
  "kiwi-forensics",
  "kiwi-integrations",
  "kiwi-mail",
+ "kiwi-mailauth",
  "kiwi-pair",
  "kiwi-sandbox",
  "mail-parser",

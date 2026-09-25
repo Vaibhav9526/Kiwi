@@ -354,3 +354,43 @@ Full per-site mapping in `src/components/icons/README.md`.
   icon + "Unknown/demo" verdict + 4 real rows; collapse hides rail;
   live DOM add-task → `kiwi.agenda` localStorage persistence proven
   end-to-end.
+
+## T-287 — UI hardening sweep (error/empty/offline/keyboard/a11y)
+
+### Audit result (what was already real)
+- **Errors:** mailbox `messagesError`/`foldersError`/`bodyError`/`renderError`
+  banners + plaintext fallback; quick-search `searchNote` banner; full search
+  view error banner; compose `sendError`/`attachError` + toasts; sync fail →
+  toast + status note; settings per-action `actionError` + `prefsSync` badge;
+  security-center `role=alert`; contacts error banner; integrations banners.
+- **Empty:** folder "Nothing here", search "No matches" (quick + full),
+  contacts "No contacts", outbox "Outbox is empty", palette "No matching
+  commands", reader "Select a message", rules/demo honest text.
+- **Keyboard:** `?` overlay already real (T-153 `ShortcutsHelp`, keydown
+  guard skips text fields, Esc closes) — verified live, not a lying hint.
+- **Offline:** `isTauri()` gate → labeled demo mode; session catches IPC
+  failures to defaults (accounts/devices empty, trust DEMO fallback) —
+  no crash paths found.
+
+### Landed fixes (the actual gaps)
+- `components/chrome.tsx` `FolderPane` — new `foldersError` + `demo` props;
+  in-pane recoverable error row (`role=alert`, was status-strip-only) and
+  "No accounts yet → Add account" empty state. Rows kept OUTSIDE
+  `role="tree"` (valid ARIA tree).
+- `App.tsx` — wires `foldersError`/`demo` into `FolderPane`.
+- `views/rules.tsx` — "No rules yet" upgraded to `kiwi-empty` idiom
+  (filters icon + guidance text; create form is the action).
+- `shell.css` — global `button/[role=button]/a/summary:focus-visible` 2px
+  accent ring (UA default was intact; now on-theme in both themes);
+  `.em-folders-error`/`.em-folders-empty` styles.
+
+### Verification (CDP, `artifacts/t287/`)
+- `?` key → overlay opens (15 rows), Esc closes; screenshot.
+- Keyboard Tab → `.em-iconbtn` gets `outline: solid 2px rgb(47,111,214)`
+  accent ring (`:focus-visible` rule live in stylesheet).
+- `tsc` 0 errors repo-wide; `vite build` green (417 kB); plugin e2e 30/30
+  (one 28/2 on a cold esbuild run — known timing flake, clean on re-run).
+- Icon-button name audit: all icon-only buttons carry `aria-label` or
+  `title` (accessible name verified, none added).
+- Contrast: both stock themes re-verified rendering (T-275 CDP shots);
+  new text uses existing `--kiwi-ms-*` tokens only.

@@ -450,4 +450,22 @@ mod tests {
         // reverse-map path).
         let _ = r.lookup_ptr(IpAddr::V4(Ipv4Addr::LOCALHOST));
     }
+
+    /// Live-DNS smoke — manual verification only. Not part of CI: a host
+    /// without working DNS is a supported configuration, so this cannot
+    /// be a required test. Run it when changing bounds or plumbing:
+    /// `cargo test -p kiwi-mailauth hickory_live -- --ignored`.
+    #[test]
+    #[ignore = "requires live system DNS — run manually per mailauth.md §6"]
+    fn hickory_live_dns_smoke() {
+        let r = HickoryResolver::system();
+        let name = DomainName::parse("gmail.com").unwrap();
+        let mx = r
+            .lookup_mx(&name)
+            .expect("live MX lookup failed — is system DNS working?");
+        assert!(!mx.is_empty(), "gmail.com publishes MX records");
+        // Sanity on the second query kind against the same shared
+        // runtime — proves the resolver isn't a one-shot.
+        assert!(r.lookup_host(&name).is_ok());
+    }
 }

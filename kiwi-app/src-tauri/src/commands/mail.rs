@@ -12,11 +12,13 @@ use tauri::State;
 
 use kiwi_core::session::{AuthMechanism, Protocol};
 use kiwi_mail::account::{AuthRef, IncomingProtocol, MailAccount};
+use kiwi_mail::authstamp::AuthSealer;
 use kiwi_mail::imap::{ImapAuth, ImapClient};
 use kiwi_mail::mime::parse_message;
 use kiwi_mail::pop3::Pop3Auth;
-use kiwi_mail::sync::{sync_folder, sync_pop3};
+use kiwi_mail::sync::{sync_folder, sync_pop3_with_auth};
 use kiwi_mail::transport::{TlsSettings, Transport};
+use kiwi_mailauth::dns::HickoryResolver;
 
 use super::{bounded, gate, resolve_secret, run_mail_io};
 use crate::error::{CmdResult, IpcError};
@@ -335,8 +337,27 @@ pub(crate) async fn load_body_raw(
         return Ok(None);
     };
     state.store.lock().await.store_body(folder_id, uid, &raw)?;
+    // T-279: Authentication-Results on lazy body ingest — the same
+    // evidence path `fetch_missing_bodies_with_auth` uses. IMAP carries
+    // no SMTP receipt, so `receipt` is `None` and SPF records `none`
+    // rather than a fabricated verdict. Stamp failures degrade to "not
+    // evaluated" — they must not fail the read.
+    if let Ok(parsed) = parse_message(&raw) {
+        let stamp = auth_sealer().evaluate_and_stamp(&parsed, &raw, now_unix(), None);
+        let _ = state.store.lock().await.set_auth(folder_id, uid, &stamp);
+    }
     remember_threading(state, folder_id, uid, &raw).await;
     Ok(Some(raw))
+}
+
+/// The production DNS resolver for Authentication-Results stamping
+/// (T-279, `mailauth.md` §6). Built lazily on first lookup so startup
+/// never blocks on DNS, and shared so hickory's answer cache stays warm
+/// across syncs. A host with no working DNS memoizes the failed build —
+/// lookups then return `Temp` instead of panicking or retrying forever.
+fn auth_sealer() -> &'static HickoryResolver {
+    static SEALER: std::sync::OnceLock<HickoryResolver> = std::sync::OnceLock::new();
+    SEALER.get_or_init(HickoryResolver::system)
 }
 
 /// Cache a body-bearing message's threading headers into the sidecar
@@ -762,13 +783,18 @@ pub(crate) async fn pop3_sync(
         let folder_id = store.ensure_folder(&acct.account_id, "INBOX")?;
         let before: std::collections::BTreeSet<u64> =
             store.folder_uids(folder_id)?.into_iter().collect();
-        let r = sync_pop3(
+        // T-279: stamp Authentication-Results at ingest. POP3 carries no
+        // SMTP receipt context, so `receipt` stays `None` (SPF records
+        // `none` with an explicit comment — never a guessed verdict).
+        let r = sync_pop3_with_auth(
             &mut client,
             &store,
             &acct.account_id,
             "INBOX",
             false,
             now_unix(),
+            auth_sealer(),
+            None,
         )
         .await
         .map_err(IpcError::from)?;

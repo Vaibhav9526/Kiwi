@@ -179,7 +179,9 @@ ingest; `SmtpReceipt` is `None` on both — POP3/IMAP cannot know
 the client IP or envelope sender, so SPF records `none` there.
 NXDOMAIN **and** NODATA map to `NxDomain`; every other failure
 (transport, timeout, config, lookup panic) maps to `Temp` —
-fail-closed, never `fail`.
+fail-closed, never `fail`. Live-DNS verification is manual:
+`cargo test -p kiwi-mailauth hickory_live -- --ignored` runs a real
+system-DNS smoke (CI has no DNS by contract).
 
 ## 7. Determinism
 

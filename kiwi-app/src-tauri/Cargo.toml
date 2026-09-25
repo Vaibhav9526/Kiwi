@@ -21,6 +21,7 @@ kiwi-contacts = { path = "../../kiwi-contacts" }
 kiwi-integrations = { path = "../../kiwi-integrations" }
 kiwi-sandbox = { path = "../../kiwi-sandbox" }
 kiwi-autoconfig = { path = "../../kiwi-autoconfig" }
+kiwi-mailauth = { path = "../../kiwi-mailauth" }
 kiwi-pair = { path = "../../kiwi-pair" }
 # DNS MX lookups for autoconfig discovery (same pin kiwi-mailauth uses).
 hickory-resolver = { version = "0.26", features = ["tokio"] }
