@@ -56,7 +56,9 @@ pub struct ExeBaseline {
 }
 
 /// One measured indicator, pre-signal. `detail` is display-safe text.
+/// camelCase wire names like every other IPC view (ipc.md §10).
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct EndpointObservation {
     pub id: String,
     pub kind: SignalKindView,

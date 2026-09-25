@@ -104,7 +104,7 @@ capture_integrity`.
 
 | rule id | title | sev / conf |
 |---------|-------|------------|
-| KIWI-TRANSPORT-001 | Mail transport is not encrypted | High / Certain |
+| KIWI-TRANSPORT-001 | Mail transport is not encrypted | High / Certain — **Critical / Certain** when a reusable secret was observed in the clear (credential exposure, not just unencrypted transport) |
 | KIWI-TRANSPORT-002 | TLS-only port served in plaintext | Critical / Certain |
 | KIWI-PROTO-001 | Mail protocol could not be identified | Info / Tentative |
 | KIWI-STARTTLS-001 | STARTTLS downgrade or stripping indicator | Critical / Firm |
@@ -156,12 +156,22 @@ deprecated-auth + cleartext-under-TLS, guessing threshold 3, strict
 implicit-TLS ports, report unrecognized, RSA ≥2048 / EC ≥256, 30-day
 expiry window. `strict()`: TLS 1.3 floor. `permissive()`: measures
 everything, reports almost nothing (proves suppression ≠ blindness).
+Every policy flag is live (T-247): `reject_broken_ciphers` gates
+KIWI-CIPHER-001 like its weak/legacy siblings, `require_tls13` is a
+shorthand floor of TLS 1.3 (it wins over `min_tls_version`; the effective
+floor is what TLS-001 reports in evidence), and
+`report_cleartext_auth_under_tls` gates KIWI-AUTH-002 specifically for
+reusable-secret mechanisms under a protected channel — a PLAIN-under-TLS
+deprecation is opt-in, while MD5/anonymous deprecation is not
+channel-scoped. Reports under non-default policies may differ from `/1`
+runs that ignored those flags.
 
-## 6. Scoring (`kiwi-score-1`)
+## 6. Scoring (`kiwi-score-2`)
 
 Per finding: `weight_points(severity) × multiplier_bp(confidence) / 10000`,
-round half up. Same rule repeating in one scope dims: 1st ×1.0, 2nd ×0.5,
-3rd ×0.25, 4th+ ×0.125. Total capped at 100 (`max_deduction_points`);
+**round half up per finding**, then sum. Same rule repeating in one scope
+dims: 1st ×1.0, 2nd ×0.5, 3rd ×0.25, 4th+ ×0.125. Total capped at 100
+(`max_deduction_points`);
 `score = 100 − deduction`. Grades: A 90–100, B 80–89, C 70–79, D 55–69,
 F 0–54. Integer arithmetic only — identical input, identical score (§7).
 `Report.score.grade` carries the FSV-1 wire tag (`"a"`–`"f"`, lowercase);
@@ -399,5 +409,9 @@ Every enum on this contract serializes under FSV-1
   filter keep using it. IPC/session-view vocabularies (`tls1.3`,
   `xoauth2`, `hostname-mismatch`, `starttls`) are a separate layer —
   see ipc.md §3.
-- `scoring_model_version` stays `kiwi-score-1` (spelling ≠ scoring) and
-  `rule_catalog_version` stays `1` (no rule logic changed).
+- `scoring_model_version` stayed `kiwi-score-1` under FSV-1 (spelling ≠
+  scoring); T-247's per-finding rounding (§6) bumped it to
+  `kiwi-score-2`. `rule_catalog_version` stays `1` — the T-247 flag
+  wiring restores documented flag semantics; no rule's identity or
+  default-policy output changed (per §5 note, non-default-policy reports
+  may differ from `/1` runs that ignored the flags).

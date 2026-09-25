@@ -293,9 +293,15 @@ pre-reconcile `ipc.ts` wrapper invoked. New code must call
 
 ### `kiwi_list_folders(accountId) → FolderView[]`
 ```jsonc
-{ "id": 1, "name": "INBOX", "exists": 42, "unseen": 2, "uidValidity": 123 }
+{ "id": 1, "accountId": "a1", "name": "INBOX",
+  "uidValidity": 123 | null, "uidNext": 995 | null, "highestUid": 994 }
 ```
 Folders appear after the first sync (IMAP LIST auto-registers them).
+`uidValidity`/`uidNext` are `null` until a sync has selected the folder.
+The earlier `exists`/`unseen` shape is **withdrawn**: no store count
+query backs them, so emitting them would fabricate zeros — unread badges
+derive from message rows instead (a folder-count query is a follow-up
+store task, not a view field).
 
 ### `kiwi_list_messages(accountId, folderId, limit?) → MessageView[]`
 Newest first. `limit` default 50, clamp 1–500. `folderId` must belong to
@@ -303,11 +309,25 @@ Newest first. `limit` default 50, clamp 1–500. `folderId` must belong to
 
 ```jsonc
 { "id": 12, "folderId": 1, "uid": 991, "messageId": "<…>" | null,
-  "subject": "…", "fromAddr": "…", "toAddrs": "…",
-  "dateUnix": 0, "size": 1234, "flags": ["\\Seen"],
-  "hasAttachments": false, "snippet": "…",
-  "inReplyTo": "<…>" | null, "references": ["<…>"] }
+  "subject": "…" | null, "fromAddr": "…" | null, "toAddrs": "…" | null,
+  "dateUnix": 0 | null, "size": 1234 | null, "flags": ["\\Seen"],
+  "unread": true, "starred": false,
+  "hasAttachments": false, "snippet": "…" | null, "bodyStored": true,
+  "inReplyTo": "<…>" | null, "references": ["<…>"],
+  "category": "primary | newsletters | social | notifications | other",
+  "unsubscribeUrl": "https://…" | null, "unsubscribeMailto": "…" | null,
+  "unsubscribeOneClick": false, "unsubscribeRequiresConsent": false,
+  "auth": AuthView | null, "attachRisk": AttachRiskView | null }
 ```
+
+`subject`/`fromAddr`/`toAddrs`/`dateUnix`/`size`/`snippet` are `null` when
+the envelope field was not captured — `null` is honest absence, never an
+empty string. `unread`/`starred` are derived from `flags` (`\\Seen` /
+`\\Flagged`); `unsubscribe*` are the T-202 sender-advertised endpoints
+(`unsubscribeRequiresConsent` marks a `mailto:`-only offer — compose needs
+explicit consent); `category` is the T-201 deterministic inbox tab;
+`auth` (T-232) and `attachRisk` (T-254) are `null` until the stored body
+has been parsed — render unknown, never safe.
 
 `inReplyTo`/`references` (T-169, header-chain threading): populated from
 a bounded sidecar cache (50k entries) filled by the sync-time
@@ -631,6 +651,73 @@ can't inherit stale stage records). Apply errors inside a pass are
 swallowed and counted on `SyncReportView.ruleFailures`; the unwritten
 watermark makes the retry automatic.
 
+## 6e. Commands — snooze **[gated]** (T-255)
+
+Reversible **local-only** parking: a snoozed message keeps its `messages`
+row in place — nothing moves server-side or locally — but the `snoozed`
+table hides it from `kiwi_list_messages` (and category tabs) until the
+deadline passes. Deletion, expunge, account removal, and UIDVALIDITY
+reset all drop the parking row by foreign-key cascade; a store move
+re-keys it, so a parked message dragged to another folder stays parked
+(`snoozedFromFolderId` still records where it was parked). Because the
+remote uid never moves, a parked message is never re-downloaded as new
+mail.
+
+### `kiwi_message_snooze(accountId, refs, untilUnix?, preset?) → SnoozeResultView`
+
+```jsonc
+// refs — 1..500 entries, deduped, non-negative, EVERY folderId must
+//        belong to accountId (cross-account ref ⇒ not-found):
+{ "accountId": "…", "refs": [ { "folderId": 1, "uid": 9 } ],
+  "preset": "tomorrow" }            // XOR:
+{ "accountId": "…", "refs": [ … ], "untilUnix": 1730000000 }
+
+{ "snoozed": 1, "untilUnix": 1730086400 }
+```
+
+Deadline is exactly one source — both set or neither ⇒ `invalid-input`.
+`untilUnix` must be in the future and ≤ ~2 years out (a far-future value
+is a renderer bug — usually milliseconds — so it's refused). Presets are
+**fixed offsets resolved server-side** (clients can't disagree):
+`later_today` +3h, `tomorrow` +24h, `next_week` +7d — they are *not*
+wall-clock-aware ("tomorrow 9am local" needs a TZ database; if a client
+wants that it computes `untilUnix` itself). Unknown preset ⇒
+`invalid-input`. Re-snoozing a parked message updates the deadline
+(`set_at` refreshed, `from_folder` kept). Audit record
+`messages-snoozed` is written (trivial, per T-255).
+
+### `kiwi_message_unsnooze(accountId, refs) → UnsnoozeResultView`
+
+Same `refs` shape and validation. Removes the parking row — the message
+reappears in whatever folder it lives in (snooze never moved it).
+Idempotent: unsnoozing a non-parked ref counts 0, not an error.
+`{ "unsnoozed": n }`. Audit record `messages-unsnoozed`.
+
+### `kiwi_list_snoozed(accountId, limit?) → SnoozedMessageView[]`
+
+The account's parked mail, soonest-due first (`limit` default 200, clamp
+1–1000; unknown `accountId` ⇒ `not-found`). Messages parked into a
+Trash-named folder stay hidden here — trash is the stronger state — but
+still release on schedule.
+
+```jsonc
+[ { "folderId": 1, "uid": 9, "folder": "INBOX",
+    "snoozedFromFolderId": 1, "snoozedUntil": 1730086400,
+    "snoozedAt": 1730000000, "subject": "…", "fromAddr": "…",
+    "messageId": "…", "dateUnix": 1729990000 } ]
+```
+
+### Due release (sync path — no IPC entry)
+
+Every sync pass starts with a bounded sweep
+(`MailStore::unsnooze_due`, ≤200 rows, ordered by `until_unix` then
+`folder_id`/`uid` — deterministic, converges pass-to-pass): rows with
+`until_unix <= now` are deleted, so the messages reappear in their
+folder lists on that pass. Runs for both IMAP `sync_folder` and POP3
+`sync_pop3`; sweep errors are swallowed — snooze state never aborts
+mail sync. There is no push event for a release; the next mail-changed
+emission covers it.
+
 ## 7. Commands — send / outbox **[gated]**
 
 ### `kiwi_send_message(accountId, message: ComposeInput, options?) → SendReceipt`
@@ -828,10 +915,12 @@ mapping, and audit records on writes.
 | `kiwi_contacts_by_email(address)` | `ContactView \| null` | recipient→name (composer/reader) |
 | `kiwi_contacts_by_tag(tag, limit?)` | `ContactView[]` | case-insensitive tag |
 | `kiwi_contact_tags()` | `{tag, count}[]` | most-used first |
-| `kiwi_import_vcards(vcard)` | `VCardImportView` | below |
+| `kiwi_import_vcards(vcardText)` | `VCardImportView` | below |
 | `kiwi_export_vcards(contactIds?)` | `{vcard}` | all contacts when omitted; unknown explicit id → `not-found` |
 
-`kiwi_import_vcards` — hard stream errors abort as `invalid-input`;
+`kiwi_import_vcards(vcardText)` — the argument is `vcardText` (Rust
+`vcard_text` → Tauri camelCase; `vcard` is rejected as an unknown arg).
+Hard stream errors abort as `invalid-input`;
 per-card issues never discard the rest. Re-import dedupes on the card's
 `UID` → `sourceUid`: a known `UID` updates in place (id + `createdUnix`
 preserved, card wins wholesale — §5.4); a store-level failure on one

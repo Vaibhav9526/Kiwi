@@ -82,7 +82,7 @@ fail with `code: "locked"`. Contacts are mailbox data; the lock must cover them.
 | `kiwi_contacts_by_email(address)` | `ContactView \| null` | recipient → name, for the reader/composer |
 | `kiwi_contacts_by_tag(tag, limit?)` | `ContactView[]` | |
 | `kiwi_contact_tags()` | `{ tag: string, count: number }[]` | most-used first, then alphabetical |
-| `kiwi_import_vcards(vcard: string)` | `VCardImportView` | §5.2 |
+| `kiwi_import_vcards(vcardText: string)` | `VCardImportView` | §5.2 — wire arg is `vcardText` (Rust `vcard_text` → Tauri camelCase) |
 | `kiwi_export_vcards(contactIds?)` | `{ vcard: string }` | all contacts when ids are omitted |
 
 `ContactInput` is `Contact` minus the store-owned fields.

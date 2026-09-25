@@ -368,3 +368,56 @@ Verification: `cargo test -p kiwi-autoconfig` **97/97** green;
 `cargo fmt -p kiwi-autoconfig --check` clean. Pre-existing uncommitted
 T-230 diffs in `net.rs`/`oauth2/{mod,provider}.rs` observed, not
 touched.
+
+## T-257 — account-add → first-sync E2E (offline, scripted fixtures)
+
+New: `kiwi-app/src-tauri/src/e2e.rs` (4 tests). Seam fix:
+`kiwi-mail/src/testutil/server.rs` — `Wire`/`serve`/`spawn_script`
+generalized `DuplexStream` → `S: AsyncRead + AsyncWrite + Unpin`, so the
+transcript harness drives a real loopback `TcpStream` (the actual
+`Transport::connect` path is exercised — genuine TCP + TLS handshake,
+not a mock). `TlsAcceptor` re-exported from `testutil`; `e2e-fixtures`
+feature on kiwi-mail (rcgen → optional dep, kept in dev-deps for
+in-crate tests) enabled via kiwi-app dev-dep. Widenings:
+`list_folders_impl`, `list_accounts_impl` → `pub(crate)`;
+`integrations_transport` → `pub(crate)` (test arg seam).
+
+Coverage — `e2e.rs`:
+- `e2e_discover_add_sync_list_green_path`: MockNet serves an autoconfig
+  doc pointing at `127.0.0.1:<listener>` → `discover_account_impl`
+  (autoconfig_host hit, suggestion fields asserted) → `add_account_impl`
+  (wizard-shaped input, `accept_invalid_certs` for the self-signed
+  acceptor) → `list_accounts_impl` (persisted) → `sync_account_impl`
+  over STARTTLS-scripted transcript (CAPABILITY→STARTTLS→TLS
+  boundary→LOGIN→LIST→SELECT→UID SEARCH→UID FETCH envelopes→header
+  fetch→LOGOUT) → `list_folders_impl` + `list_messages_impl` (2
+  envelopes, newest-first, \Seen honored, message-id parsed). Server
+  task joined — a wire divergence would fail the test.
+- `e2e_unreachable_host_surfaces_connect_error`: bound-then-dropped
+  port → sync returns `connect-failed`, no crash/hang.
+- `e2e_auth_rejection_surfaces_server_reject`: scripted `NO
+  [AUTHENTICATIONFAILED]` on LOGIN → `server-reject` with the server
+  reply surfaced.
+- `e2e_undiscoverable_domain_flagged_not_crash`: empty MockNet →
+  `mx_heuristic` + `needs_manual_review` (failure as data).
+
+PASS/FAIL matrix:
+
+| stage                 | green | bad host            | auth fail             | undiscoverable        |
+|-----------------------|-------|---------------------|-----------------------|-----------------------|
+| discover              | PASS  | n/a (doc reachable) | n/a                   | PASS (flagged guess)  |
+| add_account           | PASS  | PASS (row persists) | PASS                  | n/a                   |
+| sync_folder           | PASS  | PASS (`connect-failed`) | PASS (`server-reject`) | n/a                |
+| list_folders/messages | PASS  | n/a                 | n/a                   | n/a                   |
+
+Integration gap found+fixed: testutil's `serve`/`spawn_script` were
+DuplexStream-only — unusable for a real-socket E2E. Fixed in-place
+(generic stream); no production-code changes needed — the real path
+was already coherent.
+
+Verification: `cargo test -p kiwi-app` **98/98**; `-p kiwi-autoconfig`
+97/97; `-p kiwi-mail` 197+2 foreign failures (`linkrisk.rs:376` —
+untracked in-flight file, owner mid-edit, reported not touched);
+`testutil` suite 15/15 green; `clippy -p kiwi-app kiwi-mail
+kiwi-autoconfig --all-targets -D warnings` clean; rustfmt clean on my
+files.

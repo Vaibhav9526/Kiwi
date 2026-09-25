@@ -46,5 +46,9 @@ ammonia = "4"
 # the download command reads the stored MIME directly.
 mail-parser.workspace = true
 
+# Test-only: scripted transcript-replay seam (loopback E2E, T-257).
+[dev-dependencies]
+kiwi-mail = { path = "../../kiwi-mail", features = ["e2e-fixtures"] }
+
 [lints]
 workspace = true

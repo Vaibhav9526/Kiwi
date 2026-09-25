@@ -35,11 +35,7 @@ const NEXT_WEEK_SECS: i64 = 7 * 24 * 60 * 60;
 /// Resolve the deadline: exactly one of `untilUnix` / `preset`, presets
 /// are fixed offsets from `now` (documented contract; wall-clock-aware
 /// presets need a TZ database — flagged to Lead rather than assumed).
-fn resolve_until(
-    preset: Option<&str>,
-    until_unix: Option<i64>,
-    now: i64,
-) -> CmdResult<i64> {
+fn resolve_until(preset: Option<&str>, until_unix: Option<i64>, now: i64) -> CmdResult<i64> {
     let preset = match preset {
         None => None,
         Some("later_today") => Some(LATER_TODAY_SECS),
@@ -54,9 +50,9 @@ fn resolve_until(
             "untilUnix must be a future unix timestamp ≤ ~2y out",
         )),
         (None, None) => Err(IpcError::invalid("pass untilUnix or preset")),
-        (Some(_), Some(_)) => {
-            Err(IpcError::invalid("pass either untilUnix or preset, not both"))
-        }
+        (Some(_), Some(_)) => Err(IpcError::invalid(
+            "pass either untilUnix or preset, not both",
+        )),
     }
 }
 
@@ -115,7 +111,14 @@ pub async fn kiwi_message_snooze(
     preset: Option<String>,
 ) -> CmdResult<SnoozeResultView> {
     gate(state.inner()).await?;
-    snooze_impl(state.inner(), &account_id, refs, until_unix, preset.as_deref()).await
+    snooze_impl(
+        state.inner(),
+        &account_id,
+        refs,
+        until_unix,
+        preset.as_deref(),
+    )
+    .await
 }
 
 pub(crate) async fn snooze_impl(
@@ -327,9 +330,7 @@ mod tests {
         assert_eq!(parked[0].folder, "INBOX");
         assert_eq!(parked[0].snoozed_from_folder_id, fid);
 
-        let rel = unsnooze_impl(&state, "a1", vec![rf(fid, 1)])
-            .await
-            .unwrap();
+        let rel = unsnooze_impl(&state, "a1", vec![rf(fid, 1)]).await.unwrap();
         assert_eq!(rel.unsnoozed, 1);
         let store = state.store.lock().await;
         assert_eq!(store.list_messages(fid, 10).unwrap().len(), 2);
@@ -391,10 +392,27 @@ mod tests {
         assert_eq!(e.code, "not-found");
         // Unknown account → not-found (folder lookup precedes account proof
         // here: the folder can't belong to a missing account either way).
-        let e = snooze_impl(&state, "ghost", vec![rf(fid, 1)], Some(now_unix() + 60), None)
-            .await
-            .unwrap_err();
+        let e = snooze_impl(
+            &state,
+            "ghost",
+            vec![rf(fid, 1)],
+            Some(now_unix() + 60),
+            None,
+        )
+        .await
+        .unwrap_err();
         assert_eq!(e.code, "not-found");
+        // Duplicate refs collapse — two parked, not three.
+        let rep = snooze_impl(
+            &state,
+            "a1",
+            vec![rf(fid, 1), rf(fid, 1), rf(fid, 2)],
+            Some(now_unix() + 60),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(rep.snoozed, 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

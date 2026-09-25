@@ -26,7 +26,12 @@ pub struct MessageView {
     pub uid: u64,
     pub message_id: Option<String>,
     pub subject: Option<String>,
+    /// ipc.md §6 envelope key (`fromAddr`, matching `SearchHitView`);
+    /// `null` when the envelope sender was not captured.
+    #[serde(rename = "fromAddr")]
     pub from: Option<String>,
+    /// ipc.md §6 (`toAddrs`); `null` when recipients were not captured.
+    #[serde(rename = "toAddrs")]
     pub to: Option<String>,
     pub date_unix: Option<i64>,
     pub size: Option<u64>,

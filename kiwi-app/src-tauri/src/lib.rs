@@ -14,6 +14,8 @@ mod bridge;
 mod commands;
 mod credstore;
 mod discovery_net;
+#[cfg(test)]
+mod e2e;
 mod error;
 mod observe;
 mod signals;
@@ -100,6 +102,10 @@ pub fn run() {
             kiwi_render_body,
             kiwi_set_remote_content,
             kiwi_message_unsubscribe,
+            // snooze (gated — T-255, F-feature)
+            kiwi_message_snooze,
+            kiwi_message_unsnooze,
+            kiwi_list_snoozed,
             // send (gated)
             kiwi_send_message,
             kiwi_cancel_send,

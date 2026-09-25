@@ -10,12 +10,14 @@
 pub mod attachment;
 pub mod delete;
 pub mod render;
+pub mod snooze;
 pub mod unsubscribe;
 pub mod update;
 
 pub use attachment::*;
 pub use delete::*;
 pub use render::*;
+pub use snooze::*;
 pub use unsubscribe::*;
 pub use update::*;
 

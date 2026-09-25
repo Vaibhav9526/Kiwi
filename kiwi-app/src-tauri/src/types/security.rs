@@ -82,7 +82,7 @@ pub struct EventRow {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FindingDetailView {
-    /// The full `kiwi.forensics/1` finding, evidence included.
+    /// The full `kiwi.forensics/2` finding, evidence included (FSV-1 tags).
     pub finding: kiwi_forensics::findings::Finding,
     /// The session it was observed in — `None` when the session ring has
     /// already evicted it (findings outlive sessions on purpose).
