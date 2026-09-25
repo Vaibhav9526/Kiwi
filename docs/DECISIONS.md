@@ -149,3 +149,8 @@
 - **Decision:** FSV-1 is the canonical **forensics serde vocabulary**: lower `snake_case` enum variant names; unit variants are JSON strings; data-bearing variants use Serde's externally tagged object form and retain payloads. `EvidenceValue` remains internally tagged with `type` and snake_case variants. `as_str()` is not changed: it remains semantic/display vocabulary for evidence text, policy references, and stable finding/subject keys. A lossy legacy reader may accept the bare-string `unknown` input, but it must not invent the missing raw value. Forensics report enum tags and core/Tauri session-view vocabulary remain explicitly mapped rather than silently shared.
 - **Migration:** preserve original stored-report bytes; version the wire change (`kiwi.forensics/2` or an explicit wire-schema version); use dual-read/single-write during the compatibility window; update `forensics.md` and embedded-forensics IPC examples atomically. Unknown future enum variants remain a separate forward-compatibility gate (FOR-6); `#[serde(other)]` is not a blanket solution for newtype/struct variants.
 - **Consequences:** the current Serde output becomes the canonical report wire, eliminating per-enum spelling drift while preserving raw `TlsVersion::Unknown` payloads. A code owner must add compatibility tests, migrate consumers, and update contracts before treating the change as implemented; this ADR does not itself change source code.
+
+
+## ADR-012 — Plugin alpha = trusted-code model (owner amendment)
+
+Sideload-only plugins v1 declare capabilities via manifest but run as **trusted code** — sandbox/isolation enforcement deferred to post-alpha. Risk accepted by owner directive; A25 records the threat-model entry + follow-up hardening task.
