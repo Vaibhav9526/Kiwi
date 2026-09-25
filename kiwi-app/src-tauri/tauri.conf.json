@@ -25,7 +25,11 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis", "msi"],
+    "publisher": "KIWI contributors",
+    "copyright": "Copyright © 2026 KIWI contributors",
+    "shortDescription": "KIWI — local-first security-first mail client (alpha)",
+    "longDescription": "KIWI is a standalone, local-first desktop mail client with deterministic TLS, transport, and authentication analysis. Alpha build — unsigned, no auto-update.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
