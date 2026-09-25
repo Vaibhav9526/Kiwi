@@ -250,7 +250,8 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
   docs/contracts+audits                 -> A22 (T-260) / A23 (T-270)
 -->
 | T-272 | Final register items: FOR-10 emit 3 limitation codes + IPC-15 real wrappers | Agent 20 | open | `kiwi-forensics/`, `ipc.ts` | FINDINGS.md |
-| T-273 | Link-click policy gate: kiwi_link_click verdict + open_external risk-gating | Agent 21 | open | `src-tauri/` | T-266 |
+| T-273 | link-click policy gate: kiwi_link_click verdicts + open_external risk-gated (no bypass), audited | Agent 21 | done |
 | T-274 | Reference plugin + capability-gate proof (bridge e2e in plugins/) | Agent 25 | done | `kiwi-app/src/plugins/` | T-268 |
 | T-275 | T-268 seam land: ThemePicker mount + useTheme swap + emoji sweep + visual pass | Agent 25 (A24 terminal expired — files transferred) | open | `kiwi-app/src` | T-267,T-268 |
 | T-276 | ACFG-4 GoDaddy: resolved inline — removed from ISPDB_FIXTURES roster (correctly MX_HINTS-only, no fixed domains) | Lead | done |
+| T-277 | Fix e2e_send_* hang: root-cause blocking point + bounded timeout, keep deterministic | Agent 21 | open | `kiwi-app/src-tauri/src/e2e.rs`, `kiwi-mail` seams | T-262,T-273 |

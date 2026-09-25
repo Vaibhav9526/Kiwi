@@ -29,6 +29,7 @@ import type {
   FindingDetailView,
   FolderView,
   MailChangedEvent,
+  LinkClickVerdict,
   MessageBodyView,
   MessagePatch,
   MessageRef,
@@ -39,6 +40,8 @@ import type {
   OAuth2PollView,
   OAuth2StatusView,
   OutboxItem,
+  PairBeginView,
+  PairStatusView,
   RemoteContentView,
   RenderedBodyView,
   RuleHitView,
@@ -48,10 +51,13 @@ import type {
   SearchHit,
   SandboxOpenView,
   SecurityStatusView,
+  SendReceipt,
   SetJunkView,
   SnoozePreset,
   SnoozeResultView,
   SnoozedMessageView,
+  SyncStatusView,
+  TagCountView,
   TempDiscardView,
   TempExtendView,
   TempMailboxView,
@@ -60,6 +66,8 @@ import type {
   UnsnoozeResultView,
   UnsubscribeAction,
   UnsubscribeResultView,
+  VCardExportView,
+  VCardImportView,
   VerifyResult,
 } from "./kiwi";
 import { parseAutoconfigSuggestion, parseContact, parseOAuth2Begin, parseOAuth2Poll, parseOAuth2Status, parseSearchHit } from "./kiwi";
@@ -143,6 +151,13 @@ export const api = {
   lock(): Promise<SecurityStatusView> {
     return call<SecurityStatusView>("kiwi_lock");
   },
+  /** Canonical §9d unlock path — backend fixes `event:"unlock"` and owns
+   *  challenge id / nonce / session / TTL; renderer supplies only deviceId. */
+  unlockChallenge(deviceId: string): Promise<ChallengeView> {
+    return call<ChallengeView>("unlock_challenge", { deviceId });
+  },
+  /** Compat alias (kiwi_request_challenge) — for non-unlock challenge
+   *  events. Still backed by PairEngine. */
   requestChallenge(deviceId: string, event: "unlock" | "device-pairing" | "recovery" | "elevated-action"): Promise<ChallengeView> {
     return call<ChallengeView>("kiwi_request_challenge", { deviceId, event });
   },
@@ -229,12 +244,12 @@ export const api = {
     return parseOAuth2Status(raw);
   },
   /**
-   * `kiwi_open_external(url)` — open an https:// URL in the system
-   * browser (the OAuth2 browser handoff; webview navigation is never
-   * used for provider sign-in). Invalid → IpcError "invalid-input".
+   * `kiwi_open_external(url, sourceUrl?)` — HTTPS system-browser handoff.
+   * Message-link callers pass sourceUrl; T-273 then enforces fresh risk and
+   * refuses failed links with sandbox-required.
    */
-  openExternal(url: string): Promise<void> {
-    return call<void>("kiwi_open_external", { url });
+  openExternal(url: string, sourceUrl?: string): Promise<void> {
+    return call<void>("kiwi_open_external", { url, sourceUrl });
   },
 
   /* ---------------- search (gated, T-160) ---------------- */
@@ -285,14 +300,20 @@ export const api = {
     }
     return { saved };
   },
+  /**
+   * Single pref read — `null` = unset (ipc.md §9c). `getPrefs` covers the
+   * bag; this is for one-key lookups that should not list the store.
+   */
+  prefsGet(key: string, accountId?: string): Promise<unknown> {
+    return call<unknown>("kiwi_prefs_get", { key, accountId });
+  },
 
   /* ---------------- contacts (gated, T-173, pending backend) ---------------- */
 
   /**
    * Address book per docs/contracts/contacts.md §3 (`kiwi.contacts/1`).
-   * No backend command exists yet (Agent 7) — until they land every call
-   * throws BackendUnavailableError and views use the labeled localStorage
-   * book instead. Same wrappers either way, so no view changes on land.
+   * When the backend is absent each call throws BackendUnavailableError
+   * and views use the labeled localStorage book instead.
    */
   async listContacts(limit?: number, offset?: number): Promise<ContactView[]> {
     const raw = await call<unknown>("kiwi_list_contacts", { limit, offset });
@@ -331,6 +352,26 @@ export const api = {
     if (raw === null) return null;
     return parseContact(raw);
   },
+  async contactsByTag(tag: string, limit?: number): Promise<ContactView[]> {
+    const raw = await call<unknown>("kiwi_contacts_by_tag", { tag, limit });
+    if (!Array.isArray(raw)) return [];
+    const out: ContactView[] = [];
+    for (const item of raw) {
+      const c = parseContact(item);
+      if (c) out.push(c);
+    }
+    return out;
+  },
+  contactTags(): Promise<TagCountView[]> {
+    return call<TagCountView[]>("kiwi_contact_tags");
+  },
+  importVcards(vcardText: string): Promise<VCardImportView> {
+    // Wire arg is `vcardText` (Rust `vcard_text` → Tauri camelCase).
+    return call<VCardImportView>("kiwi_import_vcards", { vcardText });
+  },
+  exportVcards(contactIds?: string[]): Promise<VCardExportView> {
+    return call<VCardExportView>("kiwi_export_vcards", { contactIds });
+  },
 
   /* ---------------- mail read (gated) ---------------- */
 
@@ -345,6 +386,10 @@ export const api = {
   },
   syncAccount(accountId: string, folders?: string[]): Promise<Record<string, unknown>[]> {
     return call<Record<string, unknown>[]>("kiwi_sync_account", { accountId, folders });
+  },
+  /** Per-account sync rows; omit `accountId` for every configured account. */
+  syncStatus(accountId?: string): Promise<SyncStatusView[]> {
+    return call<SyncStatusView[]>("kiwi_sync_status", { accountId });
   },
 
   /* ---------------- message actions (gated, T-146) ---------------- */
@@ -372,6 +417,9 @@ export const api = {
   },
   setRemoteContent(accountId: string, allowed: boolean): Promise<RemoteContentView> {
     return call<RemoteContentView>("kiwi_set_remote_content", { accountId, allowed });
+  },
+  linkClick(accountId: string, folderId: number, uid: number, url: string): Promise<LinkClickVerdict> {
+    return call<LinkClickVerdict>("kiwi_link_click", { accountId, folderId, uid, url });
   },
   sandboxOpenLink(url: string): Promise<SandboxOpenView> {
     return call<SandboxOpenView>("kiwi_sandbox_open_link", { url });
@@ -510,6 +558,10 @@ export const api = {
   cancelSend(queueId: string): Promise<{ cancelled: boolean }> {
     return call<{ cancelled: boolean }>("kiwi_cancel_send", { queueId });
   },
+  /** Reschedule a queued send (unix seconds); returns the updated receipt. */
+  scheduleSend(queueId: string, sendAtUnix: number): Promise<SendReceipt> {
+    return call<SendReceipt>("kiwi_schedule_send", { queueId, sendAtUnix });
+  },
   async listOutbox(): Promise<OutboxItem[]> {
     return asArray<OutboxItem>(await call<unknown>("kiwi_list_outbox"));
   },
@@ -535,16 +587,32 @@ export const api = {
     return call<Record<string, unknown>>("kiwi_security_report", { accountId });
   },
 
+  /* ---------------- pairing flow (ipc.md §9d) ----------------
+   * Canonical commands; `pair_begin`/`pair_status` are exempt from the lock
+   * gate only while a backend-owned pairing flow is live — the renderer
+   * cannot activate one. */
+
+  /** Begin device pairing — backend owns the ticket/expiry/endpoint. */
+  pairBegin(deviceLabel: string): Promise<PairBeginView> {
+    return call<PairBeginView>("pair_begin", { deviceLabel });
+  },
+  /** Poll a ticket — read-only; never consumes. */
+  pairStatus(ticket: string): Promise<PairStatusView> {
+    return call<PairStatusView>("pair_status", { ticket });
+  },
+
   /* ---------------- devices / org binding (gated) ---------------- */
 
+  /** Compat registration seam (kiwi_register_device) — pending until a
+   *  device-pairing challenge verifies. */
   registerDevice(input: { label: string; algorithm: string; publicKeyB64: string; keystoreRef?: string | null }): Promise<DeviceView> {
     return call<DeviceView>("kiwi_register_device", { input });
   },
   async listDevices(): Promise<DeviceView[]> {
-    return asArray<DeviceView>(await call<unknown>("kiwi_list_devices"));
+    return asArray<DeviceView>(await call<unknown>("device_list"));
   },
   revokeDevice(deviceId: string): Promise<SecurityStatusView> {
-    return call<SecurityStatusView>("kiwi_revoke_device", { deviceId });
+    return call<SecurityStatusView>("device_revoke", { deviceId });
   },
   setOrgBinding(orgId: string | null, baseUrl: string | null): Promise<{ orgId: string; baseUrl: string } | null> {
     return call("kiwi_set_org_binding", { orgId, baseUrl });

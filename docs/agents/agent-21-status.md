@@ -621,3 +621,29 @@ browser fallback.
   fmt is independently blocked by concurrent kiwi-pair formatting. `tsc` is
   independently blocked by in-flight T-267/268 chrome/mailbox edits; no T-266
   TS error was emitted.
+
+## 2026-09-25 — T-273 link-click policy gate complete
+
+**Status:** DONE. Added lock-gated `kiwi_link_click(accountId, folderId, uid,
+url) → LinkClickVerdict` without view changes. The backend resolves the message,
+reads stored T-261 link evidence, freshly classifies this exact URL, and merges
+with failure-first precedence: clean→allow, noted→requireConfirm,
+failed→requireSandbox, non-HTTP(S)→deny. Missing stored evidence is explicit
+`stored-evidence-unavailable` / requireConfirm, never clean. Every verdict is
+hash-chain audited as `link-clicked` with message coordinate + reasons, never
+URL/domain/body.
+
+`kiwi_open_external` now accepts optional `sourceUrl`. Message callers pass the
+original clicked URL; the backend freshly classifies destination + source before
+spawn. Failed sources return `sandbox-required`, non-HTTP(S) sources
+`link-denied`, and no host-browser bypass exists. Omitted source preserves the
+existing trusted OAuth2/generic HTTPS path. Added typed `LinkClickVerdict`,
+`linkClick` and updated `openExternal` wrappers; documented §6h and error codes.
+
+Validation: T-273 policy tests **4/4**; external-open enforcement tests **2/2**;
+`cargo check -p kiwi-app`, app lib clippy `-D warnings`, focused TypeScript,
+touched-file rustfmt, and diff check clean. Full app lib passed all T-273 tests
+and every preceding test, then reached the pre-existing unrelated
+`e2e_send_delivers_files_sent_copy` hang observed in T-266. A second run skipping
+only that test progressed through all T-273 tests and later reached another
+pre-existing send-E2E hang (`e2e_send_smtp_reject_retains_outbox`).

@@ -1706,8 +1706,9 @@ listener/redirect faults). All messages are secret-free by construction.
 Opens `url` in the **system browser** — the OAuth2 browser handoff
 (`authorizeUrl`, `verificationUri`). Provider sign-in never runs inside
 the webview (embedded-webview sign-in is blocked by Google and is a
-phishing surface). Validation is fail-closed: `https://` scheme only,
-≤2048 bytes, no whitespace or quote characters; the URL is passed as a
+phishing surface). Validation is fail-closed: unsourced opens require
+`https://`; message-sourced opens accept HTTP(S) only after §6h classification.
+Both are ≤2048 bytes with no whitespace or quote characters; the URL is passed as a
 single argv element to the OS opener (`rundll32 url.dll,FileProtocolHandler`
 / `open` / `xdg-open`) — no shell is involved, so no argument or command
 injection is possible. Errors: `invalid-input` (scheme/shape), `locked`,
@@ -1780,6 +1781,9 @@ Collection caps at 32 observations per run.
 | `consent-required` | deliverability send without the unconsumed consent token (wrong/missing/consumed are indistinguishable); unsubscribe without the required consent flag (mailto always, non-one-click http) |
 | `rate-limited` | provider 429; message carries the retry hint when present |
 | `integration-error` | external-integration failure that isn't a covered class (HTTP status, malformed response, oversized body) |
+| `sandbox-unavailable` / `sandbox-failed` | sandbox provider absent/unusable, or isolated execution failed |
+| `sandbox-required` | host external-open refused a failed message link; use `kiwi_sandbox_open_link` |
+| `link-denied` | host external-open refused a non-HTTP(S) message source |
 | `oauth2-not-configured` | no usable `client_id` for the provider (pref/env unset) |
 | `oauth2-incomplete` | grant ticket unknown/expired, grant not yet complete, or `oauth2Ticket` misuse at `kiwi_add_account` |
 | `oauth2-denied` | user declined authorization |

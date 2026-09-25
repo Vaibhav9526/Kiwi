@@ -349,6 +349,14 @@ export interface MessageUpdateView {
   movedToFolderId: number | null;
 }
 
+export type LinkClickAction = "allow" | "requireConfirm" | "requireSandbox" | "deny";
+
+export interface LinkClickVerdict {
+  action: LinkClickAction;
+  /** Bounded deterministic evidence reason codes; never URL/body text. */
+  reasons: string[];
+}
+
 export interface SandboxOpenView {
   sessionId: string;
   /** Sanitized URL or attachment coordinate; never raw attachment bytes. */
@@ -606,6 +614,29 @@ export interface ContactView {
   phones: ContactPhoneView[];
   createdUnix: number | null;
   updatedUnix: number | null;
+}
+
+/** `kiwi_contact_tags` row — `{tag, count}`, most-used first (contacts.md §5.2). */
+export interface TagCountView {
+  tag: string;
+  count: number;
+}
+
+/** `kiwi_import_vcards` issue row — one per card that failed to import. */
+export interface ImportIssueView {
+  cardIndex: number;
+  detail: string;
+}
+
+/** `kiwi_import_vcards` result (contacts.md §5.2): imported contacts + issues. */
+export interface VCardImportView {
+  contacts: ContactView[];
+  issues: ImportIssueView[];
+}
+
+/** `kiwi_export_vcards` result — a single concatenated vCard payload. */
+export interface VCardExportView {
+  vcard: string;
 }
 
 /** Writable subset (ContactInput): everything minus store-owned fields. */
@@ -963,6 +994,55 @@ export interface DeviceView {
   lastSeenUnix: number;
   /** Last 8 hex of SHA-256 over the raw public key — display only. */
   keyFingerprintTail: string;
+  /** Full lowercase-hex SHA-256 fingerprint of the public key. */
+  fingerprint: string;
+  /** Credential-store key reference, when the device key is held backend-side. */
+  keystoreRef: string | null;
+  /** Revocation timestamp; `null` while the device is live (§9d.6). */
+  revokedUnix: number | null;
+}
+
+/* ---------------- pairing flow (ipc.md §9d) ---------------- */
+
+/** `pair_begin` — the backend owns the ticket + expiry; the renderer only
+ *  displays `qrPayload` for the phone to claim. */
+export interface PairBeginView {
+  ticket: string;
+  expiresUnix: number;
+  qrPayload: string;
+}
+
+/** `pair_status` — read-only ticket poll; never consumes (§9d.4). */
+export interface PairStatusView {
+  state: "awaiting-phone" | "claimed" | "expired";
+  device: DeviceView | null;
+  expiresUnix: number;
+}
+
+/**
+ * `kiwi_schedule_send`/`kiwi_send_message` receipt — queue identity plus
+ * dispatch/undo deadlines (unix seconds).
+ */
+export interface SendReceipt {
+  queueId: string;
+  /** Earliest dispatch time (unix seconds). */
+  notBeforeUnix: number;
+  /** Undo-send cancel deadline (unix seconds). */
+  undoWindowUntilUnix: number;
+}
+
+/** `kiwi_sync_status` row — one per configured account (ipc.md §6). */
+export interface SyncStatusView {
+  accountId: string;
+  /** "pending" | "connecting" | "syncing" | "idle" | "polling" |
+   *  "backoff" | "paused-locked" | "stopped" */
+  state: string;
+  lastSyncUnix: number | null;
+  lastError: string | null;
+  nextRetryUnix: number | null;
+  foldersSynced: number;
+  newMessages: number;
+  attempts: number;
 }
 
 export interface OutboxItem {
