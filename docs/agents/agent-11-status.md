@@ -118,3 +118,18 @@ thiserror/tokio/async-trait).
 - Workspace `cargo clippy --workspace`/`test --workspace` not run —
   other agents' crates have in-flight state; my scope is
   `-p kiwi-integrations` (green).
+
+### Addendum — dep-audit finding C1 (reqwest feature name)
+
+`dep-vuln-1.md` C1 flagged `features = ["rustls-tls-webpki-roots"]` —
+that name only existed in an intermediate draft; reqwest 0.13 dropped
+the `rustls-tls-*` split in favor of a single `rustls` feature, and the
+fix was applied during T-226 before the gates were run. Current state:
+
+- `kiwi-integrations/Cargo.toml:15` — `reqwest = { version = "0.13",
+  default-features = false, features = ["rustls"] }` (valid 0.13.5
+  feature set).
+- `cargo check -p kiwi-integrations` → **clean**.
+- `cargo metadata --no-deps` (full-workspace resolution) → **clean**;
+  the workspace is not red on this.
+- Only one reqwest declaration exists workspace-wide.

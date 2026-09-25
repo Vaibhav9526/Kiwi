@@ -126,8 +126,8 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 ## Backlog — MailFlow feature mine (specs in docs/BACKLOG-MAILFLOW.md; start after current queues + T-190-192)
 
 | T-200 | F1 inbox rules engine (sync-ingest, ordered, block-list-first, deterministic) | unassigned | backlog | `kiwi-mail/` | — |
-| T-201 | F2 categorization tabs (deterministic header/heuristic classifier) | Agent 14 | open | `kiwi-mail/` | — |
-| T-202 | F3 one-click unsubscribe (open URL default; mailto needs confirm) | unassigned | backlog | `kiwi-mail/` + UI | — |
+| T-201 | F2 categorization: deterministic classifier + schema v4 + ingest wiring | Agent 14 | done (101/101) | `kiwi-mail/` | — |
+| T-202 | F3 unsubscribe: List-Unsubscribe/List-Unsubscribe-Post parse + store + MessageView (mailto consent-gated) | Agent 14 | open | `kiwi-mail/` + UI | — |
 | T-203 | F4 sender block list (trash-before-rules, per-account) | unassigned | backlog | `kiwi-mail/` | — |
 | T-204 | F5 mark-as-read behavior pref | unassigned | backlog | `kiwi-app/` | — |
 | T-205 | F6 GTD labels as real IMAP folders (t/w/d keys, opt-in, Todo clears on send) | unassigned | backlog | `kiwi-mail/` + UI | — |
@@ -167,7 +167,7 @@ rebuild context. Lead handle is now term_c20c6737.
 | 11 | Devin Pro | d869b293 | T-226 done → T-227 integrations IPC |
 | 12 | Muse Spark 1.3 xhigh | 4cc53da5 | T-191 done → T-192 security surfaces |
 | 13 | Muse Spark 1.3 xhigh | e5adf4d9 | T-193 admin H1-H8 + M fixes |
-| 14 | OpenCode Zen xhigh | e26f119b | T-180 done → T-201 F2 categorization |
+| 14 | OpenCode Zen xhigh | e26f119b | T-201 done → T-202 F3 unsubscribe |
 | 15 | Devin Pro | c47aa1d7 | T-181 done → T-228 rules engine core |
 | 16 | DeepSeek V4.1 Flash | 87c46343 | T-183 mailauth hardening |
 | 17 | DeepSeek V4.1 Flash | 71a0b324 | T-194 mobile authenticator screens |

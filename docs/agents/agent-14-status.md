@@ -57,3 +57,106 @@ None (verification only). This status file only.
   tests → `tests.rs`).
 - Workspace-wide clippy was not re-checked (Agent 10 noted other crates'
   deny-lint failures as out of scope); `-p kiwi-mail` is clean.
+
+## 2026-09-25 — T-201 (F2): deterministic email categorization classifier
+
+**Status:** done — implemented + verified. All gates green (see verification
+note below for method). Work already swept into git by the repo's auto-commit
+process (commits ac02b28, 859a347 include these files); no separate commit
+made — Lead integrates.
+
+### What landed (all in `kiwi-mail`, + 4 one-line test/prod fixes in src-tauri)
+
+- **NEW `kiwi-mail/src/category.rs`** (577 lines, incl. 18 tests):
+  `Category::{Primary,Newsletters,Social,Notifications,Other}` with stable
+  SQLite slugs (`as_str`/`from_slug`, `Display`, `Default=Primary`),
+  `Classification{category, reason}`, `categorize(&ParsedMessage)` — pure
+  function of From + headers. No network, no clock, no AI. Precedence:
+  Auto-Submitted≠no → Notifications; social domain → Social (before list
+  headers — LinkedIn digests carry List-Unsubscribe); Precedence
+  bulk/list/junk → Newsletters; any `List-*` → Newsletters; bulk-mailer
+  X-Mailer/User-Agent → Newsletters; no-reply sender /
+  X-Auto-Response-Suppress → Notifications; other ESP fingerprints
+  (X-SMTPAPI, X-Campaign-*, …) → Other (deliberate: these also appear on
+  transactional mail); fallback Primary (cites personal MUA when visible).
+  Every reason cites the firing header/rule. 15 social domains (suffix
+  match), 31 bulk-mailer substrings, 22 MUA substrings, 15 automation
+  prefixes — all documented in-file.
+- **`mime.rs`**: `ParsedMessage.headers: Vec<(String,String)>` (lowercased
+  names, bounded 128 headers / 1024-char values, char-boundary-safe).
+  Key catch during testing: `List-Unsubscribe: <url>` parses as
+  `mail_parser::HeaderValue::Address`, not `Text` — extractor flattens
+  Address values (list + group) instead of skipping them.
+- **Store (schema v4)**: `messages.category TEXT NOT NULL DEFAULT
+  'primary'`; `migrate_conn` (factored for tests) adds the column
+  idempotently via `PRAGMA table_info` + best-effort backfill from stored
+  bodies (8 MiB cap, per-row failures skipped, missing/unparseable bodies
+  keep `'primary'`). `MessageMeta`/`NewMessageMeta` carry typed `Category`;
+  `upsert_message` writes it (conflict clause deliberately leaves it
+  untouched so re-upserts never clobber a refined tab); new
+  `set_category` + `list_messages_by_category`; `move_messages` carries it;
+  `search.rs` selects/maps it.
+- **Ingest wiring (`sync.rs`)**: POP3 classifies full messages at ingest;
+  IMAP `to_meta` classifies from envelope From (domain rules fire,
+  list-rules degrade to Primary); `fetch_missing_bodies` refines via
+  `set_category` once headers arrive (parse failure keeps existing value).
+- **src-tauri** (4 literals, compile-fix only): `update.rs` archive-copy
+  preserves `category: m.category` (production path); 3 test literals in
+  `mail.rs`, `message/mod.rs` use `Default::default()`.
+
+### Tests (24 new: 77 → 101)
+
+- `category.rs`: slug roundtrip/unknown-reject, fixture per tab, precedence
+  duels (social>list+precedence, auto-submitted>all, bulk-mailer>noreply),
+  suffix-boundary (`fakex.com`≠`x.com`), case-insensitivity, `Auto-Submitted:
+  no` neutral, envelope-only degradation, determinism, hostile-input splits.
+- `mime.rs`: header capture incl. Address-valued List-Unsubscribe.
+- `store/mod.rs`: persist/refine/filter, no-clobber-on-reupsert,
+  move-preserves, **v3→v4 migration test** (hand-built v3 DB → column added,
+  body backfilled to `newsletters`, bodyless row stays `primary`,
+  idempotent re-run).
+- `sync.rs`: `to_meta` envelope classification (social/notification/primary
+  degradation).
+
+### Gates
+
+```
+isolated copy (kiwi-mail+kiwi-core, same manifests):
+  cargo test -p kiwi-mail --offline               → 101/101
+  cargo clippy -p kiwi-mail --all-targets -D warnings → clean
+  cargo fmt -p kiwi-mail --check                  → clean (ran fmt in workspace)
+  unsafe grep over new code → none (workspace forbid lints apply)
+file sizes: all kiwi-mail/src files <800 (max store/mod.rs 657)
+```
+
+### Verification method + BLOCKER (Lead attention needed)
+
+- **Why isolated copy:** at ~15:14 Agent 11's edit to
+  `kiwi-integrations/Cargo.toml` requested reqwest feature
+  `rustls-tls-webpki-roots`, which does not exist in reqwest 0.13.5 —
+  workspace-wide cargo resolution now fails, blocking ALL crates' cargo
+  commands (including a real-workspace re-run of my suite and the
+  src-tauri compile check). I did NOT touch their file (active owner).
+  **Ask: Agent 11/Lead fix the feature name** (likely `rustls-tls` +
+  `webpki-roots`, or provider feature per reqwest 0.13 docs), then re-run
+  `cargo test --workspace` as a sanity gate.
+- **src-tauri literals unverified by compiler** (4 one-line additions, types
+  line up: `Category: Default+Clone+Copy`; `m.category` is `Category`).
+  Please confirm with `cargo check -p kiwi-app` (or whatever the Tauri
+  package is named) once resolution is fixed.
+- **Follow-up for A7/A5 (not mine):** expose `category` in
+  `MessageView`/IPC + contract so the F2 UI tabs can consume
+  `list_messages_by_category`. No IPC changes made in this task.
+- Residual: `fetch_missing_bodies` refinement path (3 lines, public-API
+  calls) has no dedicated live test — covered logically by unit tests on
+  both sides; a fixture-level test can ride along with the next
+  testutil sync-fixture addition.
+
+### Files changed
+
+`kiwi-mail/src/{category.rs(new),lib.rs,mime.rs,search.rs,sync.rs,
+store/{mod,schema,queries}.rs}`,
+`kiwi-app/src-tauri/src/commands/{mail.rs,message/{mod,update}.rs}`
+(4 literals), this file. Committed by repo sweep (859a347 et al) —
+Lead owns integration.
+
