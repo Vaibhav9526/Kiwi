@@ -240,12 +240,17 @@ ApplyNowReport {
 }
 ```
 
-The current `sync.rs` functions store metadata/full bodies but do not call
-`apply_on_ingest`. T-233 integration must call it only after a full parsed
-message is available: IMAP metadata-only ingest must not pretend body or
-attachment predicates are present; the IMAP body-fetch path and POP3 full
-download path are the required candidate hooks. This integration remains a
-T-233 implementation gate, not an already-landed behavior.
+Body-predicate rules are **lazy** in KIWI. Sync never fetches a message body
+just to decide a rule. IMAP metadata sync may evaluate envelope-stage rules on
+new INBOX messages, but header-, body-, and attachment-predicate facts are
+absent at that stage and do not match. A full rule evaluation happens when
+`kiwi_rules_apply_now` scans stored bodies, or when a normal ingest/body
+refinement path already has a parseable body available. POP3's full download
+has a body at ingest and can evaluate all predicates immediately. A body
+already stored may therefore be refined during the next normal evaluation
+path; a missing body is not downloaded solely for rules. This is a deliberate
+bandwidth policy: rule evaluation must not turn metadata sync into an eager
+body-fetch operation.
 
 ### 4.3 Audit persistence
 

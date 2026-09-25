@@ -92,6 +92,53 @@ and a **v6→v7 migration test**. All offline.
   `AuthResultsView` documents the `none`/`temperror` semantics for whoever
   builds it.
 
+## 2026-09-25 — T-240 upstream Authentication-Results evidence
+
+**Status:** COMPLETE. Offline parser, persistence, ingest integration, and `AuthView`
+wire surface are implemented. Verification: `cargo test -p kiwi-mail --lib` =
+169 passed / 0 failed; `cargo clippy -p kiwi-mail --all-targets -- -D warnings`
+clean; `cargo check -p kiwi-app` clean; `cargo fmt --all -- --check` clean; frontend
+`npx tsc --noEmit` clean.
+
+**Files changed (7):**
+- `kiwi-mail/src/authstamp.rs` — bounded RFC 8601 A-R parser, authserv-id/verdict
+  extraction, local/upstream comparison rows, own-stamp precedence tests.
+- `kiwi-mail/src/store/schema.rs` — schema v8 adds `message_auth.upstream_json`.
+- `kiwi-mail/src/store/mod.rs` — typed upstream evidence models + v7→v8 migration.
+- `kiwi-mail/src/store/queries.rs` — upstream JSON persistence/read/list attachment.
+- `kiwi-app/src-tauri/src/types/mail.rs` — `AuthView.upstream` + `discrepancy`.
+- `kiwi-app/src/kiwi.ts` — matching camelCase TypeScript evidence types.
+- `docs/agents/agent-21-status.md` — this entry.
+
+**Design decisions:**
+- **Extended `message_auth`, rather than adding a sibling table.** The local and
+  upstream views are one atomic authentication-evidence record keyed by the same
+  `(folder_id, uid)`. `upstream_json` is bounded typed evidence; this preserves
+  the ratified separate-table boundary from `messages` and avoids another join.
+  No historical rows are backfilled: absent original-header context must not be
+  fabricated as a missing/untrusted upstream assertion.
+- **Discrepancy means only exact pass↔fail.** Every extracted upstream result gets
+  an evidence row carrying `authserv_id`, method, upstream verdict, and local
+  verdict. `none`, `temperror`, and `softfail` are not contradictions. In
+  particular, client SPF `none` versus MTA SPF `pass` is preserved as evidence
+  but does **not** raise a discrepancy.
+- **Missing A-R is notable, not guilty.** `upstream.untrustedRelay=true` and
+  `present=false` express unverifiable relay provenance; it is never a finding.
+  Malformed/unknown values increment bounded `malformedHeaders` evidence.
+- **No `.eml` rewrite.** The raw received bytes remain byte-for-byte unchanged.
+  A copied representation places KIWI's stamp above upstream fields for RFC 8601
+  precedence, and a pre-seeded attacker A-R cannot suppress KIWI's own field.
+  KIWI-owned A-R fields are excluded from upstream evidence.
+- **Untrusted parser boundary.** Semicolons inside comments/quotes cannot forge
+  methods; at most 32 A-R fields, 32 results per method, bounded IDs/verdicts.
+  Offline `MockResolver` tests only; no network access.
+
+**Tests added:** authserv-id + SPF/DKIM/DMARC extraction, multi-header pass/fail
+evidence conflicts in both directions, honest inconclusive verdicts, missing-header
+provenance, malformed/comment injection, raw-byte preservation + KIWI-first/pre-seed
+resistance, persistence/list roundtrip, and v7→v8 migration without fabricated
+backfill. All offline.
+
 ## 2026-09-25 — T-199 dependency vulnerability audit delivered
 
 **Status:** COMPLETE. `cargo audit` (0.22.2, 1,269 advisories, 579 crates) +

@@ -201,9 +201,11 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-238 | Forensics serde vocab proposal — FSV-1 RATIFIED | Agent 22 | done | `docs/audits/` | T-196 FOR-1/2 |
 | T-239 | Wire-shape reconciliation + SS-1 required_action fix + serde posture note | Agent 20 | done |
 | T-240 | Upstream Authentication-Results parse + our-verdict discrepancy flag on AuthView | Agent 21 | open | `kiwi-mail/` | T-232 |
-| T-241 | ipc.md completeness: registered-commands reconciliation + missing entries (post T-230/233/234) | Agent 22 | open | `docs/`, `kiwi-app/src-tauri/` (read) | T-196 |
+| T-241 | ipc.md completeness + missing/divergent table (7 findings queued for wire owner) | Agent 22 | done |
 | T-242 | Integrations UI (TempMail panel, deliverability view, unsub chip) | Agent 11 | done |
 | T-243 | OAuth2 wizard UI branch: provider sign-in, device-code display, poll states, needsRefresh re-auth | Agent 19 | open | `kiwi-app/src/` | T-230 |
 | T-244 | kiwi_rules_preview dry-run cmd + rule_failures counter + deferred body-predicate eval | Agent 15 | open | `kiwi-mail/`, `src-tauri/` | T-233 |
 | T-245 | Implement ratified FSV-1 forensics serde vocab + legacy reader + contract updates | Agent 20 | open | `kiwi-forensics/` | T-238, T-196 |
 <!-- QUEUE: ACFG-3..10 autoconfig-parser drift (ex-Agent-8 items) — assign when autoconfig owner frees. authstamp clippy -> A21 in-flight. -->
+| T-246 | ACFG-3..10 autoconfig-parser drift enumeration + proposed resolutions | Agent 22 | open | `docs/audits/` | T-196 |
+| T-247 | Wire-shape batch 2: FolderView/MessageView/vcardText/evidenceRef drift (IPC-T241-2..5) | queued (A20 after T-245) | backlog | `types/`, `ipc.md` | T-241 |

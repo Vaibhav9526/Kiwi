@@ -337,3 +337,25 @@ in neither the registry nor any contract (UIS-5/6/7).
 7. Contract bookkeeping: write `integrations.md` + `oauth2.md`, index six
    existing contracts in `API_CONTRACTS.md`, resolve the `challenge-expired`
    contract-vs-contract disagreement, update admin-api.md for T-193 behavior.
+### Missing / divergent table
+
+| finding | current source or registry | `ipc.md` surface | disposition for T-241 |
+|---|---|---|---|
+| `IPC-T241-1` | `AccountView` emits `protocol`, `incomingHost/Port`, `outgoingHost/Port`, `unread`, `trust` (`types/accounts.rs:12-25`) | §5 promises nested `incoming/outgoing`, `incomingProtocol`, `username`, `unreadCount`, `trustToken` (`ipc.md:149-157`) | Existing IPC-1 shape drift; do not rewrite a T-239 decision in this docs-only pass |
+| `IPC-T241-2` | `FolderView` emits `accountId`, `uidNext`, `highestUid`; `uidValidity` nullable (`types/mail.rs:9-17`) | §6 promises `exists` and `unseen` and non-null `uidValidity` (`ipc.md:290-294`) | Existing IPC-6 shape drift; flag for T-239 |
+| `IPC-T241-3` | `MessageView` emits nullable `from`/`to` plus `unread`, `starred`, `bodyStored`, `category`, `unsubscribe*` (`types/mail.rs:21-58`) | §6 promises `fromAddr`/`toAddrs` and a smaller shape (`ipc.md:296-306`) | Existing IPC-7/11 drift; flag for T-239 |
+| `IPC-T241-4` | Tauri argument is Rust `vcard_text`, so wire name is `vcardText` (`commands/contacts.rs:205-212`) | §9b command table says `vcard` (`ipc.md:722-734`) | Existing IPC-8 naming drift; no command is missing |
+| `IPC-T241-5` | `EndpointObservation` has no serde rename and emits `evidence_ref` (`signals.rs:58-68`) | §10 promises `evidenceRef` (`ipc.md:1354-1367`) | Existing IPC-9 drift; no command is missing |
+| `IPC-T241-6` | `kiwi_lookup_autoconfig` is registered with the canonical discovery signature (`commands/autoconfig.rs:46-52`, `lib.rs:81`) | The current §5 alias note documents the name and identical response (`ipc.md:282-285`) | Resolved in current worktree; do not add a duplicate command surface |
+| `IPC-T241-7` | Five §9d logical pairing names are documented but have no Rust functions/handler entries | §9d explicitly says handlers are pending (`ipc.md:764-779`) | Intentional documentation-only future surface; not a T-241 omission |
+
+### T-241 documentation changes
+
+- Added the explicit lazy-body policy to `docs/contracts/rules.md`: sync does
+  not fetch bodies solely for body predicates; `kiwi_rules_apply_now` and
+  already-available body refinement paths are the evaluation points.
+- Added the same bandwidth/binding note to `ipc.md` §6d so the IPC contract
+  cannot be read as authorizing eager body downloads.
+- The T-230 `kiwi_lookup_autoconfig` alias was already present in the current
+  worktree and was not duplicated. No new non-in-flight command entry was
+  missing after the current T-230/T-233/T-234/§9e reconciliation.
