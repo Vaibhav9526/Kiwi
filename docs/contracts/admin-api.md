@@ -74,19 +74,19 @@ authorize taking a signed off-box copy. See §13.
 | `POST /api/v1/orgs` | `OrgService.createOrg` | `org.create` (org_admin only; T-193/H5) | |
 | `GET  /api/v1/orgs/{orgId}/users` | `OrgService.listUsers` | `user.read` | T-134: users with roles, email-ordered |
 | `GET  /api/v1/orgs/{orgId}/devices` | `OrgService.listDevices` | `device.read` | T-188/T-253: device inventory; `limit` default 50, cap 500; see §14 |
-| `POST /api/v1/orgs/{orgId}/users` | `OrgService.createUser` | `user.invite` | |
+| `POST /api/v1/orgs/{orgId}/users` | `OrgService.createUser` | `user.invite` | nonexistent `{orgId}` → `404 not.found` (T-259, never an FK 500) |
 | `PUT /api/v1/orgs/{orgId}/users/{userId}/role` | `OrgService.grantRole` | `user.role.grant` | |
 | `POST /api/v1/devices/{deviceId}/revoke` | `OrgService.revokeDevice` | `device.revoke` | |
-| `POST /api/v1/orgs/{orgId}/policies` | `PolicyService.createPolicy` | `policy.write` | body = PolicyObject minus id |
+| `POST /api/v1/orgs/{orgId}/policies` | `PolicyService.createPolicy` | `policy.write` | body = PolicyObject minus id; nonexistent `{orgId}` → `404 not.found` (T-259) |
 | `GET /api/v1/orgs/{orgId}/policies` | `PolicyService.listPolicies` | `policy.read` on owning org | T-134: full definitions with domain rules |
-| `POST /api/v1/policies/{policyId}/evaluate` | `PolicyService.evaluate` | `policy.read` on owning org | deterministic; single-policy check |
+| `POST /api/v1/policies/{policyId}/evaluate` | `PolicyService.evaluate` | `policy.read` on owning org | deterministic; `200 {verdict, reasons, policyId}` — one canonical field name with the §10 bridge (T-259/ADM-T250-12) |
 | `POST /api/v1/orgs/{orgId}/policies/evaluate-outbound` | `PolicyService.evaluateOutbound` | `policy.read` on the org | T-108 send-path bridge; see §10 |
 | `POST /api/v1/mailflow/events` | `MailflowService.ingest` | `mailflow.ingest` | MailflowEvent schema §6 |
 | `GET  /api/v1/mailflow/events` | `MailflowService.query` | `mailflow.read` | filters: org, recipient domain, ts range, limit ≤ 1000; org-bound callers omitting org read their own org (T-193/H4) |
-| `GET  /api/v1/audit` | `AuditService.query` | `audit.read` | filters: org, ts range, limit ≤ 1000; org-bound callers omitting org read their own org (T-193/H4, §12.3) |
-| `GET  /api/v1/audit/verify` | `AuditService.verify` | `audit.read` | replays hash chain; see §7 |
-| `GET  /api/v1/audit/export` | `AuditService.export` | `audit.export` | T-179 global NDJSON; **system-admin only until org-scoped export is implemented**; see §13 |
-| `GET  /api/v1/orgs/{orgId}/audit/export` | future org-scoped export service | `audit.export` on `{orgId}` | **RATIFIED T-188, not implemented**; must never return another org's rows |
+| `GET  /api/v1/audit` | `AuditService.query` | `audit.read` | `{items:[AuditRecord]}` — the FULL record incl. `org_id`/`resource`/`request_id`/`prev_hash`/`entry_hash` (T-259/ADM-T250-02; `actor_roles`/`details` are JSON-encoded strings per §13.5); filters: org, ts range, limit ≤ 1000; org-bound callers omitting org read their own org (T-193/H4, §12.3) |
+| `GET  /api/v1/audit/verify` | `AuditService.verify` | `audit.read` | `200 {valid, checked, complete, error}` — `complete:false` marks a truncated window and `valid` is never a full-chain verdict unless `complete` (T-259/ADM-T250-03); see §7 |
+| `GET  /api/v1/audit/export` | `AuditService.export` | `audit.export` + `system-admin` role | T-179 global NDJSON; **system-admin only** (implemented T-259); see §13 |
+| `GET  /api/v1/orgs/{orgId}/audit/export` | `AuditService.exportOrg` | `audit.export` on `{orgId}` | implemented T-259; `kiwi.audit-export-org/1` artifact with `scope_state`, never a whole-chain claim — §13.6 |
 
 Error shape (uniform): `{ "error": { "code": string, "message": string, "details"?: object } }`.
 Stable codes are `auth.required` (reserved for the future authenticated
@@ -421,14 +421,13 @@ calling it receives `403 auth.denied` and must not receive any rows. This is
 an intentional fail-closed interim behavior, not permission to fall back to a
 global export.
 
-The ratified future org-scoped route is
-`GET /api/v1/orgs/{orgId}/audit/export` (not implemented). It must require
-`audit.export` on the **path** `{orgId}`, enforce
-`orgId == actor.orgId`, and return an explicitly org-scoped artifact. It must
-not reuse the global route's whole-chain claim for a filtered slice. Until
-that route and its format are implemented, org admins can use the existing
-read-only `GET /api/v1/audit?org={orgId}`; that read makes no export/signature
-claim.
+The org-scoped route is
+`GET /api/v1/orgs/{orgId}/audit/export` — implemented T-259, format §13.6.
+It requires `audit.export` on the **path** `{orgId}` (which the permission
+model only satisfies when `orgId == actor.orgId`), and returns an explicitly
+org-scoped artifact that never reuses the global route's whole-chain claim.
+The read-only `GET /api/v1/audit?org={orgId}` still exists for scoped reads;
+it makes no export/signature claim.
 
 ### 13.0 Global route request/auth (current interim)
 
@@ -451,11 +450,10 @@ use §3's JSON error envelope:
 | `500` | `internal` | storage/audit-append failure; message contains only a correlation reference |
 
 The current localhost transport does not emit `401 auth.required`; missing
-credentials fail through the permission check as `403 auth.denied`. The
-current implementation still checks `audit.export` with a null target and
-does not yet recognize `system-admin`; it is therefore **non-conforming until
-T-188 follow-up code lands**. No test may treat the current global behavior as
-the ratified contract.
+credentials fail through the permission check as `403 auth.denied`. Since
+T-259 the service requires the `system-admin` role AND `audit.export` for the
+global route — `audit.export` alone is not sufficient (org_admin holds it
+org-scoped). This is conforming.
 
 ### 13.1 Global-route line layout
 
@@ -539,15 +537,17 @@ complete chain prefix at snapshot time, not necessarily the row immediately
 preceding `audit.export`. If exact adjacency is required, snapshot + audit
 append must be serialized (or moved into one repository transaction).
 
-Current implementation does **not** audit export denials, and §13.4's
-former "recursion" rationale is withdrawn: `AuditService.append` writes
-directly and does not re-enter the permission check, so a denial row is
-technically possible. This is a known deviation from binding §1/§2. Before
-§13 is approved, either implement denial-only rows for export (and decide
-whether query/verify follow the same rule) or amend the global invariant
-explicitly. A denial must never be recorded as `allowed`. If the required
-self-audit append fails, the endpoint must return `500 internal` and send no
-export body rather than deliver an unaudited successful export.
+Export denials ARE audited (T-259/ADM-T250-06): a refused export appends
+an `audit.export` row with `outcome: "denied"` — `org_id: null` on the global
+route, `org_id: {orgId}` on the org-scoped route — and `details` names
+`permission: "audit.export"` plus `scope`. The former "recursion" rationale
+is withdrawn: `AuditService.append` writes directly and never re-enters the
+permission check. `query` and `verify` follow the same rule (denial-only
+rows `audit.query`/`audit.verify`; ADM-T250-04), as do the other read
+endpoints (`user.list`, `domain.list`, `policy.list`, `device.list`,
+`mailflow.query`). A denial must never be recorded as `allowed`. If the
+required self-audit append fails, the endpoint returns `500 internal` and
+sends no export body rather than delivering an unaudited successful export.
 
 ### 13.5 Line shapes (exact)
 
@@ -665,6 +665,44 @@ and versioned. Deployments holding pre-T-193 rows may still contain
 second-unit `created_at` values from the old route clock; those rows predate the
 unit declaration and must be read with that in mind (local-dev only —
 `docker compose down -v` plus fresh migrations resets the clock).
+
+### 13.7 Org-scoped export — T-259 (`GET /api/v1/orgs/{orgId}/audit/export`)
+
+The org-scoped route returns an **explicitly scoped artifact**, format
+`kiwi.audit-export-org/1` — deliberately a different `version` string so a
+filtered slice can never be mistaken for the whole-chain
+`kiwi.audit-export/1` artifact.
+
+**Auth:** `audit.export` on the **path** `{orgId}`. The permission model only
+satisfies a non-null target when `orgId == actor.orgId`, so this is an
+own-org surface for a bound `org_admin`. `system-admin` (null org binding) is
+denied here — its surface is the global route. Denials append an
+`audit.export` denial row carrying `org_id: {orgId}` and
+`details: { permission: "audit.export", scope: "org" }`.
+
+**Line layout** — same record line shape as §13.5, different trailer:
+
+| line | object | contents |
+|------|--------|----------|
+| 1 | `header` | `type`, `version` (`kiwi.audit-export-org/1`), `scope: "org"`, `org_id`, `exported_at` (ms), `rows`, `first_seq`, `last_seq` |
+| 2 … rows+1 | `record` | one AuditRecord per line (§13.5 shape verbatim — `seq`/`prev_hash`/`entry_hash` included) |
+| rows+2 | `scope_state` | `{ type: "scope_state", org_id, rows, first_seq, last_seq, chain_claim: "none", note }` |
+| rows+3 | `signature` | same union as §13.5; covers lines 1..rows+2 (`covers_through: rows + 2`) |
+
+`first_seq`/`last_seq` are the slice's boundary seqs, **not** a contiguity
+claim — an org-filtered slice has gaps in the global chain by construction.
+`scope_state` exists because `chain_state` would be a lie here:
+`verifyChain` only validates over a contiguous run, so the artifact claims
+`chain_claim: "none"` instead. Per-row `entry_hash` still recomputes; a
+holder of the global export can verify any sliced row's position.
+
+**Caps/errors:** the org slice is bounded by `AUDIT_EXPORT_MAX_ROWS` (10000)
+with the same refuse-not-truncate rule (`400 validation.failed`). A
+nonexistent-but-valid `{orgId}` exports an empty artifact (`rows: 0`,
+`first_seq`/`last_seq: null`), consistent with the read endpoints. The
+self-audit row is appended **after** the snapshot with `org_id: {orgId}` and
+`details: { rows, signed, key_id, scope: "org" }`; a failed append returns
+`500 internal` with no body (§13.4).
 
 ## 14. Device inventory — T-188 (`GET /api/v1/orgs/{orgId}/devices`) **[RATIFIED — implemented T-253]**
 

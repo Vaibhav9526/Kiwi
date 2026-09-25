@@ -73,8 +73,13 @@ evidence[≥1], subject, observed_at_unix_ms, sources[], references[]}`.
 `subject`: `{session_id, protocol, server_host, server_port, account_id?,
 discriminator?}`. Stable key = `rule_id + "|" + subject_key` where
 `subject_key = protocol:host:port[#discriminator]` — session id excluded so
-re-scans line up across captures (`RescanDiff`: added / resolved /
-persisting keys).
+re-scans line up across captures. `RescanDiff.changes[].kind` is a
+`ChangeKind` with five wire tags: `new` (absent before), `resolved`
+(absent after), `unchanged` (present both, same severity),
+`severity_increased` / `severity_decreased` (present both, severity
+moved). `new` and `severity_increased` are regressions. Readers must
+also accept the legacy spellings `added` (= `new`) and `persisting`
+(= `unchanged`) per §12 dual-read.
 
 `Evidence`: `{kind, summary, value, source: SourceRef}`. `value` is typed:
 `{type:"text",value} | {type:"number",value} | {type:"bool",value} |

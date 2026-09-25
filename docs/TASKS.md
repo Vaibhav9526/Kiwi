@@ -195,7 +195,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 
 <!-- FSV-1 ratified: snake_case + externally-tagged data variants; EvidenceValue internal-tag exception; lossy-legacy reader. -->
 <!-- ROSTER SWEEP: A16/A17 terminals exited; A12/A13/A18 not in terminal list. Orphans: T-194 mobile screens, T-229 oauth2.md review, T-231 live-data wiring (if A12 gone), T-193 verify-in-tree. 3 unidentified OpenCode/SpaceBunny terminals pinged for identification. A21 reassigned to T-232. -->
-| T-235 | kiwi-pair contract-vs-impl gap audit | Agent 23 (e26f119b — was dup A22 session) | open |
+| T-235 | Pair gap audit DONE — CRITICAL: 9d commands missing, kiwi-pair unwired, revocation non-persistent | Agent 23 | done |
 | T-236 | rules.md contract (kiwi.rules/1, 445L) | Agent 22 | done | `docs/contracts/` | T-228 |
 | T-237 | Drift fixes batch: prefs IPC renames + contracts index + admin-api post-T-193 + challenge-expired ruling | Agent 20 | open | `kiwi-app/src/ipc.ts`, `docs/contracts/` | T-196 |
 | T-238 | Forensics serde vocab proposal — FSV-1 RATIFIED | Agent 22 | done | `docs/audits/` | T-196 FOR-1/2 |
@@ -234,3 +234,5 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-268 | SVG icon set + theme packages + plugin scaffold (sideload v1, trusted-code alpha) | Agent 25 (new Devin, 8bda6be5) | open | `components/icons`, `themes/`, `plugins/` | planner ITEM B |
 
 <!-- PLANNER PLAN accepted: ITEM A eM-client layout (light default supersedes flagship-dark default), ITEM B themes+plugins alpha=trusted-code (isolation deferred — accepted risk recorded in THREAT-MODEL by A25 + post-alpha hardening task). -->
+| T-269 | CRITICAL: wire kiwi-pair canonical — pair_status read API + atomic consume/link txn + 9d commands + persistent revocation (per pair-impl-gap-1.md) | queued (strong rust agent) | high | `kiwi-pair/`, `src-tauri/` | T-235 |
+| T-270 | authenticator.md vs mobile/ + kiwi-pair primitives enumeration | Agent 23 | open | `docs/audits/`, `mobile/` (read) | T-235 |

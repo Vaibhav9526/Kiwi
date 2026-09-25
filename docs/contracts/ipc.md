@@ -360,13 +360,21 @@ Reads the stored body; for IMAP, missing bodies are fetched on demand
 `inReplyTo`/`references` come from the parsed body (authoritative).
 
 ```jsonc
-{ "folderId": 1, "uid": 991, "messageId": "<…>" | null, "subject": "…",
-  "from": ["a@b"], "to": ["…"], "cc": [], "dateUnix": 0,
-  "textBody": "…", "htmlBody": "…" | null,
-  "attachments": [ { "filename": "…", "contentType": "…", "size": 123 } ],
+{ "folderId": 1, "uid": 991, "messageId": "<…>" | null,
+  "subject": "…" | null,
+  "from": ["a@b"], "to": ["…"], "cc": [], "dateUnix": 0 | null,
+  "textBody": "…" | null, "htmlBody": "…" | null,
+  "attachments": [ { "filename": "…" | null, "contentType": "…",
+                   "size": 123 } ],
   "bodyPresent": true,
   "inReplyTo": "<…>" | null, "references": ["<…>"] }
 ```
+
+`subject`/`dateUnix`/`textBody`/`attachments[].filename` are `null` when
+the source message lacked the field or the body part was not parsed —
+honest absence, never an empty string. `textBody: null` with
+`bodyPresent: true` means the message has no text/plain alternative;
+render the sanitized `htmlBody` path instead.
 
 ### `kiwi_sync_account(accountId, folders?) → SyncReportView[]`
 IMAP: LIST (when `folders` omitted) → register → incremental
@@ -410,7 +418,9 @@ filtered per-URL: `cid:`/`data:`/relative always pass; remote `http(s)`
 sources pass **only** when the account's remote-content opt-in is on —
 otherwise stripped and counted (`remoteImagesStripped`, so the UI can show
 "N blocked — allow remote content?"). `html: null` for text-only or
-unfetched bodies. Output capped at 8 MiB.
+unfetched bodies. Output capped at **8 MiB of UTF-8 bytes** — truncation
+rounds down to a code-point boundary, so the wire value is always valid
+UTF-8 and never exceeds the cap.
 
 ### `kiwi_set_remote_content(accountId, allowed) → RemoteContentView`
 Per-account opt-in for remote resources in rendered bodies — default off
@@ -428,8 +438,10 @@ or the source folder already IS the trash (empty-trash): `\Deleted` +
 both paths. Audited.
 ```jsonc
 { "folderId": 1, "movedToTrash": 2, "deleted": 0,
-  "trashFolderId": 4, "uidMap": { "12": 7 } }
+  "trashFolderId": 4 | null, "uidMap": { "12": 7 } }
 ```
+`trashFolderId` is `null` when nothing moved (hard delete, already-empty
+selection) — `movedToTrash > 0` guarantees it is set.
 
 ### `kiwi_move_messages(accountId, srcFolderId, dstFolderId, uids) → MoveResultView` (T-163)
 Generic folder move. **Cross-account guard**: both folders must resolve
@@ -718,6 +730,51 @@ folder lists on that pass. Runs for both IMAP `sync_folder` and POP3
 mail sync. There is no push event for a release; the next mail-changed
 emission covers it.
 
+## 6f. Commands — junk **[gated]** (T-263)
+
+User-driven junk marking — sets/clears the canonical `\Junk` store flag
+(T-212's `JUNK_FLAG`) and moves the message to/from the account's Junk
+folder. This is the manual path; deterministic verdicts elsewhere
+(auth/attachment/link evidence) never auto-junk — junking is the user's
+call or a rule's explicit action.
+
+### `kiwi_message_set_junk(accountId, refs, junk) → SetJunkView`
+
+```jsonc
+{ "accountId": "…", "junk": true,
+  "refs": [ { "folderId": 1, "uid": 9 } ] }   // same contract as §6e —
+                                            // 1..500, deduped, every
+                                            // folderId on this account
+
+{ "junk": true, "flagged": 2, "moved": 2,
+  "targetFolderId": 7,
+  "moves": [ { "fromFolderId": 1, "fromUid": 9, "toUid": 1 } ] }
+```
+
+- **`junk: true`** — add `\Junk` locally + `UID STORE +FLAGS.SILENT
+  (\Junk)`, then move into the account's Junk folder (`UID MOVE` /
+  local `move_messages`). Junk folder resolution mirrors Trash: local
+  name match (`junk`, `spam`, `junk e-mail`, `bulk mail`, …) → live
+  LIST for `\Junk` special-use → CREATE "Junk". Refs already inside a
+  Junk-named folder only get the flag — no self-move.
+- **`junk: false`** — remove `\Junk`; refs sitting in a Junk-named
+  folder move back to INBOX, others only lose the flag. There is no
+  origin tracking — INBOX is the un-junk destination by convention.
+- **Flag timing** — IMAP applies the flag *immediately* on the
+  command's own connection (flag first, then the move, at the source
+  coordinates). There is no deferred flag queue; the next sync's
+  flag-diff is the reconciliation net. POP3 has neither server flags
+  nor folders — the local flag + move is the whole effect.
+- **Idempotent** — already-correct flags aren't counted (`flagged`
+  counts real changes); absent uids are skipped, not errors.
+- **Snooze interaction** — the move re-keys parking rows, so junking a
+  snoozed message keeps it parked (it releases on schedule inside
+  Junk). Audit: `messages-junked` / `messages-unjunked` with counts.
+- `moves` lists every relocation as `{fromFolderId, fromUid, toUid}`
+  (uids are folder-scoped; a move is copy-under-fresh-uid + source
+  delete). `targetFolderId` is the Junk id for `junk`, the INBOX id
+  for un-junk-from-Junk; `null` when nothing moved.
+
 ## 7. Commands — send / outbox **[gated]**
 
 ### `kiwi_send_message(accountId, message: ComposeInput, options?) → SendReceipt`
@@ -757,10 +814,13 @@ untouched — rescheduling is not an undo. Audited.
 ### `kiwi_list_outbox() → OutboxItem[]`
 Envelope metadata only (never bodies):
 ```jsonc
-{ "queueId": "…", "accountId": "…", "from": "…", "to": ["…"],
+{ "queueId": "…", "accountId": "…" | null, "from": "…", "to": ["…"],
   "subject": "…", "notBeforeUnix": 0, "undoWindowUntilUnix": 0,
   "attempts": 0, "cancelable": true }
 ```
+`accountId` is always set by `kiwi_list_outbox` today — the field is
+`Option` headroom for queue rows that predate account binding; clients
+must tolerate `null` (render "unbound"), never assume an account.
 `cancelable` mirrors the `kiwi_cancel_send` rule (undo window open or
 send-later slot still ahead).
 
@@ -863,8 +923,13 @@ Unknown id → `not-found`.
 // view
 { "deviceId": "dev-…", "label": "…", "algorithm": "ed25519",
   "status": "pending | active | suspended | revoked",
-  "registeredUnix": 0, "lastSeenUnix": 0 }
+  "registeredUnix": 0, "lastSeenUnix": 0,
+  "keyFingerprintTail": "a1b2c3d4" }
 ```
+`keyFingerprintTail` = last 8 hex chars of SHA-256 over the raw public
+key — a short display fingerprint for the registry UI (ui-surfaces §3),
+NOT an authentication token; verification goes through the challenge
+flow (§4).
 New devices are `pending` — they activate via a `device-pairing` challenge
 (§4). Only `ed25519` signatures verify today (`unsupported-algorithm`
 otherwise). The private key never enters this process.

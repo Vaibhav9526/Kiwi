@@ -483,3 +483,104 @@ The task brief listed "unknown-org not.found" — §14.1 ratifies
 listUsers; the 404 variant is a deferred contract decision per the same
 section). Implemented spec-faithful; flagging in case Lead wants the
 contract amended instead.
+
+---
+
+## T-259 — code-side admin-drift fixes (ADM-T250-01/02/03/04/05/06/07/12/13/15)
+
+**Outcome:** every code-fix disposition in `docs/audits/admin-drift-1.md`
+is implemented; contract-only items are flagged below for Lead.
+
+### Implemented
+
+- **ADM-01** — `listPolicies` now returns the ratified §5.1 snake_case
+  `PolicyObject` (`{id, org_id, name, enabled, min_tls,
+  external_recipients, domain_rules}`). New `PolicyObject` wire type in
+  `policy/model.ts`; the internal camelCase `PolicyDefinition` stays the
+  evaluator's model. Contract wins over code.
+- **ADM-12/13** — `PolicyDecision.evaluatedPolicyId` renamed to
+  `policyId` (canonical with the §10 outbound bridge, which already used
+  `policyId`); producers in `evaluator.ts`/`services.ts` updated; the
+  single-evaluate route passes it through verbatim.
+- **ADM-14 (audit ADM-T250-13)** — unknown-org writes → `404 not.found`:
+  `createUser`/`createPolicy`/`createDevice` check `getOrg` inside the
+  audited work (a `not.found` is an `error`-outcome row, same convention
+  as grantRole's missing-user 404). Path identifiers are also validated
+  BEFORE `auditWrap` now (the grantRole pattern), so malformed ids never
+  reach the permission check or the audit row.
+- **ADM-04** — denial-only audit rows on EVERY read path:
+  `user.list`, `domain.list`, `policy.list`, `mailflow.query`,
+  `audit.query`, `audit.verify`, `audit.export` (global + org). Reads
+  append directly via `ctx.auditAppend`/`this.append` — `append` never
+  re-enters the permission check (no recursion; the §13.4 withdrawal is
+  honored). Successful reads stay unaudited.
+- **ADM-05** — `system-admin` platform role added (`types.ts` +
+  `rbac.ts`): holds ONLY `audit.export`. `ALL_ORG_ROLES` admits it via
+  the header scaffold; `GRANTABLE_ORG_ROLES` excludes it so `grantRole`
+  can never write it into `user_org_roles` (which would fail the CHECK
+  as a 500). The global export gates on role membership explicitly —
+  `audit.export` at null target alone would still pass for org_admin.
+- **ADM-06** — `export` appends an `audit.export` denial row before
+  throwing (org_id null, `details.permission`); a failed append
+  propagates as sanitized 500 with no body. Same for `exportOrg`
+  (org-scoped row).
+- **ADM-07** — `GET /api/v1/orgs/{orgId}/audit/export` implemented:
+  `AuditService.exportOrg` (path-scoped `audit.export`, so
+  `orgId == actor.orgId` by construction) + `buildOrgAuditExport` —
+  `kiwi.audit-export-org/1`, header carries `scope:"org"` + `org_id`,
+  trailer is `scope_state` with `chain_claim:"none"` (an org slice can
+  never carry a whole-chain verdict), signature covers
+  header+records+scope_state like the global artifact. Self-audit row
+  has `org_id = {orgId}` per §13.4. Cap: `AUDIT_EXPORT_MAX_ROWS` +
+  refuse-not-truncate.
+- **ADM-02** — `GET /audit` returns the full `AuditRecord`
+  (`org_id`/`resource`/`request_id`/`prev_hash`/`entry_hash` included;
+  `actor_roles`/`details` stay JSON-encoded strings per §13.5).
+- **ADM-03** — `verify` fetches limit+1: `complete` reports whether the
+  checked window is the whole chain, and `valid` is never a full-chain
+  verdict when `complete:false` (`{valid:false, complete:false}` =
+  inconclusive, not corrupt — documented in §3).
+- **ADM-15** — `createDevice` gate corrected: new `device.create`
+  permission granted to org_admin + security_admin (the method stays
+  service-only; POST /devices remains unimplemented per §14.5).
+- **Contract** (`admin-api.md`): §3 rows updated for all of the above;
+  §13.0 "non-conforming" note removed (conforming since T-259); §13.4
+  rewritten to describe implemented denial auditing + the read-denial
+  action names (`audit.query`/`audit.verify`/`*.list`/`mailflow.query`);
+  new **§13.7** documents the org-scoped export format.
+
+### Tests
+
+`server.test.ts` +9 (T-259 describe): `policyId` canonical, PolicyObject
+wire shape, ghost-org 404s, full audit record, verify `complete`, read-
+denial audit row, org-scoped export (+cross-org/system-admin denials +
+denial row), `system-admin` grant refused. `audit.export.test.ts` +4:
+system-admin export, org_admin refused on global + denial row asserted,
+org-scoped artifact/signature/self-audit/denial coverage.
+`services.test.ts` updated to the §5.1 shape. e2e leg
+`test_t259_admin_drift_fixes` in `DialectLeg` + the three global-export
+calls repointed to `SYSTEM_ADMIN` headers (org_admin now correctly
+refused globally).
+
+### Verified
+
+`npm test` — 126 passed, 1 skipped (was 113). `tsc --noEmit` clean;
+`npm run build` clean; e2e file parses (docker-gated).
+
+### Flags for Lead (contract-only decisions, not code)
+
+- **ADM-T250-11**: mailflow `security_status`/`policy_verdict` silently
+  coerce unknown values to `unknown` while `tls_version` is strict —
+  needs a ruling (document asymmetry or make all `400`).
+- **ADM-T250-14**: §4 says `audit_log.seq` is `PRIMARY KEY AUTOINCREMENT`
+  but code deliberately assigns contiguous seqs in a transaction —
+  contract-fix (describe the app-assigned invariant), NOT a code change
+  (AUTOINCREMENT would conflict with the hash-chain contract).
+- **ADM-T250-10 remainder**: §3 rows now document the shapes I touched;
+  `{ok:true}` (revoke/grantRole), `{id}` creates, and the mailflow query
+  envelope remain undocumented pending a wire-shape pass.
+- Denial-row action names (`user.list`, `domain.list`, `policy.list`,
+  `mailflow.query`, `audit.query`, `audit.verify`, `audit.export`) are a
+  new convention — §13.4 documents them; ratify or amend.
+- `system-admin` arrives only via the header scaffold (§12.2 DEV-AUTH) —
+  never grantable into `user_org_roles` (CHECK would reject it).
