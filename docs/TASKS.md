@@ -210,7 +210,9 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-246 | ACFG-3..10 enumerated (autoconfig-drift-1.md; 7/8/9 = code-owner hardening) | Agent 22 | done |
 | T-247 | Wire-shape batch 2: FolderView/MessageView/vcardText/evidenceRef drift (IPC-T241-2..5) | queued (A20 after T-245) | backlog | `types/`, `ipc.md` | T-241 |
 | T-249 | auth_risk derived enum on AuthView (clean/noted/failed table, hint-not-finding) | Agent 21 | open | `kiwi-mail/` | T-240 |
-| T-250 | admin-api.md full contract-vs-impl enumeration (endpoints/permissions/org-scope/errors) | Agent 22 | open | `docs/audits/`, `kiwi-admin/` (read) | T-196 |
+| T-250 | admin-api enumeration (admin-drift-1.md; ADM-08 §14 unimpl, ADM-01 projection gap) | Agent 22 | done |
 | T-251 | ACFG-7/8/9 parser hardening (accepts prohibited constructs) | queued | backlog | `kiwi-autoconfig/` | T-246 |
 | T-248 | Repo hygiene sweep (junk cleanup + gitignore + gate verify) | Watcher | done | repo-wide | — |
 | T-249w | Standing gate-watch loop (fmt/tsc/overlap/secrets, report NEW failures only) | Watcher | standing | fast gates | T-248 |
+| T-252 | Master findings register FINDINGS.md (dedupe 3 audits -> owner-task/status) | Agent 22 | open | `docs/audits/` | T-196/246/250 |
+| T-253 | Implement §14 device-inventory endpoint (ratified, unimplemented — ADM-T250-08) | queued | backlog | `kiwi-admin/` | T-250 |

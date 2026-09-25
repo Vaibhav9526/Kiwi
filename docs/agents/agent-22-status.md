@@ -124,3 +124,45 @@ No Rust, TypeScript, schema, or `docs/contracts/*` files were changed by T-246.
 - `git diff --check` passed for the T-246 audit files.
 - T-246 Orca DONE report sent to terminal
   `term_c20c6737-9b80-4911-bcd2-38aa5113e4d7`; receipt returned `accepted: true`.
+
+## 2026-09-25 — T-250: admin-api contract-vs-implementation enumeration
+
+**Status:** done (read-only endpoint/audit documentation; no source or contract changes).
+
+### Files changed
+
+- `docs/audits/admin-drift-1.md` — new full matrix for all 16 §3 endpoints plus `/healthz`, with current route/permission/scope/wire/error/limit behavior, §13 audit-export, §14 device-inventory, and current T-193 fix status.
+- `docs/agents/agent-22-status.md` — this entry.
+
+No `kiwi-admin` source, test, migration, or `docs/contracts/*` files were changed by T-250. T-241 remained closed and untouched.
+
+### Evidence and findings
+
+- Read `docs/contracts/admin-api.md` §§1–3 and §§12–14, `kiwi-admin/src/server.ts`, `rbac/rbac.ts`, `types.ts`, service classes, validation/model files, repository interfaces/projections, audit export, and current HTTP/RBAC/service/export tests.
+- Enumerated all 16 contract method/path rows: org create/user list/create/role, device inventory/revoke, policy create/list/evaluate/outbound, mailflow ingest/query, audit query/verify/global export/org-scoped export; also recorded extra-contract `GET /healthz`.
+- Remaining primary findings: policy-list and audit-query response projections; bounded partial audit verification; unaudited read/export denials; global export incorrectly available to `org_admin` because `system-admin` is absent; missing org-scoped export and device inventory; list/pagination and wire-shape documentation gaps; mailflow enum/id semantics; unknown-org error paths; app-assigned audit sequence wording.
+- §13 artifact format, raw NDJSON, full-chain cap, and signed/unsigned builder behavior are present; authorization and denial-audit gaps remain.
+- §14 device inventory, scoped export, and the related unimplemented service/repository paths are explicitly code-fix gates.
+- Current T-193 fixes verified: authenticated/audited policy evaluation, fail-closed null-org scoping, owner-scoped revoke, `org.create`, non-positive verify rejection, atomic/capped policy writes with error audit, typed errors/conflicts/membership, bounded/batched lists, millisecond timestamps, serialized appends, escaped LIKE filters, strict `numParam`, JSON content-type, and corrected healthz version.
+
+### Commands run
+
+- Read-only `glob`, `grep`, and `read` inspection of the admin contract, prior ADM audit, route/RBAC/service/repository/model/test sources.
+- `npm run typecheck` — passed.
+- `npm test` — **107 passed, 1 skipped, 0 failed** across 11 test files.
+- No code formatting, build, migration, or implementation command was run.
+
+### Assumptions / risks
+
+- Line references describe the current T-250 shared-worktree snapshot; concurrent edits may shift them.
+- The global audit export finding is intentionally high severity because the contract is the ratified org-control security boundary; no implementation or contract weakening was attempted.
+- T-250 records recommendations only; Lead/code-owner rulings remain required.
+- Unrelated shared-worktree changes and the closed T-241 audit were preserved.
+
+### Verification
+
+- `npm run typecheck` — passed.
+- `npm test` — **107 passed, 1 skipped, 0 failed**.
+- `git diff --check` for the T-250 audit/status files — passed.
+- T-250 Orca DONE report sent to terminal
+  `term_c20c6737-9b80-4911-bcd2-38aa5113e4d7`; receipt returned `accepted: true`.

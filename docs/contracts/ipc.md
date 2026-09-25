@@ -354,7 +354,11 @@ IMAP: LIST (when `folders` omitted) → register → incremental
   "newMessages": 3, "flagUpdates": 0, "expunged": 0, "remoteExists": 42,
   "uidValidityReset": false,
   // pop3 instead fills:
-  "downloaded": 0, "deletedRemote": 0 }
+  "downloaded": 0, "deletedRemote": 0,
+  // both fill (T-244): rule-apply errors swallowed this pass —
+  // rules never fail a sync, but nonzero means some rules didn't run;
+  // those messages keep an unwritten eval watermark and retry next pass.
+  "ruleFailures": 0 }
 ```
 
 ## 6b. Commands — message actions **[gated]** (T-146)
@@ -519,12 +523,19 @@ facts — a missing header/body/attachment fact simply doesn't match.
 **Body predicates are lazy.** IMAP metadata sync evaluates only the
 envelope-stage rules available for newly stored messages; it does **not**
 fetch a body solely to evaluate a body, header, or attachment predicate.
-`kiwi_rules_apply_now` evaluates parseable bodies already in the store, and
-normal ingest/body-refinement paths may evaluate a full predicate when the
-body is already available. POP3 has a full body at download and can evaluate
-immediately. A missing body is skipped rather than downloaded for rules;
-this bandwidth policy is binding. `kiwi_rules_apply_now` is the deliberate
-way to evaluate stored mailbox bodies on demand.
+Instead, evaluation is staged and watermarked per message (the store's
+`rule_evals` table): stage `envelope` marks an envelope-facts eval, stage
+`full` a complete-parse eval. A stored-body message that has only the
+envelope watermark is a **deferred** candidate — whenever its body arrives
+by *any* fetch path (lazy view load, prefetch, `apply_now`), the *next*
+`sync_folder` pass re-evaluates it with the full predicate set. That
+re-eval is the documented contract; the on-view loader itself never runs
+rules, so a rule can't move a message while it's open under the reader.
+POP3 has a full body at download and evals `full` immediately. A missing
+body is skipped rather than downloaded for rules; this bandwidth policy is
+binding. `kiwi_rules_apply_now` is the deliberate way to evaluate stored
+mailbox bodies on demand. Apply failures are counted on `SyncReportView`'s
+`ruleFailures` and leave the watermark unwritten — the next pass retries.
 
 ### `kiwi_rules_list(accountId?) → RuleView[]`
 With `accountId`: the rules in scope for that account (global `accountId:
@@ -585,12 +596,36 @@ the eval-time coordinates (a later move doesn't rewrite the record);
    "messageId": "<m@x>", "appliedUnix": 1758000000 }]
 ```
 
+### `kiwi_rules_preview(accountId, rule: RuleView, limit?) → RulePreviewView`
+"Test this rule" dry-run for the editor (T-244): evaluates one candidate
+rule — alone, not ordered against the stored ruleset — against the newest
+`limit` stored messages (Trash excluded; default 50, clamp 1–200).
+**Pure read**: no moves, no flag changes, no hit rows, no eval watermarks.
+The candidate runs the same `Rule::validate` gate as `upsert` —
+`invalid-input` on violation; unknown `accountId` → `not-found`.
+
+```jsonc
+{ "scanned": 48, "skippedNoBody": 2, "matched": 3,
+  "hits": [ { "folderId": 1, "uid": 9, "folder": "INBOX",
+              "subject": "…", "messageId": "…" } ] }
+```
+
+Candidates without a parseable stored body are `skippedNoBody` (a rule
+that *would* match an unfetched body does not appear — preview reports
+what stored evidence shows, never guesses).
+
 ### Ingest-time application (sync path — no IPC entry)
 The same engine runs automatically during sync: IMAP `sync_folder`
 evaluates envelope-stage rules on new INBOX messages (block verdicts
-trash before the body is ever fetched); `fetch_missing_bodies` and the
-POP3 path re-evaluate with full predicates after parsing. Other folders
-are not reprocessed at ingest — `apply_now` is the deliberate re-run.
+trash before the body is ever fetched) and ends each pass with a bounded
+deferred sweep — stored-body INBOX messages missing a `full` watermark
+get the complete predicate set. `fetch_missing_bodies` and the POP3 path
+evaluate `full` after parsing. Other folders are not reprocessed at
+ingest — `apply_now` is the deliberate re-run. A UIDVALIDITY reset wipes
+the folder's eval watermarks along with its messages (a new UID epoch
+can't inherit stale stage records). Apply errors inside a pass are
+swallowed and counted on `SyncReportView.ruleFailures`; the unwritten
+watermark makes the retry automatic.
 
 ## 7. Commands — send / outbox **[gated]**
 
@@ -1407,6 +1442,19 @@ or `oauth2Ticket` misuse), `oauth2-denied`, `oauth2-expired`,
 `oauth2-reauth` (`invalid_grant` — re-authorize), `oauth2-endpoint`
 (provider `{error,error_description}` payload), `oauth2-error` (HTTP/
 listener/redirect faults). All messages are secret-free by construction.
+
+#### `kiwi_open_external(url) → null` **[gated]** — implemented (T-243)
+
+Opens `url` in the **system browser** — the OAuth2 browser handoff
+(`authorizeUrl`, `verificationUri`). Provider sign-in never runs inside
+the webview (embedded-webview sign-in is blocked by Google and is a
+phishing surface). Validation is fail-closed: `https://` scheme only,
+≤2048 bytes, no whitespace or quote characters; the URL is passed as a
+single argv element to the OS opener (`rundll32 url.dll,FileProtocolHandler`
+/ `open` / `xdg-open`) — no shell is involved, so no argument or command
+injection is possible. Errors: `invalid-input` (scheme/shape), `locked`,
+`internal` (no browser/opener available). Returns nothing on success;
+the UI always renders the raw URL as a copyable fallback.
 
 ## 10. Commands — endpoint signals **[exempt]** (T-121)
 

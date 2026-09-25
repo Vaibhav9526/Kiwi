@@ -332,3 +332,82 @@ idiom as the reading pane.
 - consentToken lives in component state only — never rendered, never
   persisted; testId/address shown as evidence identifiers.
 - Demo mode renders the surfaces disabled with a live-backend note.
+
+---
+
+## T-231 — LIVE-DATA WIRING (inherited from A12)
+
+**Outcome:** the last demo fallbacks are gone — search hits a real FTS
+IPC, contacts is IPC-only in live mode, category tabs confirmed on real
+`MessageEnvelope.category` data.
+
+### Backend — `kiwi_search_messages` (commands/mail.rs)
+
+The frontend wrapper (`ipc.ts: searchMessages`) and `MailStore::search`
+FTS existed, but no Tauri command bridged them — the IPC name 404'd.
+Added `kiwi_search_messages(query, folderId?, limit?)`:
+
+- Lock-gated; `query` bounded 512 chars, `folderId` ≥ 0, `limit`
+  default 50 clamp 1–500 (`clamp_u32`).
+- Delegates to `store.search` — the real grammar (terms,
+  `subject:`/`from:`/`to:`/`body:`, `"phrases"`, `-negation`; ≤8 terms).
+- `accountId` resolved server-side per hit via `folder_meta`, cached per
+  unique folder — callers never guess ownership.
+- New `SearchHitView` in types/mail.rs (camelCase wire shape matching
+  `parseSearchHit`: accountId/folderId/uid/subject/fromAddr/snippet/
+  dateUnix/hasAttachments).
+- Registered in lib.rs; documented in ipc.md §6 with error codes.
+- Tests: cross-account search resolves owners, folder scope narrows,
+  scoped/negation grammar passes through, bounds enforced, empty store
+  → empty. (2 new tests; suite 89/89 green.)
+
+### Category tabs — client filter, documented (mailbox.tsx)
+
+Tabs already filter the loaded list on real `MessageView.category`
+(normalized via `normalizeCategory`; unknown → primary). **Choice
+recorded in-code:** no `list_messages_by_category` IPC exists, so tab
+scope is the loaded list — labeled on the tab tooltips and empty state.
+A server-scoped variant slots in unchanged if ever exposed.
+
+### Demo-fixture leaks sealed
+
+- **contacts.tsx** — was: any `listContacts` failure silently loaded the
+  seeded localStorage book (demo cards) into a live account; writes fell
+  back to local with a "not in the backend yet" note. Now: `demo` →
+  local book with no IPC; live → IPC-only, failures surface as error
+  banners / notes. Import counts per-card failures honestly instead of
+  diverting to localStorage. Footer/badge copy updated ("demo" label).
+- **compose.tsx** — address-book autocomplete no longer falls back to
+  the seeded book on IPC failure in live mode (empty autocomplete);
+  demo mode owns the local book. Label updated.
+- **mailbox.tsx** — "add sender to contacts" writes IPC-only in live
+  mode (failure → note); demo writes the local book.
+- **search.tsx** — stale "IPC pending" comments/copy updated; the
+  labeled local fallback only mirrors grammar over already-loaded real
+  envelopes, and only on IPC error — never fixtures.
+
+Audited every `DEMO_*` reference in `state/` and `views/`: all are
+`demo`-flag-gated. `state/mailbox.ts` live loader already surfaces IPC
+errors via `messagesError` (no mock injection); `state/accounts.ts`
+demo branches are guarded.
+
+### Files changed
+
+`src-tauri/src/commands/mail.rs` (+`kiwi_search_messages` + tests),
+`src-tauri/src/types/mail.rs` (+`SearchHitView`), `src-tauri/src/lib.rs`
+(registration), `src/views/contacts.tsx`, `src/views/compose.tsx`,
+`src/views/mailbox.tsx`, `src/views/search.tsx`,
+`docs/contracts/ipc.md` (§6 entry).
+
+### Verified
+
+`cargo test -p kiwi-app` 89/89; `npx tsc --noEmit` clean;
+`npm run build` (tsc + vite) green; `cargo fmt` clean. CSP untouched —
+no remote assets or navigation.
+
+### Cross-agent flags (Lead)
+
+- While working, `src/views/setup.tsx` (T-230) and `kiwi-mail/src/
+  sync.rs`+`store/queries.rs` (T-233 EvalStage param, T-232 auth_risk
+  field) churned mid-flight — transient red states; owners landed their
+  own fixes. No repairs needed from me this time; verified green after.

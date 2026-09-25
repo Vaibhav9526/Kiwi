@@ -78,3 +78,46 @@ used, as confirmed by repository documentation and prior status records.
 - The historical watcher log at `tools/watcher/watcher-status.md` was not
   changed; this entry was added at the exact requested path
   `docs/agents/watcher-status.md`, which did not previously exist.
+
+
+## 2026-09-25 — T-249w standing fast-gate watch
+
+**Status:** armed. The existing terminal watcher remains independently running
+as PID `12912`; the new gate-watch loop runs as PID `9088` with
+`--interval 600` (ten minutes).
+
+### Implementation
+
+- Added `tools/watcher/gate_watch.py`, a read-only loop that runs exactly:
+  `cargo fmt --check`, `npx tsc --noEmit` in `kiwi-app/`,
+  `python tests/tools/copy_overlap.py`, and
+  `python tests/tools/secret_scan.py`.
+- Runtime state is outside the repository at
+  `%LOCALAPPDATA%\KiwiMail\gate-watch\state.json`; stdout/stderr are in the
+  same directory. This avoids adding watcher churn to the working tree.
+- Failure identity is gate + normalized file + line. A location is reported
+  to Lead once; it is retained silently while unchanged, dropped when it
+  resolves, and reported if it later recurs. Reports include candidate
+  owner(s) resolved from active rows in `docs/TASKS.md` where identifiable.
+- The loop never formats, edits, or otherwise fixes a failing foreign file.
+
+### First runs and verification
+
+- Production cycle 1 completed at `2026-09-25T11:46:25Z` with
+  `fmt=FAIL`, `tsc=PASS`, `overlap=PASS`, `secrets=PASS`. Fourteen transient
+  foreign `cargo fmt` file:line deviations were recorded as the initial
+  suppressed baseline; none was reported as a new failure or fixed. The
+  first-run ready message truthfully reported the observed 3/4 baseline.
+- After tightening relative TypeScript path normalization and enforcing
+  file:line-only deduplication, the process was restarted while preserving
+  state. Production cycle 2 completed at `2026-09-25T11:47:12Z` with all
+  four gates passing and sent no notification. Current persisted state is
+  therefore clean/all-pass.
+- Validation performed before arming: Python compile; synthetic parsers for
+  `cargo fmt`, TypeScript, copy-overlap, and secret-scan diagnostics; TASKS
+  owner resolution; two isolated real cycles proving unchanged failures are
+  silent; and a synthetic new-location test proving exactly one report.
+- Final process verification: terminal watcher PID `12912` alive; gate-watch
+  PID `9088` alive with command line
+  `C:\Users\VAIBHAV\AppData\Local\Python\pythoncore-3.14-64\python.exe -u tools/watcher/gate_watch.py --interval 600`.
+
