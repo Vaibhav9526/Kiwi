@@ -3,11 +3,13 @@
 //!
 //! Deliberate semantics:
 //!
-//! - **Local landing.** The default folder is `Import` — a folder no sync
-//!   pass ever writes to. Importing into a *synced* folder is allowed but
-//!   documented: IMAP reconciliation treats the server as authoritative and
-//!   expunges local uids it doesn't know, so a synced target can lose the
-//!   imported rows on the next pass.
+//! - **Local landing.** The default folder is `Import` — a local folder no
+//!   sync pass ever writes to. Synced targets are **refused**
+//!   (`policy-blocked`) at resolution (T-326): imported rows carry
+//!   locally-minted uids with no server identity, and IMAP reconciliation
+//!   treats the server as authoritative — a synced target would expunge
+//!   them on the next pass. Resolution is case-insensitive, matching
+//!   folder-name uniqueness.
 //! - **Honest counts.** Every `From ` member is accounted for: imported,
 //!   skipped-duplicates (same `Message-ID` already on the account),
 //!   skipped-expunged (Thunderbird `Expunged` bit — importing it would
@@ -512,6 +514,50 @@ mod tests {
                 .code,
             "invalid-input"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-326: imported uids are locally minted with no server identity —
+    /// a synced (remote/system) folder would expunge them on the next
+    /// reconcile. `ensure_target_folder` refuses those targets
+    /// (`policy-blocked`) before any row is written.
+    #[tokio::test(flavor = "current_thread")]
+    async fn import_refuses_synced_target_folders() {
+        let dir = test_dir("synced-refuse");
+        let state = Arc::new(AppState::open_test(dir.clone()).unwrap());
+        let view = crate::commands::accounts::add_account_impl(&state, acct_input())
+            .await
+            .unwrap();
+        let path = write_fixture(&dir, "in.mbox", &fixture_mbox());
+
+        {
+            let store = state.store.lock().await;
+            // Rows an IMAP reconcile owns: `Work` is remote, `INBOX` system.
+            store.ensure_folder(&view.id, "Work").unwrap();
+            store.ensure_folder(&view.id, "INBOX").unwrap();
+            store.ensure_local_folder(&view.id, "Shared").unwrap();
+        }
+
+        // Synced rows refuse — and so do case-variants (folder uniqueness
+        // is NOCASE; a variant is the same synced folder, not a new local).
+        for name in ["Work", "work", "INBOX"] {
+            let e = import_mbox_impl(&state, &view.id, &path, Some(name))
+                .await
+                .expect_err("synced target must be refused");
+            assert_eq!(e.code, "policy-blocked", "target {name}");
+        }
+
+        // A local row accepts imports, resolved case-insensitively.
+        let r = import_mbox_impl(&state, &view.id, &path, Some("shared"))
+            .await
+            .expect("local target resolved NOCASE");
+        assert_eq!(r.imported, 2);
+        {
+            let store = state.store.lock().await;
+            let meta = store.folder_meta(r.folder_id).unwrap().unwrap();
+            assert_eq!(meta.origin, kiwi_mail::store::FolderOrigin::Local);
+            assert_eq!(meta.name, "Shared");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
