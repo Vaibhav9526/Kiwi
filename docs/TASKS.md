@@ -320,3 +320,5 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-339 | lazy attachment fetch: BODYSTRUCTURE-first sync + on-demand BODY.PEEK part fetch | Agent 19 | open | `kiwi-mail/imap`, store schema | sync depth |
 | T-340 | lock-gate coverage audit: classify every command, findings for ungated-by-omission | Agent 21 | open | `lib.rs`, `commands/`, `docs/audits/` | T-269 |
 | T-341 | conversation/thread mute: per-conversation flag, suppresses counts+notify, unmute restores | Agent 15b | open | `kiwi-mail/store`, `commands/`, `notify.rs` | |
+| T-342 | UI pass#2 (planner): disposable-inbox sidebar promotion + density/empty-states + global radius tokens | Agent 25 | open | `chrome.tsx`, `tokens.css`, integrations view | owner-directed |
+| T-343 | UI pass#2 (planner): Gmail floating compose dock (minimize/stack/drafts persist) | Agent 24 | open | `compose.tsx`, `App.tsx` | owner-directed |
