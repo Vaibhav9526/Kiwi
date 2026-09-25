@@ -10,7 +10,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ComponentProps } from "react";
 import { accountPref, applyPrefsBag, applyUiPrefs, collectPrefs, loadMuted, loadPref, savePref } from "../prefs";
 import { api, BackendUnavailableError, IpcError } from "../ipc";
-import type { AccountView, AppInfoView, DeviceView, FolderView, MboxExportView, MboxImportView, OAuth2StatusView, VerifyResult } from "../kiwi";
+import type { AccountView, AppInfoView, DeviceView, FolderView, MboxExportView, MboxImportView, OAuth2StatusView, StorageStatsView, VerifyResult } from "../kiwi";
 import { APP_LICENSE, APP_NAME, APP_VERSION } from "../version";
 import { OAuth2SignIn, oauth2ProviderLabel } from "../components/oauth2";
 import { navigate } from "../router";
@@ -36,6 +36,14 @@ type Section = (typeof SECTIONS)[number];
 
 function errText(e: unknown): string {
   return e instanceof IpcError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e);
+}
+
+/** Human byte size (T-333) — binary units, one decimal above 1 KiB. */
+function fmtBytes(b: number): string {
+  if (b < 1024) return `${b} B`;
+  if (b < 1048576) return `${(b / 1024).toFixed(1)} KiB`;
+  if (b < 1073741824) return `${(b / 1048576).toFixed(1)} MiB`;
+  return `${(b / 1073741824).toFixed(1)} GiB`;
 }
 
 export function SettingsView({
@@ -106,6 +114,15 @@ export function SettingsView({
   const [exportPath, setExportPath] = useState("");
   const [exportBusy, setExportBusy] = useState(false);
   const [exportResult, setExportResult] = useState<MboxExportView | null>(null);
+  // T-333: storage diagnostics (kiwi_storage_stats/compact, ipc.md §8) —
+  // About tab. null stats = not loaded; demo never fetches (no backend).
+  const [storage, setStorage] = useState<StorageStatsView | null>(null);
+  const [storageLoading, setStorageLoading] = useState(false);
+  const [storageErr, setStorageErr] = useState<string | null>(null);
+  const [compactConfirm, setCompactConfirm] = useState(false);
+  const [compactBusy, setCompactBusy] = useState(false);
+  const [compactNote, setCompactNote] = useState<string | null>(null);
+  const [compactErr, setCompactErr] = useState<string | null>(null);
   // OAuth2 posture per account (T-243): `kiwi_oauth2_status` drives the
   // needs-refresh badge + inline re-auth on Accounts cards.
   const [oauth2Status, setOauth2Status] = useState<Record<string, OAuth2StatusView | null>>({});
@@ -115,6 +132,7 @@ export function SettingsView({
   const [density, setDensity] = useState(() => loadPref("kiwi.density", "comfortable"));
   const [toasts, setToasts] = useState(() => loadPref("kiwi.toasts", "on"));
   const [sound, setSound] = useState(() => loadPref("kiwi.sound", "off"));
+  const [osNotify, setOsNotify] = useState(() => loadPref("kiwi.notify", "on"));
   const [mutedIds, setMutedIds] = useState<string[]>(() => loadMuted());
   const [syncFreq, setSyncFreq] = useState<Record<string, string>>({});
   const [signatures, setSignatures] = useState<Record<string, string>>({});
@@ -137,6 +155,7 @@ export function SettingsView({
   }, [density]);
   useEffect(() => savePref("kiwi.toasts", toasts), [toasts]);
   useEffect(() => savePref("kiwi.sound", sound), [sound]);
+  useEffect(() => savePref("kiwi.notify", osNotify), [osNotify]);
   useEffect(() => savePref("kiwi.muted", mutedIds), [mutedIds]);
 
   // Backend prefs push (T-167/T-237): best-effort, debounced; any failure
@@ -158,7 +177,7 @@ export function SettingsView({
       })();
     }, 600);
   };
-  useEffect(() => schedulePush(), [themeDefault, grace, minTls, poll, defaultId, accent, density, toasts, sound, mutedIds, syncFreq, signatures, mode]);
+  useEffect(() => schedulePush(), [themeDefault, grace, minTls, poll, defaultId, accent, density, toasts, sound, osNotify, mutedIds, syncFreq, signatures, mode]);
   useEffect(() => () => {
     if (pushTimer.current !== null) window.clearTimeout(pushTimer.current);
   }, []);
@@ -180,6 +199,7 @@ export function SettingsView({
         setDensity(loadPref("kiwi.density", "comfortable"));
         setToasts(loadPref("kiwi.toasts", "on"));
         setSound(loadPref("kiwi.sound", "off"));
+        setOsNotify(loadPref("kiwi.notify", "on"));
         setMutedIds(loadMuted());
         setPrefsSync("synced");
       } catch (e) {
@@ -189,6 +209,50 @@ export function SettingsView({
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
+
+  // T-333: storage stats load when the About section is shown (live only).
+  useEffect(() => {
+    if (section !== "About" || mode !== "live") {
+      setStorage(null);
+      setStorageErr(null);
+      return;
+    }
+    let cancelled = false;
+    setStorageLoading(true);
+    void api
+      .storageStats()
+      .then((s) => {
+        if (!cancelled) setStorage(s);
+      })
+      .catch((e) => {
+        if (!cancelled) setStorageErr(errText(e));
+      })
+      .finally(() => {
+        if (!cancelled) setStorageLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [section, mode]);
+
+  const runCompact = async () => {
+    setCompactBusy(true);
+    setCompactErr(null);
+    setCompactNote(null);
+    try {
+      const r = await api.storageCompact();
+      const fmt = (b: number | null) => (b === null ? "unmeasurable" : fmtBytes(b));
+      setCompactNote(`Compacted — ${fmt(r.beforeDbBytes)} → ${fmt(r.afterDbBytes)}.`);
+      // Refresh stats so the dl shows the post-VACUUM size.
+      void api.storageStats().then(setStorage).catch(() => {});
+    } catch (e) {
+      setCompactErr(errText(e));
+    } finally {
+      setCompactBusy(false);
+      setCompactConfirm(false);
+    }
+  };
 
   // Per-account prefs hydrate from storage as accounts arrive.
   useEffect(() => {
@@ -1232,6 +1296,24 @@ export function SettingsView({
             <h2>Notifications</h2>
             <p>
               <label>
+                OS notifications:{" "}
+                <select value={osNotify} onChange={(e) => setOsNotify(e.target.value)}>
+                  <option value="on">On (new-mail ding per synced folder)</option>
+                  <option value="off">Off (no OS popups)</option>
+                </select>
+              </label>
+              {mode !== "live" && (
+                <>
+                  {" "}
+                  <small style={{ color: "var(--kiwi-text-secondary)" }}>
+                    — this build has no OS-notification channel; the pref still saves and the desktop
+                    app honors it
+                  </small>
+                </>
+              )}
+            </p>
+            <p>
+              <label>
                 Toast popups:{" "}
                 <select value={toasts} onChange={(e) => setToasts(e.target.value)}>
                   <option value="on">On (send/sync/policy events)</option>
@@ -1283,8 +1365,9 @@ export function SettingsView({
             )}
             <p style={{ color: "var(--kiwi-text-secondary)" }}>
               <small>
-                Muted accounts keep syncing but hide unread from counts and tag the sidebar. Toast/sound
-                preferences are this-device-only until the backend prefs IPC lands.
+                Muted accounts keep syncing but hide unread from counts and tag the sidebar — and a
+                muted account never raises an OS notification. OS-notification, toast, and sound
+                preferences sync through the backend prefs store.
               </small>
             </p>
           </>
@@ -1510,11 +1593,107 @@ export function SettingsView({
                 <small>
                   Backend stats unavailable{mode === "demo" ? " in demo mode" : ""} — backend
                   version, sessions, and device id appear when a backend answers
-                  <code> kiwi_app_info</code>. Profile dir and store size are omitted: no IPC
-                  exposes them, and estimates are not shown.
+                  <code> kiwi_app_info</code>. Profile dir is omitted: no IPC exposes it, and an
+                  estimate is not shown.
                 </small>
               </p>
             )}
+
+            {/* T-333: real storage measurements via kiwi_storage_stats (§8).
+                Every value is measured backend-side — null renders as
+                "unmeasurable", 0 renders as 0; integrityCheck shows SQLite's
+                own verdict and a non-"ok" result is a danger row, not a pass. */}
+            <h2>Storage</h2>
+            {mode !== "live" ? (
+              <p style={{ color: "var(--kiwi-text-secondary)" }}>
+                <small>Storage diagnostics need the backend — demo mode has no store to measure.</small>
+              </p>
+            ) : storageLoading && !storage ? (
+              <p role="status">
+                <small>Measuring local storage…</small>
+              </p>
+            ) : storageErr ? (
+              <div className="kiwi-banner error" role="alert">
+                <small>Storage stats failed to load: {storageErr}</small>
+              </div>
+            ) : storage ? (
+              <>
+                <dl style={{ display: "grid", gridTemplateColumns: "max-content 1fr", gap: "0.25rem 1rem", marginTop: 0 }}>
+                  <dt>Database size</dt>
+                  <dd style={{ margin: 0 }}>
+                    {storage.dbBytes === null ? (
+                      <em>unmeasurable — no mail.db on disk</em>
+                    ) : (
+                      <>{fmtBytes(storage.dbBytes)} <small style={{ color: "var(--kiwi-text-secondary)" }}>({storage.dbBytes.toLocaleString()} B)</small></>
+                    )}
+                  </dd>
+                  <dt>Messages stored</dt>
+                  <dd style={{ margin: 0 }}>{storage.messageCount.toLocaleString()}</dd>
+                  <dt>Folders</dt>
+                  <dd style={{ margin: 0 }}>{storage.folderCount}</dd>
+                  <dt>Attachment payloads</dt>
+                  <dd style={{ margin: 0 }}>
+                    {storage.attachmentBytes === null ? (
+                      <em>unmeasurable</em>
+                    ) : (
+                      <>{fmtBytes(storage.attachmentBytes)} <small style={{ color: "var(--kiwi-text-secondary)" }}>(persisted tree; parts inside stored bodies excluded)</small></>
+                    )}
+                  </dd>
+                  <dt>Audit records</dt>
+                  <dd style={{ margin: 0 }}>{storage.auditCount.toLocaleString()}</dd>
+                  <dt>Schema version</dt>
+                  <dd style={{ margin: 0 }}><code>{storage.schemaVersion}</code></dd>
+                  <dt>Integrity check</dt>
+                  <dd style={{ margin: 0 }}>
+                    {storage.integrityCheck === "ok" ? (
+                      <span className="kiwi-pill secure"><Icon name="check" size={10} /> ok</span>
+                    ) : (
+                      <span className="kiwi-pill danger">
+                        <Icon name="alert-triangle" size={10} /> {storage.integrityCheck}
+                      </span>
+                    )}
+                  </dd>
+                </dl>
+                {compactConfirm ? (
+                  <div className="kiwi-banner warn" role="alertdialog" aria-label="Confirm database compaction">
+                    <p style={{ marginTop: 0 }}>
+                      <small>
+                        <b>Compact the database?</b> Rebuilds mail.db (VACUUM) — mail is paused for
+                        writing while it runs; a sync in progress refuses it. Audited as
+                        storage-compact-requested/compacted.
+                      </small>
+                    </p>
+                    <p style={{ marginBottom: 0 }}>
+                      <button type="button" onClick={() => void runCompact()} disabled={compactBusy}>
+                        {compactBusy ? "Compacting…" : "Compact now"}
+                      </button>{" "}
+                      <button type="button" onClick={() => setCompactConfirm(false)} disabled={compactBusy}>
+                        Cancel
+                      </button>
+                    </p>
+                  </div>
+                ) : (
+                  <p>
+                    <button type="button" onClick={() => { setCompactConfirm(true); setCompactErr(null); setCompactNote(null); }}>
+                      Compact database…
+                    </button>{" "}
+                    <small style={{ color: "var(--kiwi-text-secondary)" }}>
+                      reclaim free pages — before/after sizes shown from real measurement
+                    </small>
+                  </p>
+                )}
+                {compactNote && (
+                  <p role="status">
+                    <small><Icon name="check" size={10} /> {compactNote}</small>
+                  </p>
+                )}
+                {compactErr && (
+                  <div className="kiwi-banner error" role="alert">
+                    <small>Compact failed: {compactErr}</small>
+                  </div>
+                )}
+              </>
+            ) : null}
 
             <h2>Keyboard shortcuts</h2>
             <p style={{ color: "var(--kiwi-text-secondary)", marginTop: 0 }}>

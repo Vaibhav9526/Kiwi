@@ -16,10 +16,13 @@ import type {
   AccountView,
   AppInfoView,
   AttachmentSavedView,
+  AuditEventView,
+  AuditIntegrityView,
   AutoconfigSuggestion,
   ChallengeView,
   ContactInput,
   ContactView,
+  CopyResultView,
   DeleteResultView,
   DeliverabilityBeginView,
   DeliverabilityReportView,
@@ -27,9 +30,11 @@ import type {
   DeliverabilityStatusView,
   DeviceView,
   FindingDetailView,
+  ForensicsExportView,
   FolderView,
   MailChangedEvent,
   LinkClickVerdict,
+  MboxExportView,
   MboxImportView,
   MessageBodyView,
   MessagePatch,
@@ -61,6 +66,8 @@ import type {
   SnoozePreset,
   SnoozeResultView,
   SnoozedMessageView,
+  StorageCompactView,
+  StorageStatsView,
   SyncStatusView,
   TagCountView,
   RenderedTemplateView,
@@ -409,6 +416,16 @@ export const api = {
   async listFolders(accountId: string): Promise<FolderView[]> {
     return asArray<FolderView>(await call<unknown>("kiwi_list_folders", { accountId }));
   },
+  /** T-319: local store folder only; no IMAP server CREATE is implied. */
+  createFolder(accountId: string, name: string, parentId?: number | null): Promise<FolderView> {
+    return call<FolderView>("kiwi_folder_create", { accountId, parentId: parentId ?? null, name });
+  },
+  renameFolder(accountId: string, folderId: number, newName: string): Promise<FolderView> {
+    return call<FolderView>("kiwi_folder_rename", { accountId, folderId, newName });
+  },
+  deleteFolder(accountId: string, folderId: number): Promise<{ folderId: number }> {
+    return call<{ folderId: number }>("kiwi_folder_delete", { accountId, folderId });
+  },
   async listMessages(accountId: string, folderId: number, limit?: number): Promise<MessageView[]> {
     return asArray<MessageView>(await call<unknown>("kiwi_list_messages", { accountId, folderId, limit }));
   },
@@ -464,6 +481,14 @@ export const api = {
    * failed members are skipped and counted, never silently dropped. */
   importMbox(accountId: string, path: string, folder?: string): Promise<MboxImportView> {
     return call<MboxImportView>("kiwi_import_mbox", { accountId, path, folder });
+  },
+  /**
+   * `kiwi_mailbox_export_mbox` (T-316) — mirror of the importer. Lock-gated,
+   * atomic write (`.kiwi-part` + rename), honest `partial`/`skipped`/`bytes`.
+   * Contract: docs/contracts/ipc.md §6j.
+   */
+  mailboxExportMbox(folderId: number, destPath: string): Promise<MboxExportView> {
+    return call<MboxExportView>("kiwi_mailbox_export_mbox", { folderId, destPath });
   },
   linkClick(accountId: string, folderId: number, uid: number, url: string): Promise<LinkClickVerdict> {
     return call<LinkClickVerdict>("kiwi_link_click", { accountId, folderId, uid, url });
@@ -525,6 +550,20 @@ export const api = {
     uids: number[],
   ): Promise<MoveResultView> {
     return call<MoveResultView>("kiwi_move_messages", { accountId, srcFolderId, dstFolderId, uids });
+  },
+  /**
+   * Local duplicate of `uids` into `dstFolderId` under fresh local uids —
+   * the Copy-to sibling of move (T-325). NOT a server-side IMAP COPY: a
+   * copy of a synced-folder message is a local-only row. Smart/system
+   * destinations are refused.
+   */
+  copyMessages(
+    accountId: string,
+    srcFolderId: number,
+    dstFolderId: number,
+    uids: number[],
+  ): Promise<CopyResultView> {
+    return call<CopyResultView>("kiwi_copy_messages", { accountId, srcFolderId, dstFolderId, uids });
   },
 
   /* ---------------- snooze (gated, T-255) ---------------- */
@@ -669,6 +708,50 @@ export const api = {
   async securityEvents(limit?: number): Promise<Record<string, unknown>[]> {
     return asArray<Record<string, unknown>>(await call<unknown>("kiwi_security_events", { limit }));
   },
+  /**
+   * T-323/T-324: real app-audit rows from audit.jsonl — NOT transport
+   * sessions. Newest first; beforeUnix is an exclusive keyset cursor.
+   */
+  async auditEvents(beforeUnix?: number, limit?: number): Promise<AuditEventView[]> {
+    return asArray<AuditEventView>(await call<unknown>("kiwi_audit_events", { beforeUnix, limit }));
+  },
+  /**
+   * T-330/T-333: storage diagnostics + compact. Stats are real measurements
+   * (null = unmeasurable, never estimated); compact runs VACUUM and refuses
+   * `sync-in-flight` with a retry hint — callers show that message verbatim.
+   */
+  storageStats(): Promise<StorageStatsView> {
+    return call<StorageStatsView>("kiwi_storage_stats");
+  },
+  storageCompact(): Promise<StorageCompactView> {
+    return call<StorageCompactView>("kiwi_storage_compact");
+  },
+  /**
+   * T-331: audit-chain health without reading rows. Ungated, so a security
+   * strip can poll it. An unrecognized/absent field degrades to `unknown`
+   * (never `ok`) — fail-closed display.
+   */
+  async auditIntegrity(): Promise<AuditIntegrityView> {
+    const raw = await call<unknown>("kiwi_audit_integrity");
+    const rec = (raw ?? {}) as Record<string, unknown>;
+    const state = rec["state"];
+    const auditOk = rec["auditOk"];
+    if (state === "ok" || state === "corrupt" || state === "unknown") {
+      return { state, auditOk: typeof auditOk === "boolean" ? auditOk : state === "unknown" ? null : state === "ok" };
+    }
+    return { state: "unknown", auditOk: null };
+  },
+  /**
+   * T-320: save one session's deterministic forensic report to `destPath` as a
+   * self-verifying artifact (SHA-256 of its own canonical bytes embedded in
+   * the file). The written file round-trips through
+   * `kiwi_forensics::report::ExportEnvelope::verify_bytes` — no external
+   * trust store needed.
+   */
+  forensicsExport(sessionId: string, destPath: string): Promise<ForensicsExportView> {
+    return call<ForensicsExportView>("kiwi_forensics_export", { sessionId, destPath });
+  },
+
   /**
    * T-260: typed `SecuritySessionView` (ipc.md §3 canonical shape) with
    * safe-render normalization — an unrecognized enum token degrades to its
