@@ -236,7 +236,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 <!-- PLANNER PLAN accepted: ITEM A eM-client layout (light default supersedes flagship-dark default), ITEM B themes+plugins alpha=trusted-code (isolation deferred — accepted risk recorded in THREAT-MODEL by A25 + post-alpha hardening task). -->
 | T-269 | CRITICAL: wire kiwi-pair canonical — persistent revocation + 9d commands + atomic txn | Agent 11 | in-progress | `kiwi-pair/`, `src-tauri/` | T-235 |
 | T-270 | authenticator.md vs mobile/ + kiwi-pair primitives enumeration | Agent 23 | open | `docs/audits/`, `mobile/` (read) | T-235 |
-| T-271 | mail-changed event wiring + IPC-5 error docs + FINDINGS open-row sweep | Agent 20 | open | `ipc.ts`, `mailbox.ts`, `ipc.md` | T-265 |
+| T-271 | mail-changed event wired (debounce+toast) + IPC-5 docs + 25 rows closed | Agent 20 | done |
 
 <!-- CURRENT-OWNERSHIP (watcher keys on this; updated at each sweep)
   kiwi-app/src/views,chrome,shell,App   -> A24 (T-267)
@@ -249,3 +249,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
   kiwi-admin                            -> A11 (T-259 done)
   docs/contracts+audits                 -> A22 (T-260) / A23 (T-270)
 -->
+| T-272 | Final register items: FOR-10 emit 3 limitation codes + IPC-15 real wrappers | Agent 20 | open | `kiwi-forensics/`, `ipc.ts` | FINDINGS.md |

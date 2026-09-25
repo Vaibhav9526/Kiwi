@@ -26,8 +26,10 @@ with `kiwi-core` (`security-session.md`).
 - Every finding carries ≥1 typed evidence item — never a free-text-only
   conclusion. The engine drops evidence-less findings and counts them in
   `EvaluationDiagnostics.dropped_without_evidence` (must be 0 in production).
-- Unknown enum values / new fields must be ignored, not fatal
-  (API_CONTRACTS.md cross-cutting invariants).
+- Unknown *fields* are ignored, not fatal (API_CONTRACTS.md
+  cross-cutting invariants). Unknown enum *variant tags* fail closed —
+  a report from a newer engine must not be silently downgraded
+  (§12, FOR-6).
 - `contract_version` is `"kiwi.forensics/2"` (FSV-1 wire vocabulary, §12);
   `rule_catalog_version` is a u16 (currently `1`, bumped on any
   decision-logic or default-severity change). Consumers must not equate
@@ -186,10 +188,11 @@ the uppercase letters are display/`as_str()` spellings, not JSON.
 
 No system clock, no RNG, no floating point, no map-iteration order in
 findings or scoring. Times (`started_at_unix_ms`, validity bounds) and
-capture identity are *inputs*. Output order is fixed: severity (worst
-first), rule id, subject key, then confidence. Re-scan diffing compares
-stable keys; a `rule_version` bump means logic changed and keys must not
-be equated across versions.
+capture identity are *inputs*. Output order is fixed: severity
+descending (worst first), then `rule_id` ascending, then `subject_key`
+ascending, then confidence descending (most certain first). Re-scan
+diffing compares stable keys; a `rule_version` bump means logic changed
+and keys must not be equated across versions.
 
 ## 8. Report aggregate (specified; `src/report/` implements)
 
@@ -267,7 +270,10 @@ and has no in-crate implementation yet.
 
 ## 10. Capture pipeline (`src/pipeline.rs`, `pipeline::analyze_capture`)
 
-Composed entry point: raw capture bytes → `Report`. Stages:
+Composed entry point: raw capture bytes → `CaptureReport` — a thin
+wrapper `{report: Report, diagnostics: PipelineDiagnostics}` (the report
+plus the counted how-it-was-reached evidence; `diagnostics` is never a
+finding source). Stages:
 `PcapReader` (frames, bounds-first) → `decode_tcp` (Ethernet/IPv4/TCP
 only; everything else is a counted `DecodeSkip`, never fatal) →
 `Reassembler` (per-direction ordered bytes, first-seen-wins overlap,

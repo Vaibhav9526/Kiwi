@@ -295,14 +295,19 @@ pre-reconcile `ipc.ts` wrapper invoked. New code must call
 ### `kiwi_list_folders(accountId) → FolderView[]`
 ```jsonc
 { "id": 1, "accountId": "a1", "name": "INBOX",
-  "uidValidity": 123 | null, "uidNext": 995 | null, "highestUid": 994 }
+  "uidValidity": 123 | null, "uidNext": 995 | null, "highestUid": 994,
+  "exists": 42, "unseen": 7 }
 ```
 Folders appear after the first sync (IMAP LIST auto-registers them).
 `uidValidity`/`uidNext` are `null` until a sync has selected the folder.
-The earlier `exists`/`unseen` shape is **withdrawn**: no store count
-query backs them, so emitting them would fabricate zeros — unread badges
-derive from message rows instead (a folder-count query is a follow-up
-store task, not a view field).
+`exists`/`unseen` (T-264) are real `COUNT` queries over stored rows —
+`exists` is the row total, `unseen` is rows lacking a `\Seen` token
+(exact token match, case-insensitive per IMAP flag semantics). Counts
+always reflect the store at call time: flag ops, moves, junk marking,
+and deletes are all accounted — nothing is cached or approximated.
+Snoozed/parked rows **count** toward both (snooze defers display, it
+doesn't suppress — same principle as §6e search). The unread badge reads
+`unseen`.
 
 ### `kiwi_list_messages(accountId, folderId, limit?) → MessageView[]`
 Newest first. `limit` default 50, clamp 1–500. `folderId` must belong to
@@ -530,6 +535,12 @@ it's the UI's "initial sync done" signal; folder fields are `null`).
 `"idle"` fires per IDLE-triggered INBOX re-sync, `"poll"` per POP3 pass —
 both only when something actually changed.
 
+Consumer (T-271): `onMailChanged` (ipc.ts) is subscribed once at App
+level and debounced ~300 ms into a single message-list + folder-count
+refresh; a burst carrying `newMessages > 0` raises one summary toast.
+A listener MUST debounce — a sync pass emits per folder, and a naive
+per-event reload re-enters `listMessages` under the worker.
+
 ### `kiwi_sync_status(accountId?) → SyncStatusView[]` **[gated]**
 One row per configured account (all accounts when `accountId` omitted;
 unknown id → `not-found`). A worker that hasn't run yet reports
@@ -664,7 +675,7 @@ can't inherit stale stage records). Apply errors inside a pass are
 swallowed and counted on `SyncReportView.ruleFailures`; the unwritten
 watermark makes the retry automatic.
 
-## 6f. Commands — sandbox open **[gated]** (T-266)
+## 6g. Commands — sandbox open **[gated]** (T-266)
 
 Both commands are the only path for opening a hostile link or attachment.
 They fail closed: an absent/unusable provider returns
@@ -1707,6 +1718,8 @@ Collection caps at 32 observations per run.
 | `policy-unavailable` | admin bridge unreachable/bad (send fails closed) |
 | `policy-blocked` | org policy blocked the send |
 | `invalid-signature` | challenge signature mismatch |
+| `not-locked` | unlock/submit attempted while the endpoint is not `Locked` — informational, safe to treat as already-unlocked |
+| `authenticator-required` | `unlock_requires_authenticator` policy is set and no approved challenge was presented — obtain one via `kiwi_request_challenge` + `kiwi_submit_challenge` (§4) |
 | `challenge-expired` / `already-consumed` / `binding-mismatch` / `unknown-challenge` | challenge lifecycle |
 | `device-not-active` / `device-error` / `device-exists` / `device-revoked` / `unsupported-algorithm` | device path |
 | `pairing-ticket-invalid` / `pairing-ticket-consumed` / `pairing-ticket-expired` | pairing-ticket path |

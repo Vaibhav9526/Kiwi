@@ -185,12 +185,10 @@ export interface FolderView {
   uidValidity: number | null;
   uidNext: number | null;
   highestUid: number;
-  /**
-   * ipc.md §6 note: not emitted today (no store count query backs it —
-   * emitting zeros would fabricate data). Kept optional so badge code can
-   * adopt it when a folder-count query lands.
-   */
-  unseen?: number;
+  /** Total stored rows (T-264) — includes snoozed/parked mail. */
+  exists: number;
+  /** Rows without \Seen — the unread badge source. Parked mail counts. */
+  unseen: number;
 }
 
 export interface MessageView {
@@ -230,6 +228,22 @@ export interface MessageView {
   attachRisk?: AttachRiskView | null;
   /** Bounded URL evidence hint (T-261); absent until body parse. */
   linkRisk?: LinkRiskView | null;
+}
+
+/**
+ * `kiwi://mail-changed` event payload (ipc.md §6; T-157 emitter, T-271
+ * consumer). `folder`/`folderId` are null on the connect-time full pass;
+ * `reason` is "sync" | "idle" | "poll".
+ */
+export interface MailChangedEvent {
+  accountId: string;
+  folder: string | null;
+  folderId: number | null;
+  reason: string;
+  newMessages: number;
+  flagUpdates: number;
+  expunged: number;
+  atUnix: number;
 }
 
 /**

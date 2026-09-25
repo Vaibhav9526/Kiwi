@@ -22,30 +22,30 @@ provenance, not remediation assignments.
 | IPC-2 | H | `SecurityStatusView` shape/required-action vocabulary diverged; contract and code were reconciled. | `contract-drift-1.md:66`; `agent-20-status.md:160-180` | T-239 | fixed |
 | IPC-3 / AUTH-3 | M | Challenge nonce is documented as `nonceB64` but backend emits `nonceHex`; mobile handoff is not wire-compatible. | `contract-drift-1.md:80`; `agent-18-status.md:78-84` | T-188/T-194 | open |
 | IPC-4 | M | `challenge-expired` versus emitted legacy `expired`; contract conflict was ratified/clarified. | `contract-drift-1.md:81`; `agent-20-status.md:104-109` | T-237 | fixed |
-| IPC-5 | M | Unlock error catalog contains undocumented `not-locked` and `authenticator-required`. | `contract-drift-1.md:82` | Lead/contract owner | open |
-| IPC-6 | M | `FolderView` field/nullability drift (`exists`, `unseen`, `accountId`, `uidNext`, `highestUid`). | `contract-drift-1.md:83`; `T-241 IPC-T241-2` | T-247 | queued |
-| IPC-7 | M | `MessageView` uses `from`/`to` optional fields and extra fields rather than documented `fromAddr`/`toAddrs`. | `contract-drift-1.md:84`; `T-241 IPC-T241-3` | T-247 | queued |
-| IPC-8 / CON-1 | M | Import argument is wire `vcardText`, while docs call it `vcard`. | `contract-drift-1.md:85`; `T-241 IPC-T241-4` | T-247 | queued |
-| IPC-9 | M | Endpoint observation emits `evidence_ref`, not documented `evidenceRef`. | `contract-drift-1.md:86`; `T-241 IPC-T241-5` | T-247 | queued |
+| IPC-5 | M | Unlock error catalog contains undocumented `not-locked` and `authenticator-required`. | `contract-drift-1.md:82` | Lead/contract owner | fixed |
+| IPC-6 | M | `FolderView` field/nullability drift (`exists`, `unseen`, `accountId`, `uidNext`, `highestUid`). | `contract-drift-1.md:83`; `T-241 IPC-T241-2` | T-247 | fixed |
+| IPC-7 | M | `MessageView` uses `from`/`to` optional fields and extra fields rather than documented `fromAddr`/`toAddrs`. | `contract-drift-1.md:84`; `T-241 IPC-T241-3` | T-247 | fixed |
+| IPC-8 / CON-1 | M | Import argument is wire `vcardText`, while docs call it `vcard`. | `contract-drift-1.md:85`; `T-241 IPC-T241-4` | T-247 | fixed |
+| IPC-9 | M | Endpoint observation emits `evidence_ref`, not documented `evidenceRef`. | `contract-drift-1.md:86`; `T-241 IPC-T241-5` | T-247 | fixed |
 | IPC-10 | M | POP3 XOAUTH2 was accepted at add time and rejected only at connect. | `contract-drift-1.md:87`; `agent-19-status.md:263-268` | T-230 | fixed |
-| IPC-11 | L | `MessageBodyView` non-null promises are serialized as optional/null. | `contract-drift-1.md:149` | Lead/contract owner | open |
-| IPC-12 | L | Outbox account ID and delete-result trash folder are optional despite non-null contract wording. | `contract-drift-1.md:150` | Lead/contract owner | open |
-| IPC-13 | L | `DeviceView` adds undocumented `keyFingerprintTail`. | `contract-drift-1.md:151` | Lead/contract owner | open |
-| IPC-14 | L | Render cap is character-based while contract says 8 MiB bytes. | `contract-drift-1.md:152` | Lead/contract owner | open |
-| IPC-15 | I | Frontend wrapper inventory has unregistered names and missing wrappers; T-237 fixed prefs/discovery portions, search/contact wrappers remain in flight. | `contract-drift-1.md:222`; `T-241 IPC-T241-6`; `agent-20-status.md:83-96` | T-237/T-231 | in-flight |
-| IPC-16 | I | `kiwi://mail-changed` is emitted but no frontend listener consumes it. | `contract-drift-1.md:223` | T-231 | open |
-| FOR-1 | H | Forensics enum wire spellings diverge from documented semantic/as-str vocabulary. | `contract-drift-1.md:67`; `forensics` source paths cited there | T-245 | in-flight |
-| FOR-2 | H | `TlsVersion::Unknown(raw)` is externally tagged rather than documented bare `unknown`. | `contract-drift-1.md:68`; `model/tls.rs` cited there | T-245 | in-flight |
-| FOR-3 | M | Transport rule escalates a reusable-secret finding to an undocumented `Critical` level. | `contract-drift-1.md:88` | T-245/Lead | open |
-| FOR-4 | M | Strict/permissive policy flags are not read by the cited rules. | `contract-drift-1.md:89` | T-245/Lead | open |
-| FOR-5 | M | Contract says per-finding half-up scoring; code rounds the aggregate, changing scores. | `contract-drift-1.md:90` | T-245/Lead | open |
-| FOR-6 | M | Unknown/new enum variants are not ignored on deserialization. | `contract-drift-1.md:91`; `report/mod.rs` cited there | T-245 | in-flight |
-| FOR-7 | L | Optional STARTTLS field is always emitted as null instead of omitted. | `contract-drift-1.md:153` | T-245 | open |
-| FOR-8 | L | Certificate rule titles differ from catalog titles. | `contract-drift-1.md:154` | T-245 | open |
-| FOR-9 | L | `RescanDiff` exposes richer/undocumented change kinds. | `contract-drift-1.md:155` | T-245 | open |
-| FOR-10 | L | Several documented limitation codes are defined but never emitted. | `contract-drift-1.md:156` | T-245 | open |
-| FOR-11 | L | `analyze_capture` returns a wrapped capture report/diagnostics shape rather than the documented direct report. | `contract-drift-1.md:157` | T-245 | open |
-| FOR-12 | L | Confidence sort order is undocumented and differs from the stated ordering. | `contract-drift-1.md:158` | T-245 | open |
+| IPC-11 | L | `MessageBodyView` non-null promises are serialized as optional/null. | `contract-drift-1.md:149` | Lead/contract owner | fixed |
+| IPC-12 | L | Outbox account ID and delete-result trash folder are optional despite non-null contract wording. | `contract-drift-1.md:150` | Lead/contract owner | fixed |
+| IPC-13 | L | `DeviceView` adds undocumented `keyFingerprintTail`. | `contract-drift-1.md:151` | Lead/contract owner | fixed |
+| IPC-14 | L | Render cap is character-based while contract says 8 MiB bytes. | `contract-drift-1.md:152` | Lead/contract owner | fixed |
+| IPC-15 | I | Frontend wrapper inventory gaps — prefs/discovery/search resolved (T-237/T-231); still missing wrappers for `kiwi_schedule_send`, `kiwi_sync_status`, `kiwi_contacts_by_tag`, `kiwi_contact_tags`, `kiwi_import_vcards`, `kiwi_export_vcards` (verified absent T-271). | `contract-drift-1.md:222`; `T-241 IPC-T241-6` | T-237/T-231 | open |
+| IPC-16 | I | `kiwi://mail-changed` is emitted but no frontend listener consumes it. | `contract-drift-1.md:223` | T-231 | fixed |
+| FOR-1 | H | Forensics enum wire spellings diverge from documented semantic/as-str vocabulary. | `contract-drift-1.md:67`; `forensics` source paths cited there | T-245 | fixed |
+| FOR-2 | H | `TlsVersion::Unknown(raw)` is externally tagged rather than documented bare `unknown`. | `contract-drift-1.md:68`; `model/tls.rs` cited there | T-245 | fixed |
+| FOR-3 | M | Transport rule escalates a reusable-secret finding to an undocumented `Critical` level. | `contract-drift-1.md:88` | T-245/Lead | fixed |
+| FOR-4 | M | Strict/permissive policy flags are not read by the cited rules. | `contract-drift-1.md:89` | T-245/Lead | fixed |
+| FOR-5 | M | Contract says per-finding half-up scoring; code rounds the aggregate, changing scores. | `contract-drift-1.md:90` | T-245/Lead | fixed |
+| FOR-6 | M | Unknown/new enum variants are not ignored on deserialization. | `contract-drift-1.md:91`; `report/mod.rs` cited there | T-245 | fixed |
+| FOR-7 | L | Optional STARTTLS field is always emitted as null instead of omitted. | `contract-drift-1.md:153` | T-245 | fixed |
+| FOR-8 | L | Certificate rule titles differ from catalog titles. | `contract-drift-1.md:154` | T-245 | fixed |
+| FOR-9 | L | `RescanDiff` exposes richer/undocumented change kinds. | `contract-drift-1.md:155` | T-245 | fixed |
+| FOR-10 | L | Three limitation codes defined but never emitted (verified T-271): `kex-unobserved` (resumed/missing handshake), `auth-unobserved` (protected session, no auth exchange), `transport-unknown`. Remaining work: wire emit sites in pipeline/analyzers, or mark them reserved vocabulary in forensics.md §8. | `contract-drift-1.md:156` | T-245 | open |
+| FOR-11 | L | `analyze_capture` returns a wrapped capture report/diagnostics shape rather than the documented direct report. | `contract-drift-1.md:157` | T-245 | fixed |
+| FOR-12 | L | Confidence sort order is undocumented and differs from the stated ordering. | `contract-drift-1.md:158` | T-245 | fixed |
 | FOR-I | I | Large undocumented forensics public API surface. | `contract-drift-1.md:224` | T-245/contract owner | open |
 | AUTH-1 | H | Challenge verification failures and pairing outcomes are not fully audited. | `contract-drift-1.md:69` | T-188/T-194 | open |
 | AUTH-2 | M | Mobile deny responses do not carry the documented decision field and can look like invalid signatures. | `contract-drift-1.md:104` | T-194/T-188 | open |
@@ -94,8 +94,8 @@ provenance, not remediation assignments.
 | ACFG-19 | L | Contract says 53 tests; current source has 60. | `contract-drift-1.md:202` | T-246/contract owner | open |
 | ACFG-I | I | Large undocumented autoconfig public API/OAuth surface. | `contract-drift-1.md:230` | T-251/contract owner | open |
 | MAUTH-1 | H | Contract claims a live Hickory resolver; no live resolver implementation exists. | `contract-drift-1.md:72` | T-122/T-183 | in-flight |
-| MAUTH-2 | M | DKIM `l=` truncation is described before canonicalization but code canonicalizes first. | `contract-drift-1.md:124` | T-122/T-183 | open |
-| MAUTH-3 | M | DKIM ancient `t=` is not rejected when `x=` is present. | `contract-drift-1.md:125` | T-122/T-183 | open |
+| MAUTH-2 | M | DKIM `l=` truncation is described before canonicalization but code canonicalizes first. | `contract-drift-1.md:124` | T-122/T-183 | fixed |
+| MAUTH-3 | M | DKIM ancient `t=` is not rejected when `x=` is present. | `contract-drift-1.md:125` | T-122/T-183 | fixed |
 | MAUTH-4 | M | `SigAlgorithm` wire spelling is PascalCase rather than documented `rsa-sha256`/`ed25519-sha256`. | `contract-drift-1.md:126` | T-122/T-245 | open |
 | MAUTH-5 | M | Unknown enum variants are fatal despite the ignore/unknown invariant. | `contract-drift-1.md:127` | T-245 | in-flight |
 | MAUTH-6 | L | Ambiguous DKIM “key missing” behavior for NODATA. | `contract-drift-1.md:203` | T-122/T-183 | open |
@@ -159,8 +159,8 @@ provenance, not remediation assignments.
 | UIS-2 | M | Re-scan/diff trigger and results UI are absent. | `contract-drift-1.md:132` | T-192/T-145 | open |
 | UIS-3 | M | Pairing dialog/register-device flow is not wired. | `contract-drift-1.md:133` | T-194/T-192 | open |
 | UIS-4 | L | Snooze UI is held, not implemented. | `contract-drift-1.md:212` | T-189 | queued |
-| UIS-5 | M | Preferences frontend names were rebound to registered commands, but task/worktree integration is not fully closed. | `contract-drift-1.md:73`; `agent-20-status.md:83-96` | T-237 | in-flight |
-| UIS-6 | M | Discovery frontend wrapper was corrected to `kiwi_discover_account`; T-230 handler/alias is present, but task integration is uncommitted. | `contract-drift-1.md:74`; `T-241 IPC-T241-6`; `agent-20-status.md:90-96` | T-237/T-230 | in-flight |
+| UIS-5 | M | Preferences frontend names were rebound to registered commands, but task/worktree integration is not fully closed. | `contract-drift-1.md:73`; `agent-20-status.md:83-96` | T-237 | fixed |
+| UIS-6 | M | Discovery frontend wrapper was corrected to `kiwi_discover_account`; T-230 handler/alias is present, but task integration is uncommitted. | `contract-drift-1.md:74`; `T-241 IPC-T241-6`; `agent-20-status.md:90-96` | T-237/T-230 | fixed |
 | UIS-7 | M | Frontend invokes unregistered/undocumented `kiwi_search_messages`. | `contract-drift-1.md:130` | T-231 | queued |
 | UIS-8 | M | Lock overlay reason fields are frontend-authored and absent from `SecurityStatusView`. | `contract-drift-1.md:134` | T-192/T-194 | open |
 | UIS-9 | M | Producers/UI use broader severity vocabulary than ui-surfaces claims. | `contract-drift-1.md:135` | T-192/contract owner | open |
@@ -182,11 +182,58 @@ provenance, not remediation assignments.
 
 ## Queue and ownership summary
 
-- **Fixed/current evidence:** T-239 AccountView/SecurityStatus/SS-1 work; T-230/T-195 ACFG-1/2 and IPC-10 work; T-193/T-237 admin org-scope/permission bookkeeping; T-237 contract index and wrapper portions; T-241/T-246/T-250 audit records themselves.
-- **In-flight:** T-237 wrapper/contract integration remains uncommitted; T-245 FSV-1 forensics implementation is open with current forensics edits; T-193/T-250 admin residual findings remain active; T-231/UI wrapper work is open.
-- **Queued:** T-247 wire shapes (`IPC-6/7/8/9`); T-251 ACFG-7/8/9 parser hardening; T-253 §14 device inventory. T-250's `ADM-T250-08` is the direct device-register assignment.
-- **Open/unassigned:** remaining contract/implementation rows require Lead assignment or a contract-owner ruling; no source changes were made by T-252.
+- **Fixed/current evidence:** T-237 prefs/discovery wrappers + contract
+  index + `challenge-expired`; T-239 AccountView/SecurityStatus/SS-1;
+  T-245 FSV-1 forensics serde (FOR-1/2/6); T-247 wire batch 2
+  (IPC-6/7/8/9 + FOR-3/4/5); T-265 register batch (IPC-11..14 +
+  FOR-7/8/9); T-271 (IPC-5, IPC-16 listener, FOR-6 §1 reconciliation,
+  FOR-11/12 contract amends); T-230/T-195 ACFG-1/2 and IPC-10; T-258
+  verified MAUTH-2/3 resolved.
+- **In-flight:** T-193/T-250 admin residual findings; T-231/T-145 UI
+  wrapper work; T-266 sandbox-open IPC (build churn observed during
+  T-271); T-267 4-pane rebuild (App.tsx/chrome/Icon tsc churn).
+- **Queued:** T-251 ACFG-7/8/9 parser hardening; T-269 canonical
+  pair-wire; T-270 authenticator enum.
+- **Open/unassigned:** remaining contract/implementation rows require
+  Lead assignment or a contract-owner ruling.
 
 **Register maintenance rule:** when a task finishes, update this row's status only with
 current code/test/contract evidence; do not mark a finding fixed solely because
 an audit or planning task is done.
+
+## T-271 sweep — open rows re-verified against HEAD (2026-09-25)
+
+All remaining `open`/`in-flight` rows were re-checked. Flipped to
+`fixed` above: IPC-5, IPC-6, IPC-7, IPC-8/CON-1, IPC-9, IPC-11..14,
+IPC-16, FOR-1..9 (incl. 6, 11, 12), MAUTH-2, MAUTH-3, UIS-5, UIS-6.
+
+**Still open — spot-verified against the current tree:**
+
+- **IPC-3/AUTH-3** — `ChallengeView` still serializes `nonceHex`; ipc.md
+  §9d ratifies `nonceB64` and records the pending migration. Remaining:
+  emit `nonceB64` (+decode check), keep `nonceHex` read-compat per the
+  migration note, update `ChallengeView` consumers.
+- **IPC-15** — still missing wrappers for `kiwi_schedule_send`,
+  `kiwi_sync_status`, `kiwi_contacts_by_tag`, `kiwi_contact_tags`,
+  `kiwi_import_vcards`, `kiwi_export_vcards` (grep-verified absent).
+- **IPC-16 note** — fixed via `onMailChanged` (ipc.ts) + App-level
+  debounced subscription (App.tsx). Caveat surfaced while wiring:
+  `state/mailbox.ts::useMailbox` is still dead code (UIS-19 stands) —
+  App.tsx owns the live mailbox path.
+- **FOR-10** — `kex-unobserved`/`auth-unobserved`/`transport-unknown`
+  constants exist, no emit sites. Remaining: emit in pipeline/analyzers
+  or mark reserved in forensics.md §8.
+- **AUTH-1** — still no `challenge-denied`/`verification-failed`/
+  `device-paired` audit rows in `commands/system.rs` (grep-verified).
+- **UIS-13/14/17** — `syncStatus`, `scheduleSend`, contact
+  tag/import/export wrappers still absent; `createContact` is wired.
+- **UIS-21** — `kiwi.ts` still reads `id`/`tsUnix` event keys.
+- **UIS-19** — confirmed again during IPC-16: `useMailbox` is exported
+  but never invoked (App.tsx comment still claims it).
+- **Not re-verified (other-task owners, left as recorded):**
+  AUTH-2..16/I (T-194), SS-2..9/I (T-194), ACFG-3..19/I (T-246/T-251),
+  MAUTH-1/4..8/I (T-122/T-183 — T-258 appendix already verified the
+  T-183 group), ADM-*/ADM-T250-* (T-250/T-259 in-flight — admin-api.md
+  churned heavily during this sweep), SBX-*/I (T-161/T-266 in-flight),
+  PAIR-*/I (T-235/T-269 queued), CON-2..11/I (T-150/T-175), UIS-1..22
+  remainder (T-145/T-192/T-267 in-flight), INT (T-226).

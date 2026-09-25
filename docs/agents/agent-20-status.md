@@ -493,3 +493,80 @@ render-cap wording), `docs/contracts/forensics.md` (§3 ChangeKind).
   theirs; the suite passed after their module file landed.
 - `keyFingerprintTail` is informational — documented as display-only so
   no reader treats an 8-hex tail as an authentication signal.
+
+## 2026-09-25 — T-271: register finish (IPC-16 + IPC-5 + FINDINGS sweep)
+
+**Status:** done. Event listener wired, error codes documented, register
+swept — 25 rows flipped to `fixed`, remaining-open rows annotated with
+exact work left.
+
+### Per-item decisions
+
+**(1) IPC-16 — listener landed.** `onMailChanged(handler)` in ipc.ts
+(`listen<MailChangedEvent>` over `kiwi://mail-changed`, typed payload,
+`BackendUnavailableError` off-webview) + `MailChangedEvent` interface in
+kiwi.ts. **Consumer is App.tsx, not `useMailbox`** — mid-wiring I found
+`useMailbox` is still dead code (UIS-19 confirmed again: exported,
+never invoked; App.tsx owns `mailboxRev`/`loadFolders`/`notify`). The
+effect subscribes once at App level, debounces ~300 ms (a sync bursts
+per folder), collapses into ONE `mailboxRev` bump + `loadFolders()`,
+and accumulates `newMessages` into a single `info` toast. ipc.md §6
+documents the consumer + a MUST-debounce note (naive per-event reload
+re-enters `listMessages` under the worker).
+
+**(2) IPC-5 — catalog completed.** `not-locked` and
+`authenticator-required` added to the ipc.md §11 error table with
+semantics from `UnlockError` (`error.rs:84-92`): not-locked is
+informational (treat as already-unlocked); authenticator-required names
+the remediation path (`kiwi_request_challenge`/`kiwi_submit_challenge`).
+
+**(3) Sweep — `FINDINGS.md` re-run against HEAD.**
+
+Flipped `fixed` (25 rows): IPC-5/6/7/8(+CON-1)/9/11/12/13/14/16,
+FOR-1..9, FOR-11, FOR-12, MAUTH-2/3 (per T-258 verification appendix),
+UIS-5/6 (T-237 hunks now committed at HEAD). Opportunistic same-session
+closes while sweeping: FOR-6 §1 wording reconciled with §12
+fail-closed-for-variants (the two contract clauses contradicted each
+other); FOR-11 §10 documents the `CaptureReport{report,diagnostics}`
+wrapper; FOR-12 §7 spells out sort directions (severity desc → rule_id
+asc → subject_key asc → confidence desc, matching `sort_findings`).
+
+Verified still-open with remaining work noted inline: IPC-3 (nonceHex
+still emitted; `nonceB64` migration pending), IPC-15 (6 wrappers still
+absent — list in row), FOR-10 (3 limitation constants un-emitted; emit
+sites or reserved-vocab amend), AUTH-1 (no failure-audit rows),
+UIS-13/14/17/19/21. Not re-verified: rows owned by in-flight tasks
+(AUTH-2.., SS-2.., ACFG-*, MAUTH-1/4..8, ADM-*, SBX-*, PAIR-*, CON-*,
+UIS-1..22 rest, INT) — left as recorded.
+
+**Late-arriving context:** T-264 landed `FolderView.exists`/`unseen`
+(the count-query gap I flagged in T-265) — contract + kiwi.ts already
+updated by that task; IPC-6's documented shape is now superseded-but-
+coherent.
+
+### Files changed
+
+`kiwi-app/src/ipc.ts` (listen import + `onMailChanged`), `kiwi.ts`
+(`MailChangedEvent`), `App.tsx` (debounced subscription effect),
+`docs/contracts/ipc.md` (event consumer note + §11 codes),
+`docs/contracts/forensics.md` (§1 unknown-tag clause, §7 sort
+directions, §10 CaptureReport), `docs/audits/FINDINGS.md` (25 flips +
+T-271 sweep section + queue summary refresh).
+
+### Verification
+
+- `cargo test -p kiwi-app` — **112 green**.
+- `npx tsc --noEmit` — my files clean; 22 remaining errors are all
+  T-267's mid-flight rebuild (`components/icons.tsx` barrel, `Icon.tsx`
+  fill prop, `chrome.tsx` onSubmitSearch, `views/mailbox.tsx` onPick,
+  plugins/registry safeParse). Re-run at integrate.
+
+### Assumptions / risks
+
+- `App.tsx` is the correct subscription site BECAUSE `useMailbox` is
+  dead code — flagged in the sweep so UIS-19's owner knows the listener
+  needs relocating if the hook ever gets adopted.
+- Toast fires on the connect-time `reason:"sync"` pass too when new
+  mail arrived — documented behavior (honest arrival count).
+- No backend/Rust changes this task; wire event shape was already
+  correct (syncer.rs emit verified field-for-field).

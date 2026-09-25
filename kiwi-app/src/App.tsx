@@ -7,7 +7,7 @@
  * verdict comes from the backend.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, IpcError } from "./ipc";
+import { api, IpcError, isTauri, onMailChanged } from "./ipc";
 import { applyUiPrefs, loadPref, savePref } from "./prefs";
 import { useToasts } from "./state/toasts";
 import { DEMO_TRUST, useSession } from "./state/session";
@@ -33,6 +33,7 @@ import type {
   RenderedBodyView,
   SecurityEventRow,
   Severity,
+  SnoozePreset,
 } from "./kiwi";
 import {
   eventToRow,
@@ -43,7 +44,7 @@ import {
   trustTokenToSeverity,
   unixToIso,
 } from "./kiwi";
-import { AppShell, Sidebar, TopBar } from "./components/chrome";
+import { AgendaRail, AppShell, FolderPane, StatusStrip, TopBar } from "./components/chrome";
 import { AuthenticatorDialog, FindingDialog, LockOverlay } from "./components/security";
 import type { AuthStatus } from "./components/security";
 import { CommandPalette } from "./components/palette";
@@ -85,6 +86,7 @@ function toEnvelope(
     date: unixToIso(m.dateUnix),
     unread: ov?.unread ?? !flags.includes("\\Seen"),
     starred: ov?.starred ?? flags.includes("\\Flagged"),
+    answered: flags.includes("\\Answered") ? true : undefined,
     hasAttachments: m.hasAttachments === true,
     trust,
     snippet: m.snippet || "",
@@ -95,7 +97,7 @@ function toEnvelope(
 
 export default function App() {
   const route = useRoute();
-  const [theme, setTheme] = useState(() => loadPref<string>("kiwi.theme", "dark"));
+  const [theme, setTheme] = useState(() => loadPref<string>("kiwi.theme", "light"));
   const { toasts, notify, dismissToast } = useToasts();
   const {
     mode,
@@ -113,7 +115,7 @@ export default function App() {
   } = useSession(notify);
   const [folderLists, setFolderLists] = useState<Record<string, FolderView[]>>({});
   const [foldersError, setFoldersError] = useState<string | null>(null);
-  const { emailById, accounts, folders, folderLabel, filtersListLabel, unreadByFolder } = useAccountModel(
+  const { emailById, folders, folderLabel, filtersListLabel, smartFolders, accountSections, smartUnread } = useAccountModel(
     demo,
     accountsRaw,
     folderLists,
@@ -199,6 +201,40 @@ export default function App() {
     void loadFolders();
   }, [demo, accountsRaw, loadFolders]);
 
+  // Live sync → refresh (kiwi://mail-changed, IPC-16/T-271). The worker
+  // emits one event per changed pass — a sync bursts per folder — so
+  // events debounce ~300 ms into ONE list reload + folder-count refresh,
+  // and `newMessages` accumulate into a single summary toast. App-level
+  // so it refreshes whichever folder/route is mounted.
+  useEffect(() => {
+    if (demo || !isTauri()) return;
+    let unlisten: (() => void) | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let pendingNew = 0;
+    onMailChanged((ev) => {
+      if (typeof ev.newMessages === "number" && ev.newMessages > 0) {
+        pendingNew += ev.newMessages;
+      }
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = undefined;
+        const n = pendingNew;
+        pendingNew = 0;
+        setMailboxRev((r) => r + 1);
+        void loadFolders();
+        if (n > 0) notify("info", `${n} new message${n === 1 ? "" : "s"} arrived.`);
+      }, 300);
+    })
+      .then((fn) => {
+        unlisten = fn;
+      })
+      .catch(() => undefined);
+    return () => {
+      if (timer) clearTimeout(timer);
+      unlisten?.();
+    };
+  }, [demo, loadFolders, notify]);
+
   const folderKey = route.name === "mail" ? (route.folder ?? "all-inboxes") : "all-inboxes";
 
   useEffect(() => {
@@ -221,12 +257,63 @@ export default function App() {
           const list = await api.listMessages(accountId, folderId, 50);
           for (const m of list) collected.push(toEnvelope(accountId, email, key, folderId, m, t, flagOverrides));
         };
-        if (folderKey === "all-inboxes") {
+        // T-267 smart folders (eM Favorites): aggregates resolve here;
+        // flag-based smart rows (unread/flagged/unreplied) load every
+        // account INBOX and narrow client-side in baseMessages.
+        const SMART_FOLDER_RE: Record<string, RegExp> = {
+          sent: /sent/i,
+          trash: /trash|deleted|bin/i,
+          drafts: /draft/i,
+          junk: /junk|spam/i,
+        };
+        const INBOX_SMART = new Set(["unread", "flagged", "unreplied"]);
+        if (folderKey === "all-inboxes" || INBOX_SMART.has(folderKey)) {
           await Promise.all(
             accountsRaw.map(async (a) => {
               const fl = folderLists[a.id] ?? [];
               const inbox = fl.find((f) => f.name.toUpperCase() === "INBOX") ?? fl[0];
               if (inbox) await fetchOne(a.id, inbox.id, "all-inboxes");
+            }),
+          );
+          collected.sort((x, y) => (y.date < x.date ? -1 : y.date > x.date ? 1 : 0));
+        } else if (folderKey === "snoozed") {
+          // Parked rows (kiwi_list_snoozed, T-255) — account-wide sweep.
+          await Promise.all(
+            accountsRaw.map(async (a) => {
+              const email = emailById.get(a.id) ?? a.id;
+              const t = trustTokenToSeverity(a.trustToken);
+              const parked = await api.listSnoozed(a.id, 100);
+              for (const m of parked) {
+                collected.push({
+                  id: `${a.id}:${m.folderId}:${m.uid}`,
+                  accountId: a.id,
+                  accountEmail: email,
+                  folder: "snoozed",
+                  folderId: m.folderId,
+                  uid: m.uid,
+                  from: m.fromAddr || "(unknown)",
+                  subject: m.subject || "(no subject)",
+                  date: m.dateUnix != null ? unixToIso(m.dateUnix) : "",
+                  unread: false,
+                  starred: false,
+                  hasAttachments: false,
+                  trust: t,
+                  snippet: m.snoozedUntil ? `Snoozed until ${new Date(m.snoozedUntil * 1000).toLocaleString()}` : "",
+                  category: "primary",
+                  unsub: { url: null, mailto: null, oneClick: false },
+                });
+              }
+            }),
+          );
+          collected.sort((x, y) => (y.date < x.date ? -1 : y.date > x.date ? 1 : 0));
+        } else if (SMART_FOLDER_RE[folderKey]) {
+          // Sent/Trash/Drafts/Junk Email: every matching folder on every account.
+          const re = SMART_FOLDER_RE[folderKey];
+          await Promise.all(
+            accountsRaw.map(async (a) => {
+              for (const f of (folderLists[a.id] ?? []).filter((f) => re.test(f.name))) {
+                await fetchOne(a.id, f.id, folderKey);
+              }
             }),
           );
           collected.sort((x, y) => (y.date < x.date ? -1 : y.date > x.date ? 1 : 0));
@@ -617,6 +704,76 @@ export default function App() {
     () => (demo ? DEMO_MESSAGES : messages).find((m) => m.id === selectedId) ?? null,
     [demo, messages, selectedId],
   );
+
+  /**
+   * Toolbar snooze (T-267 → kiwi_message_snooze, T-255): parks the
+   * selected envelope until the preset deadline; list reloads so the
+   * parked row drops out of the folder view.
+   */
+  const snoozeSelected = useCallback(
+    async (preset: SnoozePreset) => {
+      const s = selectedEnvelope;
+      if (!s) return;
+      if (demo) {
+        notify("info", "Demo mode — snooze needs the Tauri backend.");
+        return;
+      }
+      try {
+        const v = await api.snoozeMessages(s.accountId, [{ folderId: s.folderId, uid: s.uid }], { preset });
+        notify("ok", `Snoozed ${v.snoozed} message(s) until ${new Date(v.untilUnix * 1000).toLocaleString()}.`);
+        await reloadMail();
+      } catch (e) {
+        const msg = `Snooze failed: ${e instanceof Error ? e.message : e}`;
+        setSyncNote(msg);
+        notify("error", msg);
+      }
+    },
+    [demo, selectedEnvelope, reloadMail, notify],
+  );
+
+  const unsnoozeSelected = useCallback(async () => {
+    const s = selectedEnvelope;
+    if (!s) return;
+    if (demo) {
+      notify("info", "Demo mode — unsnooze needs the Tauri backend.");
+      return;
+    }
+    try {
+      const v = await api.unsnoozeMessages(s.accountId, [{ folderId: s.folderId, uid: s.uid }]);
+      notify("ok", `Unsnoozed ${v.unsnoozed} message(s).`);
+      await reloadMail();
+    } catch (e) {
+      const msg = `Unsnooze failed: ${e instanceof Error ? e.message : e}`;
+      setSyncNote(msg);
+      notify("error", msg);
+    }
+  }, [demo, selectedEnvelope, reloadMail, notify]);
+
+  /**
+   * Toolbar junk toggle (kiwi_message_set_junk, T-263): `junk` sets the
+   * flag + moves to the account Junk folder; `false` clears/returns to
+   * INBOX. Moves remap uids — always reload the list after.
+   */
+  const setJunkSelected = useCallback(
+    async (junk: boolean) => {
+      const s = selectedEnvelope;
+      if (!s) return;
+      if (demo) {
+        notify("info", "Demo mode — junk marking needs the Tauri backend.");
+        return;
+      }
+      try {
+        const v = await api.setJunk(s.accountId, [{ folderId: s.folderId, uid: s.uid }], junk);
+        notify("ok", junk ? `Marked junk — ${v.moved} moved to Junk.` : `Un-junked — ${v.moved} moved back to INBOX.`);
+        await reloadMail();
+      } catch (e) {
+        const msg = `Junk update failed: ${e instanceof Error ? e.message : e}`;
+        setSyncNote(msg);
+        notify("error", msg);
+      }
+    },
+    [demo, selectedEnvelope, reloadMail, notify],
+  );
   const setAllowRemote = useCallback(
     async (allowed: boolean) => {
       if (demo || !selectedEnvelope) return;
@@ -671,11 +828,40 @@ export default function App() {
 
   /** Flag/star overrides applied, query NOT applied — feeds mailbox + search. */
   const baseMessages = useMemo(() => {
-    const base = demo
-      ? folderKey === "all-inboxes"
-        ? DEMO_MESSAGES
-        : DEMO_MESSAGES.filter((m) => m.folder === folderKey)
-      : messages;
+    // T-267 smart-folder predicates. Demo slugs map onto DEMO_MESSAGES
+    // folders; live aggregate folders (sent/trash/drafts/junk/snoozed)
+    // are already scoped by the loader, so only flag-based smarts and
+    // the demo `acct:slug` section ids need client predicates.
+    const SMART_PRED: Record<string, (m: MessageEnvelope) => boolean> = {
+      unread: (m) => m.unread,
+      flagged: (m) => m.starred,
+      unreplied: (m) => m.answered !== true,
+      snoozed: (m) => m.folder === "snoozed",
+      sent: (m) => m.folder === "sent",
+      trash: (m) => m.folder === "trash",
+      drafts: (m) => m.folder === "drafts",
+      junk: (m) => m.folder === "spam" || m.folder === "junk",
+    };
+    let base: MessageEnvelope[];
+    if (demo) {
+      if (folderKey === "all-inboxes") base = DEMO_MESSAGES;
+      else if (SMART_PRED[folderKey]) base = DEMO_MESSAGES.filter(SMART_PRED[folderKey]);
+      else {
+        // Per-account section id `accId:slug` (demo) or `accId:folderId` (live).
+        const sep = folderKey.lastIndexOf(":");
+        base = sep > 0
+          ? DEMO_MESSAGES.filter((m) => m.accountId === folderKey.slice(0, sep) && m.folder === folderKey.slice(sep + 1))
+          : DEMO_MESSAGES.filter((m) => m.folder === folderKey);
+      }
+    } else {
+      base = messages;
+      const pred = SMART_PRED[folderKey];
+      // Loader-scoped keys (sent/trash/…/snoozed/acct:id) carry matching
+      // `folder`/`folderId` already — re-filtering would wrongly narrow
+      // e.g. a live "sent" row's folder key. Only narrow the INBOX-loaded
+      // smart rows and demo-shaped folders.
+      if (pred && ["unread", "flagged", "unreplied"].includes(folderKey)) base = base.filter(pred);
+    }
     const withOverrides = demo
       ? base
       : base.map((m) => {
@@ -957,19 +1143,48 @@ export default function App() {
         onSync={() => void doSync()}
         onLock={() => void doLock()}
         syncing={syncing}
+        hasSelection={!!selectedEnvelope}
+        inTrash={folderKey === "trash" || /trash|deleted|bin/i.test(folderLabel)}
+        onReply={() => navigate({ name: "compose" })}
+        onReplyAll={() => navigate({ name: "compose" })}
+        onForward={() => navigate({ name: "compose" })}
+        onMarkRead={(read) => {
+          if (selectedEnvelope) void bulkPatch([selectedEnvelope.id], { seen: read }, read ? "Marked read" : "Marked unread");
+        }}
+        onMarkStarred={(starred) => {
+          if (selectedEnvelope) void bulkPatch([selectedEnvelope.id], { starred }, starred ? "Starred" : "Unstarred");
+        }}
+        onMarkAllRead={() => {
+          const ids = baseMessages.filter((m) => m.unread).map((m) => m.id);
+          if (ids.length > 0) void bulkPatch(ids, { seen: true }, "Marked all read");
+          else notify("info", "Nothing unread in this list.");
+        }}
+        onMarkJunk={(junk) => void setJunkSelected(junk)}
+        onArchive={(archived) => {
+          if (selectedEnvelope) archiveMessage(selectedEnvelope.id, archived);
+        }}
+        onSnooze={(preset) => void snoozeSelected(preset)}
+        onUnsnooze={() => void unsnoozeSelected()}
+        onDelete={(permanent) => {
+          if (selectedEnvelope) void bulkDelete([selectedEnvelope.id], permanent, permanent ? "Deleted permanently" : "Deleted");
+        }}
+        onSecurityDetails={() => openFinding(0)}
+        onEmptyTrash={() => void bulkDelete(visibleMessages.map((m) => m.id), false, "Emptied trash")}
+        onReloadList={() => void reloadMail()}
       />
       <AppShell
         sidebar={
-          <Sidebar
-            folders={folders}
-            accounts={accounts}
+          <FolderPane
+            smartFolders={smartFolders}
+            smartUnread={smartUnread}
+            accountSections={accountSections}
             activeFolder={route.name === "mail" ? (route.folder ?? "all-inboxes") : "all-inboxes"}
-            unreadByFolder={unreadByFolder}
-            pendingApprovals={authOpen && authStatus === "waiting" ? 1 : 0}
+            outboxCount={outbox.length}
           />
         }
+        rail={route.name === "mail" ? <AgendaRail /> : null}
         status={
-          <>
+          <StatusStrip pendingApprovals={authOpen && authStatus === "waiting" ? 1 : 0}>
             <span>{backendNote}</span>
             {appInfo && (
               <span>
@@ -983,7 +1198,7 @@ export default function App() {
             <button type="button" onClick={() => navigate({ name: "setup" })}>
               Add account
             </button>
-          </>
+          </StatusStrip>
         }
       >
         {route.name === "mail" && (

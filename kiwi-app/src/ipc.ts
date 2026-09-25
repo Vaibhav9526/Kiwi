@@ -10,6 +10,8 @@
  * → views render error/lock states, never demo data as real.
  */
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 import type {
   AccountView,
   AppInfoView,
@@ -26,6 +28,7 @@ import type {
   DeviceView,
   FindingDetailView,
   FolderView,
+  MailChangedEvent,
   MessageBodyView,
   MessagePatch,
   MessageRef,
@@ -108,6 +111,21 @@ async function call<T>(command: string, args?: Record<string, unknown>): Promise
 
 function asArray<T>(raw: unknown): T[] {
   return Array.isArray(raw) ? (raw as T[]) : [];
+}
+
+/* ---------------- events ---------------- */
+
+/**
+ * Subscribe to `kiwi://mail-changed` (ipc.md §6 event; emitted by the
+ * sync worker after a pass that changed stored mail). Caller owns
+ * debouncing/refresh policy; the returned unlisten detaches.
+ * Non-Tauri contexts reject with BackendUnavailableError.
+ */
+export function onMailChanged(handler: (ev: MailChangedEvent) => void): Promise<UnlistenFn> {
+  if (!isTauri()) {
+    return Promise.reject(new BackendUnavailableError("kiwi://mail-changed", "not in Tauri webview"));
+  }
+  return listen<MailChangedEvent>("kiwi://mail-changed", (e) => handler(e.payload));
 }
 
 /* ---------------- system / lock path (exempt) ---------------- */

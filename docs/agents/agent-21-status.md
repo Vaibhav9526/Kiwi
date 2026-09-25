@@ -576,3 +576,46 @@ HashSet line-overlap scan (ref line-set cached to `%TEMP%\kiwi-ref-lines.txt`,
 outside the repo); regex over `Cargo.lock` joined to the registry cache for
 exact-version licenses; recursive `ConvertFrom-Json` walk of all 4
 `node_modules` for the copyleft sweep. No repo file was written by any of them.
+
+
+## 2026-09-25 — T-266 sandbox-open IPC complete
+
+**Status:** DONE. Added lock-gated `kiwi_sandbox_open_link(url)` and
+`kiwi_sandbox_open_attachment(folderId, uid, filename)`, typed
+`SandboxOpenView`, `sandbox-unavailable` / `sandbox-failed`, and no host-open or
+browser fallback.
+
+### Security/data flow
+
+- HTTP(S) links only, bounded at 2,048 chars; hostile HTTP reaches the provider,
+  while every other scheme is `invalid-input`.
+- Attachments are stored payload references only: exact MIME filename match,
+  bounded private staging, provider execution, staging deletion. No raw bytes
+  or host paths cross IPC.
+- Stored `linkRisk.reasons` / `attachRisk.reasons` flow through
+  `SandboxSpec.evidence_reasons` into the bounded report/session ring and
+  security report. Missing evidence is explicit, never clean.
+- Successful opens append `sandbox-opened` with a sanitized target and reasons.
+  URL userinfo/query/fragment are removed; attachment targets are coordinates.
+- WSL2 artifact analysis remains supported. Link open returns typed
+  `sandbox-unavailable` on WSL2 because egress is blocked; a future provider
+  must enforce monitored isolated egress. Production rootfs path is
+  `<app-data>/sandbox/rootfs.tar`.
+
+### Contracts/frontend/tests
+
+- Updated `docs/contracts/sandbox.md` and `docs/contracts/ipc.md` §6g.
+- Added `SandboxOpenView` plus typed `ipc.ts` wrappers.
+- Five offline tests cover validation, redaction, fail-closed NullProvider,
+  full link/reason handoff + audit, and attachment ref/reason/staging cleanup.
+
+### Validation
+
+- T-266 tests **5/5**; kiwi-sandbox tests **5/5**.
+- `cargo check -p kiwi-app`, app + sandbox clippy `-D warnings`, touched-file
+  rustfmt, and T-266 diff check are clean.
+- Full app lib passed all T-266 tests and existing tests through the unrelated
+  existing `e2e_send_delivers_files_sent_copy` hang. Full workspace gates are
+  independently blocked by concurrent kiwi-pair formatting and a kiwi-mail
+  snooze-test mismatch. `tsc` is independently blocked by in-flight T-267/268
+  chrome/icons/mailbox edits; no T-266 TS error was emitted.

@@ -41,6 +41,13 @@
   device identity, pairing interception, revoked-device reuse.
 - **Abuse of AI layer (T-AI):** prompt injection via email content to skew
   explanations; over-reliance on AI text as authority.
+- **Malicious sideloaded plugin (T-PLG)** *(T-268, Agent-25)*: a plugin the
+  user installs is code executing inside the renderer — in the alpha model
+  it runs as **trusted code** (no context isolation), so a hostile plugin
+  can read anything the renderer can (mailbox UI state, DOM) and abuse the
+  bridge surface. Sideload-only distribution keeps supply-chain scope at
+  "user-chosen local files", but the code-exec risk is real and accepted
+  for alpha only (RR-11).
 
 **Explicitly OUT of scope** (no universal malware/EDR claims): fully
 compromised OS/kernel, hardware backdoors, user coercion, side-channel key
@@ -60,6 +67,7 @@ extraction from a healthy device. Documented as accepted risks.
 | B8 MIME/attachments | hostile MIME, spoofed names, tracking | bounded parse; nesting/size caps; filename sanitization; remote-content block default | message fixtures; spoofed-ext/oversize cases |
 | B9 sandbox guest (QEMU/WHPX, WSL2, Firecracker) | hostile payload executing in guest; escape attempt; tampered base image | per-run disposable instances; pinned immutable base; no host FS/creds/mailbox; no NIC default; watchdog; capability reporting; WSL2 shared-kernel caveat explicit | PoC lifecycle scripts; capability tests; QEMU/agent transcripts (pending provider crate) |
 | B3b compose PG | tampered rows, DSN leak, migration failure | Drizzle-only access; reviewed migrations; least-privilege role; `.env` gitignored; DB-level append-only trigger + hash-chain verification | migration-apply + guard tests (T-133); env-coverage test |
+| B10 renderer ↔ plugin code *(T-268)* | hostile plugin reads mail state/DOM, exfiltrates via net, calls privileged bridge methods | declared-capability gate on every bridge method; lock gate rejects all calls while locked; sideload-only install (user-chosen local files); no remote fetch in the loader; **ALPHA GAP: no context isolation — trusted code (RR-11)** | manifest/capability validation tests; lock-gate denial test; post-alpha: sandboxed context + origin pinning + signing gate |
 
 ## 4. Attack scenarios (each needs a permanent regression test)
 
@@ -103,6 +111,7 @@ extraction from a healthy device. Documented as accepted risks.
 | RR-8 | WSL2-tier shared kernel (guest→guest escape reaches sibling distros) | interim tier; hypervisor-vs-host boundary holds | QEMU/WHPX dedicated-kernel target; caveat in UI copy; never claim full isolation on this tier |
 | RR-9 | Container escape (compose services share host kernel) | accepted: containers are infra, never the hostile-code boundary | hostile content restricted to VM sandbox (B9); no mailbox/credential mounts in compose |
 | RR-10 | PG data-volume tampering/disposal on dev hosts | dev posture; file-permission + user-separation only | explicit backup story before any shared deployment; secrets never in DB (rule 16) |
+| RR-11 | **Plugins execute as trusted renderer code** — a sideloaded plugin can read the DOM/mailbox state and make network calls; manifest capabilities are a *declared contract*, enforced at bridge-method level only | **Owner amendment 2026-09-25 (planner ITEM B): alpha ships trusted-code plugins; isolation enforcement deliberately deferred to unblock the scaffold.** Not a silent skip — this row + B10 + the capability-gated bridge are the documented contract | Post-alpha hardening task: sandboxed iframe/worker host with origin pinning; capability enforcement at the context boundary; no IPC-adjacent caps for unsigned plugins; plugin CSP + size caps; review/signing gate |
 
 (Retired: NSS-hook blind spots — owned rustls transport gives full
 observation; see SECURITY.md A2.)
