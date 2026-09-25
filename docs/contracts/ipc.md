@@ -2,12 +2,12 @@
 
 > Owner: Agent 7 · **Contract version: `kiwi.ipc/1`** · Status: implemented for
 > the registered command catalog (T-120, T-121, T-142, T-144, T-146, T-157,
-> T-163, T-164, T-169, T-175); §9d is a proposed T-188 extension, not
-> implemented. Implemented by `kiwi-app/src-tauri` (Rust, Tauri 2). This
-> document is authoritative for the frontend ↔ backend boundary; the registered
-> handler list in `kiwi-app/src-tauri/src/lib.rs` is the reference
-> implementation. Changes require Lead review (API_CONTRACTS.md rule) → record
-> in DECISIONS.md.
+> T-163, T-164, T-169, T-175, T-227); §9d is the **Lead-ratified T-188 wire contract**,
+> with handlers still pending implementation. Implemented by
+> `kiwi-app/src-tauri` (Rust, Tauri 2). This document is authoritative for the
+> frontend ↔ backend boundary; the registered handler list in
+> `kiwi-app/src-tauri/src/lib.rs` is the reference implementation. Changes
+> require Lead review (API_CONTRACTS.md rule) → record in DECISIONS.md.
 
 Parties: **kiwi-app webview** (React, untrusted — SECURITY.md B2) →
 **kiwi-app backend** (trusted; enforces the lock gate, input validation,
@@ -617,16 +617,16 @@ the OS keystore via account auth only.
 Bounds: `key` 1–128 chars, `:` refused (scope separator); `value` any
 JSON ≤ 64 KiB serialized; 1024 entries total.
 
-## 9d. Commands — pairing engine, kiwi-pair **[partly gated]** (T-188, proposed)
+## 9d. Commands — pairing engine, kiwi-pair **[partly gated]** (T-188, ratified)
 
-> **Status: PROPOSED — pending Lead review.** Agent 9 drafted this section
-> from `kiwi-pair`; Agent 18 revalidated it against the current public API for
-> T-188 on 2026-09-25. Nothing here is implemented: `kiwi-app/src-tauri` does
-> not call `kiwi-pair` today. Two commands are new; **three duplicate commands
-> already declared in §4 and §9** — see §9d.11 item 1. `pair_status` also needs
-> both a read-only engine API and a persisted ticket-to-device link before it
-> can have the response below. Per this document's header, changes require Lead
-> review.
+> **RATIFIED by Lead 2026-09-25 (T-188).** The five logical command names
+> below are canonical: `pair_begin`, `pair_status`, `unlock_challenge`,
+> `device_list`, and `device_revoke`. Existing §4/§9 `kiwi_*` names may be
+> compatibility aliases only; two independent implementations or frontend
+> call paths are rejected. `pair_status` still requires the read-only
+> ticket API plus atomic ticket-to-device persistence described in §9d.3.
+> The command handlers are not yet registered; this section fixes the ratified
+> wire contract before implementation.
 
 `kiwi-pair` (T-174) is the desktop-side pairing engine: pairing tickets,
 device records, and Ed25519 challenge issue/verify over kiwi-core's canonical
@@ -649,7 +649,18 @@ the `pair.db` schema; this section only fixes the wire shapes.
 the same boot-session id §4 binds. `now` is one backend clock read per request.
 `PairError` mapping is fixed by §9d.9.
 
-### 9d.2 `pair_begin({ deviceLabel }) → PairBeginView` **[exempt]**
+**Lead rulings — ratified 2026-09-25:**
+
+| decision | binding contract rule |
+|----------|----------------------|
+| command names | `pair_begin`, `pair_status`, `unlock_challenge`, `device_list`, `device_revoke` are canonical; no duplicate handler path |
+| challenge nonce | `nonceB64` is the canonical wire field: RFC 4648 standard Base64, padded, decoding to exactly 32 bytes |
+| ticket/QR | `pair_begin` may return the ticket/QR for local-only renderer display; it never crosses an admin/mobile trust boundary or enters logs/preferences/evidence |
+| lock gate | `unlock_challenge` is always exempt; `pair_begin`/`pair_status` are exempt only while a backend-tracked pairing flow is active; outside that flow they are gated |
+| first device | the trusted first-device TOFU pairing path is approved; TOFU evidence never substitutes for the authenticator challenge |
+| device names | duplicate names are rejected with admin `409 conflict`; IPC duplicate device identity uses `device-exists`; listings remain deterministic and never merge rows |
+
+### 9d.2 `pair_begin({ deviceLabel }) → PairBeginView` **[exempt only in active pairing flow]**
 
 ```jsonc
 // request
@@ -689,13 +700,15 @@ URL-safe or unpadded forms are not accepted. `ticket` and `qrPayload` must
 never be logged, written to `prefs` (§9c), put in an evidence reference, quoted
 in an error, or echoed by `pair_status`.
 
-**Bearer-secret exception.** The ticket authorizes one pairing claim until it
-expires. §1's no-token-in-a-response rule therefore has one narrow exception:
-`pair_begin` must return the ticket/QR for the local user to render. It grants
-no mailbox access by itself; activation still requires the registered device's
-Ed25519 signature over a `device-pairing` challenge.
+**RATIFIED local-render exception.** The ticket authorizes one pairing claim
+until it expires. Lead approved returning the ticket/QR to the untrusted
+renderer **only for local screen rendering**; it is never forwarded to
+`kiwi-admin`, the mobile transport, logs, preferences, evidence, or any other
+trust boundary. It grants no mailbox access by itself; activation still
+requires the registered device's Ed25519 signature over a `device-pairing`
+challenge.
 
-### 9d.3 `pair_status({ ticket }) → PairStatusView` **[exempt]**
+### 9d.3 `pair_status({ ticket }) → PairStatusView` **[exempt only in active pairing flow]**
 
 ```jsonc
 // request
@@ -743,7 +756,7 @@ security defect. Caching the bearer ticket in kiwi-app to work around the gap
 is also refused; the cache would create a second secret store outside
 `pair.db`.
 
-### 9d.4 `unlock_challenge({ deviceId }) → PairChallengeView` **[exempt]**
+### 9d.4 `unlock_challenge({ deviceId }) → PairChallengeView` **[always exempt]**
 
 ```jsonc
 // request
@@ -760,11 +773,11 @@ is also refused; the cache would create a second secret store outside
   "expiresUnix": 1729000120 }
 ```
 
-`PairChallengeView` deliberately uses `nonceB64`, matching
-`authenticator.md` §4.2. The current Rust `ChallengeView` instead serializes
-`nonceHex`, while the TypeScript wrapper already expects `nonceB64`; adopting
-this section therefore includes a coordinated breaking wire correction, not
-merely swapping the existing command's engine backend.
+**RATIFIED canonical wire format.** `nonceB64` is the only nonce field:
+RFC 4648 standard Base64 with canonical padding, decoding to exactly 32
+bytes. It matches `authenticator.md` §4.2. The current Rust
+`ChallengeView` still serializes `nonceHex`; the required backend/frontend
+migration must remove that spelling rather than support both.
 
 The renderer supplies only `deviceId`. The backend generates `challengeId`,
 uses `os_nonce()` for the 32-byte nonce, binds the current boot `sessionId`,
@@ -805,7 +818,10 @@ the full SHA-256 digest) while adding kiwi-pair's dash-grouped
 `fingerprint`, so adopting it for `kiwi_list_devices` is additive. The raw
 `public_key` is deliberately omitted: `fingerprint` is for human out-of-band
 comparison and is never an automatic trust input. `keystoreRef` is an opaque
-alias, not key material or a secret.
+alias, not key material or a secret. Device identity is `deviceId`; duplicate
+ids fail with `device-exists`. For the separate org-admin inventory, duplicate
+normalized device names are rejected with `409 conflict` (admin-api.md §14)
+and are never silently merged.
 
 The IPC projection MUST impose a total order: `registeredUnix` ascending,
 then `deviceId` ascending. The store currently orders only by
@@ -850,26 +866,25 @@ Per §2, gated commands fail with `code: "locked"` whenever
 
 | command | locked | rationale |
 |---------|--------|-----------|
-| `pair_begin` | **allowed (exempt)** | recovery/first-device setup must remain reachable; issuing a QR does not unlock or disclose mail |
-| `pair_status` | **allowed (exempt)** | renderer must be able to finish/expire its visible QR; possession of the ticket is the capability |
-| `unlock_challenge` | **allowed (exempt)** | this is the existing §4 challenge/lift path |
+| `pair_begin` | **exempt only during an active backend-tracked pairing flow** | opens/continues local QR setup; outside that flow it is gated |
+| `pair_status` | **exempt only during that active pairing flow** | lets the renderer finish/expire its visible QR; outside it, gated |
+| `unlock_challenge` | **always exempt** | this is the authenticator unlock path |
 | `device_list` | **blocked** | inventory read is not required to render or submit the unlock flow |
 | `device_revoke` | **blocked** | destructive device administration is not a lock-lift operation |
 
-Exemption is not authentication: it only keeps the renderer synchronized with
-the locked security state. A locked renderer's `pair_begin` response still
-contains a short-lived bearer ticket, so Lead must ratify that trust-boundary
-choice.
+The pairing flow is backend-owned and cannot be opened, extended, or selected
+by a renderer-supplied flag. The initial local flow action is a trusted
+backend event; thereafter the backend binds the flow to its ticket/capability.
+Outside that active flow, `pair_begin` and `pair_status` return `locked` even
+though their handlers exist.
 
-For first-device recovery to work, the **trusted pairing-channel handler is
-also exempt while locked** for exactly three operations: validate/consume a
-ticket, create the `pending` device, and issue/verify its `device-pairing`
-challenge. It is a backend transport entry point, not permission for a webview
-or mobile message to invoke a gated renderer command. It must enforce the
-pairing transport's TLS/pin and ticket rules independently of the lock gate.
-The new device remains `pending` and cannot issue `unlock` until pairing
-verification activates it. Issuing a pairing ticket alone never changes lock
-state.
+**RATIFIED first-device TOFU path.** During the active first-device flow, the
+backend records the endpoint's executable path + SHA-256 as TOFU baseline
+evidence. TOFU is evidence, not authorization: it never activates a device or
+unlocks the mailbox. The trusted pairing-channel handler may, while locked,
+validate/consume the ticket, create the `pending` device, and issue/verify its
+`device-pairing` challenge, subject to its TLS/pin and ticket rules. Only
+successful authenticator verification activates the device.
 
 ### 9d.8 Bounds and validation
 
@@ -954,38 +969,134 @@ verbatim.
 - **Tickets are never an audit/evidence value.** Only non-secret status,
   expiry, row count, and action may be audited.
 
-### 9d.11 Open items requiring a Lead ruling or an engine fix
+### 9d.11 Ratified decisions and implementation follow-ups
 
-1. **Duplicate command names.** `unlock_challenge`, `device_list`, and
-   `device_revoke` overlap §4/§9. Recommendation: keep those names, preserve
-   the existing revoke return type, adopt §9d's additive device projection,
-   and register only `pair_begin` plus a future `pair_status`.
-2. **Coordinated challenge wire migration.** Current Rust emits `nonceHex`,
-   while `authenticator.md` and the TypeScript wrapper expect `nonceB64`.
-   Adopting `PairChallengeView` is a breaking correction and must ship with
-   backend + frontend tests together. Existing §4 also maps expiry to
-   `expired`; the `challenge-expired` mapping in §9d.9 must be reconciled.
-3. **`pair_status` needs an engine + schema change.** A read-only API alone is
+**Ratified by Lead (2026-09-25):** the five logical command names, canonical
+`nonceB64`, local-only ticket/QR rendering, flow-scoped pairing exemptions,
+and the first-device TOFU path are contract decisions, not open questions.
+The following remain implementation gates:
+
+1. **Challenge wire migration.** Replace current Rust `nonceHex` and the
+   existing `expired` spelling with the ratified `nonceB64` and
+   `challenge-expired` mappings in one coordinated backend/frontend change.
+2. **`pair_status` engine + schema change.** A read-only API alone is
    insufficient; consume/register/link must be one transaction (§9d.3).
-4. **Atomic challenge consumption.** `verify_response` currently ignores the
+3. **Atomic challenge consumption.** `verify_response` currently ignores the
    false return from `consume_challenge`, permitting a race across two engine
    instances. It must treat false as `AlreadyConsumed` before any activation.
-5. **Pairing identity/transport provisioning.** `pair_begin` needs an approved
-   source for the desktop Ed25519 identity and LAN/WSS endpoint plus the
-   actual pairing-channel handler. None is part of `PairEngine` today.
-6. **Resource bounds.** `pairing_tickets` is never pruned and has no issuance
-   cap; `list_devices` loads every row. Before an exempt `pair_begin` ships,
-   Lead must set per-profile issuance/retention limits. `device_list` also
-   needs an engine-level bound or pagination; an IPC slice after an unbounded
-   query is not a memory defence.
-7. **The `pair_begin`/`pair_status` lock exemption and trusted first-device
-   registration path** (§9d.7) are trust-boundary decisions.
-8. **The ticket-in-response exception** to §1 (§9d.2) must be ratified.
-9. **Fingerprint use.** The UI may display it for human comparison; it must
-   never auto-accept/pin based on it.
-10. **`lastSeenUnix`.** Add a real verification-time update or omit/rename the
-    field. Pairing activation updates it today; other successful challenge
-    events do not.
+4. **Pairing transport provisioning.** Implement the approved trusted
+   first-device flow with its TLS/pin enforcement and backend-owned flow
+   state; do not add a renderer-controlled bypass.
+5. **Resource bounds.** Add per-profile ticket issuance/retention limits and an
+   engine-level device-list bound or pagination before these commands ship.
+6. **Admin device-name uniqueness.** Enforce normalized per-org uniqueness at
+   the future admin write boundary with `409 conflict`; keep list order
+   deterministic and never merge rows (admin-api.md §14).
+7. **Fingerprint and `lastSeenUnix`.** Fingerprints remain display-only;
+   either add a real last-seen update or document the narrower meaning already
+   used by `PairEngine`.
+
+## 9e. Commands — external integrations **[gated]** (T-227, implements kiwi.integrations/1)
+
+IPC surface for `kiwi-integrations` (docs/contracts/integrations.md). All
+nine commands are **gated** (the lock gate applies — no exempt member of
+this family). All transport is HTTPS-only via the shared `ReqwestClient`;
+no redirects; response bodies capped. Session material (`PHPSESSID`,
+`sid_token`, test slugs, consent tokens) lives in memory only — nothing
+here is persisted, and none of it ever appears in an IPC payload.
+
+### 9e.1 Temp mail — `kiwi_integrations_tempmail_*`
+
+One disposable-inbox session at a time (GuerrillaMail sessions are
+single-mailbox). `create` replaces any live session; `discard` clears it.
+**Every response in this family carries `publicInboxNotice`** — the
+binding warning that the UI must display before/alongside use; it is
+forwarded verbatim from `PUBLIC_INBOX_NOTICE` so the copy cannot drift.
+Disposable inboxes are PUBLIC: anyone who knows the address can read its
+mail.
+
+#### `kiwi_integrations_tempmail_create(localPart?) → TempMailboxView`
+
+Initializes the session (`f=get_email_address`); when `localPart` is
+present it is applied (`f=set_email_user`) after charset validation —
+`invalid-input` on bad charset before any network call. Returns
+`{address, addressCreatedUnix?, publicInboxNotice}`.
+
+#### `kiwi_integrations_tempmail_poll() → TempPollView`
+
+`f=check_email` against the live session (the `seq` cursor advances
+server-side). Returns `{messages: TempMessageSummaryView[], totalNew,
+address?, publicInboxNotice}`. `address` is the session-resync signal.
+`not-found` when no session exists.
+
+`TempMessageSummaryView`: `{mailId, from, subject, excerpt,
+timestampUnix?, date, read}` — provider-escaped entities are already
+decoded; text is still untrusted (render as text, never HTML).
+
+#### `kiwi_integrations_tempmail_fetch(mailId) → TempMessageView`
+
+`f=fetch_email` → the provider's synthesized RFC822 is parsed and the
+HTML body runs through the same `ammonia` allowlist as
+`kiwi_render_body` — **with remote resources always stripped** (a public
+inbox never honors `remote_content_allowed`; it is a tracking surface on
+a public address). Returns `{mailId, from, subject, date, contentType?,
+html?, text?, remoteImagesStripped, publicInboxNotice}`. Raw MIME never
+crosses IPC.
+
+#### `kiwi_integrations_tempmail_discard() → TempDiscardView`
+
+Clears the local session unconditionally, then best-effort `forget_me`
+remotely. `{discarded: true, remoteForgotten, publicInboxNotice}` —
+`remoteForgotten: false` means the provider may still hold the address
+until it ages out (60 min).
+
+#### `kiwi_integrations_tempmail_extend() → TempExtendView`
+
+`f=extend` — one extra hour, once. `{extended, expired,
+addressCreatedUnix?, publicInboxNotice}`.
+
+### 9e.2 Deliverability — `kiwi_integrations_deliverability_*`
+
+Flow: `begin` → send the real message (consent-gated) → `status` polls →
+`report`. The reservation `slug` is a capability secret and never leaves
+the backend — IPC sees only the opaque `testId`.
+
+#### `kiwi_integrations_deliverability_begin() → DeliverabilityBeginView`
+
+`POST /api/v1/inbox` → `{testId, address, expiresAtUnix?,
+expiresAtRaw?, consentToken, consentNotice}`. `consentToken` is a
+single-use CSPRNG capability the backend minted; `consentNotice` is the
+mandatory UI copy describing what consent covers.
+
+#### `kiwi_integrations_deliverability_send(testId, consentToken, accountId, message) → DeliverabilitySendView`
+
+**Consent is non-bypassable**: `consentToken` must match the stored
+single-use token, compared and consumed atomically under the sessions
+lock — missing/wrong/consumed all fail `consent-required` (no oracle on
+which). The message's `to`/`cc`/`bcc` are IGNORED; the sole recipient is
+the reserved address. The send rides the normal outbox
+(`SendOptions`-less enqueue: default undo grace, audited `send-queued`).
+Returns `{testId, queueId, notBeforeUnix}` — `kiwi_cancel_send` still
+works inside the grace window.
+
+#### `kiwi_integrations_deliverability_status(testId) → DeliverabilityStatusView`
+
+Single-shot `GET /tests/{slug}/status`. `{testId, analysisStatus,
+checksDone, checksTotal, ready, sent}` — `ready` means `checks_ready`
+(`report` is fetchable); `sent` reports whether consent was consumed.
+Any poll loop belongs to the UI (provider rate limits: `rate-limited`
+carries the hint).
+
+#### `kiwi_integrations_deliverability_report(testId) → DeliverabilityReportView`
+
+`GET /tests/{slug}` → `{testId, scoreOursMilli?, scoreCompatMilli?,
+complete, reportUrl?, subscores, tallies, checks, authFailureIds}`.
+Scores are integers in milli-units; `tallies` are computed from
+`checks[]` deterministically (never trusted from the wire);
+`authFailureIds` is the auth-gate set for the UI banner; `checks[]`
+carries `category` (normalized) + `categoryRaw` (verbatim), `status`,
+`title`, `summary`, `citations[]`. Unknown statuses/categories pass
+through as strings — forward-compat is contract.
 
 ## 10. Commands — endpoint signals **[exempt]** (T-121)
 
@@ -1039,6 +1150,9 @@ Collection caps at 32 observations per run.
 | `unsupported-event` | verified challenge for unwired flow |
 | `replay-detected` | challenge nonce collision |
 | `audit-corrupt` | audit-log chain break |
+| `consent-required` | deliverability send without the unconsumed consent token (wrong/missing/consumed are indistinguishable) |
+| `rate-limited` | provider 429; message carries the retry hint when present |
+| `integration-error` | external-integration failure that isn't a covered class (HTTP status, malformed response, oversized body) |
 | `internal` | unexpected backend fault |
 
 ## 12. Notes & known gaps (see agent-7-status.md)

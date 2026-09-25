@@ -164,7 +164,7 @@ rebuild context. Lead handle is now term_c20c6737.
 
 | Agent | Model | Terminal | Assignment |
 |---|---|---|---|
-| 11 | Devin Pro | d869b293 | T-226 done → T-227 integrations IPC |
+| 11 | Devin Pro | d869b293 | T-227 done → T-234 unsub exec → T-227 integrations IPC |
 | 12 | Muse Spark 1.3 xhigh | 4cc53da5 | T-192 done → T-231 live-data wiring |
 | 13 | Muse Spark 1.3 xhigh | e5adf4d9 | T-193 admin H1-H8 + M fixes |
 | 14 | OpenCode Zen xhigh | e26f119b | T-202 done → T-212 F13 junk marking |
