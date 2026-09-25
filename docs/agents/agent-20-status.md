@@ -570,3 +570,93 @@ T-271 sweep section + queue summary refresh).
   mail arrived — documented behavior (honest arrival count).
 - No backend/Rust changes this task; wire event shape was already
   correct (syncer.rs emit verified field-for-field).
+
+## 2026-09-25 — T-272: last non-T-269 register items (FOR-10 + IPC-15 + AUTH-1 note)
+
+Scope: emit the three defined-but-un-emitted forensics limitation codes;
+close the frontend wrapper inventory; annotate AUTH-1 ownership.
+
+### Per-item decisions
+
+**FOR-10 — emit sites landed (correctness fix, not reserved-vocab).**
+Added `report::session_limitation_codes(&ConnectionSecurityEvent)` — the
+single shared classifier over the event's own fields:
+- `transport-unknown`: `transport == Unknown` (adapter-fed sessions) OR
+  capture-path flows that carried bytes but yielded zero decodable lines
+  (skipped before `analyze` — counted in the skip branch).
+- `kex-unobserved`: `tls.session_resumed || !tls.handshake_complete`, OR
+  a STARTTLS upgrade accepted (`server_reply_ok == Some(true)`) whose
+  handshake bytes never appeared (`!handshake_completed`) — the second
+  arm is reachable in the pcap path today (binary post-upgrade bytes
+  decode as opaque lines, not a handshake).
+- `auth-unobserved`: `is_encrypted() && (auth.is_none() ||
+  auth.attempts == 0)`.
+
+Emit sites: `analyze_capture` session loop (counts per code, one
+limitation row each after the loop, matching existing emit style) and
+`kiwi_security_report`'s live aggregation — live path emits
+`auth-unobserved` only via `protected_without_auth()` over
+`SecuritySession`: kiwi-core `TransportSecurity` has no `Unknown`
+variant and `SecuritySession` carries no resumption/missing-handshake
+flag (`key_exchange_group: None` is ambiguous — static-RSA suites
+legitimately have none), so emitting the other two on the live path
+would fabricate. Contract forensics.md §8 now documents the emit
+conditions per code.
+
+**IPC-15 — enum'd registered vs wrapped, wrapped only what exists.**
+Full sweep of `generate_handler!` against `ipc.ts` found 10 unwrapped
+registered names (finding listed 6). Landed 7 typed wrappers:
+`syncStatus`→`kiwi_sync_status`, `scheduleSend`→`kiwi_schedule_send`,
+`contactsByTag`→`kiwi_contacts_by_tag`, `contactTags`→`kiwi_contact_tags`,
+`importVcards`→`kiwi_import_vcards` (wire arg `vcardText`),
+`exportVcards`→`kiwi_export_vcards`, `prefsGet`→`kiwi_prefs_get`.
+Three were documented compat aliases already covered by canonical
+wrappers (`kiwi_lookup_autoconfig`→`kiwi_discover_account`,
+`kiwi_list_devices`→`device_list`, `kiwi_revoke_device`→`device_revoke`)
+— not double-wrapped. New kiwi.ts wire types: `SyncStatusView`,
+`SendReceipt`, `TagCountView`, `ImportIssueView`, `VCardImportView`,
+`VCardExportView` — all matching serde camelCase shapes in
+`types/{mail,send,contacts}.rs`.
+
+**AUTH-1 — annotated only.** Row now records A11/T-269 ownership of
+`submit_challenge` failure audits (in-flight); pair code untouched per
+Lead direction. Row stays `open`.
+
+### Files changed
+
+`kiwi-forensics/src/report/mod.rs` (`session_limitation_codes` + test),
+`kiwi-forensics/src/pipeline.rs` (counters + 3 emits + undecodable-flow
+count), `kiwi-app/src-tauri/src/commands/security.rs`
+(`protected_without_auth` + live emit + test),
+`kiwi-forensics/tests/capture_pipeline.rs` (3 integration tests),
+`kiwi-app/src/kiwi.ts` (6 wire types), `kiwi-app/src/ipc.ts` (7 wrappers
++ stale contacts comment fix), `docs/contracts/forensics.md` (§8 emit
+conditions), `docs/audits/FINDINGS.md` (FOR-10/IPC-15 → fixed, AUTH-1
+ownership note, UIS-13/14/17 wrapper-landed annotations, sweep bullets).
+
+### Verification
+
+- `cargo test -p kiwi-forensics` — **101 unit + all integration suites
+  green**, incl. 4 new FOR-10 regressions (`limitation_codes_classify_
+  unobserved_facts`, `starttls_accepted_without_handshake_yields_kex_
+  limitation`, `whitespace_only_flow_yields_transport_unknown`,
+  `healthy_plaintext_session_emits_no_for10_limitations`).
+- `cargo test -p kiwi-app` — **117 green** incl. `protected_without_auth_
+  classifies_auth_unobserved`; `e2e_send_delivers_files_sent_copy` +
+  `e2e_send_smtp_reject_retains_outbox` hang — **pre-existing defect,
+  already assigned T-277→A21** (HEAD commit c111666 names it); unrelated
+  to this task's files (send path untouched).
+- `npx tsc --noEmit` — **zero errors**.
+- `cargo clippy -p kiwi-forensics` clean; fmt clean on all touched files.
+
+### Assumptions / risks
+
+- Live-path `auth-unobserved` treats `AuthMechanism::None` + non-plaintext
+  transport as "no visible auth exchange" — matches the code doc and
+  core enum semantics.
+- `kex-unobserved`/`transport-unknown` have no honest live-path signal —
+  deliberately not emitted there (absence of evidence ≠ permission to
+  fabricate the marker).
+- T-269's pair-engine swap landed mid-task (devices.rs/system.rs/pair
+  churn in working tree + commits); my register annotation was written
+  against the documented ownership, not the in-flight code.

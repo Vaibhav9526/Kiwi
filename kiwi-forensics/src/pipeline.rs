@@ -20,7 +20,9 @@ use crate::pcap::{
     CaptureError, CaptureLimits, PcapReader, ReassembledFlow, Reassembler, ReassemblyLimits,
     StreamReassembler, decode_tcp,
 };
-use crate::report::{Limitation, Report, ReportBuilder, limitation_codes};
+use crate::report::{
+    Limitation, Report, ReportBuilder, limitation_codes, session_limitation_codes,
+};
 use crate::rules::{RuleEngine, SecurityPolicy};
 
 /// Options for one capture analysis. All bounds travel with the call so the
@@ -156,19 +158,38 @@ pub fn analyze_capture(
     let mut flows_with_gaps: u32 = 0;
     let mut unknown_protocol_sessions: u32 = 0;
     let mut dropped_without_evidence: u32 = 0;
+    let mut transport_unknown_sessions: u32 = 0;
+    let mut kex_unobserved_sessions: u32 = 0;
+    let mut auth_unobserved_sessions: u32 = 0;
     for (ordinal, flow) in flows.iter().enumerate() {
         let trace = trace_from_flow(flow, ordinal as u64, options);
         if trace.lines.is_empty() {
+            // Bytes were captured but nothing could be decoded into lines —
+            // the transport question is unanswerable for this flow.
+            if !flow.to_server.is_empty() || !flow.to_client.is_empty() {
+                transport_unknown_sessions += 1;
+            }
             continue;
         }
         let outcome = analyze(&trace, &options.analyzers);
+        let session = &outcome.session;
         if outcome.analyzed_as == Protocol::Unknown {
             unknown_protocol_sessions += 1;
+        }
+        // Promised evidence markers (forensics.md §8, FOR-10): absence of
+        // evidence must be counted, not read as clean.
+        for code in session_limitation_codes(session) {
+            match code {
+                limitation_codes::TRANSPORT_UNKNOWN => transport_unknown_sessions += 1,
+                limitation_codes::KEX_UNOBSERVED => kex_unobserved_sessions += 1,
+                limitation_codes::AUTH_UNOBSERVED => auth_unobserved_sessions += 1,
+                _ => {}
+            }
         }
         if flow.has_gaps {
             flows_with_gaps += 1;
         }
-        let (findings, diagnostics) = engine.evaluate_session_with_diagnostics(&outcome.session);
+        let (findings, diagnostics) = engine.evaluate_session_with_diagnostics(session);
         dropped_without_evidence += diagnostics.dropped_without_evidence;
         sessions += 1;
         builder = builder.add_session_findings(1, findings);
@@ -210,6 +231,30 @@ pub fn analyze_capture(
             limitation_codes::PROTOCOL_UNKNOWN,
             &format!(
                 "{unknown_protocol_sessions} session(s) could not be identified as SMTP, IMAP, or POP3."
+            ),
+        ));
+    }
+    if transport_unknown_sessions > 0 {
+        builder = builder.limitation(Limitation::new(
+            limitation_codes::TRANSPORT_UNKNOWN,
+            &format!(
+                "{transport_unknown_sessions} session(s) had transport security unclassifiable from the capture."
+            ),
+        ));
+    }
+    if kex_unobserved_sessions > 0 {
+        builder = builder.limitation(Limitation::new(
+            limitation_codes::KEX_UNOBSERVED,
+            &format!(
+                "{kex_unobserved_sessions} session(s) resumed or had missing handshake bytes; no fresh key exchange observed."
+            ),
+        ));
+    }
+    if auth_unobserved_sessions > 0 {
+        builder = builder.limitation(Limitation::new(
+            limitation_codes::AUTH_UNOBSERVED,
+            &format!(
+                "{auth_unobserved_sessions} protected session(s) showed no authentication exchange."
             ),
         ));
     }

@@ -32,7 +32,7 @@ provenance, not remediation assignments.
 | IPC-12 | L | Outbox account ID and delete-result trash folder are optional despite non-null contract wording. | `contract-drift-1.md:150` | Lead/contract owner | fixed |
 | IPC-13 | L | `DeviceView` adds undocumented `keyFingerprintTail`. | `contract-drift-1.md:151` | Lead/contract owner | fixed |
 | IPC-14 | L | Render cap is character-based while contract says 8 MiB bytes. | `contract-drift-1.md:152` | Lead/contract owner | fixed |
-| IPC-15 | I | Frontend wrapper inventory gaps — prefs/discovery/search resolved (T-237/T-231); still missing wrappers for `kiwi_schedule_send`, `kiwi_sync_status`, `kiwi_contacts_by_tag`, `kiwi_contact_tags`, `kiwi_import_vcards`, `kiwi_export_vcards` (verified absent T-271). | `contract-drift-1.md:222`; `T-241 IPC-T241-6` | T-237/T-231 | open |
+| IPC-15 | I | Frontend wrapper inventory gaps — resolved T-272: all six listed commands are registered and now wrapped (`scheduleSend`, `syncStatus`, `contactsByTag`, `contactTags`, `importVcards`, `exportVcards`) plus `prefsGet` found by full enum sweep. Three other unwrapped names are documented compat aliases already covered by their canonical wrappers (`kiwi_lookup_autoconfig`→`kiwi_discover_account`, `kiwi_list_devices`→`device_list`, `kiwi_revoke_device`→`device_revoke`) — intentionally not double-wrapped. | `contract-drift-1.md:222`; `T-241 IPC-T241-6` | T-237/T-231 | fixed |
 | IPC-16 | I | `kiwi://mail-changed` is emitted but no frontend listener consumes it. | `contract-drift-1.md:223` | T-231 | fixed |
 | FOR-1 | H | Forensics enum wire spellings diverge from documented semantic/as-str vocabulary. | `contract-drift-1.md:67`; `forensics` source paths cited there | T-245 | fixed |
 | FOR-2 | H | `TlsVersion::Unknown(raw)` is externally tagged rather than documented bare `unknown`. | `contract-drift-1.md:68`; `model/tls.rs` cited there | T-245 | fixed |
@@ -43,11 +43,11 @@ provenance, not remediation assignments.
 | FOR-7 | L | Optional STARTTLS field is always emitted as null instead of omitted. | `contract-drift-1.md:153` | T-245 | fixed |
 | FOR-8 | L | Certificate rule titles differ from catalog titles. | `contract-drift-1.md:154` | T-245 | fixed |
 | FOR-9 | L | `RescanDiff` exposes richer/undocumented change kinds. | `contract-drift-1.md:155` | T-245 | fixed |
-| FOR-10 | L | Three limitation codes defined but never emitted (verified T-271): `kex-unobserved` (resumed/missing handshake), `auth-unobserved` (protected session, no auth exchange), `transport-unknown`. Remaining work: wire emit sites in pipeline/analyzers, or mark them reserved vocabulary in forensics.md §8. | `contract-drift-1.md:156` | T-245 | open |
+| FOR-10 | L | Three limitation codes defined but never emitted — resolved T-272: shared classifier `report::session_limitation_codes` emits `transport-unknown` (undecodable byte-carrying flows / adapter `unknown`), `kex-unobserved` (`session_resumed`, `!handshake_complete`, or STARTTLS accepted with `!handshake_completed`), `auth-unobserved` (protected + `auth` absent/`attempts:0`; live report: `protected_without_auth` over `SecuritySession`). Emit conditions documented in forensics.md §8; regression tests in report/capture_pipeline/security. | `contract-drift-1.md:156` | T-245 | fixed |
 | FOR-11 | L | `analyze_capture` returns a wrapped capture report/diagnostics shape rather than the documented direct report. | `contract-drift-1.md:157` | T-245 | fixed |
 | FOR-12 | L | Confidence sort order is undocumented and differs from the stated ordering. | `contract-drift-1.md:158` | T-245 | fixed |
 | FOR-I | I | Large undocumented forensics public API surface. | `contract-drift-1.md:224` | T-245/contract owner | open |
-| AUTH-1 | H | Challenge verification failures and pairing outcomes are not fully audited. | `contract-drift-1.md:69` | T-188/T-194 | open |
+| AUTH-1 | H | Challenge verification failures and pairing outcomes are not fully audited. Ownership: `submit_challenge` failure audits belong to A11's T-269 (pair-engine landing) — in-flight, pair code untouched by T-272 per Lead direction. | `contract-drift-1.md:69` | T-188/T-194; A11/T-269 in-flight | open |
 | AUTH-2 | M | Mobile deny responses do not carry the documented decision field and can look like invalid signatures. | `contract-drift-1.md:104` | T-194/T-188 | open |
 | AUTH-4 | M | Mobile authenticator public-key pin checks prefix/length but not key encoding/size. | `contract-drift-1.md:105` | T-194/T-188 | open |
 | AUTH-5 | M | QR endpoint accepts plaintext transport despite TLS requirement. | `contract-drift-1.md:106` | T-194/T-188 | open |
@@ -167,11 +167,11 @@ provenance, not remediation assignments.
 | UIS-10 | M | Session-summary names differ and `stale` is absent. | `contract-drift-1.md:136` | T-192/contract owner | open |
 | UIS-11 | M | Trust glyph/pill render account-level rather than delivering-session trust. | `contract-drift-1.md:137` | T-192/T-145 | open |
 | UIS-12 | M | Per-account security card is absent. | `contract-drift-1.md:138` | T-192/T-145 | open |
-| UIS-13 | M | Sync status wrapper/event listener is absent. | `contract-drift-1.md:139` | T-231 | open |
-| UIS-14 | M | Send-later/schedule-send wrapper is absent. | `contract-drift-1.md:140` | T-151/T-145 | open |
+| UIS-13 | M | Sync status wrapper/event listener is absent. Wrapper `syncStatus` landed T-272 (IPC-15); UI surface/listener consumption remains. | `contract-drift-1.md:139` | T-231 | open |
+| UIS-14 | M | Send-later/schedule-send wrapper is absent. Wrapper `scheduleSend` landed T-272 (IPC-15); composer UI consumption remains. | `contract-drift-1.md:140` | T-151/T-145 | open |
 | UIS-15 | M | Template picker and persisted template store are disconnected. | `contract-drift-1.md:141` | T-151/T-145 | open |
 | UIS-16 | M | Per-recipient evaluation UI is absent and block results are over-broad. | `contract-drift-1.md:142` | T-108/T-145 | open |
-| UIS-17 | M | Contact wrappers/import/export surfaces remain unwired despite backend commands. | `contract-drift-1.md:143` | T-175/T-231 | open |
+| UIS-17 | M | Contact wrappers/import/export surfaces remain unwired despite backend commands. Wrappers `contactsByTag`/`contactTags`/`importVcards`/`exportVcards` landed T-272 (IPC-15); view surfaces remain. | `contract-drift-1.md:143` | T-175/T-231 | open |
 | UIS-18 | L | Sidebar folder tree is flat despite tree role. | `contract-drift-1.md:213` | T-145 | open |
 | UIS-19 | L | `useMailbox` is unused despite App header claiming use. | `contract-drift-1.md:214` | T-145 | open |
 | UIS-20 | L | Unused IPC wrappers remain in frontend. | `contract-drift-1.md:215` | T-237 | in-flight |
@@ -213,20 +213,24 @@ IPC-16, FOR-1..9 (incl. 6, 11, 12), MAUTH-2, MAUTH-3, UIS-5, UIS-6.
   §9d ratifies `nonceB64` and records the pending migration. Remaining:
   emit `nonceB64` (+decode check), keep `nonceHex` read-compat per the
   migration note, update `ChallengeView` consumers.
-- **IPC-15** — still missing wrappers for `kiwi_schedule_send`,
-  `kiwi_sync_status`, `kiwi_contacts_by_tag`, `kiwi_contact_tags`,
-  `kiwi_import_vcards`, `kiwi_export_vcards` (grep-verified absent).
+- **IPC-15** — *resolved T-272* (row flipped): typed wrappers landed for
+  all six commands (all verified registered in `lib.rs`), plus `prefsGet`
+  found by the full registered-vs-wrapped enum. Unwrapped remainder are
+  compat aliases whose canonical names are already wrapped.
 - **IPC-16 note** — fixed via `onMailChanged` (ipc.ts) + App-level
   debounced subscription (App.tsx). Caveat surfaced while wiring:
   `state/mailbox.ts::useMailbox` is still dead code (UIS-19 stands) —
   App.tsx owns the live mailbox path.
-- **FOR-10** — `kex-unobserved`/`auth-unobserved`/`transport-unknown`
-  constants exist, no emit sites. Remaining: emit in pipeline/analyzers
-  or mark reserved in forensics.md §8.
+- **FOR-10** — *resolved T-272* (row flipped): emit sites landed in
+  `analyze_capture` (capture) and `kiwi_security_report` (live, auth
+  only — `SecuritySession` lacks resumption/unknown-transport state) via
+  shared `report::session_limitation_codes`; §8 documents conditions.
 - **AUTH-1** — still no `challenge-denied`/`verification-failed`/
   `device-paired` audit rows in `commands/system.rs` (grep-verified).
-- **UIS-13/14/17** — `syncStatus`, `scheduleSend`, contact
-  tag/import/export wrappers still absent; `createContact` is wired.
+  Owned by A11's T-269 (pair-engine landing, in-flight); T-272 did not
+  touch pair code per Lead direction.
+- **UIS-13/14/17** — wrappers landed T-272 (IPC-15); the UI surfaces
+  consuming them remain with the UIS owners.
 - **UIS-21** — `kiwi.ts` still reads `id`/`tsUnix` event keys.
 - **UIS-19** — confirmed again during IPC-16: `useMailbox` is exported
   but never invoked (App.tsx comment still claims it).

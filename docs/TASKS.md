@@ -249,10 +249,11 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
   kiwi-admin                            -> A11 (T-259 done)
   docs/contracts+audits                 -> A22 (T-260) / A23 (T-270)
 -->
-| T-272 | Final register items: FOR-10 emit 3 limitation codes + IPC-15 real wrappers | Agent 20 | open | `kiwi-forensics/`, `ipc.ts` | FINDINGS.md |
+| T-272 | register finish: FOR-10 limitation codes emitted (honest absence), IPC-15 wrappers landed, AUTH-1→A11 | Agent 20 | done |
 | T-273 | link-click policy gate: kiwi_link_click verdicts + open_external risk-gated (no bypass), audited | Agent 21 | done |
 | T-274 | Reference plugin + capability-gate proof (bridge e2e in plugins/) | Agent 25 | done | `kiwi-app/src/plugins/` | T-268 |
 | T-275 | T-268 seam land: ThemePicker mount + useTheme swap + emoji sweep + visual pass | Agent 25 (A24 terminal expired — files transferred) | open | `kiwi-app/src` | T-267,T-268 |
 | T-276 | ACFG-4 GoDaddy: resolved inline — removed from ISPDB_FIXTURES roster (correctly MX_HINTS-only, no fixed domains) | Lead | done |
 | T-277 | Fix e2e_send_* hang: root-cause blocking point + bounded timeout, keep deterministic | Agent 21 | open | `kiwi-app/src-tauri/src/e2e.rs`, `kiwi-mail` seams | T-262,T-273 |
 | T-278 | integrations.md ↔ kiwi-integrations drift audit (last unaudited domain) — findings only | Agent 23 | open | `kiwi-integrations`, `docs/contracts/integrations.md` | T-196 program |
+| T-279 | HickoryResolver production DNS impl for mailauth (bounded timeouts, fail-closed temperror) | Agent 20 | open | `kiwi-mailauth`, app resolver wiring | T-196 |
