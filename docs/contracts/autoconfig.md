@@ -6,9 +6,19 @@
 > shape. Changes require Lead review → record in DECISIONS.md.
 
 Parties: `kiwi-autoconfig` (suggestions + evidence trail) → `kiwi-app`
-setup wizard (Agent 5, T-156) → `kiwi-mail` account model. This crate
-emits **no secrets and never opens connections** — credential keys are
-derived deterministically; the app layer binds them to the OS keystore.
+setup wizard (Agent 5, T-156) → `kiwi-mail` account model.
+
+**Secret/connection invariant (amended 2026-09-25, drift-audit ACFG-1):**
+the discovery pipeline emits **no secrets and never opens connections** —
+credential keys are derived deterministically; the app layer binds them
+to the OS keystore. The `oauth2` module (T-195, `kiwi.oauth2/1`) is the
+documented exception: it performs grant acquisition over HTTPS-only
+endpoints via the `OAuthTransport` seam. Its secrets invariant is
+stronger but differently worded — **no secrets in the DB, in plaintext
+files, or in logs; the OS credential store is the sanctioned sink** —
+`TokenSet` material persists only via
+`kiwi_mail::account::CredentialStore`, never in mail.db or a file, and
+`Debug` surfaces are redacted.
 
 ## 1. Invariants (binding)
 
@@ -19,8 +29,12 @@ derived deterministically; the app layer binds them to the OS keystore.
   usable result.
 - Every stage attempt is recorded — a caller can always answer *why is
   this suggestion flagged for review?* from `attempts` alone.
-- No secrets, no tokens, no message content. Only published server
-  facts (hosts, ports, socket security, credential *kind*).
+- No secrets, no tokens, no message content in discovery output. Only
+  published server facts (hosts, ports, socket security, credential
+  *kind*). The OAuth2 acquisition submodule (T-195) handles token
+  material under its own contract (`kiwi.oauth2/1`): the OS credential
+  store is the only persistence sink — never the DB, never plaintext,
+  never logs.
 - Unknown enum values / new fields ignored, not fatal (serde
   `snake_case` everywhere).
 - `contract_version` is `"kiwi.autoconfig/1"` (`CONTRACT_VERSION`).

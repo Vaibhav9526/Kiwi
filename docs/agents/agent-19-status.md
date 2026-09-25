@@ -239,3 +239,46 @@ Blockers hit: transient foreign reds during the session —
 `kiwi-mail/src/store/mod.rs:1083` (`PLACEHOLDER_STORE_TESTS` mid-edit,
 self-resolved) and `kiwi-app/.../types/mail.rs:90` (T-232 `auth` field
 mid-wire, self-resolved). Nothing foreign was edited.
+
+## 2026-09-25 (later) — Drift-audit follow-up (contract-drift-1.md)
+
+Audit items assigned to T-195/T-230 scope:
+
+- **ACFG-1 (H, fixed)**: `docs/contracts/autoconfig.md` still asserted the
+  pre-oauth2 invariant "no secrets and never opens connections". Amended
+  preamble + §1: discovery pipeline keeps the invariant; `oauth2` is the
+  documented exception — **no secrets in DB / plaintext / logs; the OS
+  credential store is the sanctioned sink** (`kiwi.oauth2/1`). Crate doc
+  in `kiwi-autoconfig/src/lib.rs` reworded to the same formulation.
+- **UIS-6 (H, resolved in tree)**: audit snapshot saw `ipc.ts` invoking
+  `kiwi_lookup_autoconfig`; current tree invokes `kiwi_discover_account`
+  (post-024e87d reconcile), which T-230 registered. Per Lead instruction
+  the stale-name path is also covered: **`kiwi_lookup_autoconfig` is now
+  registered as a documented alias** of `kiwi_discover_account`
+  (`commands/autoconfig.rs`, same signature/response; ipc.md §5 alias
+  note). Both spellings work; new code should use the contract name.
+- **ACFG-2 (M, already resolved)**: `oauth2::CONTRACT_VERSION` cites
+  `docs/contracts/oauth2.md` — absent at audit snapshot, exists since
+  T-195. No action needed.
+- **IPC-10 (M, fixed — adjacent in my seam)**: `xoauth2` was accepted for
+  POP3 at add time, rejected only at connect (unusable account persisted).
+  `auth_ref` now rejects `xoauth2` when incoming protocol is POP3
+  (`invalid-input`), per ipc.md §5. Regression test
+  `xoauth2_rejected_for_pop3_at_add_time` added. **Supersedes the T-230
+  assumption "`auth_ref` unchanged"** logged above.
+
+Remaining ACFG-3..10 findings (local-part charset, GoDaddy fixture,
+MX_HINTS/pphosted, TooLong-vs-MalformedXml, PI skipping, emailProvider
+root, domain fallback, %EMAILDOMAIN%) are pre-existing autoconfig-parser
+drift owned by the contract owner (Agent 8) — flagged in the Lead report,
+not touched here.
+
+Verification: `cargo test -p kiwi-app` **87/87 green** (incl. new
+`xoauth2_rejected_for_pop3_at_add_time`); `cargo test -p kiwi-autoconfig`
+92/92 green; `cargo fmt --check` clean; `cargo clippy -p kiwi-app -p
+kiwi-autoconfig --all-targets -- -D warnings` clean **with
+`-A clippy::trim_split_whitespace`** — full-workspace clippy is red on
+foreign lint `kiwi-mail/src/authstamp.rs:205` (`.trim()` before
+`.split_whitespace()`, T-232-era file mid-edit by its owner; reported to
+Lead, not edited). Same session also saw foreign `authstamp.rs` E0425s
+(`out` unbound mid-write) — self-resolved.

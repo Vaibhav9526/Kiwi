@@ -20,8 +20,11 @@
 //! [`oauth2`] (T-195) is the exception to "never opens connections": it is
 //! the grant-acquisition half of account setup. It keeps the same seam
 //! discipline — every endpoint call goes through `oauth2::OAuthTransport`
-//! (a narrow form-POST contract over the `kiwi-integrations` HTTPS seam),
-//! tokens persist only via `kiwi_mail::account::CredentialStore`, and no
+//! (a narrow form-POST contract over the `kiwi-integrations` HTTPS seam).
+//! Its secrets invariant: no token material in the DB, in plaintext files,
+//! or in logs — the OS credential store
+//! (`kiwi_mail::account::CredentialStore`) is the *sanctioned persistence
+//! sink* for `TokenSet` blobs, and every `Debug` surface is redacted. No
 //! test touches the live network.
 
 #![warn(missing_docs)]
