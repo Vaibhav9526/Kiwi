@@ -237,3 +237,15 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-269 | CRITICAL: wire kiwi-pair canonical — persistent revocation + 9d commands + atomic txn | Agent 11 | in-progress | `kiwi-pair/`, `src-tauri/` | T-235 |
 | T-270 | authenticator.md vs mobile/ + kiwi-pair primitives enumeration | Agent 23 | open | `docs/audits/`, `mobile/` (read) | T-235 |
 | T-271 | mail-changed event wiring + IPC-5 error docs + FINDINGS open-row sweep | Agent 20 | open | `ipc.ts`, `mailbox.ts`, `ipc.md` | T-265 |
+
+<!-- CURRENT-OWNERSHIP (watcher keys on this; updated at each sweep)
+  kiwi-app/src/views,chrome,shell,App   -> A24 (T-267)
+  kiwi-app/src/components/icons,themes,plugins -> A25 (T-268)
+  kiwi-app/src-tauri pair/security cmds -> A11 (T-269)
+  kiwi-app/src-tauri sandbox cmds + kiwi-mail risk files -> A21 (T-266)
+  kiwi-mail store/rules/sync + src-tauri mail cmds -> A15 (T-264)
+  kiwi-autoconfig + e2e                 -> A19 (T-262)
+  kiwi-forensics + types/ + ipc.ts      -> A20 (T-271)
+  kiwi-admin                            -> A11 (T-259 done)
+  docs/contracts+audits                 -> A22 (T-260) / A23 (T-270)
+-->
