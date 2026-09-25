@@ -196,3 +196,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 <!-- ROSTER SWEEP: A16/A17 terminals exited; A12/A13/A18 not in terminal list. Orphans: T-194 mobile screens, T-229 oauth2.md review, T-231 live-data wiring (if A12 gone), T-193 verify-in-tree. 3 unidentified OpenCode/SpaceBunny terminals pinged for identification. A21 reassigned to T-232. -->
 | T-235 | kiwi-pair contract-vs-impl gap audit (read-only, file:line evidence) | Agent 18 | open | `kiwi-pair/`, `kiwi-app/src-tauri/` | T-188 |
 | T-236 | rules.md contract: pin T-228 semantics + T-233 IPC seam shapes | Agent 22 (dup A18 session) | open | `docs/contracts/` | T-228 |
+| T-237 | Drift fixes batch: prefs IPC renames + contracts index + admin-api post-T-193 + challenge-expired ruling | Agent 20 | open | `kiwi-app/src/ipc.ts`, `docs/contracts/` | T-196 |
