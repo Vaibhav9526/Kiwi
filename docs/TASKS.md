@@ -310,6 +310,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-329 | new-mail OS notifications (tauri-plugin-notification, per-sync batched, pref-gated, junk-suppressed) | Agent 20 | open | `state.rs`, `commands/`, `capabilities` | |
 | T-330 | storage diagnostics IPC: real db_bytes/counts/integrity_check + compact (VACUUM) | Agent 15 | open | `kiwi-mail/store`, `commands/` | T-315 seam |
 | T-331 | surface audit-corruption in UI: persistent honest state + proactive integrity signal | Agent 21 | open | `commands/`, `security-center`, status strip | T-327/T-324 |
-| T-332 | Copy-to ctx-menu (kiwi_copy_messages seam, folder-picker reuse, multi-select) | Agent 24 | open | `mailbox.tsx` ctx-menu | T-325 |
+| T-332 | Copy-to ctx-menu (shared submenu, picked-aware, honest local-only tooltip) | Agent 24 | done |
 | T-333 | storage-stats wiring (About db-size + Compact) + notification pref toggle | Agent 25 | open | `settings.tsx`, About | T-330,T-329 |
 | T-334 | search operators (from:/subject:/has:/is:/before:/after:/in:) over FTS path, honest fallback | Agent 15 | open | `kiwi-mail/store/search`, queries.rs | |
+| T-335 | Unified Inbox smart view: client-side merge, per-row account context, honest <2-account hide | Agent 24 | open | `chrome.tsx` tree, `mailbox.tsx` | |
