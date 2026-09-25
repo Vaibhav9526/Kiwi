@@ -820,3 +820,343 @@ async fn e2e_send_starttls_refusal_fails_closed() {
         .unwrap()
         .expect("server consumed greeting+EHLO only");
 }
+
+// ---------------------------------------------------------------------------
+// T-285 — POP3 E2E (mirror of T-257 IMAP / T-262 SMTP): account-add →
+// sync → scripted loopback POP3 (real TCP + implicit TLS, same testutil
+// transcript seam) → USER/PASS → UIDL-diff → RETR → envelopes + bodies in
+// the real MailStore. Failure branches: auth `-ERR` → server-reject, dead
+// port → connect-failed, malformed RETR status → server-reject. Policy
+// branch: IPC pins keep-on-server (delete_after_download=false — no DELE
+// on the wire, second sync dedups on UIDL); the delete policy is driven
+// at engine level (`sync_pop3(_, true)`) against the same real transport.
+// ---------------------------------------------------------------------------
+
+/// Account input for the POP3 legs: implicit-TLS loopback, password auth.
+/// The outgoing leg is inert (never dialed in these tests).
+fn pop3_input(port: u16) -> AddAccountInput {
+    AddAccountInput {
+        display_name: "E2E POP3".into(),
+        email: "u@e2e.test".into(),
+        incoming_protocol: "pop3".into(),
+        incoming: ServerInput {
+            host: "127.0.0.1".into(),
+            port,
+            security: "tls".into(),
+        },
+        outgoing: ServerInput {
+            host: "127.0.0.1".into(),
+            port: 2525,
+            security: "tls".into(),
+        },
+        username: Some("u@e2e.test".into()),
+        outgoing_username: Some("u@e2e.test".into()),
+        incoming_auth: Some(AuthInput {
+            kind: "password".into(),
+            secret: Some("s3cret".into()),
+            oauth2_ticket: None,
+        }),
+        outgoing_auth: None,
+        accept_invalid_certs: true,
+    }
+}
+
+/// RFC 5322 bytes for a RETR response. Message 2 carries a leading-dot
+/// body line — the wire form must dot-stuff it, and the stored body must
+/// show it unstuffed (proves `read_dot_block` ran, not a raw splice).
+const POP3_MSG1: &str = "Subject: POP3 hello\r\n\
+From: Alice <alice@e2e.test>\r\n\
+To: u@e2e.test\r\n\
+Date: Wed, 01 Jan 2025 12:00:00 +0000\r\n\
+Message-ID: <pop1@e2e.test>\r\n\
+MIME-Version: 1.0\r\n\
+Content-Type: text/plain; charset=us-ascii\r\n\
+\r\n\
+First POP3 body.\r\n";
+
+const POP3_MSG2: &str = "Subject: POP3 second\r\n\
+From: Bob <bob@e2e.test>\r\n\
+To: u@e2e.test\r\n\
+Date: Wed, 01 Jan 2025 13:00:00 +0000\r\n\
+Message-ID: <pop2@e2e.test>\r\n\
+MIME-Version: 1.0\r\n\
+Content-Type: text/plain; charset=us-ascii\r\n\
+\r\n\
+Second POP3 body.\r\n\
+.stuffed line survives\r\n";
+
+/// `S:` wire lines for a RETR dot-block — leading dots doubled per RFC.
+fn pop3_msg_lines(msg: &str) -> String {
+    let mut s = String::new();
+    for line in msg.strip_suffix("\r\n").unwrap_or(msg).split("\r\n") {
+        if line.starts_with('.') {
+            s.push_str("S: .");
+        }
+        s.push_str("S: ");
+        s.push_str(line);
+        s.push('\n');
+    }
+    s.push_str("S: .\n");
+    s
+}
+
+/// Shared session head: implicit-TLS handshake, greeting, USER/PASS.
+/// CAPA is not scripted — the harness auto-answers `-ERR unsupported`,
+/// matching a real legacy server.
+const POP3_HEAD: &str = "# TLS handshake\n\
+S: +OK e2e.test POP3 TestServer ready\n\
+C: USER u@e2e.test\n\
+S: +OK user accepted, send PASS\n\
+C: PASS\n\
+S: +OK maildrop has mail\n";
+
+#[tokio::test(flavor = "current_thread")]
+async fn e2e_pop3_sync_ingests_keeps_and_dedups() {
+    let (acceptor, _der) = testutil::tls_acceptor(&["127.0.0.1"]);
+    let (listener, port) = bind_listener().await;
+    let state = test_state("pop3-green", MockNet::new());
+    let view = add_account_impl(&state, pop3_input(port))
+        .await
+        .expect("add pop3 account");
+
+    // Session 1: UIDL 2 drops → RETR both → QUIT. Keep-on-server: NO DELE
+    // may appear — a stray DELE diverges the transcript at join.
+    let s1 = format!(
+        "{POP3_HEAD}\
+         C: UIDL\n\
+         S: +OK\n\
+         S: 1 uidl-m1@e2e.test\n\
+         S: 2 uidl-m2@e2e.test\n\
+         S: .\n\
+         C: RETR 1\n\
+         S: +OK 200 octets\n\
+         {}\
+         C: RETR 2\n\
+         S: +OK 220 octets\n\
+         {}\
+         C: QUIT\n\
+         S: +OK bye\n",
+        pop3_msg_lines(POP3_MSG1),
+        pop3_msg_lines(POP3_MSG2)
+    );
+    // Session 2 (re-sync): same UIDLs, all seen → zero RETR expected.
+    let s2 = format!(
+        "{POP3_HEAD}\
+         C: UIDL\n\
+         S: +OK\n\
+         S: 1 uidl-m1@e2e.test\n\
+         S: 2 uidl-m2@e2e.test\n\
+         S: .\n\
+         C: QUIT\n\
+         S: +OK bye\n"
+    );
+    let server = spawn_sessions(listener, vec![s1, s2], Proto::Pop3, Some(acceptor));
+
+    // ── sync 1: ingest ────────────────────────────────────────────
+    let reports = sync_account_impl(state.clone(), view.id.clone(), None)
+        .await
+        .expect("pop3 sync");
+    assert_eq!(reports.len(), 1);
+    let r = &reports[0];
+    assert_eq!(r.protocol, "pop3");
+    assert_eq!(r.folder, "INBOX");
+    assert_eq!(r.downloaded, 2);
+    assert_eq!(r.remote_exists, 2);
+    assert_eq!(
+        r.deleted_remote, 0,
+        "IPC pins keep-on-server — DELE must not run"
+    );
+
+    // ── envelopes + folder landing ────────────────────────────────
+    let folders = list_folders_impl(&state, &view.id).await.unwrap();
+    let inbox = folders.iter().find(|f| f.name == "INBOX").unwrap();
+    let msgs = list_messages_impl(&state, view.id.clone(), inbox.id, None)
+        .await
+        .unwrap();
+    assert_eq!(msgs.len(), 2);
+    // POP3 uid = message number; both land unread (no \Seen concept).
+    let m2 = msgs.iter().find(|m| m.uid == 2).expect("msg 2");
+    assert_eq!(m2.subject.as_deref(), Some("POP3 second"));
+    assert_eq!(m2.from.as_deref(), Some("bob@e2e.test"));
+    assert_eq!(m2.message_id.as_deref(), Some("pop2@e2e.test"));
+    assert!(m2.unread);
+    let m1 = msgs.iter().find(|m| m.uid == 1).expect("msg 1");
+    assert_eq!(m1.subject.as_deref(), Some("POP3 hello"));
+    assert_eq!(m1.from.as_deref(), Some("alice@e2e.test"));
+
+    // ── body landing: stored at ingest, dot-unstuffed ─────────────
+    let raw = crate::commands::mail::load_body_raw(&state, &view.id, inbox.id, 2)
+        .await
+        .unwrap()
+        .expect("body stored at ingest");
+    let body = String::from_utf8_lossy(&raw);
+    assert!(body.contains("Second POP3 body."));
+    assert!(
+        body.contains(".stuffed line survives"),
+        "dot-stuffing must be undone: {body:?}"
+    );
+    assert!(
+        !body.contains("..stuffed"),
+        "stuffed wire form must not reach the store"
+    );
+
+    // ── sync 2: UIDL dedup — keep-on-server means the drops are still
+    // there, but pop3_seen makes them no-ops (no RETR in session 2). ──
+    let reports2 = sync_account_impl(state.clone(), view.id.clone(), None)
+        .await
+        .expect("second sync");
+    assert_eq!(reports2[0].downloaded, 0);
+    assert_eq!(reports2[0].remote_exists, 2);
+    assert_eq!(reports2[0].deleted_remote, 0);
+
+    server.await.unwrap().expect("transcripts replayed fully");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn e2e_pop3_auth_err_surfaces_server_reject() {
+    let (acceptor, _der) = testutil::tls_acceptor(&["127.0.0.1"]);
+    let (listener, port) = bind_listener().await;
+    let state = test_state("pop3-auth", MockNet::new());
+    let view = add_account_impl(&state, pop3_input(port)).await.unwrap();
+
+    let script = "# TLS handshake\n\
+S: +OK e2e.test POP3 TestServer ready\n\
+C: USER u@e2e.test\n\
+S: +OK user accepted, send PASS\n\
+C: PASS\n\
+S: -ERR authentication failed\n";
+    let server = spawn_sessions(listener, vec![script.into()], Proto::Pop3, Some(acceptor));
+
+    let err = sync_account_impl(state, view.id, None)
+        .await
+        .expect_err("auth -ERR must fail");
+    assert_eq!(err.code, "server-reject");
+    server.await.unwrap().expect("transcript replayed fully");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn e2e_pop3_dead_port_surfaces_connect_error() {
+    let dead = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = dead.local_addr().unwrap().port();
+    drop(dead);
+    let state = test_state("pop3-dead", MockNet::new());
+    let view = add_account_impl(&state, pop3_input(port)).await.unwrap();
+    let err = sync_account_impl(state, view.id, None)
+        .await
+        .expect_err("dead port must fail");
+    assert_eq!(err.code, "connect-failed");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn e2e_pop3_malformed_retr_surfaces_server_reject() {
+    let (acceptor, _der) = testutil::tls_acceptor(&["127.0.0.1"]);
+    let (listener, port) = bind_listener().await;
+    let state = test_state("pop3-badretr", MockNet::new());
+    let view = add_account_impl(&state, pop3_input(port)).await.unwrap();
+
+    // RETR answered with a garbage status line (not +OK/-ERR) — the
+    // client must surface the malformed reply, not panic or fabricate.
+    let script = format!(
+        "{POP3_HEAD}\
+         C: UIDL\n\
+         S: +OK\n\
+         S: 1 uidl-m1@e2e.test\n\
+         S: .\n\
+         C: RETR 1\n\
+         S: XYZZY garbage status line\n"
+    );
+    let server = spawn_sessions(listener, vec![script], Proto::Pop3, Some(acceptor));
+
+    let err = sync_account_impl(state, view.id, None)
+        .await
+        .expect_err("malformed RETR must fail");
+    assert_eq!(err.code, "server-reject");
+    server.await.unwrap().expect("transcript replayed fully");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn e2e_pop3_delete_after_download_sends_dele() {
+    // The IPC path pins keep-on-server; the delete policy is a kiwi-mail
+    // `sync_pop3` option — exercised here over the same real TCP+TLS
+    // loopback so the DELE commands are witnessed on the wire.
+    let (acceptor, _der) = testutil::tls_acceptor(&["127.0.0.1"]);
+    let (listener, port) = bind_listener().await;
+    let state = test_state("pop3-dele", MockNet::new());
+    let view = add_account_impl(&state, pop3_input(port)).await.unwrap();
+
+    let script = format!(
+        "{POP3_HEAD}\
+         C: UIDL\n\
+         S: +OK\n\
+         S: 1 uidl-m1@e2e.test\n\
+         S: 2 uidl-m2@e2e.test\n\
+         S: .\n\
+         C: RETR 1\n\
+         S: +OK 200 octets\n\
+         {}\
+         C: DELE 1\n\
+         S: +OK deleted\n\
+         C: RETR 2\n\
+         S: +OK 220 octets\n\
+         {}\
+         C: DELE 2\n\
+         S: +OK deleted\n",
+        pop3_msg_lines(POP3_MSG1),
+        pop3_msg_lines(POP3_MSG2)
+    );
+    let server = spawn_sessions(listener, vec![script], Proto::Pop3, Some(acceptor));
+
+    let t = kiwi_mail::transport::Transport::connect(
+        "127.0.0.1",
+        port,
+        kiwi_mail::transport::SocketSecurity::ImplicitTls,
+        kiwi_mail::transport::TlsSettings {
+            accept_invalid_certs: true,
+            extra_roots: Vec::new(),
+        },
+    )
+    .await
+    .expect("connect");
+    let mut client =
+        kiwi_mail::pop3::Pop3Client::connect(t, kiwi_mail::pop3::Pop3Config::default())
+            .await
+            .expect("pop3 handshake");
+    client
+        .authenticate(&kiwi_mail::pop3::Pop3Auth::UserPass {
+            user: "u@e2e.test".into(),
+            password: zeroize::Zeroizing::new("s3cret".into()),
+        })
+        .await
+        .expect("auth");
+    let (report, folder_id) = {
+        let store = state.store.lock().await;
+        let report =
+            kiwi_mail::sync::sync_pop3(&mut client, &store, &view.id, "INBOX", true, now_unix())
+                .await
+                .expect("deleting sync");
+        let folder_id = store.ensure_folder(&view.id, "INBOX").unwrap();
+        (report, folder_id)
+    };
+    // Mirror pop3_sync's lock ordering: index update happens only after
+    // the store guard is dropped — engine sync touches the store, folder
+    // registration is the app layer's job.
+    {
+        let mut index = state.index.lock().await;
+        index.remember_folder(&view.id, folder_id, "INBOX");
+        index.save(&state.data_dir).unwrap();
+    }
+    assert_eq!(report.downloaded, 2);
+    assert_eq!(report.deleted_remote, 2);
+    assert_eq!(report.remote_drops, 2);
+
+    // Envelopes + bodies still landed locally — DELE removes the server
+    // copy, never the ingested one.
+    let folders = list_folders_impl(&state, &view.id).await.unwrap();
+    let inbox = folders.iter().find(|f| f.name == "INBOX").unwrap();
+    let msgs = list_messages_impl(&state, view.id.clone(), inbox.id, None)
+        .await
+        .unwrap();
+    assert_eq!(msgs.len(), 2);
+
+    server.await.unwrap().expect("transcript replayed fully");
+}

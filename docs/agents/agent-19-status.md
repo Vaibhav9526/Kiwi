@@ -500,3 +500,43 @@ kiwi-mailauth, not mine); rustfmt clean on touched files. Transient
 foreign reds observed mid-session (mailauth dns.rs lifetime, pair.rs
 test-module fallout) — self-resolved on owner's next edits; reported
 not touched.
+
+## T-285 — POP3 E2E (DONE)
+
+Third protocol leg closed, mirroring the T-257 (IMAP) / T-262 (SMTP)
+harness shape: scripted loopback POP3 via `kiwi_mail::testutil`
+(`Proto::Pop3` + `spawn_sessions`), real TCP + implicit-TLS boundary,
+5 tests appended to `kiwi-app/src-tauri/src/e2e.rs`.
+
+- `e2e_pop3_sync_ingests_keeps_and_dedups` — add → sync → report
+  (downloaded 2, remote_exists 2, deleted_remote 0) → envelopes
+  (subject/from/message_id/unread) + body landing incl. dot-UNSTUFF
+  proof via `load_body_raw` → second sync over a second scripted
+  session: same UIDLs, `pop3_seen` dedups → downloaded 0, zero RETR
+  on the wire. Keep-on-server = the IPC pin (`sync_pop3_with_auth`
+  hardcodes `delete_after_download=false`): a stray DELE would
+  diverge the transcript at join.
+- `e2e_pop3_auth_err_surfaces_server_reject` — `-ERR` on PASS →
+  `server-reject`.
+- `e2e_pop3_dead_port_surfaces_connect_error` — refused loopback →
+  `connect-failed`.
+- `e2e_pop3_malformed_retr_surfaces_server_reject` — garbage status
+  line on RETR → `server-reject` (surfaced, not panic/fabrication).
+- `e2e_pop3_delete_after_download_sends_dele` — the delete policy is
+  engine-level only (no IPC toggle exists): drives
+  `kiwi_mail::sync::sync_pop3(_, delete_after_download=true)` over the
+  same real TCP+TLS loopback; `DELE 1`/`DELE 2` witnessed in the
+  transcript; report.deleted_remote=2; envelopes+bodies still land
+  locally; folder registered in the state index like `pop3_sync` does
+  (store guard dropped before index lock — same ordering).
+
+Verified: e2e module 13/13 green (incl. T-262's send tests — owner
+landed the DATA-terminator fix); full kiwi-app suite 130/130;
+clippy `-D warnings` clean; fmt clean.
+
+Note: `MailStore` guard held across `list_*` self-deadlocks — the
+delete test scopes the guard before readback calls.
+
+Flags: the IPC path has NO delete-after-download switch today —
+hardcoded keep-on-server. If the contract grows a per-account flag,
+`pop3_sync` just needs to pass it through.
