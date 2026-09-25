@@ -64,7 +64,7 @@ act. See §13.
 |---------------|--------------|------------|-------|
 | `POST /api/v1/orgs` | `OrgService.createOrg` | `org.create` (org_admin only; T-193/H5) | |
 | `GET  /api/v1/orgs/{orgId}/users` | `OrgService.listUsers` | `user.read` | T-134: users with roles, email-ordered |
-| `GET  /api/v1/orgs/{orgId}/devices` | `OrgService.listDevices` | `device.read` | T-188: device inventory; see §14 — **not implemented** |
+| `GET  /api/v1/orgs/{orgId}/devices` | `OrgService.listDevices` | `device.read` | T-188: device inventory; `limit` default 50, cap 500; see §14 — **not implemented** |
 | `POST /api/v1/orgs/{orgId}/users` | `OrgService.createUser` | `user.invite` | |
 | `PUT /api/v1/orgs/{orgId}/users/{userId}/role` | `OrgService.grantRole` | `user.role.grant` | |
 | `POST /api/v1/devices/{deviceId}/revoke` | `OrgService.revokeDevice` | `device.revoke` | |
@@ -419,7 +419,11 @@ operation is **global, not org-scoped**: even an actor carrying
 must ratify with §13. If global export is not intended, implementation must
 first add a genuine platform-role/permission gate; documentation alone cannot
 turn `audit.export` into an org-scoped permission. The `x-kiwi-*` headers
-remain development scaffolding, not production authentication (§12.2).
+remain development scaffolding, not production authentication (§12.2). The
+current contract therefore promises **no cross-org denial** for this route;
+an org-bound `org_admin` is allowed. A future platform-only gate must be
+introduced in code and a cross-org denial test added before this sentence can
+change.
 
 Success is `200` with `content-type: application/x-ndjson; charset=utf-8`,
 `cache-control: no-store`, and a raw `\n`-delimited body. The evidence must
@@ -544,7 +548,7 @@ type AuditExportHeader = {
 
 type AuditExportRecord = {
   seq: number;
-  ts: number;
+  ts: number;                         // stored Unix milliseconds (§4)
   actor_subject: string | null;
   actor_roles: string | null;         // JSON-encoded string, not string[]
   org_id: string | null;
@@ -652,7 +656,9 @@ Request: `GET /api/v1/orgs/{orgId}/devices`, no body. The optional `limit`
 query parameter is a decimal integer, default `50`, clamped to `1..=500`,
 matching the other org-scoped list endpoints. Unknown query parameters are
 ignored. There is no offset/pagination cursor in v1; the response is bounded
-to the requested limit. The path identifier is trimmed and must match
+to the requested limit; the service returns the first `limit` rows in that
+order and does not include a total-count or continuation token in v1. The
+path identifier is trimmed and must match
 `assertIdentifier`: 1..=256 characters from `[A-Za-z0-9_.:@-]`; otherwise the
 response is `400 validation.failed`.
 
@@ -667,7 +673,7 @@ Success is `200` with `{ "items": DeviceView[] }`, matching
       "label": "Pixel 8",       // 1..=200 characters after trim
       "revoked": 0,             // integer 0|1, never JSON boolean
       "revoked_at": null,       // integer Unix milliseconds, or null
-      "created_at": 1729000000 } // integer Unix milliseconds
+      "created_at": 1729000000000 } // integer Unix milliseconds
   ]
 }
 ```

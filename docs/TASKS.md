@@ -114,7 +114,7 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-185 | kiwi-admin defect-hunt review → admin-review-1.md | Agent 9 | done (findings pending Lead rulings) | `kiwi-admin/` (read-only) | T-149 |
 | T-186 | Mail filters UI | Agent 5 | done | `kiwi-app/src/` | — |
 | T-187 | Verify admin-review-1.md findings + apply safe (non-behavioral) fixes | Agent 6 | done (22/22 verified real; L6+L7 applied; H=Lead rulings) | `kiwi-admin/` | T-185 |
-| T-188 | Contract work: pair/challenge IPC section in ipc.md + admin devices/export endpoint specs | Agent 9 | open | `docs/contracts/` | T-185 |
+| T-188 | Pair/challenge IPC (§9d) + admin devices/export (§§13-14) contracts | Agent 18 | done (Lead rulings applied) | `docs/contracts/` | T-185 |
 | T-189 | Snooze UI | Agent 5 | held — returns in TB idiom post-T-191 | `kiwi-app/src/` | T-182 |
 | T-190 | Mailspring archaeology: ui-mailspring-map.md + mailspring-tokens.css (clean-room) | Agent 12 | done | `source/comm/` → `docs/` | — |
 | T-191 | Mailspring-faithful rebuild (sidebar/rows/reader/composer/prefs/motion/keys/CSP) | Agent 12 | done | `kiwi-app/src/` | T-190 |
@@ -171,7 +171,7 @@ rebuild context. Lead handle is now term_c20c6737.
 | 15 | Devin Pro | c47aa1d7 | T-181 done → T-228 rules engine core |
 | 16 | DeepSeek V4.1 Flash | 87c46343 | T-183 mailauth hardening |
 | 17 | DeepSeek V4.1 Flash | 71a0b324 | T-194 mobile authenticator screens |
-| 18 | Space Bunny Free | f7e88089 | T-188 pair/challenge + admin contracts |
+| 18 | Space Bunny Free | f7e88089 | T-188 done → T-229 oauth2 contract review |
 | 19 | Devin Pro | e84c9837 | T-195 OAuth2 spec + impl |
 | 20 | Devin Pro | 593d9aea | T-196 contract-drift audit |
 | 21 | Space Bunny Alpha | 12f55a82 | T-198 done → T-199 done → audit rotation |
@@ -186,3 +186,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-199 | Dependency vulnerability audit → dep-vuln-1.md (vitest crit + mobile lockfile + workspace-red catches) | Agent 21 | done | — | — |
 | T-227 | IPC for kiwi-integrations: tempmail commands (public-inbox flag on every response) + deliverability consent-token flow (non-bypassable server-side) | Agent 11 | open | `kiwi-app/src-tauri/`, `ipc.md` | T-226 |
 | T-228 | F1 rules engine core: predicate AST + ordered eval + block-list-first + store table/CRUD (pure, deterministic) | Agent 15 | open | `kiwi-mail/src/rules/` | T-181 |
+| T-229 | Review oauth2.md contract for drift vs Agent 19 impl when it lands | Agent 18 | queued | `docs/contracts/` | T-195 |
