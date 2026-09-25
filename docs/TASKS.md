@@ -224,7 +224,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-259 | Admin code-side drift fixes ALL landed (ADM-01..15, 126 tests) | Agent 11 | done |
 | T-260 | security-session.md contract-vs-impl enumeration (TrustMachine/lock gates) | Agent 22 | open | `docs/audits/` | T-196 |
 | T-261 | LinkRisk hints (linkrisk.rs 459L, 203/203, wired to TS) | Agent 21 | done |
-| T-262 | Send-path e2e: compose->outbox->scripted SMTP->sent (fail branches: reject/undo/no-STARTTLS) | Agent 19 | open | `src-tauri/`, `kiwi-mail/` testutil | T-257 |
+| T-262 | send-path e2e proven: scripted loopback SMTP+IMAP matrix (green/5xx/undo/STARTTLS-refusal) + sent-copy, audit, LIST bugfix | Agent 19 | done |
 | T-264 | folder exists/unseen real COUNTs — folder_stats + non-optional FolderView (zeros unrepresentable); store half committed fd042d3, app half in-tree pending T-269 landing | Agent 15 | done |
 
 <!-- A18 terminal gone; e26f119b was a DUP A22 session — renumbered Agent 23, owns T-235. rule_catalog stays v1 (flags restore semantics, default output identical — ratified). -->
@@ -254,7 +254,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-274 | Reference plugin + capability-gate proof (bridge e2e in plugins/) | Agent 25 | done | `kiwi-app/src/plugins/` | T-268 |
 | T-275 | T-268 seams landed + live-verified (CDP vs reference, ghost-id fallback proven) | Agent 25 | done |
 | T-276 | ACFG-4 GoDaddy: resolved inline — removed from ISPDB_FIXTURES roster (correctly MX_HINTS-only, no fixed domains) | Lead | done |
-| T-277 | Fix e2e_send_* hang: root-cause blocking point + bounded timeout, keep deterministic | Agent 21 | open | `kiwi-app/src-tauri/src/e2e.rs`, `kiwi-mail` seams | T-262,T-273 |
+| T-277 | e2e_send hang: verify-only — root cause (DATA-terminator wedge) fixed by A19/T-262 + TRANSCRIPT_STEP_TIMEOUT | Agent 21 | open |
 | T-278 | integrations.md ↔ kiwi-integrations drift audit (last unaudited domain) — findings only | Agent 23 | open | `kiwi-integrations`, `docs/contracts/integrations.md` | T-196 program |
 | T-279 | HickoryResolver production DNS impl for mailauth (bounded timeouts, fail-closed temperror) | Agent 20 | open | `kiwi-mailauth`, app resolver wiring | T-196 |
 | T-280 | host plugin surfaces: notify→toasts, settings-page→mounted panes+lifecycle, runtime supervisor, 30/30 | Agent 25 | done |
@@ -262,3 +262,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-282 | AUTH-1 failure/denied authenticator audit rows + timeout-audit contract ruling (evidence-before-effect) | Agent 11 | open | `kiwi-pair`, `commands/security.rs` | T-272 |
 | T-283 | Agenda rail real content: security-summary card (real trust/lock state only, no mock) + persisted task items | Agent 25 | open | `kiwi-app/src` rail | T-267 |
 | T-284 | security-surface regression in new layout (pill/lock/policy/chip/sandbox-open e2e) + useMailbox dead-code resolution | Agent 24 | open | `kiwi-app/src` | T-267,T-269,T-273 |
+| T-285 | POP3 e2e: scripted loopback POP3 server, add→sync→ingest green + failure branches + delete-policy | Agent 19 | open | `kiwi-app/src-tauri/src/e2e.rs`, testutil | T-257,T-262 |

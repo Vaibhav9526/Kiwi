@@ -45,6 +45,9 @@ pub struct SecurityStatusView {
     pub device_id: String,
 }
 
+/// ipc.md §9d.4 `PairChallengeView` — `nonceB64` is the ONLY nonce field
+/// (RFC 4648 standard Base64, padded, exactly 32 decoded bytes); the
+/// legacy `nonceHex` spelling is withdrawn.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChallengeView {
@@ -53,7 +56,7 @@ pub struct ChallengeView {
     pub session_id: String,
     /// "unlock" | "device-pairing" | "recovery" | "elevated-action".
     pub event: String,
-    pub nonce_hex: String,
+    pub nonce_b64: String,
     pub issued_unix: i64,
     pub expires_unix: i64,
     /// Exact bytes the authenticator must sign (canonical per contract §6).
@@ -68,7 +71,7 @@ impl From<&Challenge> for ChallengeView {
             device_id: c.device_id.clone(),
             session_id: c.session_id.clone(),
             event: challenge_event(c.event).to_string(),
-            nonce_hex: crate::audit::hex(&c.nonce),
+            nonce_b64: base64::engine::general_purpose::STANDARD.encode(c.nonce),
             issued_unix: c.issued_unix,
             expires_unix: c.expires_unix,
             canonical_bytes_b64: base64::engine::general_purpose::STANDARD

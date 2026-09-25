@@ -72,6 +72,18 @@ pub async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
                     .map_err(|_| timeout_error("server write"))?
                     .map_err(|e| e.to_string())?;
             }
+            Step::ExpectEof => {
+                // Silence is the pass: the client either closes (read
+                // error/EOF) or simply never writes within the window.
+                if let Ok(Ok(line)) =
+                    tokio::time::timeout(TRANSCRIPT_STEP_TIMEOUT, wire.rl(&mut scratch)).await
+                {
+                    return Err(format!(
+                        "expected client silence, got {:?}",
+                        String::from_utf8_lossy(&line)
+                    ));
+                }
+            }
             Step::TlsBoundary => {
                 let acc = tls
                     .as_ref()

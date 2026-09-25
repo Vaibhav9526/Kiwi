@@ -27,13 +27,9 @@ use tokio::net::TcpListener;
 use crate::commands::accounts::{add_account_impl, list_accounts_impl};
 use crate::commands::autoconfig::discover_account_impl;
 use crate::commands::mail::{list_folders_impl, list_messages_impl, sync_account_impl};
-use crate::commands::send::{
-    Delivered, cancel_impl, deliver, drop_outbox, send_impl,
-};
+use crate::commands::send::{Delivered, cancel_impl, deliver, drop_outbox, send_impl};
 use crate::state::{AppState, now_unix};
-use crate::types::{
-    AddAccountInput, AuthInput, ComposeInput, SendOptions, ServerInput,
-};
+use crate::types::{AddAccountInput, AuthInput, ComposeInput, SendOptions, ServerInput};
 
 fn test_state(tag: &str, net: MockNet) -> Arc<AppState> {
     let dir = std::env::temp_dir().join(format!(
@@ -65,7 +61,11 @@ async fn serve_imap(
     let port = listener.local_addr().unwrap().port();
     let steps = testutil::parse(script);
     let h = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await.map_err(|e| e.to_string())?;
+        let (stream, _) =
+            tokio::time::timeout(testutil::TRANSCRIPT_STEP_TIMEOUT, listener.accept())
+                .await
+                .map_err(|_| "timed out waiting for IMAP connection".to_string())?
+                .map_err(|e| e.to_string())?;
         testutil::serve(stream, &steps, Proto::Imap, tls).await
     });
     (port, h)
@@ -339,6 +339,10 @@ async fn bind_listener() -> (TcpListener, u16) {
     (l, port)
 }
 
+/// Hard cap per scripted session — a parked transcript must fail fast,
+/// not hang the test binary past its own timeout.
+const SERVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Serve one scripted session per accepted connection, in order — the
 /// send path's APPEND session and the follow-up sync each take one.
 fn spawn_sessions(
@@ -349,9 +353,23 @@ fn spawn_sessions(
 ) -> tokio::task::JoinHandle<Result<(), String>> {
     tokio::spawn(async move {
         for raw in &scripts {
-            let (stream, _) = listener.accept().await.map_err(|e| e.to_string())?;
+            let (stream, _) = tokio::time::timeout(SERVE_TIMEOUT, listener.accept())
+                .await
+                .map_err(|_| format!("timed out waiting for {proto:?} session"))?
+                .map_err(|e| e.to_string())?;
             let steps = testutil::parse(raw);
-            testutil::serve(stream, &steps, proto, tls.clone()).await?;
+            // Hard cap per session — a parked transcript must fail fast,
+            // not hang the test binary past its own timeout.
+            tokio::time::timeout(
+                SERVE_TIMEOUT,
+                testutil::serve(stream, &steps, proto, tls.clone()),
+            )
+            .await
+            .map_err(|_| format!("{proto:?} transcript session exceeded {SERVE_TIMEOUT:?}"))?
+            .map_err(|e| {
+                eprintln!("[e2e serve {proto:?}] divergence: {e}");
+                e
+            })?;
         }
         Ok(())
     })
@@ -415,11 +433,6 @@ fn smtp_data_steps(mime: &str) -> String {
         s.push_str(line);
         s.push('\n');
     }
-    if !mime.ends_with("\r\n") {
-        // Client adds the missing CRLF before the terminator — an extra
-        // blank wire line.
-        s.push_str("C:\n");
-    }
     s
 }
 
@@ -456,8 +469,11 @@ fn smtp_session(tail: &str, mime: &str) -> String {
 }
 
 /// The sent-copy session: `file_sent_copy` connects, lists for `\Sent`,
-/// APPENDs the built MIME (LITERAL+ — the post-TLS CAPABILITY probe is
-/// answered by the harness and advertises it), logs out.
+/// APPENDs the built MIME, logs out. The post-TLS CAPABILITY is scripted
+/// explicitly WITHOUT LITERAL+ so the client takes the deterministic
+/// `{n}` + `+` continuation flow — the harness's generic probe reply
+/// would advertise LITERAL+ and make the flow depend on whether the
+/// client re-probes after upgrade.
 fn imap_append_script(mime: &str) -> String {
     let n = mime.len();
     let mut s = String::from(
@@ -468,14 +484,18 @@ fn imap_append_script(mime: &str) -> String {
          C: a2 STARTTLS\n\
          S: a2 OK Begin TLS negotiation now\n\
          # TLS handshake\n\
-         C: a3 LOGIN u@e2e.test REDACTED-DUMMY\n\
-         S: a3 OK LOGIN completed\n\
-         C: a4 LIST \"\" \"*\"\n\
+         C: a3 CAPABILITY\n\
+         S: * CAPABILITY IMAP4rev2 UIDPLUS\n\
+         S: a3 OK CAPABILITY completed\n\
+         C: a4 LOGIN u@e2e.test REDACTED-DUMMY\n\
+         S: a4 OK LOGIN completed\n\
+         C: a5 LIST \"\" \"*\"\n\
          S: * LIST (\\HasNoChildren) \"/\" \"INBOX\"\n\
          S: * LIST (\\HasNoChildren \\Sent) \"/\" \"Sent\"\n\
-         S: a4 OK LIST completed\n",
+         S: a5 OK LIST completed\n",
     );
-    s.push_str(&format!("C: a5 APPEND \"Sent\" (\\Seen) {{{n}+}}\n"));
+    s.push_str(&format!("C: a6 APPEND \"Sent\" (\\Seen) {{{n}}}\n"));
+    s.push_str("S: + go ahead\n");
     // Every literal line plus the command-terminating CRLF (trailing
     // empty element of the split).
     for line in mime.split("\r\n") {
@@ -484,10 +504,10 @@ fn imap_append_script(mime: &str) -> String {
         s.push('\n');
     }
     s.push_str(
-        "S: a5 OK APPEND completed\n\
-         C: a6 LOGOUT\n\
+        "S: a6 OK APPEND completed\n\
+         C: a7 LOGOUT\n\
          S: * BYE TestServer logging out\n\
-         S: a6 OK LOGOUT completed\n",
+         S: a7 OK LOGOUT completed\n",
     );
     s
 }
@@ -614,11 +634,14 @@ async fn e2e_send_delivers_files_sent_copy() {
     // ── Stage 4: audit rows — enqueue + committed send ──────────────
     let audit = audit_actions(&state);
     for action in ["\"send-queued\"", "\"send-sent\""] {
-        assert!(audit.contains(action), "audit must record {action}: {audit}");
+        assert!(
+            audit.contains(action),
+            "audit must record {action}: {audit}"
+        );
     }
     assert!(
-        !audit.contains("send-sent-copy-failed"),
-        "sent copy must not have failed: {audit}"
+        !audit.contains("send-sent-copy-failed") && !audit.contains("send-attempt-failed"),
+        "nothing may fail on the green path: {audit}"
     );
 
     // ── Stage 5: the Sent copy round-trips — sync lists it back ─────
@@ -627,7 +650,10 @@ async fn e2e_send_delivers_files_sent_copy() {
         .expect("sync after send");
     assert_eq!(reports.len(), 2, "INBOX + Sent sync: {reports:?}");
     let folders = list_folders_impl(&state, &view.id).await.unwrap();
-    let sent = folders.iter().find(|f| f.name == "Sent").expect("Sent folder");
+    let sent = folders
+        .iter()
+        .find(|f| f.name == "Sent")
+        .expect("Sent folder");
     let msgs = list_messages_impl(&state, view.id.clone(), sent.id, None)
         .await
         .unwrap();
@@ -661,18 +687,16 @@ async fn e2e_send_smtp_reject_retains_outbox() {
     .await
     .unwrap();
     let item = state.send_queue.lock().await.due(i64::MAX).remove(0);
-    let meta = state
-        .outbox_meta
-        .lock()
-        .await
-        .get(&item.queue_id)
-        .cloned();
+    let meta = state.outbox_meta.lock().await.get(&item.queue_id).cloned();
     let queue_id = item.queue_id.clone();
     let mime = String::from_utf8_lossy(&item.request.message).into_owned();
 
     let smtp = spawn_sessions(
         smtp_l,
-        vec![smtp_session("C: .\nS: 554 5.7.1 Rejected: content policy\n", &mime)],
+        vec![smtp_session(
+            "C: .\nS: 554 5.7.1 Rejected: content policy\n",
+            &mime,
+        )],
         Proto::Smtp,
         Some(acceptor),
     );
@@ -695,6 +719,11 @@ async fn e2e_send_smtp_reject_retains_outbox() {
     assert!(
         rows.iter().any(|r| r.queue_id == queue_id),
         "persisted outbox row retained: {rows:?}"
+    );
+    let audit = audit_actions(&state);
+    assert!(
+        audit.contains("send-attempt-failed") && audit.contains("server-reject"),
+        "the 5xx must surface tamper-evidently: {audit}"
     );
 
     smtp.await.unwrap().expect("smtp transcript replayed fully");
@@ -726,9 +755,14 @@ async fn e2e_send_cancel_inside_undo_window_never_transmits() {
     assert!(state.send_queue.lock().await.due(i64::MAX).is_empty());
     assert!(state.outbox_meta.lock().await.is_empty());
     assert!(state.store.lock().await.outbox_list(10).unwrap().is_empty());
+    let audit = audit_actions(&state);
     assert!(
-        audit_actions(&state).contains("\"send-cancelled\""),
+        audit.contains("\"send-cancelled\""),
         "cancel must be audited"
+    );
+    assert!(
+        !audit.contains("send-attempt-failed") && !audit.contains("send-sent"),
+        "a cancelled send must never reach the wire: {audit}"
     );
 }
 
@@ -752,23 +786,19 @@ async fn e2e_send_starttls_refusal_fails_closed() {
     .await
     .unwrap();
     let item = state.send_queue.lock().await.due(i64::MAX).remove(0);
-    let meta = state
-        .outbox_meta
-        .lock()
-        .await
-        .get(&item.queue_id)
-        .cloned();
+    let meta = state.outbox_meta.lock().await.get(&item.queue_id).cloned();
     let queue_id = item.queue_id.clone();
 
     // EHLO reply with no STARTTLS capability — the client must abort
-    // before AUTH/MAIL. The script ends there: anything further on the
-    // wire would diverge the server task.
+    // before AUTH/MAIL. The `# EOF` step proves fail-closed *on the
+    // wire*: any byte past EHLO (e.g. a plaintext AUTH) fails the join.
     let smtp = spawn_sessions(
         smtp_l,
         vec![
             "S: 220 e2e.test ESMTP TestServer\n\
              C: EHLO kiwi.local\n\
-             S: 250 e2e.test\n"
+             S: 250 e2e.test\n\
+             # EOF\n"
                 .into(),
         ],
         Proto::Smtp,
@@ -779,13 +809,14 @@ async fn e2e_send_starttls_refusal_fails_closed() {
     assert_eq!(outcome, Delivered::Held, "STARTTLS refusal must not send");
     assert_eq!(state.send_queue.lock().await.pending_count(), 1);
     assert!(
-        state
-            .outbox_meta
-            .lock()
-            .await
-            .get(&queue_id)
-            .is_some(),
+        state.outbox_meta.lock().await.get(&queue_id).is_some(),
         "retained for retry — fail closed, not dropped"
     );
-    smtp.await.unwrap().expect("server consumed greeting+EHLO only");
+    assert!(
+        audit_actions(&state).contains("send-attempt-failed"),
+        "refusal must be audited, not silent"
+    );
+    smtp.await
+        .unwrap()
+        .expect("server consumed greeting+EHLO only");
 }

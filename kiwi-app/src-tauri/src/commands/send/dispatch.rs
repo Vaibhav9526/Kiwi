@@ -124,6 +124,14 @@ pub(crate) async fn deliver(
             Ok(d) => d,
             Err(e) => {
                 eprintln!("[kiwi-app] send {queue_id} failed: {}", e.message);
+                // The outbox row tracks retry state but can't say *why* —
+                // the failed attempt itself must be tamper-evident.
+                // `IpcError` carries code + sanitized message only.
+                let _ = s.audit.lock().await.record(
+                    "send-attempt-failed",
+                    &format!("{queue_id}: {} — {}", e.code, e.message),
+                    now_unix(),
+                );
                 match e.code {
                     "policy-unavailable" | "connect-failed" | "tls-failed" | "protocol-error"
                     | "server-reject" | "auth-failed" | "io-error" => Delivered::Held,

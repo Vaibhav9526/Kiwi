@@ -421,3 +421,82 @@ untracked in-flight file, owner mid-edit, reported not touched);
 `testutil` suite 15/15 green; `clippy -p kiwi-app kiwi-mail
 kiwi-autoconfig --all-targets -D warnings` clean; rustfmt clean on my
 files.
+
+## T-262 — send-path E2E (mirror of T-257) — DONE
+
+Compose → `kiwi_send_enqueue` → outbox due → scripted loopback SMTP
+(real TCP + STARTTLS via testutil seam) → outbox drain + Sent copy +
+audit. Four new tests in `src-tauri/src/e2e.rs`.
+
+- `e2e_send_delivers_files_sent_copy`: `send_impl` enqueues a
+  compose-shaped input (queue+`outbox` row+meta all asserted);
+  `due()` drains; `deliver` runs a scripted loopback SMTP session —
+  greeting/EHLO/STARTTLS boundary/post-TLS EHLO/AUTH PLAIN/MAIL FROM
+  (SIZE tolerated)/RCPT/DATA/354 + the verbatim MIME bytes line-by-line
+  + `.` + 250 + QUIT. `Delivered::Sent` → `drop_outbox` drains
+  queue+meta+persisted row; audit shows `send-queued` + `send-sent`;
+  the Sent copy then *round-trips*: a scripted APPEND session files the
+  MIME into `Sent`, and a follow-up `sync_account_impl` lists it back
+  (subject/from/`\Seen`→read asserted). Both server tasks joined.
+- `e2e_send_smtp_reject_retains_outbox`: `554` after DATA →
+  `server-reject` → `Held` — re-enqueued with linear backoff
+  (`attempts=1`, `not_before` in future), persisted row kept, and the
+  failure is tamper-evident via the new `send-attempt-failed` audit
+  row (`server-reject` recorded).
+- `e2e_send_cancel_inside_undo_window_never_transmits`: `cancel_impl`
+  inside the 30 s grace window → queue/meta/persisted row all gone,
+  `send-cancelled` audited, and no `send-attempt-failed`/`send-sent`
+  rows (ports are dead — any dispatch would have audited a
+  `connect-failed`).
+- `e2e_send_starttls_refusal_fails_closed`: EHLO without STARTTLS →
+  `Held` (fail closed — retained for retry, not dropped), failure
+  audited; a new `# EOF` transcript step proves **zero client bytes**
+  past the refused EHLO — no plaintext AUTH leak possible.
+
+PASS/FAIL matrix:
+
+| stage                    | green | 5xx DATA           | undo-cancel         | STARTTLS refusal     |
+|--------------------------|-------|--------------------|---------------------|----------------------|
+| send_impl enqueue        | PASS  | PASS               | PASS                | PASS                 |
+| outbox persisted + due   | PASS  | PASS               | PASS                | PASS                 |
+| TCP+TLS+STARTTLS session | PASS  | PASS               | n/a (never dials)   | PASS (EHLO only)     |
+| MAIL/RCPT/DATA + body    | PASS  | PASS (all seen)    | n/a                 | PASS (`# EOF` clean) |
+| drain + Sent copy        | PASS  | n/a (held)         | n/a                 | n/a                  |
+| retention/retry          | n/a   | PASS (Held+backoff)| n/a                 | PASS (Held)          |
+| audit rows               | PASS  | PASS               | PASS                | PASS                 |
+
+Integration gaps found + fixed in-place (my seam crates/commands):
+
+1. `dispatch.rs` — **no Sent copy existed at all**. Added
+   `file_sent_copy`: after SMTP accept + `send-sent` audit, a dedicated
+   IMAP session `LIST "" "*"` → `\Sent`-flagged mailbox (fallback
+   `Sent`, RFC 6154) → `APPEND (\Seen)`. Best-effort: copy failure
+   audits `send-sent-copy-failed`, never retries (recipient already
+   accepted) — avoids duplicate delivery.
+2. `dispatch.rs` — failed attempts were stderr-only. Added
+   `send-attempt-failed` audit (code + sanitized message) so the 5xx/
+   refusal paths are tamper-evident.
+3. `kiwi-mail/src/imap/commands.rs` — **real bug**: LIST parse
+   uppercased the whole untagged line before extracting fields, so
+   `MailboxInfo.name` arrived as `SENT` not `Sent` — APPEND would have
+   filed into a duplicate uppercase mailbox on a real server. Now
+   matches the verb case-insensitively but parses the tail verbatim
+   (mailbox names are case-sensitive; only INBOX is case-invariant).
+4. `testutil` — new `# EOF`/`Step::ExpectEof` step (silence-or-timeout
+   = pass, any bytes = fail) enabling fail-closed wire proofs; session
+   accept/serve wrapped in a 30 s cap so a parked transcript fails
+   fast instead of wedging the test binary (hit twice while
+   debugging).
+
+Also fixed a script-gen bug my own harness had: `smtp_data_steps`
+emitted a phantom empty `C:` line before `.` (a mime not ending in
+CRLF gets `\r\n.\r\n`, not a blank line). Deadlock bisected via
+per-step server tracing, since removed.
+
+Verification: `cargo test -p kiwi-app` **125/125** (incl. all 8 e2e);
+`-p kiwi-mail` **205/205** (testutil 16/16); `-p kiwi-autoconfig`
+97/97; clippy clean on kiwi-app/kiwi-mail (one foreign warning in
+kiwi-mailauth, not mine); rustfmt clean on touched files. Transient
+foreign reds observed mid-session (mailauth dns.rs lifetime, pair.rs
+test-module fallout) — self-resolved on owner's next edits; reported
+not touched.

@@ -5,7 +5,7 @@ use serde::Serialize;
 use kiwi_mail::attachrisk::{AttachRisk, AttachRiskReason};
 use kiwi_mail::authrisk::AuthRisk;
 use kiwi_mail::linkrisk::{LinkRisk, LinkRiskReason};
-use kiwi_mail::store::{FolderMeta, MessageMeta};
+use kiwi_mail::store::{FolderMeta, FolderStats, MessageMeta};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -17,6 +17,10 @@ pub struct FolderView {
     pub uid_validity: Option<u64>,
     pub uid_next: Option<u64>,
     pub highest_uid: u64,
+    /// Total stored messages in the folder (T-264, ipc.md §6).
+    pub exists: u64,
+    /// Stored messages without `\Seen` — the unread badge source.
+    pub unseen: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -273,8 +277,11 @@ impl From<&MessageMeta> for MessageView {
     }
 }
 
-impl From<&FolderMeta> for FolderView {
-    fn from(f: &FolderMeta) -> Self {
+impl FolderView {
+    /// `From<&FolderMeta>` is deliberately absent — `exists`/`unseen` must
+    /// come from a real count query (`MailStore::folder_stats`), never a
+    /// fabricated default (the withdrawn-field warning in ipc.md §6).
+    pub fn from_meta(f: &FolderMeta, stats: FolderStats) -> Self {
         Self {
             id: f.id,
             account_id: f.account_id.clone(),
@@ -282,6 +289,8 @@ impl From<&FolderMeta> for FolderView {
             uid_validity: f.uid_validity,
             uid_next: f.uid_next,
             highest_uid: f.highest_uid,
+            exists: stats.exists,
+            unseen: stats.unseen,
         }
     }
 }

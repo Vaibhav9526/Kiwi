@@ -9,6 +9,11 @@ pub enum Step {
     Client(String),
     /// Mid-transcript TLS upgrade point.
     TlsBoundary,
+    /// `# EOF` — the client must go silent: no further line may arrive
+    /// before the peer closes or the step timeout elapses. Fail-closed
+    /// proofs (e.g. STARTTLS refusal) end the script with this so a
+    /// wrongly-proceeding client can't leak bytes past the last `S:`.
+    ExpectEof,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +46,8 @@ pub fn parse(text: &str) -> Vec<Step> {
             ));
         } else if raw.contains("TLS handshake") {
             steps.push(Step::TlsBoundary);
+        } else if raw.trim() == "# EOF" {
+            steps.push(Step::ExpectEof);
         }
     }
     steps
