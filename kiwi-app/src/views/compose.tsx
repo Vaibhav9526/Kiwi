@@ -17,6 +17,7 @@ import { accountPref, loadPref } from "../prefs";
 import { api, IpcError } from "../ipc";
 import { filterContacts, loadLocalBook } from "../contacts";
 import { PolicyBanner } from "../components/security";
+import { Icon } from "../components/icons/index";
 
 const TEMPLATES = ["Status update", "Meeting request", "Out of office"];
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
@@ -592,7 +593,7 @@ export function ComposeView({
           <span key={`to-${r}`} className="kiwi-pill unknown" style={{ marginRight: "0.3rem" }}>
             To: {r}{" "}
             <button type="button" onClick={() => removeAddress(r)} aria-label={`Remove ${r}`}>
-              ✕
+              <Icon name="close" size={10} />
             </button>
           </span>
         ))}
@@ -600,7 +601,7 @@ export function ComposeView({
           <span key={`cc-${r}`} className="kiwi-pill unknown" style={{ marginRight: "0.3rem" }}>
             Cc: {r}{" "}
             <button type="button" onClick={() => removeAddress(r)} aria-label={`Remove ${r}`}>
-              ✕
+              <Icon name="close" size={10} />
             </button>
           </span>
         ))}
@@ -656,7 +657,7 @@ export function ComposeView({
             “”
           </button>
           <button type="button" title="Bulleted list" aria-label="Bulleted list" onClick={() => wrapSelection("", "", "- ")}>
-            ☰
+            <Icon name="list" size={13} />
           </button>
         </span>
         <textarea

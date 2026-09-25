@@ -17,6 +17,7 @@ import { EDIT_HANDOFF_KEY, localAutoconfigGuess } from "./setup";
 import { FiltersView } from "./filters";
 import { IntegrationsView } from "./integrations";
 import { SHORTCUT_ROWS } from "../components/shortcuts";
+import { Icon } from "../components/icons/index";
 
 // T-191 tabbed preferences (Mailspring idiom): the eight legacy sections
 // fold into seven tabs — General (general + notifications + privacy +
@@ -543,7 +544,7 @@ export function SettingsView({
                   {a.displayName} <small style={{ color: "var(--kiwi-text-secondary)" }}>{a.email}</small>{" "}
                   {defaultId === a.id && (
                     <span className="kiwi-pill secure" title="Default sending account">
-                      ✓ default
+                      <Icon name="check" size={10} /> default
                     </span>
                   )}
                   {mutedIds.includes(a.id) && (
@@ -650,7 +651,7 @@ export function SettingsView({
                 {(testResults[a.id] ?? []).map((r, i) => (
                   <p key={i}>
                     <small>
-                      Verify {i === 0 ? "incoming" : "outgoing"}: {r.ok ? "✓ ok" : "✕ failed"} —{" "}
+                      Verify {i === 0 ? "incoming" : "outgoing"}: <Icon name={r.ok ? "check" : "close"} size={10} /> {r.ok ? "ok" : "failed"} —{" "}
                       {r.steps.map((s) => `${s.stage}:${s.ok ? "ok" : "FAIL"}`).join(", ")}
                     </small>
                   </p>
@@ -758,7 +759,11 @@ export function SettingsView({
             <ul>
               {devices.map((d) => (
                 <li key={d.deviceId}>
-                  {d.label} <small>({d.deviceId}, {d.algorithm}, {d.status})</small>{" "}
+                  {d.label}{" "}
+                  <small>
+                    ({d.deviceId}, {d.algorithm}, {d.status}, fp …{d.keyFingerprintTail}
+                    {d.revokedUnix != null && `, revoked ${new Date(d.revokedUnix * 1000).toLocaleDateString()}`})
+                  </small>{" "}
                   {confirmRevoke === d.deviceId ? (
                     <>
                       <button type="button" onClick={() => void revokeDevice(d.deviceId)}>

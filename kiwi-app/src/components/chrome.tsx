@@ -49,7 +49,7 @@ import {
   IconUnread,
   IconUnreplied,
   IconUser,
-} from "./icons";
+} from "./shell-icons";
 
 export function TrustChip({ trust, locked }: TrustState) {
   if (locked) {
@@ -265,7 +265,7 @@ function ToolBtn({
 }
 
 export function TopBar(props: TopBarProps) {
-  const { trust, demo, query, onQuery, theme, onTheme, onSync, syncing } = props;
+  const { trust, demo, query, onQuery, onSubmitSearch, theme, onTheme, onSync, syncing } = props;
   const sel = props.hasSelection;
   const composeActions: MenuEntry[] = [
     { label: "Reply", run: props.onReply, disabled: !sel },
@@ -706,7 +706,7 @@ export function AgendaRail() {
               onClick={() => setGroupOpen((m) => ({ ...m, [g.key]: !expanded }))}
             >
               <span className={`em-disclosure${expanded ? " is-open" : ""}`} aria-hidden="true">
-                <IconChevronDown size={11} />
+                <IconChevronRight size={11} />
               </span>
               {g.label}
             </button>

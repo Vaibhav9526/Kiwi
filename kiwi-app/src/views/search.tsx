@@ -18,6 +18,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { MessageEnvelope, SearchHit } from "../kiwi";
 import { unixToIso } from "../kiwi";
 import { api, BackendUnavailableError } from "../ipc";
+import { Icon } from "../components/icons/index";
 
 export interface ParsedQuery {
   /** Verbatim backend string (real grammar; UI-only tokens removed). */
@@ -381,7 +382,7 @@ export function SearchView({
           onClick={() => onQuery(setToken(query, "has:", parsed.hasAttachment ? null : "attachment"))}
           title="UI-side filter (never sent to the server)"
         >
-          {parsed.hasAttachment ? "✓ " : ""}has:attachment
+          {parsed.hasAttachment && <Icon name="check" size={11} />} has:attachment
         </button>
         <label>
           <small>folder: </small>
@@ -426,7 +427,7 @@ export function SearchView({
       )}
       {query.trim() && rows.length === 0 && !searching && (
         <div className="kiwi-empty">
-          <span className="kiwi-empty-icon" aria-hidden="true">🔍</span>
+          <span className="kiwi-empty-icon em-empty-icon" aria-hidden="true"><Icon name="search" size={28} /></span>
           <strong>No matches</strong>
           <br />
           <small>Try fewer terms, or clear the filter chips.</small>
@@ -448,7 +449,7 @@ export function SearchView({
             <div style={{ display: "flex", justifyContent: "space-between", gap: "0.4rem" }}>
               <span>
                 <Highlight text={r.from} terms={parsed.highlight} />
-                {r.hasAttachments && <span aria-label="has attachments"> 📎</span>}
+                {r.hasAttachments && <Icon name="paperclip" size={12} label="has attachments" />}
               </span>
               <span style={{ color: "var(--kiwi-text-secondary)", fontSize: "0.8rem" }}>
                 {r.date ? new Date(r.date).toLocaleString() : "—"}

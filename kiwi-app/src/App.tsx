@@ -45,6 +45,7 @@ import {
   unixToIso,
 } from "./kiwi";
 import { AgendaRail, AppShell, FolderPane, StatusStrip, TopBar } from "./components/chrome";
+import { Icon } from "./components/icons/index";
 import { AuthenticatorDialog, FindingDialog, LockOverlay } from "./components/security";
 import type { AuthStatus } from "./components/security";
 import { CommandPalette } from "./components/palette";
@@ -1059,7 +1060,7 @@ export default function App() {
         setLockReason("No authenticator device registered — pair one in Settings → KIWI Security.");
         return;
       }
-      const chal = await api.requestChallenge(active.deviceId, "unlock");
+      const chal = await api.unlockChallenge(active.deviceId);
       setChallenge(chal);
       const secs = Math.max(1, chal.expiresUnix - Math.floor(Date.now() / 1000));
       setAuthSeconds(secs);
@@ -1276,7 +1277,7 @@ export default function App() {
                   aria-label="Close composer (draft autosaves locally)"
                   title="Close composer (draft autosaves locally)"
                 >
-                  ✕
+                  <Icon name="close" size={12} />
                 </button>
               </div>
               <ComposeView

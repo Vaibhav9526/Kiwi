@@ -13,6 +13,7 @@ import type { MessageEnvelope, MessagePatch } from "../kiwi";
 import { loadPref, savePref } from "../prefs";
 import { describeRule, matchRule, newRule, RULE_ACTIONS, RULE_FIELDS, validateRule } from "../filters";
 import type { FilterRule, RuleAction, RuleField } from "../filters";
+import { Icon } from "../components/icons/index";
 
 function sanitizeRules(raw: unknown): FilterRule[] {
   if (!Array.isArray(raw)) return [];
@@ -199,7 +200,7 @@ export function FiltersView({
       </div>
       {rules.length === 0 && (
         <div className="kiwi-empty">
-          <span className="kiwi-empty-icon" aria-hidden="true">🔀</span>
+          <span className="kiwi-empty-icon em-empty-icon" aria-hidden="true"><Icon name="filters" size={28} /></span>
           <strong>No rules yet</strong>
           <br />
           <small>Create one — e.g. from contains “invoice” → mark read.</small>
@@ -225,7 +226,7 @@ export function FiltersView({
                 </small>
                 <span style={{ marginLeft: "auto", display: "inline-flex", gap: "0.25rem" }}>
                   <button type="button" onClick={() => move(r.id, -1)} disabled={i === 0} aria-label={`Move ${r.name} up`}>
-                    ↑
+                    <Icon name="arrow-up" size={12} />
                   </button>
                   <button
                     type="button"
@@ -233,7 +234,7 @@ export function FiltersView({
                     disabled={i === rules.length - 1}
                     aria-label={`Move ${r.name} down`}
                   >
-                    ↓
+                    <Icon name="arrow-down" size={12} />
                   </button>
                   <button type="button" onClick={() => (open ? (setOpenId(null), setDraft(null)) : startEdit(r))}>
                     {open ? "Close" : "Edit"}
@@ -309,7 +310,7 @@ export function FiltersView({
                         onClick={() => setDraft((d) => (d ? { ...d, conditions: d.conditions.filter((_, k) => k !== j) } : d))}
                         aria-label={`Remove condition ${j + 1}`}
                       >
-                        ✕
+                        <Icon name="close" size={11} />
                       </button>
                     </p>
                   ))}

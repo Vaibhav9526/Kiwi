@@ -12,6 +12,7 @@ import { api, BackendUnavailableError, IpcError } from "../ipc";
 import type { AutoconfigSuggestion, VerifyResult } from "../kiwi";
 import { OAuth2SignIn, oauth2ProviderLabel } from "../components/oauth2";
 import { navigate } from "../router";
+import { Icon } from "../components/icons/index";
 
 const STEPS = ["Address", "Servers", "Credentials", "Verify & add"] as const;
 
@@ -289,7 +290,7 @@ export function SetupWizardView({ mode, onAdded }: { mode: "live" | "demo"; onAd
     return (
       <div className={`kiwi-banner ${r.ok ? "warn" : "block"}`} role="status">
         <strong>
-          {label}: {r.ok ? "✓ ok" : "✕ failed"}
+          {label}: <Icon name={r.ok ? "check" : "close"} size={10} /> {r.ok ? "ok" : "failed"}
         </strong>
         <ul>
           {r.steps.map((s) => (
@@ -539,11 +540,11 @@ export function SetupWizardView({ mode, onAdded }: { mode: "live" | "demo"; onAd
 
       <div style={{ display: "flex", gap: "0.4rem" }}>
         <button type="button" onClick={() => setStep((s) => Math.max(0, s - 1))} disabled={step === 0}>
-          ← Back
+          <Icon name="arrow-left" size={11} /> Back
         </button>
         {step < 3 && (
           <button type="button" onClick={() => setStep((s) => s + 1)} disabled={(step === 0 && !emailOk) || (step === 1 && !serversOk) || (step === 2 && !credsOk)}>
-            Next →
+            Next <Icon name="arrow-right" size={11} />
           </button>
         )}
         {step === 3 && !oauth2Ticket && (

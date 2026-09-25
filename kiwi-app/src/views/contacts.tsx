@@ -14,6 +14,7 @@ import type { CSSProperties } from "react";
 import type { ContactInput, ContactView } from "../kiwi";
 import { contactLabel, contactPrimaryEmail, parseContact } from "../kiwi";
 import { api } from "../ipc";
+import { Icon } from "../components/icons/index";
 import {
   deleteLocal,
   filterContacts,
@@ -373,7 +374,7 @@ export function ContactsView({
         {loading && <p role="status"><small>Loading…</small></p>}
         {filtered.length === 0 && !loading && (
           <div className="kiwi-empty">
-            <span className="kiwi-empty-icon" aria-hidden="true">👥</span>
+            <span className="kiwi-empty-icon em-empty-icon" aria-hidden="true"><Icon name="accounts" size={28} /></span>
             <strong>No contacts</strong>
             <br />
             <small>{query ? "No matches — clear the search." : "Create the first card."}</small>

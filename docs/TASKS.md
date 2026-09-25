@@ -230,7 +230,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 <!-- A18 terminal gone; e26f119b was a DUP A22 session — renumbered Agent 23, owns T-235. rule_catalog stays v1 (flags restore semantics, default output identical — ratified). -->
 | T-265 | Register batch cleared (IPC-11..14 + FOR-7/8/9; real byte-cap fix) | Agent 20 | done |
 | T-266 | Sandbox-open IPC (evidence handoff, fail-closed; 5/5) | Agent 21 | done |
-| T-267 | Pixel-faithful eM Client 4-pane rebuild (light default, folder tree/list/reader/agenda rail, statusbar) | Agent 24 (new Devin, ee5cbe6c) | open | `kiwi-app/src/views`, `chrome.tsx`, `shell.css` | ref docs/ui/reference-layout.png |
+| T-267 | Pixel-faithful eM Client 4-pane rebuild (light default, folder tree/list/reader/agenda rail, statusbar) | Agent 24 (new Devin, ee5cbe6c) | done | `kiwi-app/src/views`, `chrome.tsx`, `shell.css` | ref docs/ui/reference-layout.png |
 | T-268 | Icons(53)+theme packages+plugin scaffold (alpha trusted-code, T-PLG/B10/RR-11) | Agent 25 | done |
 
 <!-- PLANNER PLAN accepted: ITEM A eM-client layout (light default supersedes flagship-dark default), ITEM B themes+plugins alpha=trusted-code (isolation deferred — accepted risk recorded in THREAT-MODEL by A25 + post-alpha hardening task). -->

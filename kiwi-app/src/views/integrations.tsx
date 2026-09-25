@@ -32,6 +32,7 @@ import type {
   TempMessageView,
 } from "../kiwi";
 import { PUBLIC_INBOX_NOTICE } from "../kiwi";
+import { Icon } from "../components/icons/index";
 
 function errText(e: unknown): string {
   return e instanceof IpcError
@@ -378,7 +379,11 @@ function ReportView({ r }: { r: DeliverabilityReportView }) {
         <p>
           {Object.entries(r.tallies).map(([k, t]) => (
             <span key={k} className="kiwi-pill unknown" style={{ marginRight: "0.4rem" }}>
-              {CATEGORY_LABEL[k] ?? k}: {t.pass}✓ {t.warn}⚠ {t.fail}✗{t.skip ? ` ${t.skip}⊘` : ""}
+              {CATEGORY_LABEL[k] ?? k}: {t.pass}
+              <Icon name="check" size={10} /> {t.warn}
+              <Icon name="alert-triangle" size={10} /> {t.fail}
+              <Icon name="x-circle" size={10} />
+              {t.skip ? <> {t.skip}<Icon name="blocked" size={10} /></> : null}
               {t.other ? ` ${t.other}?` : ""}
             </span>
           ))}
