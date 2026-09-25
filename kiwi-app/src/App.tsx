@@ -7,7 +7,7 @@
  * theme/route/query/palette wiring plus view composition. The renderer owns
  * NO security verdicts — every verdict comes from the backend.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, IpcError, isTauri, onMailChanged } from "./ipc";
 import { applyUiPrefs } from "./prefs";
 import { useTheme } from "./themes";
@@ -128,7 +128,10 @@ export default function App() {
   } = useSession(notify);
   // T-280: host the enabled sideloaded plugins — notify.show → toast sink,
   // settings-page → Settings→Plugins panes; every bridge call is lock-gated.
-  usePluginRuntime(notify, trust.locked);
+  // T-302: message-list-read resolves against the CURRENT visible list via
+  // ref (declared before `messages` exists in scope — ref reads at call time).
+  const pluginListRef = useRef<MessageEnvelope[]>([]);
+  usePluginRuntime(notify, trust.locked, () => pluginListRef.current);
   const [folderLists, setFolderLists] = useState<Record<string, FolderView[]>>({});
   const [foldersError, setFoldersError] = useState<string | null>(null);
   const { emailById, folders, folderLabel, filtersListLabel, smartFolders, accountSections, smartUnread } = useAccountModel(
@@ -1054,6 +1057,10 @@ export default function App() {
       (m) => m.from.toLowerCase().includes(q) || m.subject.toLowerCase().includes(q) || m.snippet.toLowerCase().includes(q),
     );
   }, [baseMessages, query, demo]);
+
+  // T-302: the plugin list snapshot tracks exactly what the user sees —
+  // current folder, filters, overrides, demo search.
+  pluginListRef.current = visibleMessages;
 
   const doSync = useCallback(async () => {
     if (demo) {

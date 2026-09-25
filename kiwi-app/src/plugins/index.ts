@@ -40,12 +40,15 @@ export type { InstalledPlugin } from "./registry";
 export {
   broadcastPluginEvent,
   emitToPlugin,
+  fireComposerAction,
+  listComposerActions,
   listPluginPanes,
   reconcilePlugins,
   startPluginSession,
   stopAllPlugins,
+  subscribeComposerActions,
   subscribePluginPanes,
 } from "./runtime";
-export type { PluginPane, PluginSession, PluginSinks } from "./runtime";
-export { useInstalledPlugins, usePluginPanes, usePluginRuntime } from "./hooks";
+export type { ComposerAction, PluginPane, PluginSession, PluginSinks } from "./runtime";
+export { useComposerActions, useInstalledPlugins, usePluginPanes, usePluginRuntime } from "./hooks";
 export type { NotifySink } from "./hooks";

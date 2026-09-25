@@ -23,6 +23,7 @@ import { filterContacts, loadLocalBook } from "../contacts";
 import { PolicyBanner } from "../components/security";
 import { Icon } from "../components/icons/index";
 import { navigate } from "../router";
+import { fireComposerAction, useComposerActions } from "../plugins";
 
 const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 
@@ -821,8 +822,7 @@ export function ComposeView({
             Cancel
           </button>{" "}
           <small style={{ color: "var(--kiwi-text-secondary)" }}>
-            saves the current subject + body verbatim (placeholders like {"{{name}}"} included)
-          </small>
+            saves the current subject + body verbatim (placeholders like {"{{name}}"} included)          </small>
         </p>
       )}
       {tplError && (

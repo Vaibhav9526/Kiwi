@@ -106,7 +106,9 @@ export function TempMailPanel({ live }: { live: boolean }) {
         setNotice(p.publicInboxNotice);
         setMessages(p.messages);
       })
-      .catch(() => {});
+      .catch((e) => {
+        if (mounted.current) setError(errText(e));
+      });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [live]);
 
@@ -429,9 +431,13 @@ export const DELIVERABILITY_POLL_MS = 15_000;
 const MAX_POLL_DELAY_MS = 60 * 60 * 1000;
 
 function retryAfterMs(error: unknown): number | undefined {
-  if (error instanceof IpcError) return error.retryAfterMs;
+  if (error instanceof IpcError) {
+    if (error.retryAfterMs !== undefined) return error.retryAfterMs;
+    const match = error.message.match(/retry after\s+(\d+)\s*ms/i);
+    return match?.[1] === undefined ? undefined : Math.min(Number(match[1]), MAX_POLL_DELAY_MS);
+  }
   if (typeof error === "object" && error !== null) {
-    const value = (error as Record<string, unknown>)["retryAfterMs"];
+    const value = (error as Record<string, unknown>)["retryAfterMs"] ?? (error as Record<string, unknown>)["retry_after_ms"];
     if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
       return Math.min(value, MAX_POLL_DELAY_MS);
     }

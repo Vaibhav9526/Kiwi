@@ -83,9 +83,10 @@ function numberMap(source: JsonRecord, key: string): Record<string, number> {
 
 function httpsUrl(value: unknown): string {
   if (typeof value !== "string" || value.length === 0 || value.length > 2048) fail();
+  if (!value.split("").every((character) => character.charCodeAt(0) >= 0x21 && character.charCodeAt(0) <= 0x7e)) fail();
   try {
     const parsed = new URL(value);
-    if (parsed.protocol !== "https:" || !parsed.hostname || parsed.username || parsed.password) fail();
+    if (parsed.protocol !== "https:" || !parsed.hostname || parsed.username || parsed.password || parsed.hash) fail();
   } catch {
     fail();
   }
@@ -122,15 +123,15 @@ export function decodeIntegrationAuthGate(raw: unknown): DeliverabilityAuthGate 
     const source = record(raw);
     if (!has(source, "authGate") || source["authGate"] === undefined || source["authGate"] === null) fail();
     const value = source["authGate"];
-    if (value === true || value === "pass" || value === "trusted" || value === "ok") return "pass";
-    if (value === false || value === "fail" || value === "blocked") return "fail";
+    if (value === true || value === "pass" || value === "clear" || value === "trusted" || value === "ok") return "pass";
+    if (value === false || value === "fail" || value === "failed" || value === "blocked" || value === "denied") return "fail";
     if (typeof value === "object" && value !== null && !Array.isArray(value)) {
       const gate = value as JsonRecord;
       if (gate["allowed"] === true || gate["passed"] === true || gate["trusted"] === true) return "pass";
       if (gate["allowed"] === false || gate["passed"] === false || gate["trusted"] === false) return "fail";
-      const status = gate["status"];
-      if (status === "pass" || status === "trusted" || status === "ok") return "pass";
-      if (status === "fail" || status === "blocked") return "fail";
+      const status = gate["state"] ?? gate["status"] ?? gate["outcome"] ?? gate["result"] ?? gate["kind"];
+      if (status === "pass" || status === "clear" || status === "trusted" || status === "ok") return "pass";
+      if (status === "fail" || status === "failed" || status === "blocked" || status === "denied") return "fail";
     }
     return "unknown";
   });

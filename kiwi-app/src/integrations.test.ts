@@ -140,6 +140,8 @@ describe("integration response decoders", () => {
 
   it("fails closed when the report auth gate is missing or unknown", () => {
     expect(decodeIntegrationAuthGate({ authGate: "pass" })).toBe("pass");
+    expect(decodeIntegrationAuthGate({ authGate: "clear" })).toBe("pass");
+    expect(decodeIntegrationAuthGate({ authGate: { state: "blocked" } })).toBe("fail");
     expect(decodeIntegrationAuthGate({ authGate: "blocked" })).toBe("fail");
     expect(decodeIntegrationAuthGate({})).toBeNull();
     expect(decodeDeliverabilityReportView({ ...report, authGate: undefined })).toBeNull();

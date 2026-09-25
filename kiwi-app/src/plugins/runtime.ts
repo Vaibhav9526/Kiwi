@@ -71,6 +71,60 @@ export function subscribePluginPanes(fn: () => void): () => void {
   return () => paneListeners.delete(fn);
 }
 
+/* ---------- composer action store (T-302) ---------- */
+
+/** A plugin-contributed button on the compose surface. */
+export interface ComposerAction {
+  pluginId: string;
+  pluginName: string;
+  actionId: string;
+  label: string;
+  /** Registry icon name — arbitrary strings rejected, falls back to "puzzle". */
+  icon?: string;
+  title?: string;
+}
+
+const composerActions = new Map<string, ComposerAction>(); // key `${pluginId}/${actionId}`
+const actionListeners = new Set<() => void>();
+// Cached snapshot — same useSyncExternalStore stability rule as panes.
+let actionSnapshot: ComposerAction[] = [];
+
+function actionKey(pluginId: string, actionId: string) {
+  return `${pluginId}/${actionId}`;
+}
+
+function actionsChanged() {
+  actionSnapshot = [...composerActions.values()];
+  for (const fn of actionListeners) {
+    try {
+      fn();
+    } catch {
+      // listener bug must not break the store
+    }
+  }
+}
+
+export function listComposerActions(): ComposerAction[] {
+  return actionSnapshot;
+}
+
+export function subscribeComposerActions(fn: () => void): () => void {
+  actionListeners.add(fn);
+  return () => actionListeners.delete(fn);
+}
+
+/**
+ * Fire a registered composer action — the host→plugin `composer.action`
+ * event carries { actionId } + the draft metadata the view supplied.
+ * Returns false when the session isn't running.
+ */
+export function fireComposerAction(action: ComposerAction, draft?: Record<string, unknown>): boolean {
+  const session = sessions.get(action.pluginId);
+  if (!session) return false;
+  session.host.emit("composer.action", { actionId: action.actionId, ...draft });
+  return true;
+}
+
 /* ---------- session supervisor ---------- */
 
 export interface PluginSinks {
@@ -78,6 +132,13 @@ export interface PluginSinks {
   notify: (kind: string, text: string) => void;
   /** App lock check — the bridge rejects every call while locked. */
   isLocked: () => boolean;
+  /**
+   * Current list-view snapshot source (T-302) — the host supplies the
+   * envelopes the user can see (selected folder, post-filter). When absent
+   * the `messages.list`/`messages.getEnvelope` handlers are not registered
+   * and calls resolve `not-implemented`.
+   */
+  listSnapshot?: () => unknown[];
 }
 
 export interface PluginSession {
@@ -93,6 +154,22 @@ const TOAST_KINDS = new Set(["info", "ok", "warn", "error"]);
 
 function asStr(v: unknown, max = 2000): string | undefined {
   return typeof v === "string" && v.length > 0 && v.length <= max ? v : undefined;
+}
+
+/**
+ * Bounded list-view row (T-302, message-list-read): explicit field
+ * whitelist so NEW envelope fields never leak to plugins accidentally.
+ * No snippet, no body-derived data, no recipients — metadata only.
+ */
+const ENVELOPE_FIELDS = ["id", "from", "subject", "date", "unread", "starred", "hasAttachments", "category", "trust", "answered"] as const;
+
+function toPluginEnvelope(m: unknown): Record<string, unknown> | null {
+  if (typeof m !== "object" || m === null) return null;
+  const src = m as Record<string, unknown>;
+  if (typeof src.id !== "string") return null;
+  const out: Record<string, unknown> = {};
+  for (const f of ENVELOPE_FIELDS) out[f] = src[f];
+  return out;
 }
 
 /**
@@ -151,6 +228,45 @@ export function startPluginSession(installed: InstalledPlugin, sinks: PluginSink
         if (removed) panesChanged();
         return { removed };
       },
+      /* T-302: message-list-read sinks — registered only when the host can
+         actually supply the snapshot (listSnapshot absent → not-implemented). */
+      ...(sinks.listSnapshot
+        ? {
+            "messages.list": () => ({
+              messages: (sinks.listSnapshot?.() ?? []).map(toPluginEnvelope).filter((m) => m !== null),
+            }),
+            "messages.getEnvelope": (params: unknown) => {
+              const p = (params ?? {}) as Record<string, unknown>;
+              const id = asStr(p.id, 300);
+              const row = (sinks.listSnapshot?.() ?? []).map(toPluginEnvelope).find((m) => m?.id === id);
+              return row ? { envelope: row } : { envelope: null };
+            },
+          }
+        : {}),
+      /* T-302: composer-action sinks — register/unregister + click evt. */
+      "composer.registerAction": (params, plugin) => {
+        const p = (params ?? {}) as Record<string, unknown>;
+        const actionId = asStr(p.actionId ?? p.id, 80);
+        const label = asStr(p.label, 80);
+        if (!actionId || !label) return { registered: false, reason: "actionId + label required" };
+        composerActions.set(actionKey(plugin.id, actionId), {
+          pluginId: plugin.id,
+          pluginName: plugin.name ?? plugin.id,
+          actionId,
+          label,
+          icon: asStr(p.icon, 60),
+          title: asStr(p.title, 200),
+        });
+        actionsChanged();
+        return { registered: true };
+      },
+      "composer.unregisterAction": (params, plugin) => {
+        const p = (params ?? {}) as Record<string, unknown>;
+        const actionId = asStr(p.actionId ?? p.id, 80);
+        const removed = actionId ? composerActions.delete(actionKey(plugin.id, actionId)) : false;
+        if (removed) actionsChanged();
+        return { removed };
+      },
     },
   });
 
@@ -172,6 +288,14 @@ export function startPluginSession(installed: InstalledPlugin, sinks: PluginSink
         }
       }
       if (touched) panesChanged();
+      let actionTouched = false;
+      for (const [k, a] of composerActions) {
+        if (a.pluginId === manifest.id) {
+          composerActions.delete(k);
+          actionTouched = true;
+        }
+      }
+      if (actionTouched) actionsChanged();
     },
   };
 
