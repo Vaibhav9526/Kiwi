@@ -38,7 +38,11 @@ pub trait OAuthTransport: Send + Sync {
     /// POST `form` as `application/x-www-form-urlencoded` to `url`.
     /// Implementations must refuse non-HTTPS URLs and never follow
     /// redirects.
-    async fn post_form(&self, url: &str, form: &[(&str, &str)]) -> Result<TransportReply, OAuthError>;
+    async fn post_form(
+        &self,
+        url: &str,
+        form: &[(&str, &str)],
+    ) -> Result<TransportReply, OAuthError>;
 }
 
 /// Blanket adapter: any `HttpClient` is an `OAuthTransport`. Form values
@@ -46,7 +50,11 @@ pub trait OAuthTransport: Send + Sync {
 /// every transport sees identical wire bytes.
 #[async_trait]
 impl<T: HttpClient + ?Sized> OAuthTransport for T {
-    async fn post_form(&self, url: &str, form: &[(&str, &str)]) -> Result<TransportReply, OAuthError> {
+    async fn post_form(
+        &self,
+        url: &str,
+        form: &[(&str, &str)],
+    ) -> Result<TransportReply, OAuthError> {
         let body = form_encode(form);
         let req = HttpRequest::post(url, Some(body.into_bytes()))
             .header("content-type", "application/x-www-form-urlencoded")

@@ -90,7 +90,7 @@ impl GrantKind {
 /// In-flight grant returned by [`OAuthFlow::begin`]. **Not serializable and
 /// not `Clone`**: the PKCE verifier, `state`, device code, and bound
 /// loopback socket are transient grant secrets — they must not be persisted
-/// or logged (the `Debug` impl redacts them).
+/// or logged (the `Debug` impls redact them).
 #[derive(Debug)]
 pub enum PendingGrant {
     /// Loopback auth-code grant. `listener` holds the bound socket; drop the
@@ -101,7 +101,6 @@ pub enum PendingGrant {
 }
 
 /// Loopback auth-code branch of [`PendingGrant`].
-#[derive(Debug)]
 pub struct LoopbackGrant {
     /// URL the user must open in a browser.
     pub authorize_url: String,
@@ -115,8 +114,19 @@ pub struct LoopbackGrant {
     pub(crate) listener: LoopbackListener,
 }
 
+/// Redacted `Debug` — verifier is grant material, never logged.
+impl std::fmt::Debug for LoopbackGrant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoopbackGrant")
+            .field("authorize_url", &self.authorize_url)
+            .field("redirect_uri", &self.redirect_uri)
+            .field("state", &self.state)
+            .field("code_verifier", &"<redacted>")
+            .finish_non_exhaustive()
+    }
+}
+
 /// Device-code branch of [`PendingGrant`].
-#[derive(Debug)]
 pub struct DeviceGrant {
     /// Poll handle — a transient secret; sent only to the token endpoint.
     pub(crate) device_code: Zeroizing<String>,
@@ -130,6 +140,19 @@ pub struct DeviceGrant {
     pub expires_at_unix: i64,
     /// Provider-requested poll cadence.
     pub poll_interval_secs: u64,
+}
+
+/// Redacted `Debug` — the device code is a poll credential, never logged.
+impl std::fmt::Debug for DeviceGrant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeviceGrant")
+            .field("device_code", &"<redacted>")
+            .field("user_code", &self.user_code)
+            .field("verification_uri", &self.verification_uri)
+            .field("expires_at_unix", &self.expires_at_unix)
+            .field("poll_interval_secs", &self.poll_interval_secs)
+            .finish_non_exhaustive()
+    }
 }
 
 impl PendingGrant {
@@ -204,8 +227,8 @@ pub struct RedirectOutcome {
 
 impl RedirectOutcome {
     /// Parse a redirect target: a raw query string (`code=…&state=…`) or a
-    /// full URL whose query part is used. Bounded: input over
-    /// [`crate::oauth2::loopback::MAX_REQUEST_LINE`] bytes is rejected.
+    /// full URL whose query part is used. Bounded: input over 8 KiB is
+    /// rejected.
     pub fn from_query(input: &str) -> Result<Self, OAuthError> {
         if input.len() > loopback::MAX_REQUEST_LINE {
             return Err(OAuthError::Malformed("redirect too long"));
@@ -348,7 +371,11 @@ pub trait OAuthFlow: Send + Sync {
 
     /// Begin a grant with fresh entropy. Equivalent to
     /// `begin_with(http, None, now_unix)`.
-    async fn begin(&self, http: &dyn OAuthTransport, now_unix: i64) -> Result<PendingGrant, OAuthError>;
+    async fn begin(
+        &self,
+        http: &dyn OAuthTransport,
+        now_unix: i64,
+    ) -> Result<PendingGrant, OAuthError>;
 
     /// Begin a grant; `secrets` pins PKCE/state material for tests —
     /// device-code flows ignore it (they mint no client secrets).
@@ -400,7 +427,11 @@ pub trait OAuthFlow: Send + Sync {
 /// `oauth2/<provider_id>/<lowercased email>`.
 #[must_use]
 pub fn credential_key(provider_id: &str, email: &str) -> String {
-    format!("oauth2/{}/{}", provider_id, email.trim().to_ascii_lowercase())
+    format!(
+        "oauth2/{}/{}",
+        provider_id,
+        email.trim().to_ascii_lowercase()
+    )
 }
 
 /// `AuthRef` for both incoming and outgoing sides of a completed grant —
@@ -470,3 +501,6 @@ pub async fn ensure_fresh(
     save_tokens(store, flow.provider_id(), email, &fresh)?;
     Ok(Some(fresh))
 }
+
+#[cfg(test)]
+mod tests;

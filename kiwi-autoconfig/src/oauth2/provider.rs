@@ -123,10 +123,7 @@ impl ProviderConfig {
     /// build arbitrary fixtures.
     pub(crate) fn check_client_id(&self) -> Result<(), OAuthError> {
         let id = &self.client_id;
-        if id.is_empty()
-            || id.len() > 256
-            || !id.bytes().all(|b| (0x21..=0x7e).contains(&b))
-        {
+        if id.is_empty() || id.len() > 256 || !id.bytes().all(|b| (0x21..=0x7e).contains(&b)) {
             return Err(OAuthError::InvalidConfig("client_id"));
         }
         Ok(())

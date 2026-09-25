@@ -191,14 +191,16 @@ impl OAuthFlow for OAuthClient {
                 expected: GrantKind::LoopbackCode,
             });
         };
-        // Provider signalled failure on the redirect (e.g. user cancelled).
-        if let Some(err) = &redirect.error {
-            return Err(map_error_code(err, redirect.error_description.as_deref()));
-        }
-        // CSRF guard — checked before any network call.
+        // CSRF guard — checked before any network call or error mapping; an
+        // `error` claim on a redirect whose state does not match is not
+        // trusted.
         match (&redirect.state, g.state.as_str()) {
             (Some(echoed), want) if echoed == want => {}
             _ => return Err(OAuthError::StateMismatch),
+        }
+        // Provider signalled failure on the redirect (e.g. user cancelled).
+        if let Some(err) = &redirect.error {
+            return Err(map_error_code(err, redirect.error_description.as_deref()));
         }
         let code = redirect
             .code
@@ -261,7 +263,9 @@ impl OAuthFlow for OAuthClient {
                     payload.error_description.as_deref(),
                 )),
             },
-            None => Err(OAuthError::Http { status: reply.status }),
+            None => Err(OAuthError::Http {
+                status: reply.status,
+            }),
         }
     }
 
@@ -271,9 +275,7 @@ impl OAuthFlow for OAuthClient {
         tokens: &TokenSet,
         now_unix: i64,
     ) -> Result<TokenSet, OAuthError> {
-        let refresh_token = tokens
-            .refresh_token()
-            .ok_or(OAuthError::InvalidGrant)?;
+        let refresh_token = tokens.refresh_token().ok_or(OAuthError::InvalidGrant)?;
         let mut form: Vec<(&str, &str)> = vec![
             ("grant_type", "refresh_token"),
             ("client_id", self.provider.client_id.as_str()),
@@ -329,7 +331,9 @@ fn token_reply(reply: super::TransportReply, now_unix: i64) -> Result<TokenSet, 
 fn endpoint_error(reply: &super::TransportReply) -> OAuthError {
     match parse_error(reply) {
         Some(p) => map_error_code(&p.error, p.error_description.as_deref()),
-        None => OAuthError::Http { status: reply.status },
+        None => OAuthError::Http {
+            status: reply.status,
+        },
     }
 }
 
@@ -341,9 +345,7 @@ fn parse_error(reply: &super::TransportReply) -> Option<ErrorPayload> {
         .ok()
         .map(|mut p: ErrorPayload| {
             p.error = p.error.chars().take(128).collect();
-            p.error_description = p
-                .error_description
-                .map(|d| d.chars().take(256).collect());
+            p.error_description = p.error_description.map(|d| d.chars().take(256).collect());
             p
         })
 }

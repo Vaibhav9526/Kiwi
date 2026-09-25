@@ -105,8 +105,9 @@ fn handle_conn(stream: &mut TcpStream) -> Result<Option<RedirectOutcome>, OAuthE
                     break;
                 }
             }
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock
-                || e.kind() == std::io::ErrorKind::TimedOut =>
+            Err(e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
             {
                 break;
             }

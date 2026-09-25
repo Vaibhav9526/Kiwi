@@ -52,7 +52,8 @@ impl GrantSecrets {
     /// verifier must satisfy RFC 7636 (43–128 chars, unreserved set); state
     /// must be 16–128 unreserved chars.
     pub fn fixed(state: &str, verifier: &str) -> Result<Self, OAuthError> {
-        if !(16..=128).contains(&state.len()) || !state.bytes().all(|b| UNRESERVED_B64URL.contains(&b))
+        if !(16..=128).contains(&state.len())
+            || !state.bytes().all(|b| UNRESERVED_B64URL.contains(&b))
         {
             return Err(OAuthError::InvalidConfig("state"));
         }
