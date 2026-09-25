@@ -49,6 +49,8 @@ ammonia = "4"
 # the download command reads the stored MIME directly.
 mail-parser.workspace = true
 url = "2"
+rfd = { version = "0.16", features = ["common-controls-v6"] }
+tauri-plugin-notification = "=2.3.1"
 
 # Test-only: scripted transcript-replay seam (loopback E2E, T-257).
 [dev-dependencies]

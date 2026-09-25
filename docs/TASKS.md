@@ -307,7 +307,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-327 | audit retention: hash-chain re-anchor sweep, dual bounds, self-audited, hostile-pref clamp | Agent 21 | done |
 | T-323-aux | Empty Trash/Junk via real delete loop + count-aware confirm | Agent 24 | done |
 | T-328 | IMAP server-folder CRUD: real CREATE/RENAME/DELETE wire cmds, local mirror post-ACK | Agent 19 | open | `kiwi-mail/imap*`, `commands/` folder IPCs | T-319 gap |
-| T-329 | new-mail OS notifications (tauri-plugin-notification, per-sync batched, pref-gated, junk-suppressed) | Agent 20 | open | `state.rs`, `commands/`, `capabilities` | |
+| T-329 | new-mail OS notifications (mockable seam, 4 sync sites, pref+rate-limit+junk-suppress, fail-soft) | Agent 20 | done |
 | T-330 | storage diagnostics IPC: real db_bytes/counts/integrity_check + compact (VACUUM) | Agent 15 | open | `kiwi-mail/store`, `commands/` | T-315 seam |
 | T-331 | surface audit-corruption in UI: persistent honest state + proactive integrity signal | Agent 21 | open | `commands/`, `security-center`, status strip | T-327/T-324 |
 | T-332 | Copy-to ctx-menu (shared submenu, picked-aware, honest local-only tooltip) | Agent 24 | done |
@@ -315,3 +315,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-334 | search operators (from:/subject:/has:/is:/before:/after:/in:) over FTS path, honest fallback | Agent 15 | open | `kiwi-mail/store/search`, queries.rs | |
 | T-335 | Unified Inbox smart view: client-side merge, per-row account context, honest <2-account hide | Agent 24 | open | `chrome.tsx` tree, `mailbox.tsx` | |
 | T-336 | ci.yml ui-smoke job: headless Chrome + vite preview + smoke, honest browser-absence skip | Agent 26 | open | `.github/workflows/ci.yml`, `scripts/ui-smoke.mjs` | T-305 |
+| T-337 | release packaging: real tauri build + bundle targets + RELEASING.md honest unsigned notes | Agent 20 | open | `kiwi-app/src-tauri/tauri.conf.json`, `docs/RELEASING.md` | |
