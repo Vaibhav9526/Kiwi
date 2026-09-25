@@ -228,3 +228,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-264 | Folder exists/unseen COUNT query + FolderView fields (IPC-6 follow-up) | queued | backlog | `kiwi-mail/store` | T-247 |
 
 <!-- A18 terminal gone; e26f119b was a DUP A22 session — renumbered Agent 23, owns T-235. rule_catalog stays v1 (flags restore semantics, default output identical — ratified). -->
+| T-265 | Register cleanup: IPC-11..14 + FOR-7/8/9 (nullability/units/titles/diff-kinds) | Agent 20 | open | `types/`, `ipc.md`, `kiwi-forensics/` | FINDINGS.md |
