@@ -1063,6 +1063,40 @@ export default function App() {
         } else if (op.kind === "rename") {
           const f = await api.renameFolder(op.accountId, op.folderId, op.newName);
           notify("ok", `Renamed to “${f.name}”.`);
+        } else if (op.kind === "empty") {
+          // T-323-aux: drain the folder via the real delete path — list a
+          // page, delete chunked (permanent), repeat until empty or the
+          // folder stops shrinking (honest stall, not a silent spin).
+          let removed = 0;
+          let failed = 0;
+          for (let round = 0; round < 25; round++) {
+            const page = await api.listMessages(op.accountId, op.folderId, 500);
+            if (page.length === 0) break;
+            let progressed = 0;
+            for (let i = 0; i < page.length; i += 400) {
+              try {
+                const r = await api.deleteMessages(
+                  op.accountId,
+                  op.folderId,
+                  page.slice(i, i + 400).map((m) => m.uid),
+                  true,
+                );
+                progressed += r.movedToTrash + r.deleted;
+                removed += r.movedToTrash + r.deleted;
+              } catch {
+                failed += page.slice(i, i + 400).length;
+              }
+            }
+            if (progressed === 0) break;
+            if (page.length < 500) break;
+          }
+          await reloadMail();
+          if (removed === 0 && failed > 0)
+            return `Empty failed — ${failed} message${failed === 1 ? "" : "s"} could not be deleted.`;
+          notify(
+            failed === 0 ? "ok" : "warn",
+            `Emptied folder — ${removed} permanently deleted${failed > 0 ? `, ${failed} failed` : ""}.`,
+          );
         } else {
           await api.deleteFolder(op.accountId, op.folderId);
           notify("ok", "Folder deleted.");
@@ -1073,7 +1107,7 @@ export default function App() {
         return e instanceof Error ? e.message : String(e);
       }
     },
-    [demo, loadFolders, notify],
+    [demo, loadFolders, notify, reloadMail],
   );
 
   /** Flag/star overrides applied, query NOT applied — feeds mailbox + search. */

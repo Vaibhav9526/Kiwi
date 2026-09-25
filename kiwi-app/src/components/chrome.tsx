@@ -455,7 +455,10 @@ export interface FolderSection {
 export type FolderOp =
   | { kind: "create"; accountId: string; parentId: number | null; name: string }
   | { kind: "rename"; accountId: string; folderId: number; newName: string }
-  | { kind: "delete"; accountId: string; folderId: number };
+  | { kind: "delete"; accountId: string; folderId: number }
+  /** T-323-aux: permanently remove every message IN the folder (the folder
+   *  row itself stays) — list→kiwi_delete_messages loop, no new IPC. */
+  | { kind: "empty"; accountId: string; folderId: number };
 
 const SMART_ICONS: Record<string, (p: { size?: number }) => ReactNode> = {
   "all-inboxes": (p) => <IconInbox {...p} />,
@@ -617,11 +620,13 @@ export function FolderPane({
   const [acctCtx, setAcctCtx] = useState<{ x: number; y: number; accountId: string; email: string } | null>(null);
   /** T-322 dialog — one small modal for create/rename/delete. */
   const [dlg, setDlg] = useState<{
-    kind: "create" | "rename" | "delete";
+    kind: "create" | "rename" | "delete" | "empty";
     accountId: string;
     folderId?: number;
     parentId?: number | null;
     label: string;
+    /** T-323-aux: stored-row count shown in the empty confirm. */
+    count?: number;
   } | null>(null);
   const [dlgName, setDlgName] = useState("");
   const [dlgErr, setDlgErr] = useState<string | null>(null);
@@ -629,7 +634,15 @@ export function FolderPane({
   const submitFolderOp = async () => {
     if (!dlg || !onFolderOp) return;
     setDlgErr(null);
-    if (dlg.kind !== "delete") {
+    if (dlg.kind === "empty") {
+      setDlgBusy(true);
+      const err = await onFolderOp({ kind: "empty", accountId: dlg.accountId, folderId: dlg.folderId! });
+      setDlgBusy(false);
+      if (err) {
+        setDlgErr(err);
+        return;
+      }
+    } else if (dlg.kind !== "delete") {
       const name = dlgName.trim();
       if (!name) {
         setDlgErr("Enter a folder name.");
@@ -822,6 +835,32 @@ export function FolderPane({
                 setDlg({ kind: "rename", accountId, folderId: ctx.folderId, label: ctx.label });
               },
             },
+            // T-323-aux: Empty Trash/Junk — only meaningful on the dump
+            // folders; hidden elsewhere like the eM/Thunderbird idiom.
+            // Empties MESSAGES (kiwi_delete_messages loop) — the folder
+            // row itself is untouched.
+            ...(/trash|junk|spam|deleted/i.test(ctx.label)
+              ? [
+                  {
+                    label: `Empty ${ctx.label}…`,
+                    icon: "trash" as const,
+                    danger: true,
+                    disabled: demo || ctx.exists == null || ctx.exists === 0 || ctx.folderId == null,
+                    title: demo
+                      ? "Needs the Tauri backend"
+                      : ctx.folderId == null || ctx.exists == null
+                        ? "Folder counts unavailable — can't confirm what would be deleted"
+                        : ctx.exists === 0
+                          ? `${ctx.label} is already empty`
+                          : `Permanently delete all ${ctx.exists} message${ctx.exists === 1 ? "" : "s"} in ${ctx.label}`,
+                    onSelect: () => {
+                      const accountId = ctx.id.split(":")[0];
+                      setDlgErr(null);
+                      setDlg({ kind: "empty", accountId, folderId: ctx.folderId, label: ctx.label, count: ctx.exists });
+                    },
+                  },
+                ]
+              : []),
             {
               label: "Delete",
               icon: "trash",
@@ -881,9 +920,11 @@ export function FolderPane({
             aria-label={
               dlg.kind === "delete"
                 ? `Delete folder ${dlg.label}`
-                : dlg.kind === "rename"
-                  ? `Rename folder ${dlg.label}`
-                  : `New folder in ${dlg.label}`
+                : dlg.kind === "empty"
+                  ? `Empty ${dlg.label}`
+                  : dlg.kind === "rename"
+                    ? `Rename folder ${dlg.label}`
+                    : `New folder in ${dlg.label}`
             }
             style={{ width: "min(400px, 100%)" }}
             onKeyDown={(e) => {
@@ -895,9 +936,11 @@ export function FolderPane({
               <h1>
                 {dlg.kind === "delete"
                   ? `Delete “${dlg.label}”?`
-                  : dlg.kind === "rename"
-                    ? `Rename “${dlg.label}”`
-                    : `New folder in ${dlg.label}`}
+                  : dlg.kind === "empty"
+                    ? `Empty ${dlg.label}?`
+                    : dlg.kind === "rename"
+                      ? `Rename “${dlg.label}”`
+                      : `New folder in ${dlg.label}`}
               </h1>
               <button
                 type="button"
@@ -913,6 +956,11 @@ export function FolderPane({
               <p>
                 Permanently remove the local folder <b>{dlg.label}</b>? This only removes the store row —
                 the folder must already be empty.
+              </p>
+            ) : dlg.kind === "empty" ? (
+              <p>
+                Permanently delete {dlg.count ?? 0} message{dlg.count === 1 ? "" : "s"}?{" "}
+                <b>This cannot be undone.</b>
               </p>
             ) : (
               <p>
@@ -941,7 +989,15 @@ export function FolderPane({
             )}
             <p style={{ marginBottom: 0 }}>
               <button type="button" onClick={() => void submitFolderOp()} disabled={dlgBusy}>
-                {dlgBusy ? "Working…" : dlg.kind === "delete" ? "Delete" : dlg.kind === "rename" ? "Rename" : "Create"}
+                {dlgBusy
+                  ? "Working…"
+                  : dlg.kind === "delete"
+                    ? "Delete"
+                    : dlg.kind === "empty"
+                      ? "Empty"
+                      : dlg.kind === "rename"
+                        ? "Rename"
+                        : "Create"}
               </button>{" "}
               <button type="button" onClick={() => setDlg(null)} disabled={dlgBusy}>
                 Cancel

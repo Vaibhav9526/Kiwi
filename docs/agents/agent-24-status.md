@@ -781,3 +781,28 @@ security-center.tsx are mid-edit; not T-322).
 folder-mgmt hunk; A21's audit-log check + A25's nav line stay in the
 worktree. kiwi.ts/ipc.ts (A15's T-319 wrappers + A21's audit line) NOT
 committed by me.
+
+## T-323-aux — Empty Trash/Junk via the real delete path
+
+**No new IPC** — `FolderOp` gains `{kind:"empty"}`; App drains the folder
+through `listMessages(limit 500)` → `api.deleteMessages(…, permanent=true)`
+chunked at 400 (the same IPC the message ctx-menu Delete uses — audit is
+backend-side via that command). Loops until a page comes back empty or
+progress stalls (0 removed in a round → break, honest; 25-round cap).
+
+**Menu (chrome.tsx):** `Empty {Trash|Junk|Spam|Deleted}…` appears ONLY on
+dump-named folders — hidden elsewhere (eM idiom). Disabled honestly when
+demo / `folderId` unknown / `exists` unknown ("counts unavailable — can't
+confirm") / already empty.
+
+**Dialog:** same T-322 `.ms-composer-modal` — "Empty Trash?" →
+"Permanently delete N messages? **This cannot be undone.**" → Empty
+button; Esc/backdrop blocked while busy; IPC error verbatim in role=alert.
+Toast on success: "Emptied folder — N permanently deleted[, M failed]".
+
+**Smoke:** `folder-mgmt` extended — right-clicks the Trash-labelled row,
+asserts the Empty item exists + demo-disabled. CDP bug found+fixed: evals
+must not return DOM elements (object-graph serialization throws
+"Object reference chain is too long") — return primitives. Same failure
+currently breaks A21's `audit-log` check on their end (mid-flight T-320).
+**21 pass / 1 fail** (audit-log only, foreign).

@@ -553,6 +553,20 @@ async function runChecks(cdp, sid) {
       if (demoMode && !it.d) throw new Error(`"${want}" enabled in demo`);
     }
     await cdp.eval(sid, keyOn(".em-ctx", "Escape"));
+    // T-323-aux: Trash/Junk rows gain "Empty X…" (demo-disabled honestly).
+    const emptied = await cdp.eval(sid, `(()=>{const el=[...document.querySelectorAll('.em-accounts .em-tree-item')]
+      .find(r=>/trash|junk|spam/i.test(r.getAttribute('aria-label')||''));
+      if(!el)return 'no-trash';
+      el.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:12,clientY:12}));
+      return 'ctx';})()`);
+    if (emptied === "ctx") {
+      await waitFor(cdp, sid, `${qsa(".em-ctx-item")} >= 5`);
+      const emptyDisabled = await cdp.eval(sid,
+        `[...document.querySelectorAll('.em-ctx-item')].find(b=>/^Empty /.test(b.textContent.trim()))?.disabled ?? null`);
+      if (emptyDisabled === null) throw new Error("Trash ctx menu missing Empty item");
+      if (demoMode && !emptyDisabled) throw new Error("Empty enabled in demo");
+      await cdp.eval(sid, keyOn(".em-ctx", "Escape"));
+    }
     // Account head → root-level "New folder…".
     await cdp.eval(sid, `(()=>{const el=document.querySelector('.em-account-head');
       el.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:12,clientY:12}));})()`);
