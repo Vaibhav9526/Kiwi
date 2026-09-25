@@ -285,3 +285,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-305 | scripted UI smoke suite (CDP/playwright): boot→folders→list→reader→compose→settings→theme→menu→lock assertions, CI-runnable | Agent 24 | done | `kiwi-app`, scripts/ | regression gate |
 | T-306 | CSP-safe Worker plugin loader (blob: worker-src only, free isolation, live-proven) | Agent 25 | done |
 | T-307 | plugin install UX: file-picker sideload button + error surfaces + cap badges + live install demo | Agent 25 | open | `kiwi-app/src` settings+plugins | T-302,T-306 |
+| T-308 | device-management surface vs canonical T-269 cmds: real device list + revoke + fingerprint display | Agent 24 | open | `kiwi-app/src` settings/security | T-269,T-303 |
