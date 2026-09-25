@@ -165,6 +165,9 @@ export function MailboxView(props: MailboxProps) {
   const anchorRef = useRef<string | null>(null);
   const headingRef = useRef<HTMLHeadingElement | null>(null);
   const selectAllRef = useRef<HTMLInputElement | null>(null);
+  // T-291: list⇄reader focus ping-pong — Enter opens the reader, Esc returns.
+  const rowsRef = useRef<HTMLDivElement | null>(null);
+  const readerRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
     setPicked([]);
     anchorRef.current = null;
@@ -489,11 +492,15 @@ export function MailboxView(props: MailboxProps) {
             )}
             <div
               className="em-rows"
+              ref={rowsRef}
               role="listbox"
-              aria-label="Messages. j/k or arrows move, s stars, e archives, r replies, u toggles read. Ctrl-click toggles selection, Shift-click range-selects."
+              aria-label="Messages. j/k or arrows move, Enter opens the reader, s stars, e archives, Delete deletes, r replies, u toggles read. Ctrl-click toggles selection, Shift-click range-selects."
               aria-multiselectable="true"
               aria-activedescendant={selected?.id}
+              tabIndex={0}
               onKeyDown={(e) => {
+                const t = e.target as HTMLElement | null;
+                if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable)) return;
                 if (e.key === "ArrowDown" || e.key === "j") {
                   e.preventDefault();
                   stepSelection(1);
@@ -503,10 +510,18 @@ export function MailboxView(props: MailboxProps) {
                 } else if (e.key === "n") stepSelection(1);
                 else if (e.key === "p") stepSelection(-1);
                 else if (!selected) return;
-                else if (e.key === "u") props.onToggleRead(selected.id);
+                else if (e.key === "Enter") {
+                  // Open = move keyboard focus into the reader pane (its
+                  // own map takes over: Esc back, r/a/f composer).
+                  e.preventDefault();
+                  readerRef.current?.focus();
+                } else if (e.key === "u") props.onToggleRead(selected.id);
                 else if (e.key === "s") props.onToggleStar(selected.id);
                 else if (e.key === "e") props.onArchive(selected.id, true);
-                else if (e.key === "r") navigate({ name: "compose" });
+                else if (e.key === "Delete") {
+                  e.preventDefault();
+                  props.onBulkDelete([selected.id], isTrash, isTrash ? "Deleted permanently" : "Moved to Trash");
+                } else if (e.key === "r") navigate({ name: "compose" });
               }}
             >
               <DateGroup
@@ -539,7 +554,33 @@ export function MailboxView(props: MailboxProps) {
           </>
         )}
       </section>
-      <section key={selected?.id ?? "none"} className="em-reader ms-ready" aria-label="Message reader" tabIndex={0}>
+      <section
+        key={selected?.id ?? "none"}
+        className="em-reader ms-ready"
+        aria-label="Message reader. Esc returns to the list; r reply, a reply-all, f forward open the composer."
+        tabIndex={0}
+        ref={readerRef}
+        onKeyDown={(e) => {
+          const t = e.target as HTMLElement | null;
+          const typing = !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.isContentEditable);
+          if (typing) {
+            // Esc inside a field blurs it rather than bouncing panes.
+            if (e.key === "Escape") (t as HTMLElement).blur();
+            return;
+          }
+          if (e.key === "Escape") {
+            e.preventDefault();
+            rowsRef.current?.focus();
+          } else if (e.ctrlKey || e.metaKey || e.altKey) return;
+          else if (!selected) return;
+          else if (e.key === "r" || e.key === "a" || e.key === "f") {
+            // Reply / reply-all / forward all open the composer — the
+            // compose route owns prefill when it exists.
+            e.preventDefault();
+            navigate({ name: "compose" });
+          }
+        }}
+      >
         {!selected && folder !== "outbox" && (
           <div className="kiwi-empty">
             <span className="kiwi-empty-icon em-empty-icon" aria-hidden="true">

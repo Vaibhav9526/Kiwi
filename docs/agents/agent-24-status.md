@@ -267,3 +267,34 @@
 ### Verification
 
 - `npm run build` (`tsc && vite build`) — green, 83 modules.
+
+## T-291 — keyboard navigation depth
+
+### Reconciliation (overlay ⇄ reality, both directions)
+
+| Binding | State |
+|---|---|
+| Ctrl+K palette · Ctrl+N compose · F5 sync · `/` focus search · `?` overlay · Enter-in-search → results · Ctrl+Enter send · Esc close dialogs | already real — verified handlers exist (App.tsx:973, chrome.tsx:293, compose.tsx:347); left as advertised. |
+| j/k · ↑/↓ · n/p — next/prev message | already real — `em-rows` keydown → `stepSelection` → real `navigate` to `messageId` route. |
+| s / e / u | already real — `toggleStar`/`onArchive`/`toggleRead` → `patchMessage`/`moveMessages` IPC (local-only in demo, labeled). |
+| **Enter (list)** | ADDED — focus moves into `.em-reader` (`readerRef.focus()`); previously row-Enter only re-selected. |
+| **Delete (list)** | ADDED — `onBulkDelete([selected.id], isTrash)` → `kiwi_delete_messages` (permanent when already in Trash). |
+| **Esc / r / a / f (reader)** | ADDED — `.em-reader` gained a keydown map: Esc returns focus to the list; r/a/f open the composer (reply-all/forward share the compose route — no prefill contract exists; documented, not stubbed). |
+
+### Focus management
+
+- `.em-rows` gained `tabIndex={0}` so the pane itself holds nav focus (rows already focusable); reader section already had `tabIndex={0}`.
+- Typing guard on both pane maps (`INPUT/TEXTAREA/SELECT/contenteditable`) — attachment "Save to" inputs live inside the reader and must not trigger s/e/u; Esc inside a field blurs it instead of bouncing panes.
+- Modifier keys excluded from reader single-letter map; global handler already guards `isTyping`.
+- Focus ring: `theme.css ::focus-visible` outline + T-287 button ring — new focus targets covered automatically.
+
+### Overlay truth table
+
+- Added rows: Enter-in-list, Delete, r/a/f reader composer keys, Esc-in-reader.
+- No working-but-unlisted bindings remain (palette arrows, agenda Enter/Esc, compose address-picker are dialog-internal).
+- No advertised-but-dead bindings remain.
+
+### Verification
+
+- `npm run build` (`tsc && vite build`) — green, 83 modules.
+- No UI test driver exists in-repo (no playwright/vitest) — bindings verified by static trace to real handlers/IPC; demo mode exercises the same map with local-only mutations.

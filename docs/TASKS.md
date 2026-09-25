@@ -267,5 +267,5 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-287 | UI hardening sweep done: folder error/empty surfaces, focus rings, ?overlay verified real | Agent 25 | done |
 | T-288 | message templates: backend (Agent 20: store+IPC+contract) then composer UI (A25) | Agent 20 backend / A25 UI | open | `kiwi-mail`, `commands/`, `kiwi.ts`/`ipc.ts`, composer | Mailspring parity |
 | T-289 | OAuth2/account-add verified live e2e (device code, retryAfterSecs, needsRefresh, error map, first-run) | Agent 24 | done |
-| T-290 | high-contrast a11y theme package (WCAG contrast, third stock theme — dogfoods theme system) | Agent 25 | open | `kiwi-app/src/themes/` | T-268 |
-| T-291 | keyboard nav depth: list j/k+actions, reader reply/back, focus mgmt, ?-overlay truth check | Agent 24 | open | `kiwi-app/src` | T-267,T-287 |
+| T-290 | high-contrast a11y theme package (WCAG contrast, third stock theme — dogfoods theme system) | Agent 25 | done | `kiwi-app/src/themes/` | T-268 |
+| T-291 | keyboard nav depth: list j/k+actions, reader reply/back, focus mgmt, ?-overlay truth check | Agent 24 | done | `kiwi-app/src` | T-267,T-287 |
