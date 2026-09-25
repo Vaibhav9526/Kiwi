@@ -296,11 +296,11 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-316 | mbox export: shared mbox.rs write-side, streaming atomic, round-trip proven | Agent 20 | done |
 | T-317 | drag messages→folder tree (multi-select, smart-views un-droppable, no fake undo) | Agent 24 | done |
 | T-318 | import/export UI seam wired to ipc.md §6j (both rows) w/ verbatim counts | Agent 25 | done |
-| T-319 | folder management: local folder create/rename/delete IPC, audited, system folders protected | Agent 15 | open | `kiwi-mail/store`, `kiwi-app/commands` | |
+| T-319 | local folder create/rename/delete IPC; remote/system fail-closed; audited | Agent 15 | done |
 | T-320 | forensic report file export: canonical JSON + SHA-256 integrity envelope, audited, lock-gated | Agent 21 | open | `commands/security.rs`, `kiwi-forensics` | vision tamper-evident exports |
 | T-321 | post-T-286: contract/docs sweep — consent-boundary semantics documented as-built | Agent 23 | open | `ipc.md`, `docs/contracts/` | T-286 |
-| T-322 | folder-mgmt UI seam for T-319: ctx-menu create/rename/delete, system+smart folders protected | Agent 24 | open | `mailbox.tsx`, `chrome.tsx` | T-319 |
+| T-322 | folder-mgmt UI seam for T-319: ctx-menu create/rename/delete, system+smart folders protected | Agent 24 | open | `mailbox.tsx`, `chrome.tsx` | T-319 | local folder create/rename/delete IPC; remote/system fail-closed; audited | Agent 15 | done |
 | T-323 | audit-log view surface (backend read-IPC queued; Security Center home; honest pending-state) | Agent 25 | open | `security-center.tsx` | T-318 finding |
-| T-324 | kiwi_audit_events read IPC: bounded newest-first audit rows for T-323 | Agent 15 | open | `kiwi-mail/store/queries.rs`, `commands/` | T-323 |
+| T-324 | kiwi_audit_events read IPC (bounded, keyset, lock-gated) — LIVE for A25 T-323 | Agent 15 | in-progress | `kiwi-mail/store/queries.rs`, `commands/` | T-323 |
 | T-325 | kiwi_copy_messages IPC (copy vs move; local-only dst semantics documented) | Agent 20 | open | `commands/message`, `store` | |
 | T-326 | import/synced-folder expunge edge: refuse synced dst OR minted-uid reconcile skip | Agent 19 | open | `commands/import.rs`, `imap` reconcile | T-309 caveat |
