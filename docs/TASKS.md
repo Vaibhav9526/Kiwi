@@ -261,7 +261,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-281 | rules management UI: Settings/Mail Rules AST+action editors, preview, apply-now | Agent 24 | done |
 | T-282 | AUTH-1 failure/denied authenticator audit rows + timeout-audit contract ruling (evidence-before-effect) | Agent 11 | open | `kiwi-pair`, `commands/security.rs` | T-272 |
 | T-283 | Agenda rail real: security card on real trust/findings/devices (no mock), persisted tasks | Agent 25 | done |
-| T-284 | security-surface regression in new layout (pill/lock/policy/chip/sandbox-open e2e) + useMailbox dead-code resolution | Agent 24 | open | `kiwi-app/src` | T-267,T-269,T-273 |
+| T-284 | security-surface regression in new layout (pill/lock/policy/chip/sandbox-open e2e) + useMailbox dead-code resolution | Agent 24 | done | `kiwi-app/src` | T-267,T-269,T-273 |
 | T-285 | POP3 e2e: scripted loopback POP3 server, add→sync→ingest green + failure branches + delete-policy | Agent 19 | open | `kiwi-app/src-tauri/src/e2e.rs`, testutil | T-257,T-262 |
 | T-286 | implement T-278 findings by severity — H consent-bypass server-side first, then 11M, 7L; apply own rulings | Agent 23 | open | `kiwi-integrations`, `commands/`, contracts | T-278 |
 | T-287 | UI hardening sweep: real error/empty/offline states, keyboard-help overlay-or-remove, a11y pass | Agent 25 | open | `kiwi-app/src` | T-267 |

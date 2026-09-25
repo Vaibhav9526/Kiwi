@@ -1,10 +1,11 @@
 /**
  * KIWI root (T-143, T-151, T-182): live backend orchestration over kiwi.ipc/1
  * with labeled demo fallback outside the Tauri webview. State lives in
- * `src/state/` hooks (useToasts, useSession, useAccountModel, useMailbox,
- * useCompose, useSecurity); this file keeps theme/route/query/palette wiring
- * plus view composition. The renderer owns NO security verdicts — every
- * verdict comes from the backend.
+ * `src/state/` hooks (useToasts, useSession, useAccountModel); this file owns
+ * the mail-changed listener and mailbox state inline (T-284: the dead
+ * useMailbox hook was deleted — see docs/agents/agent-24-status.md) and keeps
+ * theme/route/query/palette wiring plus view composition. The renderer owns
+ * NO security verdicts — every verdict comes from the backend.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, IpcError, isTauri, onMailChanged } from "./ipc";
@@ -1223,6 +1224,8 @@ export default function App() {
             accountSections={accountSections}
             activeFolder={route.name === "mail" ? (route.folder ?? "all-inboxes") : "all-inboxes"}
             outboxCount={outbox.length}
+            foldersError={foldersError}
+            demo={demo}
           />
         }
         rail={

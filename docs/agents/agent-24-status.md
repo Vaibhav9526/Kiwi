@@ -225,3 +225,25 @@
   `src-tauri/src/lib.rs:167-172`.
 - Required Orca T-281 completion report sent to terminal
   `term_c20c6737-9b80-4911-bcd2-38aa5113e4d7`.
+
+## T-284 — security-surface regression pass (rebuilt layout)
+
+### Audited surfaces
+
+| Surface | Verdict |
+|---|---|
+| Unlock flow (T-269 canonical) | PASS — `api.unlockChallenge(active.deviceId)` at `App.tsx:1108`, polls `kiwi_security_status` every 3s while `AuthenticatorDialog` is open; `LockOverlay` shows trust lines + challenge id. No `requestChallenge(deviceId,"unlock")` callers remain (the generic wrapper stays in `ipc.ts` for pairing/recovery/elevated-action events). |
+| Security pill | FIXED — previously showed only account trust and opened `findings[0]` (unrelated session finding). Now: envelope carries `auth`/`attachRisk`/`linkRisk` (T-232/T-254/T-261), `messageEvidenceLevel()` maps failed→danger / noted→warning / all-clean→secure; absent evidence falls back to account trust with an honest "not evaluated" summary. Pill expands a per-message `MessageEvidence` panel (SPF/DKIM/DMARC verdicts + dkim_domain + dmarc_policy + discrepancy/untrusted-relay flags, link + attachment reason codes). Findings feed stays reachable via the separate "Security details (N)" button (disabled at 0 — was a dead click when the pill hit `openFinding(0)` with zero findings). |
+| Link policy (T-273) | FIXED — `kiwi_link_click` / `kiwi_sandbox_open_link` / `kiwi_sandbox_open_attachment` were registered backend commands with ZERO UI callers; rendered anchors in `dangerouslySetInnerHTML` were unguarded. `BodyPane` now intercepts anchor clicks: `linkClick` verdict → `allow` = `kiwi_open_external`; `requireConfirm` = warn banner w/ reasons + Open anyway/Cancel; `requireSandbox` = warn banner w/ reasons + Open in sandbox (→ `sandboxOpenLink`, session id + sanitized target + evidence shown); `deny` = blocked banner, nothing opens; IPC failure = fail-closed error banner. Displayed URL is query/fragment-stripped like the backend's `sanitized_link_target`. Demo mode shows a labeled "needs the backend" note — no fabricated verdicts. |
+| Attachment sandbox | FIXED — `AttachmentList` gains an "Open in sandbox" affordance per attachment (live only, `kiwi_sandbox_open_attachment`), plus a risk banner when `attachRisk` is noted/failed listing the bounded reason codes. |
+| Unsubscribe chip | PASS (unchanged) — `UnsubscribeChip` still calls `kiwi_message_unsubscribe` with real `UnsubscribeInfo` endpoints; dormant without them. |
+| useMailbox dead code | RESOLVED BY DELETION — `src/state/mailbox.ts` deleted. It was a 628-line duplicate of the mailbox logic `App.tsx` owns inline (mail-changed listener + loaders); zero imports anywhere (verified by grep across `src/` and `src-tauri/`). Adopting it would mean re-plumbing App.tsx's integrated loaders for no behavioral gain and churning a file other agents are actively editing. `normalizeCategory`/`parseUnsubscribe` live in `kiwi.ts`, unaffected. |
+
+### Contract notes (not gaps)
+
+- `auth`/`attachRisk`/`linkRisk` are absent until the message body is fetched+evaluated — the pill reads "not evaluated" rather than clean for those rows; deliberate and preserved.
+- `kiwi_open_external` without `sourceUrl` requires `https://`; message links are pre-gated by `linkClick` so this is the executor path, consistent with backend design.
+
+### Verification
+
+- `npm run build` (`tsc && vite build`) — green, 81 modules.

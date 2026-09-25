@@ -19,8 +19,8 @@
  * rows (avatar, unread dot, bold sender, category pill, snippet).
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
-import type { FindingInfo, MessageBodyView, MessageEnvelope, MessagePatch, OutboxItem, RenderedBodyView, SearchHit, UnsubscribeInfo } from "../kiwi";
+import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import type { AttachRiskView, FindingInfo, MessageBodyView, MessageEnvelope, MessagePatch, OutboxItem, RenderedBodyView, SearchHit, Severity, UnsubscribeInfo } from "../kiwi";
 import { severityLabel } from "../kiwi";
 import type { MessageCategory } from "../kiwi";
 import { listen } from "@tauri-apps/api/event";
@@ -190,6 +190,10 @@ export function MailboxView(props: MailboxProps) {
   }, [picked, allPicked]);
 
   const isTrash = folder === "trash" || (folder !== "outbox" && /trash|deleted|bin/i.test(folderLabel));
+  // T-284: the reader pill expands into the message's own evidence panel —
+  // auth/link/attachment hints carried on the envelope, never the findings feed.
+  const [evidenceOpen, setEvidenceOpen] = useState(false);
+  useEffect(() => setEvidenceOpen(false), [selected?.id]);
   const [contactNote, setContactNote] = useState<string | null>(null);
   useEffect(() => {
     setContactNote(null);
@@ -553,9 +557,9 @@ export function MailboxView(props: MailboxProps) {
             </div>
             <div className="em-reader-meta">
               <SecurityPill
-                level={selected.trust}
-                summary={`Account trust for ${selected.accountEmail}. Per-message session attribution is not yet exposed by the backend.`}
-                onOpen={() => props.onOpenFinding(0)}
+                level={messageEvidenceLevel(selected) ?? selected.trust}
+                summary={pillSummaryFor(selected)}
+                onOpen={() => setEvidenceOpen((o) => !o)}
               />
               <button type="button" className="em-linkbtn" onClick={() => void addSenderToContacts()} title="Save the sender to contacts">
                 Add to contacts
@@ -569,6 +573,7 @@ export function MailboxView(props: MailboxProps) {
                 Security details ({findings.length})
               </button>
             </div>
+            {evidenceOpen && <MessageEvidence m={selected} />}
             {contactNote && (
               <p role="status" className="em-note">
                 <small>{contactNote}</small>
@@ -1200,6 +1205,7 @@ function MessageCard({
                 demo={demo}
                 attachNote={attachNote}
                 attachBusy={attachBusy}
+                attachRisk={m.attachRisk ?? null}
                 onSaveAttachment={onSaveAttachment}
               />
               <BodyPane
@@ -1209,6 +1215,9 @@ function MessageCard({
                 renderError={renderError}
                 remoteAllowed={remoteAllowed}
                 demo={demo}
+                accountId={m.accountId}
+                folderId={m.folderId}
+                uid={m.uid}
                 onAllowRemote={onAllowRemote}
               />
             </>
@@ -1432,22 +1441,53 @@ function AttachmentList({
   demo,
   attachNote,
   attachBusy,
+  attachRisk,
   onSaveAttachment,
 }: {
   body: MessageBodyView;
   demo: boolean;
   attachNote: string | null;
   attachBusy: boolean;
+  /** T-254/T-284 message-level attachment evidence; null until evaluated. */
+  attachRisk: AttachRiskView | null;
   onSaveAttachment: (attachmentIndex: number, destPath: string) => void;
 }) {
   const [destPaths, setDestPaths] = useState<Record<number, string>>({});
+  const [sandboxBusy, setSandboxBusy] = useState(false);
+  const [sandboxNote, setSandboxNote] = useState<string | null>(null);
   // Reset per-message save state when the selection changes.
   useEffect(() => {
     setDestPaths({});
+    setSandboxNote(null);
   }, [body.folderId, body.uid]);
+
+  const openInSandbox = async (filename: string | null) => {
+    if (!filename || demo || !isTauri()) return;
+    setSandboxBusy(true);
+    try {
+      const s = await api.sandboxOpenAttachment(body.folderId, body.uid, filename);
+      setSandboxNote(
+        `Sandbox session ${s.sessionId} opened for ${s.target}.` +
+          (s.evidenceReasons.length > 0 ? ` Evidence: ${s.evidenceReasons.join(", ")}.` : ""),
+      );
+    } catch (e) {
+      setSandboxNote(`Sandbox open failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setSandboxBusy(false);
+    }
+  };
+
   if (body.attachments.length === 0) return null;
   return (
     <div aria-label="Attachments" className="em-attach">
+      {attachRisk && attachRisk.risk !== "clean" && (
+        <p className={`kiwi-banner ${attachRisk.risk === "failed" ? "error" : "warn"}`} role="status">
+          <small>
+            Attachment evidence: {attachRisk.risk}
+            {attachRisk.reasons.length > 0 ? ` — ${attachRisk.reasons.join(", ")}` : ""}. Detonate in the sandbox instead of saving.
+          </small>
+        </p>
+      )}
       {body.attachments.map((a, i) => (
         <p key={`${a.filename}-${i}`}>
           <small>
@@ -1470,6 +1510,14 @@ function AttachmentList({
               </label>{" "}
               <button type="button" disabled={attachBusy} onClick={() => onSaveAttachment(i, destPaths[i] ?? a.filename ?? "attachment")}>
                 {attachBusy ? "Saving…" : "Save"}
+              </button>{" "}
+              <button
+                type="button"
+                disabled={sandboxBusy || !a.filename}
+                title="Detonate inside the isolated sandbox (kiwi_sandbox_open_attachment)"
+                onClick={() => void openInSandbox(a.filename)}
+              >
+                {sandboxBusy ? "Opening…" : "Open in sandbox"}
               </button>
             </>
           )}
@@ -1485,8 +1533,109 @@ function AttachmentList({
           <small>{attachNote}</small>
         </p>
       )}
+      {sandboxNote && (
+        <p role="status">
+          <small>{sandboxNote}</small>
+        </p>
+      )}
     </div>
   );
+}
+
+/**
+ * T-284: derive the reader pill's verdict from the message's own evidence
+ * hints (T-232 auth, T-254 attachment, T-261 link). `null` when nothing has
+ * been evaluated — the pill then falls back to account trust and says so.
+ */
+function messageEvidenceLevel(m: MessageEnvelope): Severity | null {
+  const risks: string[] = [];
+  if (m.auth) risks.push(m.auth.authRisk);
+  if (m.linkRisk) risks.push(m.linkRisk.risk);
+  if (m.attachRisk) risks.push(m.attachRisk.risk);
+  if (risks.length === 0) return null;
+  if (risks.includes("failed")) return "danger";
+  if (risks.includes("noted")) return "warning";
+  return "secure";
+}
+
+function pillSummaryFor(m: MessageEnvelope): string {
+  if (messageEvidenceLevel(m) !== null) {
+    return "Per-message evidence evaluated — activate for the auth/link/attachment detail.";
+  }
+  return `Account trust for ${m.accountEmail}. This message's auth/link/attachment evidence has not been evaluated yet (fetched bodies only) — activate for detail.`;
+}
+
+/** T-284: expandable per-message evidence detail under the reader pill. */
+function MessageEvidence({ m }: { m: MessageEnvelope }) {
+  const a = m.auth;
+  const link = m.linkRisk;
+  const att = m.attachRisk;
+  if (!a && !link && !att) {
+    return (
+      <p className="em-note" role="status">
+        <small>
+          No per-message evidence yet — auth/link/attachment hints are evaluated when the body is fetched.{" "}
+          Account trust: {severityLabel(m.trust)}.
+        </small>
+      </p>
+    );
+  }
+  return (
+    <div className="kiwi-banner" role="region" aria-label="Message security evidence" style={{ margin: "0.3rem 0" }}>
+      {a && (
+        <p style={{ margin: 0 }}>
+          <small>
+            <strong>Authentication:</strong> SPF {a.spf} · DKIM {a.dkim}
+            {a.dkimDomain ? ` (${a.dkimDomain})` : ""} · DMARC {a.dmarc} (policy {a.dmarcPolicy})
+            {a.discrepancy ? " — upstream/local verdict discrepancy" : ""}
+            {a.upstream.untrustedRelay ? " — upstream auth via untrusted relay" : ""}
+            {a.upstream.malformedHeaders > 0 ? ` — ${a.upstream.malformedHeaders} malformed upstream header(s)` : ""}
+          </small>
+        </p>
+      )}
+      {link && (
+        <p style={{ margin: 0 }}>
+          <small>
+            <strong>Links:</strong> {link.risk}
+            {link.reasons.length > 0 ? ` — ${link.reasons.join(", ")}` : ""}
+          </small>
+        </p>
+      )}
+      {att && (
+        <p style={{ margin: 0 }}>
+          <small>
+            <strong>Attachments:</strong> {att.risk}
+            {att.reasons.length > 0 ? ` — ${att.reasons.join(", ")}` : ""}
+          </small>
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * T-284 link policy gate state machine. Every click on a rendered-body anchor
+ * goes through kiwi_link_click (message-scoped evidence) before anything
+ * opens: allow → kiwi_open_external; requireConfirm/requireSandbox → an
+ * explicit banner affordance; deny → blocked inline. Reasons are the bounded
+ * deterministic codes only — never raw URL or body text.
+ */
+type LinkGate =
+  | { phase: "checking"; url: string }
+  | { phase: "confirm"; url: string; reasons: string[] }
+  | { phase: "sandbox"; url: string; reasons: string[] }
+  | { phase: "deny"; reasons: string[] }
+  | { phase: "opened"; sessionId?: string; target?: string; reasons?: string[] }
+  | { phase: "note" | "error"; text: string };
+
+/** Matches the backend's sanitized_link_target: scheme://host/path only. */
+function displayUrl(raw: string): string {
+  try {
+    const u = new URL(raw);
+    return `${u.protocol}//${u.host}${u.pathname}`.slice(0, 120);
+  } catch {
+    return "(unparseable link)";
+  }
 }
 
 function BodyPane({
@@ -1496,6 +1645,9 @@ function BodyPane({
   renderError,
   remoteAllowed,
   demo,
+  accountId,
+  folderId,
+  uid,
   onAllowRemote,
 }: {
   body: MessageBodyView;
@@ -1504,9 +1656,58 @@ function BodyPane({
   renderError: string | null;
   remoteAllowed: boolean;
   demo: boolean;
+  /** Message coordinates for the message-scoped kiwi_link_click verdict. */
+  accountId: string;
+  folderId: number;
+  uid: number;
   onAllowRemote: (allowed: boolean) => void;
 }) {
   const [showSource, setShowSource] = useState(false);
+  const [gate, setGate] = useState<LinkGate | null>(null);
+  useEffect(() => setGate(null), [accountId, folderId, uid]);
+
+  const openExternal = async (url: string) => {
+    try {
+      await api.openExternal(url);
+      setGate({ phase: "opened" });
+    } catch (e) {
+      setGate({ phase: "error", text: e instanceof Error ? e.message : String(e) });
+    }
+  };
+
+  const openSandbox = async (url: string) => {
+    setGate({ phase: "checking", url });
+    try {
+      const s = await api.sandboxOpenLink(url);
+      setGate({ phase: "opened", sessionId: s.sessionId, target: s.target, reasons: s.evidenceReasons });
+    } catch (e) {
+      setGate({ phase: "error", text: e instanceof Error ? e.message : String(e) });
+    }
+  };
+
+  const onBodyClick = (e: ReactMouseEvent<HTMLElement>) => {
+    const a = (e.target as HTMLElement).closest("a[href]");
+    if (!a) return;
+    e.preventDefault();
+    const href = a.getAttribute("href") ?? "";
+    if (!href || href.startsWith("#")) return;
+    if (demo || !isTauri()) {
+      setGate({ phase: "note", text: "Link checks need the backend — run the Tauri app. Nothing was opened." });
+      return;
+    }
+    void (async () => {
+      setGate({ phase: "checking", url: href });
+      try {
+        const v = await api.linkClick(accountId, folderId, uid, href);
+        if (v.action === "allow") await openExternal(href);
+        else if (v.action === "requireConfirm") setGate({ phase: "confirm", url: href, reasons: v.reasons });
+        else if (v.action === "requireSandbox") setGate({ phase: "sandbox", url: href, reasons: v.reasons });
+        else setGate({ phase: "deny", reasons: v.reasons });
+      } catch (err) {
+        setGate({ phase: "error", text: err instanceof Error ? err.message : String(err) });
+      }
+    })();
+  };
   return (
     <>
       {renderLoading && (
@@ -1521,11 +1722,54 @@ function BodyPane({
       )}
       {rendered?.html ? (
         <>
+          {gate && (
+            <div
+              className={`kiwi-banner ${gate.phase === "deny" || gate.phase === "error" ? "error" : gate.phase === "confirm" || gate.phase === "sandbox" ? "warn" : ""}`}
+              role={gate.phase === "deny" || gate.phase === "error" ? "alert" : "status"}
+              aria-label="Link policy"
+            >
+              {gate.phase === "checking" && <small>Checking link safety…</small>}
+              {gate.phase === "confirm" && (
+                <>
+                  <small>
+                    Link needs confirmation — {displayUrl(gate.url)}
+                    {gate.reasons.length > 0 ? ` — evidence: ${gate.reasons.join(", ")}` : ""}.
+                  </small>{" "}
+                  <button type="button" onClick={() => void openExternal(gate.url)}>Open anyway</button>{" "}
+                  <button type="button" onClick={() => setGate(null)}>Cancel</button>
+                </>
+              )}
+              {gate.phase === "sandbox" && (
+                <>
+                  <small>
+                    Risky link — {displayUrl(gate.url)}
+                    {gate.reasons.length > 0 ? ` — evidence: ${gate.reasons.join(", ")}` : ""}. Open isolated instead of your browser?
+                  </small>{" "}
+                  <button type="button" onClick={() => void openSandbox(gate.url)}>Open in sandbox</button>{" "}
+                  <button type="button" onClick={() => setGate(null)}>Cancel</button>
+                </>
+              )}
+              {gate.phase === "deny" && (
+                <small>Link blocked{gate.reasons.length > 0 ? ` — evidence: ${gate.reasons.join(", ")}` : ""}. Nothing was opened.</small>
+              )}
+              {gate.phase === "opened" && (
+                <small>
+                  {gate.sessionId
+                    ? `Opened in sandbox session ${gate.sessionId} — ${gate.target ?? ""}${gate.reasons && gate.reasons.length > 0 ? `. Evidence: ${gate.reasons.join(", ")}` : ""}.`
+                    : "Opened in the system browser."}
+                </small>
+              )}
+              {gate.phase === "note" && <small>{gate.text}</small>}
+              {gate.phase === "error" && <small>Link check failed — {gate.text}. Nothing was opened.</small>}
+            </div>
+          )}
           <div
             className="kiwi-rendered-body"
+            onClick={onBodyClick}
             // Sanitized server-side by kiwi_render_body (ammonia strict
             // allowlist: no scripts/forms/iframes; remote images stripped
             // unless the per-account opt-in is on). Never raw htmlBody.
+            // Clicks are gated through kiwi_link_click before any open.
             dangerouslySetInnerHTML={{ __html: rendered.html }}
           />
           {(rendered.remoteImagesStripped > 0 || remoteAllowed) && !demo && (
