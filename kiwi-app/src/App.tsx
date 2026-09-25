@@ -8,7 +8,8 @@
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, IpcError, isTauri, onMailChanged } from "./ipc";
-import { applyUiPrefs, loadPref, savePref } from "./prefs";
+import { applyUiPrefs } from "./prefs";
+import { useTheme } from "./themes";
 import { useToasts } from "./state/toasts";
 import { DEMO_TRUST, useSession } from "./state/session";
 import { useAccountModel } from "./state/accounts";
@@ -31,6 +32,7 @@ import type {
   OutboxItem,
   RemoteContentView,
   RenderedBodyView,
+  SearchHit,
   SecurityEventRow,
   Severity,
   SnoozePreset,
@@ -98,7 +100,10 @@ function toEnvelope(
 
 export default function App() {
   const route = useRoute();
-  const [theme, setTheme] = useState(() => loadPref<string>("kiwi.theme", "light"));
+  // T-275: theme is owned by useTheme() (src/themes) — persists kiwi.theme,
+  // applies resolved data-theme, accepts installed-package ids, and follows
+  // the legacy kiwi-theme event so Settings/TopBar stay in sync.
+  const { theme, setTheme } = useTheme();
   const { toasts, notify, dismissToast } = useToasts();
   const {
     mode,
@@ -142,6 +147,9 @@ export default function App() {
   const [syncNote, setSyncNote] = useState<string | null>(null);
   const [flagOverrides, setFlagOverrides] = useState<Record<string, { starred?: boolean; unread?: boolean }>>({});
   const [query, setQuery] = useState("");
+  const [searchHits, setSearchHits] = useState<SearchHit[] | null>(null);
+  const [searchBusy, setSearchBusy] = useState(false);
+  const [searchNote, setSearchNote] = useState<string | null>(null);
   const [findingIndex, setFindingIndex] = useState<number | null>(null);
   const [findingDetail, setFindingDetail] = useState<FindingDetailView | null>(null);
   const [findingDetailError, setFindingDetailError] = useState<string | null>(null);
@@ -155,23 +163,9 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
 
-  // UI prefs (theme/accent/density) apply from storage; the theme state
-  // writes through first so applyUiPrefs reads the fresh value.
+  // UI prefs (accent/density) apply from storage on mount; data-theme is
+  // applied by useTheme (above) — installed theme ids resolve via registry.
   useEffect(() => applyUiPrefs(), []);
-  useEffect(() => {
-    savePref("kiwi.theme", theme);
-    applyUiPrefs();
-  }, [theme]);
-
-  // Settings → Appearance writes through the same pref; follow it live.
-  useEffect(() => {
-    const onTheme = (e: Event) => {
-      const v = (e as CustomEvent).detail;
-      if (typeof v === "string" && (v === "light" || v === "dark" || v === "system")) setTheme(v);
-    };
-    window.addEventListener("kiwi-theme", onTheme);
-    return () => window.removeEventListener("kiwi-theme", onTheme);
-  }, []);
 
   /* ---------- live loaders ---------- */
 
@@ -342,6 +336,45 @@ export default function App() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [demo, trust.locked, folderKey, accountsRaw, folderLists, emailById, mailboxRev]);
+
+  // T-231: titlebar search pill → real FTS (kiwi_search_messages), debounced
+  // 300 ms. Live-only — demo keeps its labeled client-side filter, and a
+  // backend failure surfaces as a list-pane banner, never fabricated rows.
+  // `searchHits` stays null while inactive so the mailbox can distinguish
+  // "not searching" from "searched, zero hits".
+  const searchActive = !demo && !trust.locked && route.name === "mail" && query.trim() !== "";
+  useEffect(() => {
+    if (!searchActive) {
+      setSearchHits(null);
+      setSearchBusy(false);
+      setSearchNote(null);
+      return;
+    }
+    let cancelled = false;
+    setSearchBusy(true);
+    const t = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const hits = await api.searchMessages(query.trim(), 50);
+          if (!cancelled) {
+            setSearchHits(hits);
+            setSearchNote(null);
+          }
+        } catch (e) {
+          if (!cancelled) {
+            setSearchHits([]);
+            setSearchNote(`Search failed: ${e instanceof Error ? e.message : String(e)}`);
+          }
+        } finally {
+          if (!cancelled) setSearchBusy(false);
+        }
+      })();
+    }, 300);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(t);
+    };
+  }, [searchActive, query]);
 
   const selectedId = route.name === "mail" ? route.messageId : undefined;
 
@@ -879,12 +912,14 @@ export default function App() {
   }, [demo, folderKey, messages, flagOverrides]);
 
   const visibleMessages = useMemo(() => {
+    // T-231: live mode delegates search to kiwi_search_messages (hit rows
+    // render in the list pane); the substring filter is the demo path only.
     const q = query.trim().toLowerCase();
-    if (!q) return baseMessages;
+    if (!q || !demo) return baseMessages;
     return baseMessages.filter(
       (m) => m.from.toLowerCase().includes(q) || m.subject.toLowerCase().includes(q) || m.snippet.toLowerCase().includes(q),
     );
-  }, [baseMessages, query]);
+  }, [baseMessages, query, demo]);
 
   const doSync = useCallback(async () => {
     if (demo) {
@@ -992,12 +1027,10 @@ export default function App() {
   /* ---------- command palette actions (T-153) ---------- */
 
   const cycleTheme = useCallback(() => {
-    setTheme((t) => {
-      const next = t === "dark" ? "light" : t === "light" ? "system" : "dark";
-      notify("info", `Theme: ${next}.`);
-      return next;
-    });
-  }, [notify]);
+    const next = theme === "dark" ? "light" : theme === "light" ? "system" : "dark";
+    setTheme(next);
+    notify("info", `Theme: ${next}.`);
+  }, [theme, setTheme, notify]);
 
   const paletteActions: PaletteAction[] = useMemo(() => {
     const list: PaletteAction[] = [
@@ -1136,8 +1169,6 @@ export default function App() {
         demo={demo}
         query={query}
         onQuery={setQuery}
-        theme={theme}
-        onTheme={setTheme}
         onOpenPalette={() => setPaletteOpen(true)}
         onOpenShortcuts={() => setHelpOpen(true)}
         onSubmitSearch={() => navigate({ name: "search" })}
@@ -1207,6 +1238,10 @@ export default function App() {
             folder={folderKey}
             folderLabel={folderLabel}
             messages={visibleMessages}
+            searchQuery={query}
+            searchResults={searchActive ? (searchHits ?? []) : null}
+            searchBusy={searchActive && searchBusy}
+            searchNote={searchNote}
             messagesLoading={messagesLoading}
             messagesError={messagesError}
             selectedId={selectedId}

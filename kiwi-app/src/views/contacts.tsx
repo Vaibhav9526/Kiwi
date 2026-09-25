@@ -6,7 +6,10 @@
  * labeled localStorage book (`src/contacts.ts`, with seeded demo cards)
  * is reachable only when `demo` is set — a live account never sees it.
  * The search box filters the loaded list client-side (bounded at 500);
- * `kiwi_search_contacts` remains for larger books.
+ * `kiwi_search_contacts` remains for larger books. Import keeps a
+ * client-side parse only for the preview table — the write itself goes
+ * through `kiwi_import_vcards` (server-side dedupe + issue report);
+ * export uses `kiwi_export_vcards`.
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -95,6 +98,7 @@ export function ContactsView({
   const [showIO, setShowIO] = useState(false);
   const [preview, setPreview] = useState<VCardParse | null>(null);
   const [previewName, setPreviewName] = useState("");
+  const [previewText, setPreviewText] = useState("");
   const [ioNote, setIoNote] = useState<string | null>(null);
 
   useEffect(() => {
@@ -247,11 +251,13 @@ export function ContactsView({
   const set = (k: keyof FormState) => (e: { target: { value: string } }) =>
     setForm((f) => ({ ...f, [k]: e.target.value }));
 
-  /** .vcf picker (T-176): typed path via the platform file input, 1 MiB cap,
-    * parsed client-side (no import IPC exists yet) into a preview table. */
+  /** .vcf picker (T-176): platform file input, 1 MiB cap. Parsed
+    * client-side into a preview table; the raw text is kept so live
+    * import can hand the backend the original payload unchanged. */
   const pickFile = (files: FileList | null) => {
     setIoNote(null);
     setPreview(null);
+    setPreviewText("");
     const file = files?.[0];
     if (!file) return;
     if (file.size > MAX_VCARD_BYTES) {
@@ -262,7 +268,9 @@ export function ContactsView({
     const reader = new FileReader();
     reader.onload = () => {
       try {
-        setPreview(parseVCard(typeof reader.result === "string" ? reader.result : ""));
+        const text = typeof reader.result === "string" ? reader.result : "";
+        setPreview(parseVCard(text));
+        setPreviewText(text);
       } catch {
         setIoNote(`Could not read "${file.name}" as text.`);
       }
@@ -303,23 +311,20 @@ export function ContactsView({
         setPreview(null);
         return;
       }
-      let added = 0;
-      let failed = 0;
-      for (const input of preview.contacts) {
-        try {
-          await api.createContact(input);
-          added++;
-        } catch {
-          failed++;
-        }
-      }
+      // Live import — kiwi_import_vcards re-parses the original payload
+      // server-side (dedupe + per-card issues come from the contract).
+      const r = await api.importVcards(previewText);
       setContacts(await api.listContacts(500));
-      const msg = failed
-        ? `Import done: ${added} imported, ${failed} failed.`
-        : `Import done: ${added} imported.`;
+      const msg = r.issues.length
+        ? `Import done: ${r.contacts.length} contact(s) imported, ${r.issues.length} issue(s) — ${r.issues
+            .slice(0, 2)
+            .map((i) => `card ${i.cardIndex + 1}: ${i.detail}`)
+            .join("; ")}.`
+        : `Import done: ${r.contacts.length} contact(s) imported.`;
       setIoNote(msg);
-      onNotify(failed ? "warn" : "ok", msg);
+      onNotify(r.issues.length ? "warn" : "ok", msg);
       setPreview(null);
+      setPreviewText("");
     } catch (e) {
       setIoNote(`Import failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -327,8 +332,21 @@ export function ContactsView({
     }
   };
 
-  const exportAll = () => {
-    const text = exportVCard(contacts);
+  /** Export: live mode pulls the canonical server serialization
+    * (kiwi_export_vcards); demo serializes the local book client-side. */
+  const exportAll = async () => {
+    setIoNote(null);
+    let text: string;
+    if (demo) {
+      text = exportVCard(contacts);
+    } else {
+      try {
+        text = (await api.exportVcards()).vcard;
+      } catch (e) {
+        setIoNote(`Export failed: ${e instanceof Error ? e.message : String(e)}`);
+        return;
+      }
+    }
     if (!text) {
       setIoNote("Nothing to export — the book is empty.");
       return;
@@ -497,7 +515,7 @@ export function ContactsView({
               </>
             )}
             <p>
-              <button type="button" onClick={exportAll} disabled={contacts.length === 0}>
+              <button type="button" onClick={() => void exportAll()} disabled={contacts.length === 0}>
                 Export all ({contacts.length}) as .vcf
               </button>{" "}
               <small style={{ color: "var(--kiwi-text-secondary)" }}>

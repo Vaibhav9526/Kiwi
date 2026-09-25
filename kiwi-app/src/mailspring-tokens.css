@@ -38,6 +38,10 @@
   --kiwi-ms-accent: #419bf9;
   --kiwi-ms-accent-active: #3187e1;
   --kiwi-ms-accent-emphasis: #5b90fb;
+  /* T-268: primary-action token (eM "+New" = orange) — distinct from the
+   * selection accent; theme packages override. */
+  --kiwi-ms-primary: #e8781e;
+  --kiwi-ms-primary-text: #ffffff;
   --kiwi-ms-icon-muted: #919191;
   --kiwi-ms-info: #3187e1;
   --kiwi-ms-success: #5cb346;
@@ -178,6 +182,8 @@
   --kiwi-ms-accent: #eaa132;
   --kiwi-ms-accent-active: #cf8a26;
   --kiwi-ms-accent-emphasis: #f2c063;
+  --kiwi-ms-primary: #e8781e;
+  --kiwi-ms-primary-text: #ffffff;
   --kiwi-ms-icon-muted: #8e8ca3;
   --kiwi-ms-info: #58b660;
   --kiwi-ms-success: #34d399;

@@ -20,7 +20,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import type { FindingInfo, MessageBodyView, MessageEnvelope, MessagePatch, OutboxItem, RenderedBodyView, UnsubscribeInfo } from "../kiwi";
+import type { FindingInfo, MessageBodyView, MessageEnvelope, MessagePatch, OutboxItem, RenderedBodyView, SearchHit, UnsubscribeInfo } from "../kiwi";
 import { severityLabel } from "../kiwi";
 import type { MessageCategory } from "../kiwi";
 import { listen } from "@tauri-apps/api/event";
@@ -101,6 +101,12 @@ export interface MailboxProps {
   folder: string;
   folderLabel: string;
   messages: MessageEnvelope[];
+  /** T-231: live FTS hits (kiwi_search_messages). `null` = not searching —
+   * the pane shows the normal folder list; `[]` = searched, zero hits. */
+  searchResults: SearchHit[] | null;
+  searchBusy: boolean;
+  searchNote: string | null;
+  searchQuery: string;
   messagesLoading: boolean;
   messagesError: string | null;
   selectedId?: string;
@@ -137,6 +143,8 @@ export interface MailboxProps {
 
 export function MailboxView(props: MailboxProps) {
   const { folder, folderLabel, messages: allMessages, selectedId, findings, locked } = props;
+  const searchHits = props.searchResults;
+  const searching = searchHits !== null;
   // T-267 eM tabs: Primary | Other (+N non-primary). The T-201 category
   // slugs still arrive per message — "Other" aggregates the four
   // non-primary slugs, and each row keeps its colored category pill.
@@ -287,9 +295,11 @@ export function MailboxView(props: MailboxProps) {
       <section aria-label={`${folderLabel} message list`} className="em-list-col">
         <div className="em-list-head">
           <h1 ref={headingRef} tabIndex={-1} className="em-pane-title">
-            {folderLabel}{" "}
+            {searching ? "Search results" : folderLabel}{" "}
             <small className="em-pane-sub">
-              ({folder === "outbox" ? props.outbox.length : `${messages.length} of ${allMessages.length}`})
+              {searching
+                ? `(${searchHits.length} hit(s) — “${props.searchQuery.trim()}”)`
+                : `(${folder === "outbox" ? props.outbox.length : `${messages.length} of ${allMessages.length}`})`}
             </small>
           </h1>
           {folder === "outbox" && (
@@ -298,7 +308,7 @@ export function MailboxView(props: MailboxProps) {
             </button>
           )}
         </div>
-        {folder !== "outbox" && (
+        {folder !== "outbox" && !searching && (
           <div className="em-list-tabs" role="tablist" aria-label="Inbox categories (loaded messages)">
             <button
               type="button"
@@ -365,7 +375,7 @@ export function MailboxView(props: MailboxProps) {
             </span>
           </div>
         )}
-        {picked.length > 0 && folder !== "outbox" && (
+        {picked.length > 0 && folder !== "outbox" && !searching && (
           <BulkBar
             count={picked.length}
             inTrash={isTrash}
@@ -399,6 +409,35 @@ export function MailboxView(props: MailboxProps) {
         )}
         {folder === "outbox" ? (
           <OutboxList outbox={props.outbox} onCancelSend={props.onCancelSend} />
+        ) : searching ? (
+          <>
+            {props.searchBusy && (
+              <div role="status" aria-label="Searching messages">
+                <div className="kiwi-skeleton" />
+                <div className="kiwi-skeleton" />
+              </div>
+            )}
+            {props.searchNote && (
+              <div className="kiwi-banner error" role="alert">
+                <small>{props.searchNote}</small>
+              </div>
+            )}
+            {!props.searchBusy && !props.searchNote && searchHits.length === 0 && (
+              <div className="kiwi-empty">
+                <span className="kiwi-empty-icon em-empty-icon" aria-hidden="true">
+                  <IconMail size={28} />
+                </span>
+                <strong>No matches</strong>
+                <br />
+                <small>Nothing in the mailbox matches “{props.searchQuery.trim()}”.</small>
+              </div>
+            )}
+            <div className="em-rows" role="listbox" aria-label={`Search results for ${props.searchQuery.trim()}`}>
+              {searchHits.map((h) => (
+                <SearchHitRow key={`${h.accountId}:${h.folderId}:${h.uid}`} hit={h} />
+              ))}
+            </div>
+          </>
         ) : (
           <>
             {props.messagesLoading && (
@@ -653,6 +692,74 @@ function DateGroup({
 }
 
 /* ---------------- eM-style message row ---------------- */
+
+/**
+ * T-231 FTS hit row (kiwi_search_messages). Hits are not envelopes — no
+ * unread/star/category state exists on SearchHit, so the row shows only
+ * what the backend returned (sender, subject, snippet, date, paperclip)
+ * and navigates to the owning `accountId:folderId` folder + message.
+ * Hits lacking `accountId` (contract permits absence) can't resolve their
+ * folder — they render inert rather than navigating somewhere wrong.
+ */
+function SearchHitRow({ hit }: { hit: SearchHit }) {
+  const openable = hit.accountId !== "";
+  const open = () => {
+    if (!openable) return;
+    navigate({
+      name: "mail",
+      folder: `${hit.accountId}:${hit.folderId}`,
+      messageId: `${hit.accountId}:${hit.folderId}:${hit.uid}`,
+    });
+  };
+  const dateIso = hit.dateUnix !== null ? new Date(hit.dateUnix * 1000).toISOString() : "";
+  return (
+    <article
+      role="option"
+      className="em-row"
+      aria-selected={false}
+      aria-label={`${hit.from}, ${hit.subject}`}
+      aria-disabled={!openable}
+      title={openable ? hit.subject : "Cannot open — the search hit lacks an account id"}
+      onClick={open}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") open();
+      }}
+      tabIndex={0}
+    >
+      <span className="em-dot" aria-hidden="true" />
+      <span className="em-avatar" aria-hidden="true" style={{ background: avatarTint(hit.from) }}>
+        {senderName(hit.from).slice(0, 1).toUpperCase() || "?"}
+      </span>
+      <span className="em-row-text">
+        <span className="em-row-line em-row-top">
+          <span className="em-row-sender" title={hit.from}>
+            {senderName(hit.from)}
+          </span>
+          <time className="em-row-date" title={dateIso}>
+            {formatDateShort(dateIso)}
+          </time>
+        </span>
+        <span className="em-row-line">
+          <span className="em-row-subject" title={hit.subject}>
+            {hit.subject}
+          </span>
+          <span className="em-row-marks">
+            {hit.hasAttachments && (
+              <span title="Has attachments" aria-label="Has attachments">
+                <IconPaperclip size={11} />
+              </span>
+            )}
+          </span>
+        </span>
+        <span className="em-row-line em-row-sub">
+          <span className="em-row-snippet" title={hit.snippet}>
+            {hit.snippet}
+          </span>
+        </span>
+      </span>
+    </article>
+  );
+}
 
 function RowShell({
   id,

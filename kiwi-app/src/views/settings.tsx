@@ -18,6 +18,7 @@ import { FiltersView } from "./filters";
 import { IntegrationsView } from "./integrations";
 import { SHORTCUT_ROWS } from "../components/shortcuts";
 import { Icon } from "../components/icons/index";
+import { ThemePicker, useTheme } from "../themes";
 
 // T-191 tabbed preferences (Mailspring idiom): the eight legacy sections
 // fold into seven tabs — General (general + notifications + privacy +
@@ -52,7 +53,10 @@ export function SettingsView({
   filters?: ComponentProps<typeof FiltersView>;
 }) {
   const [section, setSection] = useState<Section>("General");
-  const [themeDefault, setThemeDefault] = useState(() => loadPref("kiwi.theme", "dark"));
+  // T-275: theme is owned by useTheme() — the ThemePicker (Appearance tab)
+  // and TopBar select write through it; backend bag merges dispatch
+  // kiwi-theme via applyPrefsBag, so no manual pref re-read is needed.
+  const { theme: themeDefault } = useTheme();
   const [grace, setGrace] = useState(() => loadPref("kiwi.grace", "10"));
   const [minTls, setMinTls] = useState(() => loadPref("kiwi.minTls", "tls1.2"));
   const [templates, setTemplates] = useState<string[]>(() => loadPref("kiwi.templates", ["Status update", "Meeting request"]));
@@ -87,7 +91,6 @@ export function SettingsView({
   const [prefsSync, setPrefsSync] = useState<"local" | "synced" | "unavailable">("local");
   const pushTimer = useRef<number | null>(null);
 
-  useEffect(() => savePref("kiwi.theme", themeDefault), [themeDefault]);
   useEffect(() => savePref("kiwi.grace", grace), [grace]);
   useEffect(() => savePref("kiwi.minTls", minTls), [minTls]);
   useEffect(() => savePref("kiwi.templates", templates), [templates]);
@@ -137,7 +140,7 @@ export function SettingsView({
       try {
         const bag = await api.getPrefs();
         applyPrefsBag(bag);
-        setThemeDefault(loadPref("kiwi.theme", "dark"));
+        // theme state re-syncs via the kiwi-theme event applyPrefsBag emits.
         setGrace(loadPref("kiwi.grace", "10"));
         setMinTls(loadPref("kiwi.minTls", "tls1.2"));
         setTemplates(loadPref("kiwi.templates", ["Status update", "Meeting request"]));
@@ -485,27 +488,9 @@ export function SettingsView({
 
         {section === "Appearance" && (
           <>
-            <p>
-              <label>
-                Theme:{" "}
-                <select
-                  value={themeDefault}
-                  onChange={(e) => {
-                    setThemeDefault(e.target.value);
-                    // App owns the live theme state; mirror here for next launch.
-                    try {
-                      window.dispatchEvent(new CustomEvent("kiwi-theme", { detail: e.target.value }));
-                    } catch {
-                      // Non-fatal — next launch picks it up.
-                    }
-                  }}
-                >
-                  <option value="system">System</option>
-                  <option value="light">Light</option>
-                  <option value="dark">Dark</option>
-                </select>
-              </label>
-            </p>
+            {/* T-268 picker (T-275 landed): stock + sideloaded theme packages,
+                System option, instant apply via data-theme on root. */}
+            <ThemePicker />
             <p>
               <label>
                 Accent intensity:{" "}

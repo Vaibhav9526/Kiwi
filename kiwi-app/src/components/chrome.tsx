@@ -14,6 +14,7 @@ import type { Severity, SnoozePreset, TrustState } from "../kiwi";
 import { severityGlyph, severityLabel } from "../kiwi";
 import { navigate } from "../router";
 import { loadPref, savePref } from "../prefs";
+import { useTheme } from "../themes";
 import {
   IconArchive,
   IconBolt,
@@ -187,8 +188,6 @@ export interface TopBarProps {
   demo: boolean;
   query: string;
   onQuery: (q: string) => void;
-  theme: string;
-  onTheme: (t: string) => void;
   onOpenPalette: () => void;
   onOpenShortcuts: () => void;
   onSubmitSearch: () => void;
@@ -265,7 +264,10 @@ function ToolBtn({
 }
 
 export function TopBar(props: TopBarProps) {
-  const { trust, demo, query, onQuery, onSubmitSearch, theme, onTheme, onSync, syncing } = props;
+  const { trust, demo, query, onQuery, onSubmitSearch, onSync, syncing } = props;
+  // T-275: theme self-serves from useTheme() — the select lists every
+  // registered theme package (stock + sideloaded), not just the trio.
+  const { theme, resolvedTheme, themes, setTheme } = useTheme();
   const sel = props.hasSelection;
   const composeActions: MenuEntry[] = [
     { label: "Reply", run: props.onReply, disabled: !sel },
@@ -303,10 +305,13 @@ export function TopBar(props: TopBarProps) {
           )}
           <label className="em-theme-label">
             Theme{" "}
-            <select value={theme} onChange={(e) => onTheme(e.target.value)} aria-label="Color theme">
-              <option value="light">Light</option>
-              <option value="dark">Dark</option>
-              <option value="system">System</option>
+            <select value={theme} onChange={(e) => setTheme(e.target.value)} aria-label="Color theme">
+              <option value="system">System ({resolvedTheme})</option>
+              {themes.map((t) => (
+                <option key={t.id} value={t.id}>
+                  {t.name}
+                </option>
+              ))}
             </select>
           </label>
           <button type="button" className="em-iconbtn" onClick={props.onOpenPalette} aria-label="Open command palette" title="Commands (Ctrl+K)">

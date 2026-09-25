@@ -4,8 +4,8 @@
  * `collapse-right`, `unreplied` landed in the registry — stubs removed.
  * Stable contract: `{size?, className?, title?}`.
  */
-// NOTE: "./icons" resolves to THIS file (icons.tsx shadows icons/) — the
-// registry lives behind the explicit directory specifier.
+// NOTE: keep the explicit "./icons/index" specifier — bare "./icons"
+// resolves to the directory barrel, which is correct but less obvious.
 import { Icon } from "./icons/index";
 import type { IconName } from "./icons/index";
 

@@ -190,3 +190,65 @@ Full per-site mapping in `src/components/icons/README.md`.
   A24's file, left untouched.
 - `notify.show` host handler in the harness is a recording stub — the
   production mapping to toasts is a host-side wiring task (UI owner).
+
+## 2026-09-25 — T-275: T-268 seam landing (A24 files transferred)
+
+**Status:** complete — seams landed + live-verified via CDP screenshots.
+
+### Delivered
+
+- `views/settings.tsx` — Appearance tab mounts `<ThemePicker/>` (replaces the
+  hardcoded light/dark/system `<select>`); `themeDefault` state removed →
+  `useTheme().theme` (hook persists the pref + applies `data-theme`); backend
+  pull no longer re-reads the pref manually — `applyPrefsBag` now emits
+  `kiwi-theme` so bag-carried theme ids (incl. custom) apply live.
+- `App.tsx` — local `useState` theme + `kiwi-theme` listener + `light|dark|
+  system` filter removed → `useTheme()`; `cycleTheme` uses `setTheme(next)`;
+  TopBar's `theme`/`onTheme` props dropped.
+- `components/chrome.tsx` — TopBar self-serves `useTheme()`; theme select now
+  lists every registered package (System + stock + sideloaded) with resolved
+  name, not a hardcoded trio.
+- `prefs.ts` — `applyUiPrefs` no longer writes `data-theme` (themes module is
+  the sole writer → uninstalled-id fallback can't be overwritten); keeps
+  accent/density/shell attrs. `applyPrefsBag` dispatches `kiwi-theme` when the
+  bag carries `kiwi.theme`.
+- `views/integrations.tsx` — last rendered glyph (`▾`/`▸` disclosure) →
+  `Icon chevron-down/chevron-right`. Residual inventory: all remaining emoji/
+  arrows are comments, keyboard-hint text (`↑↓`, `→` in prose), or the
+  documented `severityGlyph` text fallback — intentional, not chrome.
+
+### Live verification (CDP, artifacts/t275/)
+
+- Boot: `data-theme=light` (default landed) — `01-mail-light.png`.
+- `kiwi-theme(dark)` event → `data-theme=dark` — `02-mail-dark.png`
+  (flagship palette: deep black, amber accents, orange primary).
+- Settings→Appearance: picker renders 3 radios (System + KIWI Light +
+  KIWI Flagship Dark w/ swatches) — `03-settings-appearance.png`.
+- Clicking "KIWI Dark" radio → `data-theme=dark` live —
+  `04-settings-dark-picked.png`.
+- Ghost theme id (`ghost-theme`) → resolves to `light` via registry
+  fallback — installed-package ids verified end-to-end.
+- Visual pass vs `docs/ui/reference-layout.png`: 4-pane boundaries
+  (folders | list | reader | agenda), toolbar order (+New orange primary →
+  Refresh → Reply/ReplyAll/Forward/Mark/Archive/Snooze/QuickActions/Delete
+  w/ carets), list rows (avatar, sender, category pill, preview, date,
+  badge), reader card (subject + security pills + To-line + body +
+  actions), agenda rail (Add new task + date groups + checks/flags),
+  bottom nav strip + status icons — all land. Deviations are spec-level
+  (KIWI trust chip/demo pill/theme select in topbar; F2 Primary/Other
+  tabs), not fidelity bugs.
+
+### Commands run
+
+- `npx tsc` — 0 errors repo-wide.
+- `npx vite build` — green (381 kB bundle).
+- `node src/plugins/e2e/run.mjs` — 21/21.
+- headless-shell CDP drive (`artifacts/t275/shot.mjs`) — 4 screenshots +
+  4 live attribute assertions, all pass.
+
+### Notes
+
+- A vite dev server was already live on :1420 (stale agent process) —
+  reused for the visual pass; did not kill it.
+- `shell-icons.tsx`'s stale "icons.tsx shadows icons/" NOTE comment left
+  as-is in T-274; file is now transferred — comment is harmless.

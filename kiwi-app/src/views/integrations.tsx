@@ -265,7 +265,7 @@ function TempMailPanel({ live }: { live: boolean }) {
                     onClick={() => void fetchMsg(m.mailId)}
                     aria-expanded={openId === m.mailId}
                   >
-                    {openId === m.mailId ? "▾" : "▸"}
+                    <Icon name={openId === m.mailId ? "chevron-down" : "chevron-right"} size={12} />
                   </button>{" "}
                   <strong>
                     {m.from || "(unknown)"}
