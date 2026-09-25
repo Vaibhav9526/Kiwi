@@ -118,7 +118,7 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-189 | Snooze UI | Agent 5 | held — returns in TB idiom post-T-191 | `kiwi-app/src/` | T-182 |
 | T-190 | Mailspring archaeology: ui-mailspring-map.md + mailspring-tokens.css (clean-room) | Agent 12 | done | `source/comm/` → `docs/` | — |
 | T-191 | Mailspring-faithful rebuild (sidebar/rows/reader/composer/prefs/motion/keys/CSP) | Agent 12 | done | `kiwi-app/src/` | T-190 |
-| T-192 | KIWI security surfaces in Mailspring idiom (pill, banner, lock, security center, approvals badge) | Agent 12 | in-progress | `kiwi-app/src/` | T-191 |
+| T-192 | KIWI security surfaces in Mailspring idiom | Agent 12 | done | `kiwi-app/src/` | T-191 |
 | T-193 | kiwi-admin H1-H8 fixes per Lead rulings + M1-M7 + e2e regression guards | Agent 6 | open | `kiwi-admin/` | T-187 |
 | T-194 | Mobile authenticator screens: pairing QR, approvals, devices, history (mock transport) | Agent 4 (Nemotron 3.5 Lightning) | open | `mobile/` | T-136 |
 | T-195 | OAuth2 acquisition: trait + Google loopback-PKCE + Microsoft device-code + CredentialStore lifecycle | Agent 19 | done (92/92) | `kiwi-autoconfig/`, `kiwi-mail/` | T-183 |
@@ -165,7 +165,7 @@ rebuild context. Lead handle is now term_c20c6737.
 | Agent | Model | Terminal | Assignment |
 |---|---|---|---|
 | 11 | Devin Pro | d869b293 | T-226 done → T-227 integrations IPC |
-| 12 | Muse Spark 1.3 xhigh | 4cc53da5 | T-191 done → T-192 security surfaces |
+| 12 | Muse Spark 1.3 xhigh | 4cc53da5 | T-192 done → T-231 live-data wiring |
 | 13 | Muse Spark 1.3 xhigh | e5adf4d9 | T-193 admin H1-H8 + M fixes |
 | 14 | OpenCode Zen xhigh | e26f119b | T-201 done → T-202 F3 unsubscribe |
 | 15 | Devin Pro | c47aa1d7 | T-181 done → T-228 rules engine core |
@@ -188,3 +188,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-228 | F1 rules engine core: predicate AST + ordered eval + block-list-first + store table/CRUD (pure, deterministic) | Agent 15 | open | `kiwi-mail/src/rules/` | T-181 |
 | T-229 | Review oauth2.md contract for drift vs Agent 19 impl when it lands | Agent 18 | queued | `docs/contracts/` | T-195 |
 | T-230 | OAuth2 IPC commands (begin/poll/status) + account-wizard seam (autoconfig oauth2 → flow → CredentialStore) | Agent 19 | open | `kiwi-app/src-tauri/`, `ipc.md` | T-195 |
+| T-231 | Live-data wiring: category tabs UI (F2), search→real IPC, contacts view→IPC, unsubscribe chip | Agent 12 | open | `kiwi-app/src/` | T-192,T-201,T-202 |
