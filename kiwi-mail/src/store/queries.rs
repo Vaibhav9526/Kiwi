@@ -49,6 +49,60 @@ fn map_message_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<MessageMeta> {
     })
 }
 
+/// Shared `folders` row → [`FolderMeta`] mapping.
+fn map_folder_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<FolderMeta> {
+    let origin: String = r.get(4)?;
+    let parent_id: Option<i64> = r.get(2)?;
+    Ok(FolderMeta {
+        id: r.get(0)?,
+        account_id: r.get(1)?,
+        parent_id,
+        name: r.get(3)?,
+        origin: FolderOrigin::from_str(&origin).map_err(|_| rusqlite::Error::InvalidQuery)?,
+        uid_validity: r.get::<_, Option<i64>>(5)?.map(|v| v as u64),
+        uid_next: r.get::<_, Option<i64>>(6)?.map(|v| v as u64),
+        highest_uid: r.get::<_, i64>(7)? as u64,
+    })
+}
+
+/// Recursive directory copy — `std::fs` has no dir copy. Attachment payload
+/// dirs are shallow trees of extracted parts; every entry is copied
+/// verbatim and the destination is created on demand.
+fn copy_dir_all(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let target = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_all(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), &target)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_local_folder_name(name: &str) -> Result<String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() || trimmed == "." || trimmed == ".." {
+        return Err(MailError::InvalidInput("folder name is empty".into()));
+    }
+    if trimmed.len() > 255 {
+        return Err(MailError::InvalidInput(
+            "folder name exceeds 255 bytes".into(),
+        ));
+    }
+    if trimmed.contains(['/', '\\']) || trimmed.chars().any(char::is_control) {
+        return Err(MailError::InvalidInput(
+            "folder name contains a path separator or control character".into(),
+        ));
+    }
+    if is_system_folder_name(trimmed) {
+        return Err(MailError::InvalidInput("folder name is reserved".into()));
+    }
+    Ok(trimmed.to_string())
+}
+
 impl MailStore {
     // -- accounts -----------------------------------------------------------
 
@@ -128,37 +182,83 @@ impl MailStore {
 
     // -- folders ------------------------------------------------------------
 
-    /// Insert-or-get a folder row; returns its id.
+    /// Insert-or-get a server/sync-owned folder row; returns its id.
     pub fn ensure_folder(&self, account_id: &str, name: &str) -> Result<i64> {
+        let origin = if is_system_folder_name(name) {
+            FolderOrigin::System
+        } else {
+            FolderOrigin::Remote
+        };
         self.conn.execute(
-            "INSERT OR IGNORE INTO folders (account_id, name) VALUES (?1, ?2)",
-            params![account_id, name],
+            "INSERT OR IGNORE INTO folders (account_id, name, origin)
+             VALUES (?1, ?2, ?3)",
+            params![account_id, name, origin.as_str()],
         )?;
         let id: i64 = self.conn.query_row(
-            "SELECT id FROM folders WHERE account_id = ?1 AND name = ?2",
+            "SELECT id FROM folders
+             WHERE account_id = ?1 AND name = ?2 AND parent_id IS NULL
+               AND origin <> 'local'",
             params![account_id, name],
             |r| r.get(0),
         )?;
         Ok(id)
     }
 
+    /// Insert-or-get a local folder used by imports or explicit user CRUD.
+    pub fn ensure_local_folder(&self, account_id: &str, name: &str) -> Result<i64> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO folders (account_id, name, origin)
+             VALUES (?1, ?2, 'local')",
+            params![account_id, name],
+        )?;
+        Ok(self.conn.query_row(
+            "SELECT id FROM folders
+             WHERE account_id = ?1 AND name = ?2 AND parent_id IS NULL
+               AND origin = 'local'",
+            params![account_id, name],
+            |r| r.get(0),
+        )?)
+    }
+
+    /// Resolve an import target (T-326): reuse the **local** folder of this
+    /// name, create one when absent, refuse a remote/system row. Imported
+    /// messages carry locally-minted uids with no server identity — in a
+    /// synced folder the next reconcile treats the server as authoritative
+    /// and would expunge them. The lookup is `COLLATE NOCASE` to mirror
+    /// `idx_folders_sibling_name`: a case-variant of a synced name is the
+    /// same folder and must refuse, not die on the unique index.
+    pub fn ensure_target_folder(&self, account_id: &str, name: &str) -> Result<i64> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT id, origin FROM folders
+                 WHERE account_id = ?1 AND name = ?2 COLLATE NOCASE
+                   AND parent_id IS NULL",
+                params![account_id, name],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)),
+            )
+            .optional()?;
+        match row {
+            // Fail closed: an unrecognized origin is not a proven-local row.
+            Some((id, origin)) => match FolderOrigin::from_str(&origin) {
+                Ok(FolderOrigin::Local) => Ok(id),
+                _ => Err(MailError::PolicyRejected(format!(
+                    "import target '{name}' is a synced folder — imports land in local folders only"
+                ))),
+            },
+            None => self.ensure_local_folder(account_id, name),
+        }
+    }
+
     /// All folders for an account, name order (trash discovery, folder
     /// pickers).
     pub fn list_folders(&self, account_id: &str) -> Result<Vec<FolderMeta>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, account_id, name, uid_validity, uid_next, highest_uid
+            "SELECT id, account_id, parent_id, name, origin, uid_validity,
+                    uid_next, highest_uid
              FROM folders WHERE account_id = ?1 ORDER BY name",
         )?;
-        let rows = stmt.query_map(params![account_id], |r| {
-            Ok(FolderMeta {
-                id: r.get(0)?,
-                account_id: r.get(1)?,
-                name: r.get(2)?,
-                uid_validity: r.get::<_, Option<i64>>(3)?.map(|v| v as u64),
-                uid_next: r.get::<_, Option<i64>>(4)?.map(|v| v as u64),
-                highest_uid: r.get::<_, i64>(5)? as u64,
-            })
-        })?;
+        let rows = stmt.query_map(params![account_id], map_folder_row)?;
         let mut out = Vec::new();
         for r in rows {
             out.push(r?);
@@ -167,22 +267,123 @@ impl MailStore {
     }
 
     pub fn folder_meta(&self, folder_id: i64) -> Result<Option<FolderMeta>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, account_id, name, uid_validity, uid_next, highest_uid
-             FROM folders WHERE id = ?1",
-        )?;
-        let mut rows = stmt.query(params![folder_id])?;
-        match rows.next()? {
-            None => Ok(None),
-            Some(r) => Ok(Some(FolderMeta {
-                id: r.get(0)?,
-                account_id: r.get(1)?,
-                name: r.get(2)?,
-                uid_validity: r.get::<_, Option<i64>>(3)?.map(|v| v as u64),
-                uid_next: r.get::<_, Option<i64>>(4)?.map(|v| v as u64),
-                highest_uid: r.get::<_, i64>(5)? as u64,
-            })),
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT id, account_id, parent_id, name, origin, uid_validity,
+                        uid_next, highest_uid
+                 FROM folders WHERE id = ?1",
+                params![folder_id],
+                map_folder_row,
+            )
+            .optional()?)
+    }
+
+    /// Create one empty local folder. The store owns the row; sync never
+    /// receives or mirrors it. `parent_id = None` means a root local folder.
+    pub fn create_local_folder(
+        &self,
+        account_id: &str,
+        parent_id: Option<i64>,
+        name: &str,
+    ) -> Result<FolderMeta> {
+        let name = validate_local_folder_name(name)?;
+        if self.get_account(account_id)?.is_none() {
+            return Err(MailError::InvalidInput("unknown account".into()));
         }
+        if let Some(parent_id) = parent_id {
+            let parent = self
+                .folder_meta(parent_id)?
+                .ok_or_else(|| MailError::InvalidInput("unknown parent folder".into()))?;
+            if parent.account_id != account_id {
+                return Err(MailError::InvalidInput(
+                    "parent folder is on another account".into(),
+                ));
+            }
+            if parent.origin != FolderOrigin::Local {
+                return Err(MailError::InvalidInput("parent folder is not local".into()));
+            }
+        }
+        let duplicate: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM folders
+             WHERE account_id = ?1 AND parent_id IS ?2 AND name = ?3 COLLATE NOCASE",
+            params![account_id, parent_id, name],
+            |r| r.get(0),
+        )?;
+        if duplicate > 0 {
+            return Err(MailError::InvalidInput(
+                "folder name already exists under this parent".into(),
+            ));
+        }
+        self.conn.execute(
+            "INSERT INTO folders (account_id, parent_id, name, origin)
+             VALUES (?1, ?2, ?3, 'local')",
+            params![account_id, parent_id, name],
+        )?;
+        let id = self.conn.last_insert_rowid();
+        self.folder_meta(id)?
+            .ok_or_else(|| MailError::Store(rusqlite::Error::QueryReturnedNoRows))
+    }
+
+    /// Rename one local folder. Remote and system rows are immutable here.
+    pub fn rename_local_folder(&self, folder_id: i64, new_name: &str) -> Result<FolderMeta> {
+        let folder = self
+            .folder_meta(folder_id)?
+            .ok_or_else(|| MailError::InvalidInput("unknown folder".into()))?;
+        if folder.origin != FolderOrigin::Local {
+            return Err(MailError::PolicyRejected(
+                "only local folders can be renamed".into(),
+            ));
+        }
+        let new_name = validate_local_folder_name(new_name)?;
+        let duplicate: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM folders
+             WHERE account_id = ?1 AND parent_id IS ?2 AND name = ?3 COLLATE NOCASE
+               AND id <> ?4",
+            params![folder.account_id, folder.parent_id, new_name, folder_id],
+            |r| r.get(0),
+        )?;
+        if duplicate > 0 {
+            return Err(MailError::InvalidInput(
+                "folder name already exists under this parent".into(),
+            ));
+        }
+        self.conn.execute(
+            "UPDATE folders SET name = ?2 WHERE id = ?1",
+            params![folder_id, new_name],
+        )?;
+        self.folder_meta(folder_id)?
+            .ok_or_else(|| MailError::Store(rusqlite::Error::QueryReturnedNoRows))
+    }
+
+    /// Delete an empty local leaf. Messages, child folders, system folders and
+    /// remote folders all fail closed. UI smart views have no row/id at all.
+    pub fn delete_local_folder(&self, folder_id: i64) -> Result<bool> {
+        let folder = self
+            .folder_meta(folder_id)?
+            .ok_or_else(|| MailError::InvalidInput("unknown folder".into()))?;
+        if folder.origin != FolderOrigin::Local {
+            return Err(MailError::PolicyRejected(
+                "only local folders can be deleted".into(),
+            ));
+        }
+        let messages: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM messages WHERE folder_id = ?1",
+            params![folder_id],
+            |r| r.get(0),
+        )?;
+        let children: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM folders WHERE parent_id = ?1",
+            params![folder_id],
+            |r| r.get(0),
+        )?;
+        if messages > 0 || children > 0 {
+            return Err(MailError::PolicyRejected("folder is not empty".into()));
+        }
+        Ok(self
+            .conn
+            .execute("DELETE FROM folders WHERE id = ?1", params![folder_id])?
+            > 0)
     }
 
     /// Record the server's folder state after a SELECT/STATUS.
@@ -701,6 +902,179 @@ impl MailStore {
             moved.push((*uid, dst_uid as u64));
         }
         Ok(moved)
+    }
+
+    /// Copy messages between folders of the SAME account (T-325). Fresh
+    /// destination uids exactly like a move, but the source row and payload
+    /// are untouched — the destination row is a **local-only copy** carrying
+    /// no server identity (a real IMAP COPY into a synced folder is the sync
+    /// layer's job — tracked gap). Body files and attachment dirs are
+    /// byte-copied, never renamed; risk + auth evidence rows are copied so
+    /// the duplicate keeps its evaluation. The snooze row deliberately does
+    /// NOT carry — parking binds to the source coordinate, and a copy of a
+    /// parked message must not vanish at wake. Crash-safe trivially: a
+    /// mid-copy abort leaves a subset of duplicates, never a loss.
+    /// Returns `(src_uid → dst_uid)` pairs.
+    pub fn copy_messages(
+        &self,
+        src_folder_id: i64,
+        dst_folder_id: i64,
+        uids: &[u64],
+    ) -> Result<Vec<(u64, u64)>> {
+        let mut next: i64 = self.conn.query_row(
+            "SELECT COALESCE(MAX(uid), 0) FROM messages WHERE folder_id = ?1",
+            params![dst_folder_id],
+            |r| r.get(0),
+        )?;
+        let mut copied = Vec::new();
+        for uid in uids {
+            let row = self
+                .conn
+                .query_row(
+                    "SELECT message_id, subject, from_addr, to_addrs, date_unix,
+                            size, flags, has_attachments, snippet, body_path,
+                            fetched_at, category,
+                            unsub_http, unsub_mailto, unsub_oneclick
+                     FROM messages WHERE folder_id = ?1 AND uid = ?2",
+                    params![src_folder_id, *uid as i64],
+                    |r| {
+                        Ok((
+                            r.get::<_, Option<String>>(0)?,
+                            r.get::<_, Option<String>>(1)?,
+                            r.get::<_, Option<String>>(2)?,
+                            r.get::<_, Option<String>>(3)?,
+                            r.get::<_, Option<i64>>(4)?,
+                            r.get::<_, Option<i64>>(5)?,
+                            r.get::<_, String>(6)?,
+                            r.get::<_, i64>(7)?,
+                            r.get::<_, Option<String>>(8)?,
+                            r.get::<_, Option<String>>(9)?,
+                            r.get::<_, i64>(10)?,
+                            r.get::<_, String>(11)?,
+                            r.get::<_, Option<String>>(12)?,
+                            r.get::<_, Option<String>>(13)?,
+                            r.get::<_, i64>(14)?,
+                        ))
+                    },
+                )
+                .optional()?;
+            let Some((
+                message_id,
+                subject,
+                from_addr,
+                to_addrs,
+                date_unix,
+                size,
+                flags,
+                has_attachments,
+                snippet,
+                body_path,
+                fetched_at,
+                category,
+                unsub_http,
+                unsub_mailto,
+                unsub_oneclick,
+            )) = row
+            else {
+                continue; // uid absent in src — skip, not an error
+            };
+            next += 1;
+            let dst_uid = next;
+            self.conn.execute(
+                "INSERT INTO messages
+                   (folder_id, uid, message_id, subject, from_addr, to_addrs,
+                    date_unix, size, flags, has_attachments, snippet,
+                    body_path, fetched_at, category,
+                    unsub_http, unsub_mailto, unsub_oneclick)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,NULL,?12,?13,?14,?15,?16)",
+                params![
+                    dst_folder_id,
+                    dst_uid,
+                    message_id,
+                    subject,
+                    from_addr,
+                    to_addrs,
+                    date_unix,
+                    size,
+                    flags,
+                    has_attachments,
+                    snippet,
+                    fetched_at,
+                    category,
+                    unsub_http,
+                    unsub_mailto,
+                    unsub_oneclick,
+                ],
+            )?;
+            // Copy the body payload, then repoint the new row at the copy.
+            if body_path.is_some() {
+                let src_abs = self.body_path(src_folder_id, *uid);
+                let dst_abs = self.body_path(dst_folder_id, dst_uid as u64);
+                if let Some(parent) = dst_abs.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                if src_abs.exists() {
+                    std::fs::copy(&src_abs, &dst_abs)?;
+                }
+                if dst_abs.exists() {
+                    let rel = dst_abs
+                        .strip_prefix(&self.root)
+                        .unwrap_or(&dst_abs)
+                        .to_string_lossy()
+                        .into_owned();
+                    self.conn.execute(
+                        "UPDATE messages SET body_path = ?3
+                         WHERE folder_id = ?1 AND uid = ?2",
+                        params![dst_folder_id, dst_uid, rel],
+                    )?;
+                }
+            }
+            // Copy the attachment payload dir (recursive — dirs hold the
+            // extracted parts; the source dir stays).
+            let src_att = self
+                .root
+                .join("attachments")
+                .join(src_folder_id.to_string())
+                .join(uid.to_string());
+            if src_att.exists() {
+                let dst_att = self
+                    .root
+                    .join("attachments")
+                    .join(dst_folder_id.to_string())
+                    .join(dst_uid.to_string());
+                copy_dir_all(&src_att, &dst_att)?;
+            }
+            self.conn.execute(
+                "INSERT OR REPLACE INTO message_attachment_risk
+                    (folder_id, uid, risk, reasons_json)
+                 SELECT ?1, ?2, risk, reasons_json
+                 FROM message_attachment_risk WHERE folder_id = ?3 AND uid = ?4",
+                params![dst_folder_id, dst_uid, src_folder_id, *uid as i64],
+            )?;
+            self.conn.execute(
+                "INSERT OR REPLACE INTO message_link_risk
+                    (folder_id, uid, risk, reasons_json)
+                 SELECT ?1, ?2, risk, reasons_json
+                 FROM message_link_risk WHERE folder_id = ?3 AND uid = ?4",
+                params![dst_folder_id, dst_uid, src_folder_id, *uid as i64],
+            )?;
+            // Auth evidence carries too — the copy keeps the verdict its
+            // bytes earned. (Move lacks this carry — tracked pre-existing
+            // gap; copying both is strictly honest.)
+            self.conn.execute(
+                "INSERT OR REPLACE INTO message_auth
+                    (folder_id, uid, spf, dkim, dmarc, dmarc_policy,
+                     dkim_domain, key_query, dmarc_record, header_value,
+                     evidence_json, upstream_json, auth_risk)
+                 SELECT ?1, ?2, spf, dkim, dmarc, dmarc_policy,
+                        dkim_domain, key_query, dmarc_record, header_value,
+                        evidence_json, upstream_json, auth_risk
+                 FROM message_auth WHERE folder_id = ?3 AND uid = ?4",
+                params![dst_folder_id, dst_uid, src_folder_id, *uid as i64],
+            )?;
+            copied.push((*uid, dst_uid as u64));
+        }
+        Ok(copied)
     }
 
     /// Persist (or refresh) a message's Authentication-Results verdicts

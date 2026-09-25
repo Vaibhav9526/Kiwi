@@ -13,7 +13,7 @@ use crate::commands::mail::connect_imap;
 use crate::error::{CmdResult, IpcError};
 use crate::observe::{self, ObservationContext};
 use crate::state::{AppState, now_unix};
-use crate::types::{DeleteResultView, MoveResultView};
+use crate::types::{CopyResultView, DeleteResultView, MoveResultView};
 
 /// `kiwi_delete_messages(accountId, folderId, uids, permanent?)`.
 /// Soft delete moves to Trash (IMAP `UID MOVE`, COPY+DELETE+EXPUNGE
@@ -225,6 +225,81 @@ pub(crate) async fn move_messages_impl(
         src_folder_id,
         dst_folder_id,
         moved,
+        uid_map: pairs.into_iter().collect(),
+    })
+}
+
+/// `kiwi_copy_messages(accountId, srcFolderId, dstFolderId, uids)` — the
+/// Copy-to sibling every real client exposes next to Move-to (T-325).
+/// **Store-level only**: no IMAP `UID COPY` — a copy of a synced-folder
+/// message is a local duplicate with fresh local uids, never a server
+/// copy (that gap is the sync layer's; documented in ipc.md §6k).
+/// Destination is refuse-by-construction like move: smart views have no
+/// folder row (`owned_folder` → not-found), and **system-origin** folders
+/// (INBOX/SENT/TRASH/DRAFTS/JUNK/ARCHIVE) are refused outright — a
+/// local-only copy inside a sync-owned mailbox fabricates "received"
+/// provenance that the next reconcile would expunge anyway; copy into a
+/// local folder instead. (Move keeps its Trash destination because that
+/// is the delete path.) Source is untouched.
+#[tauri::command]
+pub async fn kiwi_copy_messages(
+    state: State<'_, Arc<AppState>>,
+    account_id: String,
+    src_folder_id: i64,
+    dst_folder_id: i64,
+    uids: Vec<i64>,
+) -> CmdResult<CopyResultView> {
+    gate(state.inner()).await?;
+    copy_messages_impl(
+        state.inner(),
+        account_id,
+        src_folder_id,
+        dst_folder_id,
+        uids,
+    )
+    .await
+}
+
+pub(crate) async fn copy_messages_impl(
+    state: &AppState,
+    account_id: String,
+    src_folder_id: i64,
+    dst_folder_id: i64,
+    uids: Vec<i64>,
+) -> CmdResult<CopyResultView> {
+    bounded("accountId", &account_id, 128)?;
+    let uids = bounded_uids(&uids)?;
+    if src_folder_id == dst_folder_id {
+        return Err(IpcError::invalid("src and dst folders must differ"));
+    }
+    owned_folder(state, &account_id, src_folder_id).await?;
+    let dst_meta = state
+        .store
+        .lock()
+        .await
+        .folder_meta(dst_folder_id)?
+        .filter(|m| m.account_id == account_id)
+        .ok_or_else(|| IpcError::not_found("unknown dstFolderId"))?;
+    if dst_meta.origin == kiwi_mail::store::FolderOrigin::System {
+        return Err(IpcError::invalid(
+            "cannot copy into a system folder — use a local folder",
+        ));
+    }
+    let pairs = state
+        .store
+        .lock()
+        .await
+        .copy_messages(src_folder_id, dst_folder_id, &uids)?;
+    let copied = pairs.len() as u64;
+    state.audit.lock().await.record(
+        "messages-copied",
+        &format!("{account_id}: f{src_folder_id}→f{dst_folder_id} ×{copied}"),
+        now_unix(),
+    )?;
+    Ok(CopyResultView {
+        src_folder_id,
+        dst_folder_id,
+        copied,
         uid_map: pairs.into_iter().collect(),
     })
 }
