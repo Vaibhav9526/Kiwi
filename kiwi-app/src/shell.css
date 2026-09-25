@@ -2111,6 +2111,34 @@ span.em-tool-primary {
   padding: 3px 8px;
 }
 
+/* T-287 — a11y: consistent keyboard focus ring on all buttons (UA default
+ * was intact — this makes it on-theme and equally visible in both themes). */
+button:focus-visible,
+[role="button"]:focus-visible,
+a:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--kiwi-ms-accent);
+  outline-offset: 1px;
+  border-radius: var(--kiwi-ms-radius-small);
+}
+
+/* Folder-pane error + no-accounts empty state (recoverable, in-pane). */
+.em-folders-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 5px;
+  color: var(--kiwi-ms-danger);
+  padding: 4px 2px;
+}
+
+.em-folders-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 2px;
+  color: var(--kiwi-ms-text-secondary);
+}
+
 /* T-283 — rail security summary card (real data only; rows omitted when
  * no source exists). Compact bordered block above the task groups. */
 .em-security-card {

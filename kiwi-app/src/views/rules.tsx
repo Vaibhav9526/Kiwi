@@ -457,9 +457,14 @@ export function RulesView({
           ) : (
             <>
               {sorted.length === 0 && !draft && (
-                <p>
-                  <small>No rules yet — create the first one below.</small>
-                </p>
+                <div className="kiwi-empty">
+                  <span className="kiwi-empty-icon em-empty-icon" aria-hidden="true">
+                    <Icon name="filters" size={28} />
+                  </span>
+                  <strong>No rules yet</strong>
+                  <br />
+                  <small>Create the first one below — it evaluates in order, top first.</small>
+                </div>
               )}
               <div style={{ display: "flex", flexDirection: "column", gap: "0.3rem" }}>
                 {sorted.map((r, i) => (

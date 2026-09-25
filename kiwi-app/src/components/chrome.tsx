@@ -498,12 +498,16 @@ export function FolderPane({
   accountSections,
   activeFolder,
   outboxCount,
+  foldersError,
+  demo,
 }: {
   smartFolders: { id: string; label: string }[];
   smartUnread: Record<string, number>;
   accountSections: FolderSection[];
   activeFolder: string;
   outboxCount: number;
+  foldersError?: string | null;
+  demo?: boolean;
 }) {
   const [favOpen, setFavOpen] = useState(true);
   const [open, setOpen] = useState<Record<string, boolean>>({});
@@ -530,6 +534,19 @@ export function FolderPane({
               indent
             />
           ))}
+        </div>
+      )}
+      {foldersError && (
+        <p className="em-folders-error" role="alert">
+          <Icon name="alert-triangle" size={11} /> <small>{foldersError}</small>
+        </p>
+      )}
+      {accountSections.length === 0 && !demo && !foldersError && (
+        <div className="em-folders-empty">
+          <small>No accounts yet.</small>
+          <button type="button" className="em-security-link" onClick={() => navigate({ name: "setup" })}>
+            Add account →
+          </button>
         </div>
       )}
       <div role="tree" aria-label="Accounts" className="em-accounts">
