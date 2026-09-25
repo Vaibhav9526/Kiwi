@@ -295,8 +295,10 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-315 | About tab: build-time version, honest diagnostics w/ omit-notes, shared keymap | Agent 25 | done |
 | T-316 | mbox export IPC (symmetric to T-309; temp+rename, partial-honest result, audited) | Agent 20 | open | `kiwi-app/commands`, `kiwi-mail/mbox.rs` | T-309 |
 | T-317 | drag messages→folder tree (multi-select, smart-views un-droppable, no fake undo) | Agent 24 | done |
-| T-318 | import/export UI seam: file pickers, entry points, honest result counts for T-309/T-316 | Agent 25 | done | `settings.tsx`, folder ctx-menu | T-309,T-316 |
+| T-318 | import/export UI seam wired to ipc.md §6j (both rows) w/ verbatim counts | Agent 25 | done |
 | T-319 | folder management: local folder create/rename/delete IPC, audited, system folders protected | Agent 15 | open | `kiwi-mail/store`, `kiwi-app/commands` | |
 | T-320 | forensic report file export: canonical JSON + SHA-256 integrity envelope, audited, lock-gated | Agent 21 | open | `commands/security.rs`, `kiwi-forensics` | vision tamper-evident exports |
 | T-321 | post-T-286: contract/docs sweep — consent-boundary semantics documented as-built | Agent 23 | open | `ipc.md`, `docs/contracts/` | T-286 |
 | T-322 | folder-mgmt UI seam for T-319: ctx-menu create/rename/delete, system+smart folders protected | Agent 24 | open | `mailbox.tsx`, `chrome.tsx` | T-319 |
+| T-323 | audit-log view surface (backend read-IPC queued; Security Center home; honest pending-state) | Agent 25 | open | `security-center.tsx` | T-318 finding |
+| T-324 | kiwi_audit_events read IPC: bounded newest-first audit rows for T-323 | Agent 15 | open | `kiwi-mail/store/queries.rs`, `commands/` | T-323 |

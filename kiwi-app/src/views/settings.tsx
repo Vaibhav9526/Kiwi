@@ -10,7 +10,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ComponentProps } from "react";
 import { accountPref, applyPrefsBag, applyUiPrefs, collectPrefs, loadMuted, loadPref, savePref } from "../prefs";
 import { api, BackendUnavailableError, IpcError } from "../ipc";
-import type { AccountView, AppInfoView, DeviceView, FolderView, OAuth2StatusView, VerifyResult } from "../kiwi";
+import type { AccountView, AppInfoView, DeviceView, FolderView, MboxExportView, MboxImportView, OAuth2StatusView, VerifyResult } from "../kiwi";
 import { APP_LICENSE, APP_NAME, APP_VERSION } from "../version";
 import { OAuth2SignIn, oauth2ProviderLabel } from "../components/oauth2";
 import { navigate } from "../router";
@@ -94,6 +94,18 @@ export function SettingsView({
   const [remoteState, setRemoteState] = useState<Record<string, boolean>>({});
   const [remoteBusy, setRemoteBusy] = useState<string | null>(null);
   const [draftCount, setDraftCount] = useState(0);
+  // T-318: mbox import (kiwi_import_mbox) + export (kiwi_mailbox_export_mbox)
+  // — path inputs match the existing destPath idiom (no dialog plugin in
+  // this shell). Results render verbatim counts; failures surface inline.
+  const [importFor, setImportFor] = useState<string | null>(null);
+  const [importPath, setImportPath] = useState("");
+  const [importFolder, setImportFolder] = useState("");
+  const [importBusy, setImportBusy] = useState(false);
+  const [importResult, setImportResult] = useState<MboxImportView | null>(null);
+  const [exportSel, setExportSel] = useState(""); // "accountId:folderId"
+  const [exportPath, setExportPath] = useState("");
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportResult, setExportResult] = useState<MboxExportView | null>(null);
   // OAuth2 posture per account (T-243): `kiwi_oauth2_status` drives the
   // needs-refresh badge + inline re-auth on Accounts cards.
   const [oauth2Status, setOauth2Status] = useState<Record<string, OAuth2StatusView | null>>({});
@@ -389,6 +401,61 @@ export function SettingsView({
       navigate({ name: "setup" });
     } catch {
       setActionError("Could not stage the reconfigure handoff (storage unavailable).");
+    }
+  };
+
+  /** T-318 import: client rejects non-.mbox picks before the IPC (the
+   * backend's own "no `From ` separator" check is the authoritative one);
+   * the result card shows the returned counts verbatim. */
+  const runImport = async (accountId: string) => {
+    setActionError(null);
+    setImportResult(null);
+    const path = importPath.trim();
+    if (!path) {
+      setActionError("Enter the .mbox file path first.");
+      return;
+    }
+    if (!/\.mbox$/i.test(path)) {
+      setActionError("Not an .mbox file — pick a Berkeley-mbox file whose name ends in .mbox.");
+      return;
+    }
+    setImportBusy(true);
+    try {
+      setImportResult(await api.importMbox(accountId, path, importFolder.trim() || undefined));
+    } catch (e) {
+      setActionError(errText(e));
+    } finally {
+      setImportBusy(false);
+    }
+  };
+
+  /** T-318 export: folder select holds "accountId:folderId"; dest path is a
+   * typed input (same idiom as attachment download — no dialog plugin).
+   * `.mbox` is appended when missing so the produced file matches the name
+   * shown in the result line. */
+  const runExport = async () => {
+    setActionError(null);
+    setExportResult(null);
+    const folderId = Number(exportSel.split(":")[1]);
+    let path = exportPath.trim();
+    if (!Number.isFinite(folderId) || folderId <= 0) {
+      setActionError("Pick a folder to export.");
+      return;
+    }
+    if (!path) {
+      setActionError("Enter a destination path for the .mbox file.");
+      return;
+    }
+    if (!/\.mbox$/i.test(path)) path = `${path}.mbox`;
+    setExportBusy(true);
+    try {
+      const r = await api.mailboxExportMbox(folderId, path);
+      setExportPath(path); // result line echoes the real destination used
+      setExportResult(r);
+    } catch (e) {
+      setActionError(errText(e));
+    } finally {
+      setExportBusy(false);
     }
   };
 
@@ -750,8 +817,183 @@ export function SettingsView({
                     style={{ width: "100%", maxWidth: "30rem" }}
                   />
                 </p>
+                {importFor === a.id ? (
+                  <div className="kiwi-banner" role="group" aria-label={`Import mbox into ${a.email}`}>
+                    <p style={{ marginTop: 0 }}>
+                      <label htmlFor={`mbox-path-${a.id}`}>Import .mbox file</label>
+                      <br />
+                      <input
+                        id={`mbox-path-${a.id}`}
+                        type="text"
+                        value={importPath}
+                        onChange={(e) => setImportPath(e.target.value)}
+                        placeholder="C:\\…\\archive.mbox"
+                        style={{ width: "100%", maxWidth: "26rem" }}
+                        disabled={importBusy}
+                      />
+                    </p>
+                    <p>
+                      <label htmlFor={`mbox-folder-${a.id}`}>Target folder</label>
+                      <br />
+                      <input
+                        id={`mbox-folder-${a.id}`}
+                        type="text"
+                        value={importFolder}
+                        onChange={(e) => setImportFolder(e.target.value)}
+                        placeholder="Import"
+                        style={{ width: "12rem" }}
+                        disabled={importBusy}
+                      />{" "}
+                      <small style={{ color: "var(--kiwi-text-secondary)" }}>
+                        empty = the local “Import” folder
+                      </small>
+                    </p>
+                    <p>
+                      <button type="button" onClick={() => void runImport(a.id)} disabled={importBusy}>
+                        {importBusy ? "Importing…" : "Import"}
+                      </button>{" "}
+                      <button
+                        type="button"
+                        disabled={importBusy}
+                        onClick={() => {
+                          setImportFor(null);
+                          setImportResult(null);
+                          setActionError(null);
+                        }}
+                      >
+                        Cancel
+                      </button>{" "}
+                      {importBusy && (
+                        <small style={{ color: "var(--kiwi-text-secondary)" }}>
+                          kiwi_import_mbox — parsing and ingesting members…
+                        </small>
+                      )}
+                    </p>
+                    {importResult && (
+                      <p role="status" style={{ marginBottom: 0 }}>
+                        <small>
+                          <Icon name="check" size={10} /> Imported <b>{importResult.imported}</b> of{" "}
+                          {importResult.messagesFound} members into “{importResult.folder}”
+                          {importResult.skippedDuplicates > 0 && <> · {importResult.skippedDuplicates} duplicates skipped</>}
+                          {importResult.skippedExpunged > 0 && <> · {importResult.skippedExpunged} expunged skipped</>}
+                          {importResult.failed > 0 && <> · {importResult.failed} failed</>}
+                          {importResult.ruleFailures > 0 && <> · {importResult.ruleFailures} rule failures</>}
+                          {importResult.truncated && <> · <b>truncated</b> — member cap hit, file not fully read</>}
+                          {importResult.imported === 0 &&
+                            importResult.skippedDuplicates === 0 &&
+                            importResult.skippedExpunged === 0 &&
+                            importResult.failed === 0 && <> — nothing to import</>}
+                          {importResult.issues.slice(0, 5).map((iss) => (
+                            <span key={iss.index} style={{ display: "block" }}>
+                              · member {iss.index}: {iss.detail}
+                            </span>
+                          ))}
+                          {importResult.issues.length > 5 && (
+                            <span style={{ display: "block" }}>· +{importResult.issues.length - 5} more issues</span>
+                          )}
+                        </small>
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <p>
+                    <button
+                      type="button"
+                      disabled={mode !== "live"}
+                      title={mode !== "live" ? "Import needs the backend — demo mode has no mailbox store" : undefined}
+                      onClick={() => {
+                        setImportFor(a.id);
+                        setImportPath("");
+                        setImportFolder("");
+                        setImportResult(null);
+                        setActionError(null);
+                      }}
+                    >
+                      Import .mbox…
+                    </button>{" "}
+                    <small style={{ color: "var(--kiwi-text-secondary)" }}>
+                      Berkeley mbox → this account (kiwi_import_mbox)
+                    </small>
+                  </p>
+                )}
               </div>
             ))}
+            {mode === "live" && accounts.length === 0 ? (
+              <p style={{ color: "var(--kiwi-text-secondary)" }}>
+                <small>No accounts yet — add one before importing or exporting mail.</small>
+              </p>
+            ) : (
+              <div className="kiwi-card">
+                <h2>
+                  Export folder <small style={{ color: "var(--kiwi-text-secondary)" }}>mbox</small>
+                </h2>
+                {mode !== "live" ? (
+                  <p style={{ color: "var(--kiwi-text-secondary)" }}>
+                    <small>Export needs the backend — demo mode has no real folder store.</small>
+                  </p>
+                ) : (
+                  <>
+                    <p>
+                      <label htmlFor="export-folder">Folder</label>
+                      <br />
+                      <select id="export-folder" value={exportSel} onChange={(e) => setExportSel(e.target.value)} disabled={exportBusy}>
+                        <option value="">Choose a folder…</option>
+                        {accounts.flatMap((a) =>
+                          (folderLists?.[a.id] ?? []).map((f) => (
+                            <option key={`${a.id}:${f.id}`} value={`${a.id}:${f.id}`}>
+                              {a.email} — {f.name}
+                              {f.exists === 0 ? " (empty)" : ` (${f.exists})`}
+                            </option>
+                          )),
+                        )}
+                      </select>{" "}
+                      {Object.values(folderLists ?? {}).every((l) => l.length === 0) && (
+                        <small style={{ color: "var(--kiwi-text-secondary)" }}>folder list empty — sync first</small>
+                      )}
+                    </p>
+                    <p>
+                      <label htmlFor="export-path">Destination</label>
+                      <br />
+                      <input
+                        id="export-path"
+                        type="text"
+                        value={exportPath}
+                        onChange={(e) => setExportPath(e.target.value)}
+                        placeholder="C:\\…\\folder.mbox"
+                        style={{ width: "100%", maxWidth: "26rem" }}
+                        disabled={exportBusy}
+                      />{" "}
+                      <small style={{ color: "var(--kiwi-text-secondary)" }}>
+                        .mbox appended if missing; written atomically
+                      </small>
+                    </p>
+                    <p>
+                      <button type="button" onClick={() => void runExport()} disabled={exportBusy || !exportSel}>
+                        {exportBusy ? "Exporting…" : "Export to mbox"}
+                      </button>{" "}
+                      {exportBusy && (
+                        <small style={{ color: "var(--kiwi-text-secondary)" }}>
+                          kiwi_mailbox_export_mbox — streaming bodies to disk…
+                        </small>
+                      )}
+                    </p>
+                    {exportResult && (
+                      <div className={`kiwi-banner ${exportResult.partial ? "warn" : ""}`} role="status">
+                        <small>
+                          <Icon name={exportResult.partial ? "alert-triangle" : "check"} size={10} /> Exported{" "}
+                          <b>{exportResult.exported}</b>
+                          {exportResult.skipped > 0 && <> · {exportResult.skipped} skipped (body unavailable)</>} ·{" "}
+                          {exportResult.bytes.toLocaleString()} B → {exportPath.trim() || "destination"}
+                          {exportResult.truncated && <> · <b>truncated</b> at the member cap</>}
+                          {exportResult.partial && !exportResult.truncated && exportResult.skipped === 0 && <> · partial</>}
+                          {exportResult.exported === 0 && exportResult.skipped === 0 && <> — folder was empty</>}
+                        </small>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
             <p>
               <button type="button" onClick={() => navigate({ name: "setup" })}>
                 Add account…
