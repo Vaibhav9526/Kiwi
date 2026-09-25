@@ -188,7 +188,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-228 | F1 rules engine core (AST/eval/persistence v6, 25 tests) | Agent 15 | done | `kiwi-mail/src/rules/` | T-181 |
 | T-229 | Review oauth2.md contract for drift vs Agent 19 impl when it lands | Agent 18 | queued | `docs/contracts/` | T-195 |
 | T-230 | OAuth2 IPC + wizard seam (begin/poll/cancel/status/discover, CredentialStore, 86/86) | Agent 19 | done |
-| T-231 | Live-data wiring (search IPC added, category tabs real, demo sealed; 91/91) | Agent 11 | done |
+| T-231 | live-data UI wiring: category tabs on real envelopes, real FTS search, contacts IPC | Agent 24 (reassigned from A11) | open | `kiwi-app/src` | T-267 |
 | T-232 | Authentication-Results stamping on ingest (RFC 8601) + verdict field on MessageView | Agent 16 | open | `kiwi-mail/` | T-183 |
 | T-233 | Rules ingest application + IPC (5 cmds, rule_hits audit, schema v8) | Agent 15 | done |
 
@@ -253,4 +253,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-273 | Link-click policy gate: kiwi_link_click verdict + open_external risk-gating | Agent 21 | open | `src-tauri/` | T-266 |
 | T-274 | Reference plugin + capability-gate proof (bridge e2e in plugins/) | Agent 25 | done | `kiwi-app/src/plugins/` | T-268 |
 | T-275 | T-268 seam land: ThemePicker mount + useTheme swap + emoji sweep + visual pass | Agent 25 (A24 terminal expired — files transferred) | open | `kiwi-app/src` | T-267,T-268 |
-| T-276 | ACFG-4: verify GoDaddy autoconfig fixture or remove contract claim (no fabrication) | Agent 23 | open | `kiwi-autoconfig`, `docs/contracts/autoconfig.md` | T-270 |
+| T-276 | ACFG-4 GoDaddy: resolved inline — removed from ISPDB_FIXTURES roster (correctly MX_HINTS-only, no fixed domains) | Lead | done |
