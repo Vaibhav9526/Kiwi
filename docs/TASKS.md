@@ -286,14 +286,14 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-306 | CSP-safe Worker plugin loader (blob: worker-src only, free isolation, live-proven) | Agent 25 | done |
 | T-307 | plugin install UX live-proven (picker→install→worker→lifecycle); FileList-clear bug fixed | Agent 25 | done |
 | T-308 | device surface verified vs canonical §9d: full DeviceView fields, revoke live, this-device badge | Agent 24 | done |
-| T-309 | mbox import: parser (From_ boundaries, flags map) + kiwi_import_mbox IPC + audit | Agent 19 | open | `kiwi-mail`, `commands/` | onboarding/migration |
+| T-309 | mbox import: mboxrd parser, dedup, honest counts, real ingest pipeline | Agent 19 | done |
 | T-310 | reader polish: quote collapse, splitQuotedText, in-reply-to jump, sig muted | Agent 24 | done |
 | T-311 | draft rulings for 8 authenticator contract contradictions → ADR-013 + proposal doc | Agent 20 | done |
 | T-312 | contacts depth (server search, compose handoff) + agenda sandbox row lit | Agent 25 | done |
 | T-313 | quick-filter chips (unread/starred/attachments/sender; live counts, AND-combine) | Agent 24 | done |
 | T-314 | smoke flow-checks 18/18; caught+fixed Reply blank-composer bug via real seedCompose | Agent 24 | done |
 | T-315 | About tab: build-time version, honest diagnostics w/ omit-notes, shared keymap | Agent 25 | done |
-| T-316 | mbox export IPC (symmetric to T-309; temp+rename, partial-honest result, audited) | Agent 20 | open | `kiwi-app/commands`, `kiwi-mail/mbox.rs` | T-309 |
+| T-316 | mbox export: shared mbox.rs write-side, streaming atomic, round-trip proven | Agent 20 | done |
 | T-317 | drag messages→folder tree (multi-select, smart-views un-droppable, no fake undo) | Agent 24 | done |
 | T-318 | import/export UI seam wired to ipc.md §6j (both rows) w/ verbatim counts | Agent 25 | done |
 | T-319 | folder management: local folder create/rename/delete IPC, audited, system folders protected | Agent 15 | open | `kiwi-mail/store`, `kiwi-app/commands` | |
@@ -302,3 +302,5 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-322 | folder-mgmt UI seam for T-319: ctx-menu create/rename/delete, system+smart folders protected | Agent 24 | open | `mailbox.tsx`, `chrome.tsx` | T-319 |
 | T-323 | audit-log view surface (backend read-IPC queued; Security Center home; honest pending-state) | Agent 25 | open | `security-center.tsx` | T-318 finding |
 | T-324 | kiwi_audit_events read IPC: bounded newest-first audit rows for T-323 | Agent 15 | open | `kiwi-mail/store/queries.rs`, `commands/` | T-323 |
+| T-325 | kiwi_copy_messages IPC (copy vs move; local-only dst semantics documented) | Agent 20 | open | `commands/message`, `store` | |
+| T-326 | import/synced-folder expunge edge: refuse synced dst OR minted-uid reconcile skip | Agent 19 | open | `commands/import.rs`, `imap` reconcile | T-309 caveat |

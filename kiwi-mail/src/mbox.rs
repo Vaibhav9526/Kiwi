@@ -184,6 +184,128 @@ fn needs_unescape(raw: &[u8]) -> bool {
     raw.windows(6).any(|w| w == b">From ")
 }
 
+// ---------------------------------------------------------------------------
+// Write side (T-316 export) — exact mirrors of the read rules above.
+// ---------------------------------------------------------------------------
+
+/// Escape one RFC822 payload for mboxrd output — the mirror of `unescape`:
+/// every line matching `^>*From ` gains one leading `>` (`From ` → `>From `,
+/// `>From ` → `>>From `, any depth). A bare `From ` line in the output
+/// stream is by definition a separator, so it must always be escaped. Line
+/// terminators pass through verbatim (the reader accepts both LF and CRLF).
+/// Single pass, no fast path — a `>>+From ` check-by-substring is easy to
+/// under-match; scanning lines is the same O(n) with no special cases.
+pub fn escape_for_mbox(raw: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(raw.len() + 16);
+    let mut pos = 0usize;
+    while pos <= raw.len() {
+        let le = find_line_end(raw, pos);
+        let line = &raw[pos..le.content_end];
+        let n_gt = line.iter().take_while(|b| **b == b'>').count();
+        if line[n_gt..].starts_with(SEP) {
+            out.push(b'>');
+        }
+        out.extend_from_slice(line);
+        let term_end = le.next_pos.min(raw.len());
+        out.extend_from_slice(&raw[le.content_end..term_end]);
+        pos = le.next_pos;
+    }
+    out
+}
+
+/// The `From ` separator line — `From <token-or---> <asctime-UTC>` LF. The
+/// reader keeps only the sender token and ignores the date, but real mbox
+/// consumers expect a timestamp-shaped tail, so emit asctime in UTC
+/// (`Sat Jan  4 12:00:00 2025` — space-padded day, deterministic).
+/// `date_unix` `None` or unparseable → `From -` alone.
+pub fn separator(envelope_from: Option<&str>, date_unix: Option<i64>) -> Vec<u8> {
+    let token = envelope_from
+        .and_then(|f| {
+            // `<a@b>` inside a display-name string wins; else first
+            // whitespace-free token.
+            let inner = f
+                .find('<')
+                .and_then(|i| f[i + 1..].find('>').map(|j| &f[i + 1..i + 1 + j]));
+            let tok = inner.unwrap_or_else(|| f.split_whitespace().next().unwrap_or(""));
+            let tok = &tok[..tok.len().min(MAX_ENVELOPE_FROM)];
+            (!tok.is_empty()).then_some(tok)
+        })
+        .unwrap_or("-");
+    let mut out = Vec::with_capacity(64);
+    out.extend_from_slice(SEP);
+    out.extend_from_slice(token.as_bytes());
+    if let Some(ts) = date_unix.and_then(asctime_utc) {
+        out.push(b' ');
+        out.extend_from_slice(ts.as_bytes());
+    }
+    out.push(b'\n');
+    out
+}
+
+/// `Jan  4 12:00:00 2025`-style UTC asctime — mbox convention, no timezone
+/// suffix (asctime has none). `time` format failures → `None` (emitted bare).
+fn asctime_utc(unix: i64) -> Option<String> {
+    use time::format_description::{self, FormatItem};
+    static FMT: std::sync::OnceLock<Vec<FormatItem<'static>>> = std::sync::OnceLock::new();
+    let fmt = FMT.get_or_init(|| {
+        format_description::parse_borrowed::<2>(
+            "[weekday repr:short] [month repr:short] [day padding:space] \
+             [hour]:[minute]:[second] [year]",
+        )
+        .expect("static asctime format is valid")
+    });
+    time::OffsetDateTime::from_unix_timestamp(unix)
+        .ok()?
+        .format(fmt)
+        .ok()
+}
+
+/// X-Mozilla-Status header lines for a row's stored flags — the write-side
+/// mirror of `mozilla_status`'s read map (same bit table). Returns `None`
+/// when no mapped flag is set: absence of the header already means unread,
+/// so no stamp is needed.
+pub fn mozilla_status_lines(flags: &[String]) -> Option<Vec<u8>> {
+    let mut status: u32 = 0;
+    let mut status2: u32 = 0;
+    for f in flags {
+        match f.as_str() {
+            "\\Seen" => status |= 0x0001,
+            "\\Answered" => status |= 0x0002,
+            "\\Flagged" => status |= 0x0004,
+            "\\Junk" => status2 |= 0x0008_0000,
+            _ => {}
+        }
+    }
+    if status == 0 && status2 == 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(64);
+    out.extend_from_slice(format!("X-Mozilla-Status: {status:04x}\r\n").as_bytes());
+    if status2 != 0 {
+        out.extend_from_slice(format!("X-Mozilla-Status2: {status2:08x}\r\n").as_bytes());
+    }
+    Some(out)
+}
+
+/// True when the payload's header block already carries `X-Mozilla-Status` —
+/// a previously-imported message keeps its own stamp; export never doubles it.
+pub fn has_mozilla_status(raw: &[u8]) -> bool {
+    let scan = &raw[..raw.len().min(STATUS_SCAN_BYTES)];
+    let mut pos = 0usize;
+    while pos <= scan.len() {
+        let le = find_line_end(scan, pos);
+        let line = &scan[pos..le.content_end];
+        if line.is_empty() {
+            break;
+        }
+        if !line[0].is_ascii_whitespace() && header_value(line, b"x-mozilla-status:").is_some() {
+            return true;
+        }
+        pos = le.next_pos;
+    }
+    false
+}
+
 /// X-Mozilla-Status bit → flag mapping (nsMsgMessageFlags.idl, canonical):
 ///
 /// | bit | flag | wire flag |
@@ -287,8 +409,14 @@ mod tests {
                      Subject: two\n\nbody two\n";
         let split = split_mbox(mbox).unwrap();
         assert_eq!(split.messages.len(), 2);
-        assert_eq!(split.messages[0].envelope_from.as_deref(), Some("alice@x.test"));
-        assert_eq!(split.messages[1].envelope_from.as_deref(), Some("bob@y.test"));
+        assert_eq!(
+            split.messages[0].envelope_from.as_deref(),
+            Some("alice@x.test")
+        );
+        assert_eq!(
+            split.messages[1].envelope_from.as_deref(),
+            Some("bob@y.test")
+        );
         assert!(!split.leading_junk);
         // The separator never lands in the payload.
         assert!(!split.messages[0].raw.windows(5).any(|w| w == b"From "));

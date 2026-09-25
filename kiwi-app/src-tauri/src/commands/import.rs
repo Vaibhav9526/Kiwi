@@ -24,6 +24,7 @@ use std::sync::Arc;
 
 use tauri::State;
 
+use kiwi_mail::authstamp::AuthSealer;
 use kiwi_mail::mbox;
 use kiwi_mail::mime::parse_message;
 use kiwi_mail::store::NewMessageMeta;
@@ -58,13 +59,7 @@ pub async fn kiwi_import_mbox(
     folder: Option<String>,
 ) -> CmdResult<MboxImportView> {
     gate(state.inner()).await?;
-    import_mbox_impl(
-        state.inner(),
-        &account_id,
-        &path,
-        folder.as_deref(),
-    )
-    .await
+    import_mbox_impl(state.inner(), &account_id, &path, folder.as_deref()).await
 }
 
 pub(crate) async fn import_mbox_impl(
@@ -105,8 +100,7 @@ pub(crate) async fn import_mbox_impl(
             MAX_MBOX_BYTES / (1024 * 1024)
         )));
     }
-    let bytes =
-        std::fs::read(path).map_err(|e| IpcError::invalid(format!("read failed: {e}")))?;
+    let bytes = std::fs::read(path).map_err(|e| IpcError::invalid(format!("read failed: {e}")))?;
     if bytes.len() as u64 > MAX_MBOX_BYTES {
         return Err(IpcError::invalid(format!(
             "mbox exceeds {} MiB cap",
@@ -132,11 +126,7 @@ pub(crate) async fn import_mbox_impl(
         issues: Vec::new(),
     };
     if split.leading_junk {
-        push_issue(
-            &mut view,
-            0,
-            "bytes before first 'From ' separator ignored",
-        );
+        push_issue(&mut view, 0, "bytes before first 'From ' separator ignored");
     }
 
     let mut imported_uids: Vec<u64> = Vec::new();
@@ -144,7 +134,7 @@ pub(crate) async fn import_mbox_impl(
     {
         let store = state.store.lock().await;
         let folder_id = store
-            .ensure_folder(account_id, folder_name)
+            .ensure_target_folder(account_id, folder_name)
             .map_err(IpcError::from)?;
         view.folder_id = folder_id;
         // Locally-minted uids continue from the current max (same rule as
@@ -421,17 +411,24 @@ mod tests {
 
         // X-Mozilla-Status mapped — read them back through the same
         // projection the UI does.
-        let msgs =
-            crate::commands::mail::list_messages_impl(&state, view.id.clone(), r.folder_id, Some(10))
-                .await
-                .unwrap();
+        let msgs = crate::commands::mail::list_messages_impl(
+            &state,
+            view.id.clone(),
+            r.folder_id,
+            Some(10),
+        )
+        .await
+        .unwrap();
         let m1 = msgs
             .iter()
             .find(|m| m.subject.as_deref() == Some("imported one"))
             .unwrap();
         assert!(!m1.unread, "X-Mozilla-Status 0005 → \\Seen");
         assert!(m1.starred, "X-Mozilla-Status 0005 → \\Flagged");
-        let m2 = msgs.iter().find(|m| m.subject.as_deref() == Some("imported two")).unwrap();
+        let m2 = msgs
+            .iter()
+            .find(|m| m.subject.as_deref() == Some("imported two"))
+            .unwrap();
         assert!(m2.unread, "no status header → unread");
 
         // >From unescape landed in the stored body verbatim.
@@ -439,11 +436,15 @@ mod tests {
             state.clone(),
             view.id.clone(),
             r.folder_id,
-            m2.uid,
+            m2.uid as i64,
         )
         .await
         .unwrap();
-        assert!(src.source.contains("\nFrom realmail@z.test"), "{}", src.source);
+        assert!(
+            src.source.contains("\nFrom realmail@z.test"),
+            "{}",
+            src.source
+        );
         assert!(!src.source.contains(">From realmail"));
 
         // Envelope preserved: Date header parsed through the MIME pipeline.
@@ -485,10 +486,15 @@ mod tests {
             "not-found"
         );
         assert_eq!(
-            import_mbox_impl(&state, &view.id, &dir.join("nope.mbox").to_string_lossy(), None)
-                .await
-                .unwrap_err()
-                .code,
+            import_mbox_impl(
+                &state,
+                &view.id,
+                &dir.join("nope.mbox").to_string_lossy(),
+                None
+            )
+            .await
+            .unwrap_err()
+            .code,
             "not-found"
         );
         assert_eq!(
