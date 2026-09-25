@@ -202,3 +202,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-239 | IPC-1/2 wire-shape reconciliation (AccountView/SecurityStatusView) + SS-1 required_action + serde(other) note | Agent 20 | open | `types/`, `ipc.md` | T-196 |
 | T-240 | Upstream Authentication-Results parse + our-verdict discrepancy flag on AuthView | Agent 21 | open | `kiwi-mail/` | T-232 |
 | T-241 | ipc.md completeness: registered-commands reconciliation + missing entries (post T-230/233/234) | Agent 22 | open | `docs/`, `kiwi-app/src-tauri/` (read) | T-196 |
+| T-242 | Integrations UI: TempMail panel + deliverability view + unsub chip (Mailspring idiom) | Agent 11 | open | `kiwi-app/src/` | T-227, T-234 |
