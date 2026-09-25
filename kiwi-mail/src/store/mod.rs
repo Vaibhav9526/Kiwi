@@ -159,9 +159,7 @@ fn ensure_category_column(conn: &Connection) -> Result<()> {
             return Ok(());
         }
     }
-    conn.execute_batch(
-        "ALTER TABLE messages ADD COLUMN category TEXT NOT NULL DEFAULT 'primary'",
-    )?;
+    conn.execute_batch("ALTER TABLE messages ADD COLUMN category TEXT NOT NULL DEFAULT 'primary'")?;
     Ok(())
 }
 
@@ -231,6 +229,7 @@ mod tests {
             flags: vec!["\\Seen".into()],
             has_attachments: false,
             snippet: Some("hi".into()),
+            category: Category::default(),
         }
     }
 
@@ -518,5 +517,141 @@ mod tests {
         assert!(!store.pop3_seen_contains(acct_id, "uidl1").unwrap());
         store.pop3_mark_seen(acct_id, "uidl1", 100).unwrap();
         assert!(store.pop3_seen_contains(acct_id, "uidl1").unwrap());
+    }
+
+    #[test]
+    fn category_persist_refine_filter() {
+        use crate::category::Category;
+        let store = MailStore::open_memory().unwrap();
+        seed_account(&store, "a1");
+        let fid = store.ensure_folder("a1", "INBOX").unwrap();
+
+        // Ingest stores the tab…
+        let mut m1 = meta(1001);
+        m1.category = Category::Newsletters;
+        store.upsert_message(fid, &m1, 100).unwrap();
+        store.upsert_message(fid, &meta(1002), 100).unwrap(); // Primary default
+        let rows = store.list_messages(fid, 10).unwrap();
+        assert_eq!(rows[0].category, Category::Newsletters);
+        assert_eq!(rows[1].category, Category::Primary);
+
+        // …refinement updates it…
+        assert!(store.set_category(fid, 1002, Category::Social).unwrap());
+        assert!(!store.set_category(fid, 9999, Category::Other).unwrap());
+        assert_eq!(
+            store.list_messages(fid, 10).unwrap()[1].category,
+            Category::Social
+        );
+
+        // …re-upserts never clobber a refined tab with an ingest default…
+        store.upsert_message(fid, &meta(1002), 200).unwrap();
+        assert_eq!(
+            store.list_messages(fid, 10).unwrap()[1].category,
+            Category::Social
+        );
+
+        // …and the tab filter powers the F2 UI tabs.
+        let social = store
+            .list_messages_by_category(fid, Category::Social, 10)
+            .unwrap();
+        assert_eq!(social.len(), 1);
+        assert_eq!(social[0].uid, 1002);
+        assert!(
+            store
+                .list_messages_by_category(fid, Category::Notifications, 10)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn move_preserves_category() {
+        use crate::category::Category;
+        let store = MailStore::open_memory().unwrap();
+        seed_account(&store, "a1");
+        let src = store.ensure_folder("a1", "INBOX").unwrap();
+        let dst = store.ensure_folder("a1", "Archive").unwrap();
+        let mut m = meta(101);
+        m.category = Category::Notifications;
+        store.upsert_message(src, &m, 100).unwrap();
+        store.move_messages(src, dst, &[101]).unwrap();
+        let rows = store.list_messages(dst, 10).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].category, Category::Notifications);
+    }
+
+    /// Pre-v4 database (messages table without `category`, `user_version = 3`)
+    /// migrates to v4: column appears, stored bodies are classified, rows
+    /// without bodies keep the `'primary'` default.
+    #[test]
+    fn v3_to_v4_migration_backfills_category() {
+        use rusqlite::Connection;
+        let dir = std::env::temp_dir().join(format!(
+            "kiwi-mig-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(dir.join("bodies").join("1")).unwrap();
+        let conn = Connection::open(dir.join("mail.db")).unwrap();
+        // v3 shape: messages WITHOUT the category column.
+        conn.execute_batch(
+            "CREATE TABLE messages (
+                id              INTEGER PRIMARY KEY,
+                folder_id       INTEGER NOT NULL,
+                uid             INTEGER NOT NULL,
+                message_id      TEXT,
+                subject         TEXT,
+                from_addr       TEXT,
+                to_addrs        TEXT,
+                date_unix       INTEGER,
+                size            INTEGER,
+                flags           TEXT NOT NULL DEFAULT '',
+                has_attachments INTEGER NOT NULL DEFAULT 0,
+                snippet         TEXT,
+                body_path       TEXT,
+                fetched_at      INTEGER NOT NULL,
+                UNIQUE (folder_id, uid)
+            );
+            INSERT INTO messages
+                (folder_id, uid, subject, from_addr, flags, fetched_at, body_path)
+            VALUES
+                (1, 42, 'sale', 'deals@shop.example', '', 100, 'bodies/1/42.eml'),
+                (1, 43, 'hello', 'alice@example.com', '', 100, NULL);
+            PRAGMA user_version = 3;",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("bodies").join("1").join("42.eml"),
+            b"From: deals@shop.example\r\nSubject: sale\r\nList-Unsubscribe: <https://shop.example/u>\r\n\r\nbuy now\r\n",
+        )
+        .unwrap();
+
+        super::migrate_conn(&conn, &dir).unwrap();
+
+        let v: u32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, super::schema::SCHEMA_VERSION);
+        let cat: String = conn
+            .query_row("SELECT category FROM messages WHERE uid = 42", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(cat, "newsletters");
+        // No body → default stays.
+        let cat: String = conn
+            .query_row("SELECT category FROM messages WHERE uid = 43", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(cat, "primary");
+
+        // Idempotent: a second run is a no-op.
+        super::migrate_conn(&conn, &dir).unwrap();
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

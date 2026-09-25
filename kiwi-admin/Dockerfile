@@ -17,13 +17,15 @@ COPY package.json package-lock.json ./
 # installs and tests green. Agent 5 regenerates the lock under T-130
 # (`npm install` locally); then this restores `npm ci` for full pinning.
 RUN npm install
-COPY tsconfig.json vitest.config.ts ./
+COPY tsconfig.json tsconfig.build.json vitest.config.ts ./
 COPY src/ ./src/
 COPY tests/ ./tests/
 # Type gate: the image must not build unless types are clean.
 RUN npm run typecheck
-# tsconfig sets noEmit for editors; emit explicitly for the image.
-RUN npx tsc -p tsconfig.json --noEmit false --outDir dist
+# tsconfig sets noEmit for editors; emit via the build config (src only — the
+# dev tsconfig also compiles tests/, which would push the entrypoint to
+# dist/src/server.js and break CMD below).
+RUN npm run build
 
 FROM node:22-bookworm-slim AS runner
 ENV NODE_ENV=production

@@ -327,4 +327,40 @@ mod tests {
         };
         assert!(has_attachment_parts(&multi));
     }
+
+    fn envelope_item(from: &str) -> FetchItem {
+        use crate::imap::{Envelope, FetchItem, Mailbox};
+        FetchItem {
+            uid: Some(1),
+            flags: vec![],
+            envelope: Some(Envelope {
+                from: vec![Mailbox {
+                    name: None,
+                    email: from.into(),
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn to_meta_classifies_from_envelope() {
+        use crate::category::Category;
+        // Domain rules fire on ENVELOPE-only metadata…
+        assert_eq!(
+            to_meta(&envelope_item("jobs@linkedin.com")).category,
+            Category::Social
+        );
+        assert_eq!(
+            to_meta(&envelope_item("noreply@bank.example")).category,
+            Category::Notifications
+        );
+        // …list rules degrade to Primary until the body arrives.
+        assert_eq!(
+            to_meta(&envelope_item("deals@shop.example")).category,
+            Category::Primary
+        );
+        assert_eq!(to_meta(&FetchItem::default()).category, Category::Primary);
+    }
 }

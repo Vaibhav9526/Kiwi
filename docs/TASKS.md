@@ -174,7 +174,7 @@ rebuild context. Lead handle is now term_c20c6737.
 | 18 | Space Bunny Free | f7e88089 | T-188 pair/challenge + admin contracts |
 | 19 | Devin Pro | e84c9837 | T-195 OAuth2 spec + impl |
 | 20 | Devin Pro | 593d9aea | T-196 contract-drift audit |
-| 21 | Space Bunny Alpha | 12f55a82 | T-197 done → T-198 overlap-gate tool |
+| 21 | Space Bunny Alpha | 12f55a82 | T-198 done → T-199 done → audit rotation |
 | Watcher | Space Bunny Alpha | 30e63397 | tools/watcher/watcher.py loop |
 | Planner | Devin | 621f9265 | plans |
 | Lead | Devin (SWE-2) | c20c6737 | orchestration + ledger |
@@ -183,3 +183,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-196 | Contract-drift audit: every contracts/*.md vs actual code → docs/audits/contract-drift-1.md | Agent 20 | open | `docs/`, read-only | — |
 | T-197 | License-compliance + secret scan (GPL boundary, secrets, dep licenses) → docs/audits/license-secret-scan-1.md | Agent 21 | open | repo-wide, read-only | — |
 | T-198 | copy_overlap.py gate tool (45-char verbatim scan, CI static-checks) | Agent 21 | open | `tests/tools/` | T-197 |
+| T-199 | Dependency vulnerability audit → dep-vuln-1.md (vitest crit + mobile lockfile + workspace-red catches) | Agent 21 | done | — | — |

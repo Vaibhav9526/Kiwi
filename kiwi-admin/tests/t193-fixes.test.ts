@@ -15,7 +15,7 @@ import { makeTempDbPath } from "./helpers/db.js";
 describe("T-193/H1 evaluate is authenticated and audited", () => {
   const admin: Actor = { subject: "h1-admin", roles: ["org_admin"], orgId: null };
 
-  it("viewer and cross-org evaluations are denied and audited; owner allowed", async () => {
+  it("anonymous and cross-org evaluations are denied and audited; owner allowed", async () => {
     const container = await createServiceContainer(makeTempDbPath());
     const a = (await container.orgs.createOrg(admin, "h1c.test", 102)).id;
     const b = (await container.orgs.createOrg(admin, "h1d.test", 103)).id;
@@ -29,9 +29,11 @@ describe("T-193/H1 evaluate is authenticated and audited", () => {
       })
     ).id;
     const input = { direction: "outbound" as const, sender: "a@t", recipient: "b@t", tlsVersion: null };
-    await expect(container.policies.evaluate({ subject: "v", roles: ["viewer"], orgId: a }, p, input)).rejects.toThrow(
-      AuthorizationDeniedError,
-    );
+    // No roles at all: the pre-H1 route discarded the actor, so this is the
+    // exact shape that used to read policy decisions unauthenticated.
+    await expect(
+      container.policies.evaluate({ subject: "anon", roles: [], orgId: null }, p, input),
+    ).rejects.toThrow(AuthorizationDeniedError);
     await expect(container.policies.evaluate({ ...admin, orgId: b }, p, input)).rejects.toThrow(
       AuthorizationDeniedError,
     );
@@ -41,6 +43,11 @@ describe("T-193/H1 evaluate is authenticated and audited", () => {
     expect(denied.length).toBeGreaterThanOrEqual(2);
     const ok = await container.policies.evaluate({ ...admin, orgId: a }, p, input);
     expect(ok).toBeTruthy();
+    // A viewer in the OWNING org holds `policy.read` (§3), so evaluation is
+    // allowed for them — denying it while `listPolicies` allows reads would
+    // be incoherent. This pins that choice.
+    const viewerOk = await container.policies.evaluate({ subject: "v", roles: ["viewer"], orgId: a }, p, input);
+    expect(viewerOk).toBeTruthy();
     const allowed = (await container.audit.query(admin, { limit: 100 })).filter(
       (r) => r.outcome === "allowed" && r.action === "policy.evaluate",
     );
@@ -154,6 +161,75 @@ describe("T-193/M7 bounded listings", () => {
     await container.orgs.createUser(writer, org, "two@acme.test", 152);
     expect((await container.orgs.listUsers(writer, org, 1)).length).toBeLessThanOrEqual(1);
     expect((await container.orgs.listUsers(writer, org)).length).toBeGreaterThanOrEqual(2);
+    await container.close();
+  });
+});
+
+describe("T-193/H4 org-bound reads default to the caller's own org", () => {
+  it("mailflow and audit without ?org= never leak another org", async () => {
+    const container = await createServiceContainer(makeTempDbPath());
+    const admin: Actor = { subject: "h4", roles: ["org_admin"], orgId: null };
+    const a = (await container.orgs.createOrg(admin, "h4a.test", 180)).id;
+    const b = (await container.orgs.createOrg(admin, "h4b.test", 181)).id;
+    const writerA: Actor = { ...admin, orgId: a };
+    const viewerA: Actor = { subject: "h4v", roles: ["viewer"], orgId: a };
+    for (const [writer, org, who] of [
+      [writerA, a, "a"],
+      [{ ...admin, orgId: b }, b, "b"],
+    ] as const) {
+      await container.mailflow.ingest(writer, {
+        direction: "outbound",
+        sender: `${who}@t`,
+        recipient: `${who}@u.test`,
+        ts: 1820,
+        message_id: null,
+        tls_version: null,
+        security_status: "clean",
+        policy_verdict: "allow",
+        org_id: org,
+      });
+    }
+    // No filter: an org-bound caller reads their OWN org, never all orgs.
+    const items = (await container.mailflow.query(viewerA, { limit: 50 })).items;
+    expect(items.length).toBeGreaterThanOrEqual(1);
+    expect(items.every((e) => e.org_id === a)).toBe(true);
+    // Explicit cross-org widening is refused, not silently honored.
+    await expect(container.mailflow.query(viewerA, { orgId: b, limit: 50 })).rejects.toThrow(
+      AuthorizationDeniedError,
+    );
+    // Same rule for the audit log: unfiltered == own-org slice, and the
+    // other org's slice is a 403, not a wider read.
+    const unfiltered = await container.audit.query(viewerA, { limit: 200 });
+    const ownSlice = await container.audit.query(viewerA, { orgId: a, limit: 200 });
+    expect(unfiltered.map((r) => r.seq)).toEqual(ownSlice.map((r) => r.seq));
+    await expect(container.audit.query(viewerA, { orgId: b, limit: 200 })).rejects.toThrow(
+      AuthorizationDeniedError,
+    );
+    await container.close();
+  });
+});
+
+describe("T-193/M1 service-stamped timestamps are Unix milliseconds", () => {
+  it("audit ts and created_at live in ms, one unit everywhere", async () => {
+    const container = await createServiceContainer(makeTempDbPath());
+    const admin: Actor = { subject: "m1", roles: ["org_admin"], orgId: null };
+    // Route-shaped clock: the HTTP layer passes Date.now() (ms) as `now`.
+    const nowMs = Date.now();
+    const org = (await container.orgs.createOrg(admin, "m1.test", nowMs)).id;
+    const writer: Actor = { ...admin, orgId: org };
+    await container.policies.createPolicy(writer, org, "m1p", {
+      name: "m1p",
+      enabled: true,
+      minTls: null,
+      externalRecipients: "warn",
+      domainRules: [],
+    });
+    // ms-scale, not seconds: safely above 1e10 until the year 2286.
+    const rows = await container.audit.query(admin, { limit: 50 });
+    expect(rows.length).toBeGreaterThan(0);
+    for (const r of rows) expect(r.ts).toBeGreaterThan(10_000_000_000);
+    const user = await container.orgs.createUser(writer, org, "m1@acme.test", nowMs);
+    expect(user.created_at).toBeGreaterThan(10_000_000_000);
     await container.close();
   });
 });

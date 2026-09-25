@@ -276,3 +276,107 @@ describe("server transport", () => {
     }
   });
 });
+
+describe("T-193 HTTP regression guards", () => {
+  it("H1: policy evaluation requires an actor (no headers, or a role-less caller, is 403)", async () => {
+    const listed = await api(`/api/v1/orgs/${orgId}/policies`, { headers: boundHeaders });
+    const policyId = (listed.json.items as { id: string }[])[0]!.id;
+    const body = { direction: "outbound", sender: "a@http.test", recipient: "b@partner.example", tlsVersion: "tls1.3" };
+    // Pre-H1 this route discarded the actor entirely — no headers meant a
+    // free policy oracle. Now it is a permission-checked, audited read.
+    const naked = await api(`/api/v1/policies/${policyId}/evaluate`, {
+      method: "POST",
+      body,
+      headers: { "x-kiwi-subject": "nobody" },
+    });
+    expect(naked.status).toBe(403);
+    expect(naked.json.error.code).toBe("auth.denied");
+    // Cross-org evaluation is equally refused.
+    const other = await api("/api/v1/orgs", { method: "POST", body: { name: "other-http.test" }, headers: adminHeaders });
+    const otherOrg = (other.json as { id: string }).id as string;
+    const cross = await api(`/api/v1/policies/${policyId}/evaluate`, {
+      method: "POST",
+      body,
+      headers: { "x-kiwi-subject": "tester", "x-kiwi-roles": "org_admin", "x-kiwi-org": otherOrg },
+    });
+    expect(cross.status).toBe(403);
+  });
+
+  it("H2: an org-scoped call without x-kiwi-org is denied, not global", async () => {
+    // A security_admin role with NO org binding must not exercise org scope.
+    const floater = { "x-kiwi-subject": "floater", "x-kiwi-roles": "security_admin" };
+    const r = await api(`/api/v1/orgs/${orgId}/policies`, {
+      method: "POST",
+      body: { name: "floater", enabled: true, min_tls: null, external_recipients: "allow", domain_rules: [] },
+      headers: floater,
+    });
+    expect(r.status).toBe(403);
+    expect(r.json.error.code).toBe("auth.denied");
+  });
+
+  it("H4: an org-bound mailflow read without ?org= stays inside its own org", async () => {
+    const r = await api(`/api/v1/mailflow/events?limit=50`, { headers: viewerHeaders });
+    expect(r.status).toBe(200);
+    const items = r.json.items as { org_id: string | null }[];
+    expect(items.length).toBeGreaterThan(0);
+    expect(items.every((e) => e.org_id === orgId)).toBe(true);
+  });
+
+  it("H5: viewers cannot create orgs; org_admin can", async () => {
+    const denied = await api("/api/v1/orgs", {
+      method: "POST",
+      body: { name: "viewer-org.test" },
+      headers: { "x-kiwi-subject": "v", "x-kiwi-roles": "viewer" },
+    });
+    expect(denied.status).toBe(403);
+    const allowed = await api("/api/v1/orgs", {
+      method: "POST",
+      body: { name: "h5-http.test" },
+      headers: adminHeaders,
+    });
+    expect(allowed.status).toBe(201);
+  });
+
+  it("H8: verify?limit=0 is a 400, never an attested empty chain", async () => {
+    for (const q of ["limit=0", "limit=-1"]) {
+      const r = await api(`/api/v1/audit/verify?${q}`, { headers: boundHeaders });
+      expect(r.status).toBe(400);
+      expect(r.json.error.code).toBe("validation.failed");
+    }
+    const v = await api(`/api/v1/audit/verify?limit=1000`, { headers: boundHeaders });
+    expect(v.json.valid).toBe(true);
+    expect(v.json.checked).toBeGreaterThan(0);
+  });
+
+  it("M5+M6: duplicate email is a 409 conflict; outsider grant is a 404", async () => {
+    const email = `dup-${Date.now()}@http.test`;
+    const first = await api(`/api/v1/orgs/${orgId}/users`, {
+      method: "POST",
+      body: { email },
+      headers: boundHeaders,
+    });
+    expect(first.status).toBe(201);
+    const second = await api(`/api/v1/orgs/${orgId}/users`, {
+      method: "POST",
+      body: { email },
+      headers: boundHeaders,
+    });
+    expect(second.status).toBe(409);
+    expect(second.json.error.code).toBe("conflict");
+    const outsider = await api(`/api/v1/orgs/org-nope/users/${(first.json as { id: string }).id}/role`, {
+      method: "PUT",
+      body: { role: "viewer" },
+      headers: { "x-kiwi-subject": "tester", "x-kiwi-roles": "org_admin", "x-kiwi-org": "org-nope" },
+    });
+    // The user belongs to the real org, not the actor's path org: the grant
+    // targets (user, org) jointly, so this is a 404 — never a cross-org
+    // role row, never a constraint-name 500.
+    expect(outsider.status).toBe(404);
+  });
+
+  it("M7: user listing honors ?limit=", async () => {
+    const r = await api(`/api/v1/orgs/${orgId}/users?limit=1`, { headers: boundHeaders });
+    expect(r.status).toBe(200);
+    expect((r.json.items as unknown[]).length).toBeLessThanOrEqual(1);
+  });
+});

@@ -43,8 +43,9 @@ pub struct ParsedMessage {
     /// Raw top-level headers as `(lowercased-name, value)` pairs, bounded
     /// (see `MAX_CAPTURED_HEADERS`): the deterministic classifier
     /// (`crate::category`) reads bulk/automation signals from these.
-    /// Only text-valued headers are kept; structured values (addresses,
-    /// dates, content-types, Received) are already surfaced typed above.
+    /// Text, text-list, and address/URL values are kept (`List-Unsubscribe`
+    /// parses as an address); structured values (dates, content-types,
+    /// Received) are already surfaced typed above and skipped here.
     pub headers: Vec<(String, String)>,
 }
 
@@ -157,10 +158,9 @@ pub fn parse_message(raw: &[u8]) -> Result<ParsedMessage> {
 // Raw header capture (classification input)
 // ---------------------------------------------------------------------------
 
-/// Copy the root part's text-valued headers into bounded
+/// Copy the root part's text-extractable headers into bounded
 /// `(lowercased-name, value)` pairs. Unknown `X-` headers surface as
-/// `HeaderName::Other`; structured values are skipped (typed fields above
-/// already carry them). Never fails — hostile input just yields fewer rows.
+/// `HeaderName::Other`. Never fails — hostile input just yields fewer rows.
 fn capture_headers(msg: &mail_parser::Message<'_>) -> Vec<(String, String)> {
     let Some(root) = msg.parts.first() else {
         return Vec::new();
@@ -180,6 +180,9 @@ fn capture_headers(msg: &mail_parser::Message<'_>) -> Vec<(String, String)> {
         let value = match &h.value {
             mail_parser::HeaderValue::Text(t) => t.to_string(),
             mail_parser::HeaderValue::TextList(l) => l.join(", "),
+            // RFC 2369 list headers (`List-Unsubscribe: <https://…>`) and
+            // address headers parse as addresses — flatten to text.
+            mail_parser::HeaderValue::Address(a) => address_text(a),
             _ => continue,
         };
         let mut value = value;
@@ -193,6 +196,30 @@ fn capture_headers(msg: &mail_parser::Message<'_>) -> Vec<(String, String)> {
         out.push((name, value));
     }
     out
+}
+
+/// Flatten an address-list/group value to display text (addresses and URLs;
+///
+/// names included so group headers stay identifiable).
+fn address_text(a: &mail_parser::Address<'_>) -> String {
+    match a {
+        mail_parser::Address::List(list) => list
+            .iter()
+            .filter_map(|x| x.address.as_deref())
+            .collect::<Vec<_>>()
+            .join(", "),
+        mail_parser::Address::Group(groups) => groups
+            .iter()
+            .flat_map(|g| {
+                g.name.iter().map(|n| n.to_string()).chain(
+                    g.addresses
+                        .iter()
+                        .filter_map(|x| x.address.as_deref().map(str::to_string)),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -532,5 +559,22 @@ mod tests {
         // The injected text stays on the Subject line — never becomes a header.
         assert!(!text.contains("\r\nBCC:"));
         assert!(text.contains("Subject: hi  BCC: evil@x\r\n"));
+    }
+
+    #[test]
+    fn headers_captured_for_classification() {
+        let raw = b"From: deals@shop.example\r\nTo: b@y.test\r\nSubject: sale\r\nList-Unsubscribe: <https://shop.example/u>\r\nPrecedence: bulk\r\nX-Mailer: Mailchimp 1.0\r\nReceived: from a by b\r\n\r\nbody\r\n";
+        let p = parse_message(raw).unwrap();
+        // Text-valued signal headers are kept, names lowercased.
+        // `List-Unsubscribe: <url>` parses as an address value — kept as text.
+        assert!(
+            p.headers
+                .iter()
+                .any(|(n, v)| n == "list-unsubscribe" && v.contains("https://shop.example/u"))
+        );
+        assert!(p.headers.iter().any(|(n, _)| n == "precedence"));
+        assert!(p.headers.iter().any(|(n, _)| n == "x-mailer"));
+        // Received stays typed-only (structured value, skipped here).
+        assert!(!p.headers.iter().any(|(n, _)| n == "received"));
     }
 }

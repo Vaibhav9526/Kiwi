@@ -235,6 +235,8 @@ async fn move_local(
             flags: m.flags.clone(),
             has_attachments: m.has_attachments,
             snippet: m.snippet.clone(),
+            // Row copy (archive move): the tab travels with the message.
+            category: m.category,
         },
         now_unix(),
     )?;

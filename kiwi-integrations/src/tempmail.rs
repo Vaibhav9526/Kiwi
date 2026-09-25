@@ -37,8 +37,7 @@ pub const MAX_FIELD: usize = 8 * 1024;
 
 /// Mandatory disclosure text — UI must show this before enabling a temp
 /// inbox. Kept here so copy cannot drift across surfaces.
-pub const PUBLIC_INBOX_NOTICE: &str =
-    "Temporary inboxes are PUBLIC: anyone who knows the address can read its mail, and \
+pub const PUBLIC_INBOX_NOTICE: &str = "Temporary inboxes are PUBLIC: anyone who knows the address can read its mail, and \
      messages pass through a third-party server. Never receive personal or sensitive mail here.";
 
 /// A disposable address as the provider reports it.

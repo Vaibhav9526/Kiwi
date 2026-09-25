@@ -261,7 +261,7 @@ pub fn search_messages(
     // outside a quoted phrase (SECURITY.md rule 9).
     let sql = "SELECT m.id, m.folder_id, m.uid, m.message_id, m.subject, m.from_addr,
                 m.to_addrs, m.date_unix, m.size, m.flags, m.has_attachments,
-                m.snippet, m.body_path
+                m.snippet, m.body_path, m.category
          FROM messages m
          JOIN messages_fts f ON f.rowid = m.id
          WHERE messages_fts MATCH ?1
@@ -282,6 +282,8 @@ pub fn search_messages(
 }
 
 fn map_message_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<MessageMeta> {
+    use crate::category::Category;
+    let slug: String = r.get(13)?;
     Ok(MessageMeta {
         id: r.get(0)?,
         folder_id: r.get::<_, i64>(1)?,
@@ -300,6 +302,7 @@ fn map_message_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<MessageMeta> {
         has_attachments: r.get::<_, i64>(10)? != 0,
         snippet: r.get(11)?,
         body_path: r.get(12)?,
+        category: Category::from_slug(&slug).unwrap_or_default(),
     })
 }
 
@@ -320,6 +323,7 @@ mod tests {
             flags: vec![],
             has_attachments: false,
             snippet: Some(snippet.into()),
+            category: Default::default(),
         }
     }
 

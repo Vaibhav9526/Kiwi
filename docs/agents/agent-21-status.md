@@ -2,6 +2,100 @@
 
 > Append dated entries: status, files changed, commands run, tests, assumptions, risks.
 
+## 2026-09-25 — T-199 dependency vulnerability audit delivered
+
+**Status:** COMPLETE. `cargo audit` (0.22.2, 1,269 advisories, 579 crates) +
+`npm audit` across all 4 npm packages, full and `--omit=dev`. Written to
+`docs/audits/dep-vuln-1.md`. **No code, manifest, or lockfile was changed.**
+
+**Files changed (2):** `docs/audits/dep-vuln-1.md` (new), this log.
+
+**Headline: two BLOCKING build problems, more urgent than any advisory — the
+Rust workspace does not currently resolve.**
+- **C1** — `kiwi-integrations/Cargo.toml` requests reqwest feature
+  `rustls-tls-webpki-roots`, which **does not exist** in `reqwest 0.13.5`
+  (it exposes `rustls`, `rustls-no-provider`, `__rustls-aws-lc-rs`).
+  `cargo tree --workspace` and `cargo check --workspace` both fail. Owner:
+  kiwi-integrations. Not fixed (read-only).
+  **Important nuance:** `cargo audit` still reports cleanly because it parses
+  `Cargo.lock` without re-resolving — so a green audit does **not** mean the
+  workspace builds. I only found this because I ran `cargo tree` to build the
+  reverse-dependency evidence, and it blew up.
+- **C2** — `kiwi-mailauth/src/dmarc.rs` has an unclosed `mod tests`
+  ("unexpected closing delimiter", line 597). The file is modified/uncommitted,
+  so almost certainly another agent's in-flight edit, not a committed defect.
+  Reported, not fixed.
+
+**Advisory results:**
+| Scope | Result |
+|---|---|
+| Rust workspace | 1 vulnerability + 7 allowed warnings (unchanged from T-154) |
+| `kiwi-app` | 0 |
+| `kiwi-admin` | 6 (1 critical + 5 moderate) — all dev-only |
+| `kiwi-admin-ui` | 0 |
+| `mobile` | **NOT AUDITABLE** — `ENOLOCK`, no `package-lock.json` |
+| `--omit=dev` (shipped) | **0 in all three lockfile-backed packages** |
+
+**Actionable (A1–A5):**
+- **A1** `vitest` 3.2.4 in kiwi-admin — **CRITICAL** GHSA-5xrq-8626-4rwp
+  (range `<3.2.6`). Exposure verified unreachable: advisory needs the Vitest UI
+  server listening; there is **no `--ui`/`--api`/`ui: true` anywhere**, the
+  config sets only `environment`/`include`/`onConsoleLog`, and scripts are
+  `vitest run`/`vitest`. But **3.2.6 and 3.2.7 exist** (confirmed via
+  `npm view vitest versions`), so the fix is a free non-breaking minor bump.
+  **Action: `npm i -D vitest@^3.2.7`.**
+- **A2** `mobile` pins `vitest` **3.2.4** exactly — the **same critical**,
+  invisible to `npm audit` because of A5. Bump together with A1.
+- **A3** `@vitest/mocker` moderate GHSA-82fw-gwwq-j7x9 — fix needs vitest
+  **4.x** (major). Exposure nil: `git grep 'vi\.mock|vi\.doMock|jest\.mock'`
+  over kiwi-admin + mobile = **0 hits**, we never mock modules. Accept; fold
+  into a scheduled vitest 4.x migration.
+- **A4** `esbuild` 0.18.20 moderate GHSA-67mh-4wv8-2f99 via
+  `drizzle-kit → @esbuild-kit/esm-loader → @esbuild-kit/core-utils`. Advisory
+  needs the esbuild **dev server listening**; here esbuild is only a transform
+  loader inside the drizzle-kit CLI, which binds no port. **Explicitly advise
+  against `npm audit fix --force`**, which would semver-major-*downgrade*
+  drizzle-kit to 0.18.1 — a far worse outcome than an unreachable dev-only
+  moderate. (drizzle-kit's other esbuild copies, 0.25.12/0.28.2, are above the
+  vulnerable range.)
+- **A5** `mobile/` not auditable at all — generate and commit the lockfile.
+  **Third audit to raise this** (T-154 baseline, interim, now).
+
+**Accepted risk (B1–B4), each with the reasoning recorded in the audit:**
+- **B1** `rsa` 0.9.10 RUSTSEC-2023-0071 (Marvin, 5.9, **no fix**). Re-verified
+  at call sites in `kiwi-mailauth/src/dkim.rs`: enum holds `RsaPublicKey` (740),
+  parsing only (786–791), `pkcs1v15::VerifyingKey::verify` (832–839). The one
+  `RsaPrivateKey::new(1024)` is at line **1124, inside `mod tests`** (opens
+  426). Marvin needs a private-key op — we do none outside tests. Accept.
+- **B2** `glib` 0.18.5 unsound — chain `glib ← gtk/gdk/gio/pango/soup3/
+  webkit2gtk/cairo-rs/…`, i.e. the whole Linux Tauri/wry path, not compiled on
+  the Windows-first target. Re-assess if a Linux build is ever produced.
+- **B3** `proc-macro-error` unmaintained ← `glib-macros`, `gtk3-macros` —
+  build-time macro, same Linux-only path.
+- **B4** 5× `unic-char-*` unmaintained — full chain verified from the lockfile:
+  `tauri-utils → urlpattern → unic-ucd-ident → unic-char-property`;
+  `tauri-utils` is pulled by 6 upstream Tauri crates. Ride Tauri upgrades.
+
+**Delta vs T-154:** Rust findings identical (DB grew 1251 → 1269, no new hits);
+`kiwi-admin` critical **unchanged and now unfixed across three audits** despite
+a one-line fix; mobile lockfile **still missing after three audits**. Both are
+process failures, not technical ones — flagged as such to the Lead.
+
+**Method notes / gotchas hit:**
+- `cargo tree` was unusable for reverse-dep evidence (C1), so I parsed
+  `Cargo.lock` directly to build the `glib`/`unic-char-*`/`rsa`/`tauri-utils`
+  chains — those chains are *verified*, not recalled from the T-154 text.
+- `npm audit` text output under-reports (it printed 2 advisories while the
+  summary said 6); the `--json` output is the complete set and is what the
+  audit tabulates. My first parse failed because PowerShell `>` wrote UTF-16 —
+  read the bytes and decode explicitly.
+
+**Assumptions / limits:** Rust exposure judged against a Windows-first target
+(B2/B3 would move to actionable on a Linux build). npm exposure assumes the
+documented scripts are what people run — a dev manually running `vitest --ui`
+would create a live listener and change A1's exposure. Nothing was fixed or
+modified; C1/C2/A1–A5 are recommendations for their owners.
+
 ## 2026-09-25 — T-198 copy-overlap gate delivered (gates T-190/T-191)
 
 **Status:** COMPLETE. `tests/tools/copy_overlap.py` written, wired into

@@ -59,7 +59,7 @@ impl Category {
 
     /// Parse a stored slug. Unknown values → `None` (callers fall back to
     /// `Primary` so a future category never breaks old reads).
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn from_slug(s: &str) -> Option<Self> {
         match s.trim().to_lowercase().as_str() {
             "primary" => Some(Category::Primary),
             "newsletters" => Some(Category::Newsletters),
@@ -223,22 +223,16 @@ pub fn categorize(msg: &ParsedMessage) -> Classification {
 
     // Rule 2: social sender domain (before list headers — social digests
     // carry List-Unsubscribe).
-    if let Some(pattern) = SOCIAL_DOMAINS.iter().find(|p| domain_matches(domain, p)) {
+    if let Some(pattern) = SOCIAL_DOMAINS.iter().find(|p| domain_matches(&domain, p)) {
         return Classification {
             category: Category::Social,
-            reason: format!(
-                "from domain '{domain}' matches social sender '{pattern}' → social"
-            ),
+            reason: format!("from domain '{domain}' matches social sender '{pattern}' → social"),
         };
     }
 
     // Rule 3: bulk precedence.
     if let Some(v) = header(msg, "precedence") {
-        let first = v
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .to_lowercase();
+        let first = v.split_whitespace().next().unwrap_or("").to_lowercase();
         if matches!(first.as_str(), "bulk" | "list" | "junk") {
             return Classification {
                 category: Category::Newsletters,
@@ -330,6 +324,11 @@ fn header<'a>(msg: &'a ParsedMessage, name: &str) -> Option<&'a str> {
         .map(|(_, v)| v.as_str())
 }
 
+/// Presence check for a (lowercased) header name.
+fn has_header(msg: &ParsedMessage, name: &str) -> bool {
+    header(msg, name).is_some()
+}
+
 /// Split `local@domain`; returns lowercase `(local, domain)` (`""` halves
 /// when malformed — never panics on hostile input).
 fn split_addr(addr: &str) -> (String, String) {
@@ -345,8 +344,7 @@ fn split_addr(addr: &str) -> (String, String) {
 /// Suffix match on dot boundaries: `mail.linkedin.com` matches
 /// `linkedin.com`; `fakelinkedin.com` does not.
 fn domain_matches(domain: &str, pattern: &str) -> bool {
-    !domain.is_empty()
-        && (domain == pattern || domain.ends_with(&format!(".{pattern}")))
+    !domain.is_empty() && (domain == pattern || domain.ends_with(&format!(".{pattern}")))
 }
 
 /// Shorten long header values for reason strings (char-boundary safe).
@@ -387,12 +385,12 @@ mod tests {
             Category::Notifications,
             Category::Other,
         ] {
-            assert_eq!(Category::from_str(c.as_str()), Some(c));
+            assert_eq!(Category::from_slug(c.as_str()), Some(c));
         }
-        assert_eq!(Category::from_str("PRIMARY"), Some(Category::Primary));
-        assert_eq!(Category::from_str("  social "), Some(Category::Social));
-        assert_eq!(Category::from_str("spam"), None);
-        assert_eq!(Category::from_str(""), None);
+        assert_eq!(Category::from_slug("PRIMARY"), Some(Category::Primary));
+        assert_eq!(Category::from_slug("  social "), Some(Category::Social));
+        assert_eq!(Category::from_slug("spam"), None);
+        assert_eq!(Category::from_slug(""), None);
         assert_eq!(Category::default(), Category::Primary);
     }
 
@@ -400,15 +398,25 @@ mod tests {
     fn personal_mail_is_primary_with_mua_evidence() {
         let c = categorize(&personal());
         assert_eq!(c.category, Category::Primary);
-        assert!(c.reason.contains("thunderbird"), "reason: {}", c.reason);
-        assert!(c.reason.contains("personal mail client"), "reason: {}", c.reason);
+        // Reason preserves the header's original case — compare folded.
+        let reason = c.reason.to_lowercase();
+        assert!(reason.contains("thunderbird"), "reason: {}", c.reason);
+        assert!(
+            reason.contains("personal mail client"),
+            "reason: {}",
+            c.reason
+        );
     }
 
     #[test]
     fn bare_mail_without_signals_is_primary() {
         let c = categorize(&parsed("From: a@example.com\r\nSubject: s"));
         assert_eq!(c.category, Category::Primary);
-        assert!(c.reason.contains("no bulk/automation signals"), "{}", c.reason);
+        assert!(
+            c.reason.contains("no bulk/automation signals"),
+            "{}",
+            c.reason
+        );
     }
 
     #[test]
@@ -536,10 +544,7 @@ mod tests {
     #[test]
     fn domain_split_rejects_hostile_input() {
         assert_eq!(split_addr("no-at-sign"), (String::new(), String::new()));
-        assert_eq!(
-            split_addr("a@b@c."),
-            ("a@b".to_string(), "c".to_string())
-        );
+        assert_eq!(split_addr("a@b@c."), ("a@b".to_string(), "c".to_string()));
         assert!(!domain_matches("", "x.com"));
         assert!(!domain_matches("notx.com", "x.com"));
         assert!(domain_matches("a.b.x.com", "x.com"));
@@ -550,18 +555,22 @@ mod tests {
         // IMAP metadata ingest has envelope From but no headers: domain
         // rules (social / no-reply) must still fire; list rules degrade to
         // Primary until the body arrives and refines the category.
-        let mut m = ParsedMessage::default();
-        m.from = vec![Addr {
-            name: None,
-            email: "user@reddit.com".into(),
-        }];
+        let m = ParsedMessage {
+            from: vec![Addr {
+                name: None,
+                email: "user@reddit.com".into(),
+            }],
+            ..Default::default()
+        };
         assert_eq!(categorize(&m).category, Category::Social);
 
-        let mut m = ParsedMessage::default();
-        m.from = vec![Addr {
-            name: None,
-            email: "billing+noreply@shop.example".into(),
-        }];
+        let m = ParsedMessage {
+            from: vec![Addr {
+                name: None,
+                email: "billing+noreply@shop.example".into(),
+            }],
+            ..Default::default()
+        };
         // "billing+noreply" is not an exact no-reply local-part → Primary.
         assert_eq!(categorize(&m).category, Category::Primary);
     }

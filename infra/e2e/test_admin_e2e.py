@@ -232,6 +232,19 @@ class Backend:
     def count_audit_rows(self):
         raise NotImplementedError
 
+    # -- device rows (T-193/H3: revocation is org-scoped) -------------------
+    # No HTTP route creates devices, so the H3 probe inserts the row the way
+    # the service would and exercises the real revoke path against it.
+
+    def create_device(self, org_id, label):
+        raise NotImplementedError
+
+    def device_revoked(self, device_id):
+        raise NotImplementedError
+
+    def delete_device(self, device_id):
+        raise NotImplementedError
+
 
 class SqliteBackend(Backend):
     name = "sqlite"
@@ -278,6 +291,31 @@ class SqliteBackend(Backend):
         out = sqlite_exec(js).stdout.strip().splitlines()
         return int(out[-1]) if out else 0
 
+    def create_device(self, org_id, label):
+        import uuid
+
+        dev = f"dev-e2e-{uuid.uuid4().hex[:12]}"
+        js = sqlite_script(
+            "db.prepare('INSERT INTO devices (id, org_id, label, revoked, created_at) VALUES (?,?,?,?,?)')"
+            f".run({json.dumps(dev)},{json.dumps(org_id)},{json.dumps(label)},0,{int(time.time() * 1000)});"
+            "console.log('OK');"
+        )
+        proc = sqlite_exec(js)
+        if "OK" not in proc.stdout:
+            raise AssertionError(f"device insert failed: {proc.stdout} {proc.stderr}")
+        return dev
+
+    def device_revoked(self, device_id):
+        js = sqlite_script(
+            f"const r=db.prepare('SELECT revoked FROM devices WHERE id=?').get({json.dumps(device_id)});"
+            "console.log(r?String(r.revoked):'missing');"
+        )
+        out = sqlite_exec(js).stdout.strip().splitlines()
+        return out and out[-1] == "1"
+
+    def delete_device(self, device_id):
+        sqlite_exec(sqlite_script(f"db.prepare('DELETE FROM devices WHERE id=?').run({json.dumps(device_id)});"))
+
 
 class PostgresBackend(Backend):
     name = "postgres"
@@ -312,6 +350,26 @@ class PostgresBackend(Backend):
     def count_audit_rows(self):
         code, out, _ = pg_query("SELECT COUNT(*) FROM audit_log")
         return int(out) if code == 0 and out.isdigit() else 0
+
+    def create_device(self, org_id, label):
+        import uuid
+
+        dev = f"dev-e2e-{uuid.uuid4().hex[:12]}"
+        now_ms = int(time.time() * 1000)
+        code, out = pg_exec_script(
+            "INSERT INTO devices (id, org_id, label, revoked, created_at) VALUES "
+            f"('{dev}','{org_id}','{label}',false,{now_ms});"
+        )
+        if code != 0:
+            raise AssertionError(f"device insert failed: {out}")
+        return dev
+
+    def device_revoked(self, device_id):
+        code, out, _ = pg_query(f"SELECT revoked FROM devices WHERE id='{device_id}'")
+        return code == 0 and out.strip().lower() in ("t", "true", "1")
+
+    def delete_device(self, device_id):
+        pg_exec_script(f"DELETE FROM devices WHERE id='{device_id}';")
 
 
 def _raised(proc, success_marker):
@@ -403,7 +461,8 @@ class AdminE2E(unittest.TestCase):
                 "direction": "outbound",
                 "sender": "a@kiwi-test.invalid",
                 "recipient": "b@blocked.invalid",
-                "ts": int(time.time()),
+                # Caller-supplied message time, Unix milliseconds per contract §4.
+                "ts": int(time.time() * 1000),
                 "message_id": f"<e2e-{stamp}@kiwi-test.invalid>",
                 "tls_version": "tls1.2",
                 "security_status": "clean",
@@ -678,6 +737,254 @@ class DialectLeg(AdminE2E):
         seqs = [row["seq"] for row in self.fetch_audit()["items"]]
         self.assertTrue(seqs, "audit log is empty after activity")
         self.assertEqual(seqs, list(range(1, len(seqs) + 1)), "audit seq must be contiguous from 1")
+
+
+class T193Regression(AdminE2E):
+    """T-193 regression guards over HTTP (admin-review-1 H1-H8 + M1-M7).
+
+    Dialect-independent like TransportLeg: every property here must hold on
+    SQLite and Postgres alike (H7 is exactly a case where they diverged).
+    Tests are order-independent against the shared long-lived compose DB —
+    unique stamps per run, presence assertions, never exact global counts.
+    """
+
+    # -- per-test fixtures ------------------------------------------------
+
+    def fresh_org(self, headers=ORG_ADMIN):
+        stamp = f"{int(time.time() * 1000)}-{os.getpid()}"
+        return self.create_org(f"T193 {stamp}")
+
+    def org_headers(self, role, org, subject="t193"):
+        return {"x-kiwi-subject": subject, "x-kiwi-roles": role, "x-kiwi-org": org}
+
+    def create_policy(self, org, headers):
+        status, body = http(
+            "POST",
+            f"/api/v1/orgs/{org}/policies",
+            {
+                "name": "t193 policy",
+                "enabled": True,
+                "min_tls": "tls1.2",
+                "external_recipients": "warn",
+                "domain_rules": [{"domain": "blocked.invalid", "action": "block"}],
+            },
+            headers,
+        )
+        self.assertEqual(status, 201, f"create policy failed: {status} {body}")
+        return body["id"]
+
+    def live_backend(self):
+        """The dialect the service actually opened (device rows need SQL)."""
+        if service_dialect() == "sqlite":
+            return SqliteBackend()
+        return PostgresBackend()
+
+    # -- H1: evaluate is authenticated ------------------------------------
+
+    def test_h1_evaluate_requires_an_actor(self):
+        org = self.fresh_org()
+        bound = self.org_headers("org_admin", org)
+        policy = self.create_policy(org, bound)
+        body = {
+            "direction": "outbound",
+            "sender": "a@kiwi-test.invalid",
+            "recipient": "b@blocked.invalid",
+            "tlsVersion": "tls1.2",
+        }
+        # Pre-H1 the route discarded the actor: no headers meant a free
+        # policy oracle plus an existence probe via the 404 path.
+        status, err = http("POST", f"/api/v1/policies/{policy}/evaluate", body, {"x-kiwi-subject": "nobody"})
+        self.assertEqual(status, 403, f"role-less evaluate must be refused: {status} {err}")
+        self.assertEqual(err["error"]["code"], "auth.denied")
+
+        other = self.fresh_org()
+        status, _ = http(
+            "POST", f"/api/v1/policies/{policy}/evaluate", body, self.org_headers("org_admin", other)
+        )
+        self.assertEqual(status, 403, "cross-org evaluate must be refused")
+
+        status, verdict = http("POST", f"/api/v1/policies/{policy}/evaluate", body, bound)
+        self.assertEqual(status, 200, f"own-org evaluate failed: {status} {verdict}")
+        self.assertIn(verdict.get("verdict"), ("allow", "warn", "block"))
+
+    # -- H2: fail-closed org scope -----------------------------------------
+
+    def test_h2_org_scoped_call_without_org_header_is_denied(self):
+        org = self.fresh_org()
+        floater = {"x-kiwi-subject": "floater", "x-kiwi-roles": "security_admin"}
+        status, err = http(
+            "POST",
+            f"/api/v1/orgs/{org}/policies",
+            {"name": "floater", "enabled": True, "external_recipients": "allow", "domain_rules": []},
+            floater,
+        )
+        self.assertEqual(status, 403, f"null-org actor must not hold org scope: {status} {err}")
+
+    # -- H3: device revocation is org-scoped --------------------------------
+
+    def test_h3_cross_org_revoke_is_denied(self):
+        org_a = self.fresh_org()
+        org_b = self.fresh_org()
+        backend = self.live_backend()
+        dev = backend.create_device(org_a, "t193 laptop")
+        try:
+            status, err = http(
+                "POST", f"/api/v1/devices/{dev}/revoke", None, self.org_headers("org_admin", org_b)
+            )
+            self.assertEqual(status, 403, f"cross-org revoke must be refused: {status} {err}")
+            self.assertFalse(backend.device_revoked(dev), "a denied revoke must not land")
+
+            status, _ = http(
+                "POST", f"/api/v1/devices/{dev}/revoke", None, self.org_headers("org_admin", org_a)
+            )
+            self.assertEqual(status, 200, "own-org revoke must work")
+            self.assertTrue(backend.device_revoked(dev), "own-org revoke must land")
+        finally:
+            backend.delete_device(dev)
+
+    # -- H4: org-bound reads default to the caller's own org -----------------
+
+    def test_h4_unfiltered_reads_stay_inside_the_callers_org(self):
+        org_a = self.fresh_org()
+        org_b = self.fresh_org()
+        bound_a = self.org_headers("org_admin", org_a)
+        bound_b = self.org_headers("org_admin", org_b)
+        viewer_a = self.org_headers("viewer", org_a, subject="t193-viewer")
+        for org, headers in ((org_a, bound_a), (org_b, bound_b)):
+            status, _ = http(
+                "POST",
+                "/api/v1/mailflow/events",
+                {
+                    "direction": "outbound",
+                    "sender": f"a@{org}.kiwi-test.invalid",
+                    "recipient": "b@blocked.invalid",
+                    "ts": int(time.time() * 1000),
+                    "tls_version": "tls1.2",
+                    "security_status": "clean",
+                    "policy_verdict": "allow",
+                    "org_id": org,
+                },
+                headers,
+            )
+            self.assertEqual(status, 201)
+
+        status, body = http("GET", "/api/v1/mailflow/events?limit=100", None, viewer_a)
+        self.assertEqual(status, 200)
+        self.assertTrue(body["items"], "own-org rows must come back")
+        for event in body["items"]:
+            self.assertEqual(event["org_id"], org_a, "unfiltered read leaked another org")
+
+        status, _ = http("GET", f"/api/v1/mailflow/events?org={org_b}&limit=100", None, viewer_a)
+        self.assertEqual(status, 403, "explicit cross-org widening must be refused")
+
+        status, unfiltered = http("GET", "/api/v1/audit?limit=1000", None, viewer_a)
+        self.assertEqual(status, 200)
+        status, scoped = http("GET", f"/api/v1/audit?org={org_a}&limit=1000", None, viewer_a)
+        self.assertEqual(status, 200)
+        self.assertEqual(
+            [r["seq"] for r in unfiltered["items"]],
+            [r["seq"] for r in scoped["items"]],
+            "unfiltered audit read must equal the caller's own-org slice",
+        )
+        status, _ = http("GET", f"/api/v1/audit?org={org_b}&limit=1000", None, viewer_a)
+        self.assertEqual(status, 403)
+
+    # -- H5: createOrg requires org.create -----------------------------------
+
+    def test_h5_viewer_cannot_create_orgs(self):
+        status, err = http(
+            "POST", "/api/v1/orgs", {"name": "viewer-org"}, {"x-kiwi-subject": "v", "x-kiwi-roles": "viewer"}
+        )
+        self.assertEqual(status, 403, f"viewer createOrg must be refused: {status} {err}")
+
+    # -- H6: concurrent appends stay gapless ----------------------------------
+
+    def test_h6_parallel_burst_appends_without_loss(self):
+        """Ten concurrent mutations serialize: every request succeeds and the
+        chain still verifies (the H6 failure mode was a 500 + a lost row)."""
+        import concurrent.futures
+
+        org = self.fresh_org()
+        bound = self.org_headers("org_admin", org)
+        stamp = int(time.time() * 1000)
+
+        def add_user(i):
+            return http(
+                "POST",
+                f"/api/v1/orgs/{org}/users",
+                {"email": f"burst{stamp}-{i}@kiwi-test.invalid"},
+                bound,
+            )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
+            results = list(pool.map(add_user, range(10)))
+        for status, body in results:
+            self.assertEqual(status, 201, f"concurrent append lost a row: {status} {body}")
+        self.assert_chain_valid("chain must verify after a concurrent burst")
+
+    # -- H7: UNIQUE(org_id, email) holds on this dialect -----------------------
+
+    def test_h7_duplicate_email_is_rejected(self):
+        """H7 was a Postgres-only gap (SQLite shipped UNIQUE, PG a plain
+        index): the same double-create must 409 on whichever dialect is live."""
+        org = self.fresh_org()
+        bound = self.org_headers("org_admin", org)
+        email = f"dup-{int(time.time() * 1000)}@kiwi-test.invalid"
+        status, _ = http("POST", f"/api/v1/orgs/{org}/users", {"email": email}, bound)
+        self.assertEqual(status, 201)
+        status, err = http("POST", f"/api/v1/orgs/{org}/users", {"email": email}, bound)
+        self.assertEqual(status, 409, f"duplicate email must conflict: {status} {err}")
+        self.assertEqual(err["error"]["code"], "conflict")
+
+    # -- H8: verify never attests an empty window -------------------------------
+
+    def test_h8_verify_floor(self):
+        for query in ("limit=0", "limit=-1"):
+            status, err = http("GET", f"/api/v1/audit/verify?{query}", None, ORG_ADMIN)
+            self.assertEqual(status, 400, f"verify?{query} must be refused: {status} {err}")
+            self.assertEqual(err["error"]["code"], "validation.failed")
+        status, body = http("GET", "/api/v1/audit/verify?limit=10000", None, ORG_ADMIN)
+        self.assertEqual(status, 200)
+        self.assertTrue(body["valid"])
+        self.assertGreater(body["checked"], 0, "verify must actually check rows")
+
+    # -- M1: one timestamp unit (milliseconds) ------------------------------------
+
+    def test_m1_service_timestamps_are_milliseconds(self):
+        """Contract §4 declares Unix milliseconds; rows stamped in seconds
+        would be off by 1000x against every since/until filter."""
+        body = self.fetch_audit("?limit=50")
+        self.assertTrue(body["items"], "no audit rows to inspect")
+        for row in body["items"]:
+            self.assertGreater(row["ts"], 10_000_000_000, f"audit ts not ms-scale: {row['ts']}")
+
+    # -- M6: grantRole is membership-checked ---------------------------------------
+
+    def test_m6_outsider_grant_is_404(self):
+        org_a = self.fresh_org()
+        org_b = self.fresh_org()
+        bound_a = self.org_headers("org_admin", org_a)
+        bound_b = self.org_headers("org_admin", org_b)
+        status, user = http(
+            "POST", f"/api/v1/orgs/{org_a}/users", {"email": f"out-{int(time.time() * 1000)}@kiwi-test.invalid"}, bound_a
+        )
+        self.assertEqual(status, 201)
+        status, err = http(
+            "PUT", f"/api/v1/orgs/{org_b}/users/{user['id']}/role", {"role": "viewer"}, bound_b
+        )
+        self.assertEqual(status, 404, f"outsider grant must be 404: {status} {err}")
+
+    # -- M7: listings are bounded -----------------------------------------------------
+
+    def test_m7_listings_honor_limit(self):
+        org = self.fresh_org()
+        bound = self.org_headers("org_admin", org)
+        status, body = http("GET", f"/api/v1/orgs/{org}/users?limit=1", None, bound)
+        self.assertEqual(status, 200)
+        self.assertLessEqual(len(body["items"]), 1)
+        status, body = http("GET", f"/api/v1/orgs/{org}/policies?limit=1", None, bound)
+        self.assertEqual(status, 200)
+        self.assertLessEqual(len(body["items"]), 1)
 
 
 class SqliteLeg(DialectLeg):

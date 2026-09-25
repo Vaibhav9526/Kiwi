@@ -2294,10 +2294,17 @@ dependencies = [
 name = "kiwi-autoconfig"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "base64 0.22.1",
+ "getrandom 0.3.4",
+ "kiwi-integrations",
  "kiwi-mail",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.20",
+ "tokio",
+ "zeroize",
 ]
 
 [[package]]

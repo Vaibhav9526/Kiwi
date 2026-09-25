@@ -221,6 +221,7 @@ mod tests {
                     flags: vec![],
                     has_attachments: false,
                     snippet: None,
+                    category: Default::default(),
                 },
                 now_unix(),
             )
@@ -312,6 +313,7 @@ mod tests {
                         flags: vec![],
                         has_attachments: false,
                         snippet: None,
+                        category: Default::default(),
                     },
                     now_unix(),
                 )

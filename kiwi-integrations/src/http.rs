@@ -110,7 +110,6 @@ pub struct HttpResponse {
 
 impl HttpResponse {
     /// All values of `name` (case-insensitive).
-    #[must_use]
     pub fn header_values<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a str> + 'a {
         self.headers
             .iter()
@@ -187,6 +186,14 @@ impl ReqwestClient {
         })
     }
 
+    /// Override the per-response body cap (e.g. providers whose JSON embeds
+    /// message bodies need more than 1 MiB).
+    #[must_use]
+    pub fn with_body_cap(mut self, cap: usize) -> Self {
+        self.body_cap = cap;
+        self
+    }
+
     fn check_url(url: &str) -> Result<(), IntegrationError> {
         if url.len() > 4096 {
             return Err(IntegrationError::Malformed("url"));
@@ -229,9 +236,10 @@ impl HttpClient for ReqwestClient {
             rb = rb.body(body.clone());
         }
 
-        let resp = rb.send().await.map_err(|e| IntegrationError::Transport {
-            kind: classify(&e),
-        })?;
+        let resp = rb
+            .send()
+            .await
+            .map_err(|e| IntegrationError::Transport { kind: classify(&e) })?;
         let status = resp.status().as_u16();
         let headers = resp
             .headers()
@@ -251,9 +259,7 @@ impl HttpClient for ReqwestClient {
         while let Some(chunk) = stream
             .chunk()
             .await
-            .map_err(|e| IntegrationError::Transport {
-                kind: classify(&e),
-            })?
+            .map_err(|e| IntegrationError::Transport { kind: classify(&e) })?
         {
             if body.len() + chunk.len() > self.body_cap {
                 return Err(IntegrationError::BodyTooLarge);
@@ -367,7 +373,8 @@ impl Step {
     /// Require a request header verbatim.
     #[must_use]
     pub fn expect_header(mut self, name: &str, value: &str) -> Self {
-        self.expect_headers.push((name.to_string(), value.to_string()));
+        self.expect_headers
+            .push((name.to_string(), value.to_string()));
         self
     }
 }
@@ -410,15 +417,17 @@ impl HttpClient for ScriptedHttp {
             q.pop_front()
         };
         let Some(step) = step else {
-            panic!("ScriptedHttp: unexpected request {} {}", req.method.as_str(), req.url);
+            panic!(
+                "ScriptedHttp: unexpected request {} {}",
+                req.method.as_str(),
+                req.url
+            );
         };
         if let Some(m) = step.expect_method {
             assert_eq!(
-                m,
-                req.method,
+                m, req.method,
                 "step {}: method mismatch for {}",
-                step.name,
-                req.url
+                step.name, req.url
             );
         }
         for frag in step.expect_query {
@@ -430,10 +439,10 @@ impl HttpClient for ScriptedHttp {
                 frag
             );
         }
-        for (n, v) in step.expect_headers {
+        for (n, v) in &step.expect_headers {
             assert_eq!(
                 req.header_value(n),
-                Some(*v),
+                Some(v.as_str()),
                 "step {}: header {n} mismatch",
                 step.name
             );
@@ -457,7 +466,10 @@ mod tests {
     #[tokio::test]
     async fn rejects_plain_http() {
         let c = ReqwestClient::new(1000).unwrap();
-        let err = c.request(HttpRequest::get("http://x.test/")).await.unwrap_err();
+        let err = c
+            .request(HttpRequest::get("http://x.test/"))
+            .await
+            .unwrap_err();
         assert_eq!(err, IntegrationError::InsecureUrl);
     }
 
@@ -471,13 +483,10 @@ mod tests {
 
     #[tokio::test]
     async fn scripted_replays_in_order_and_asserts() {
-        let http = ScriptedHttp::new(vec![Step::get(
-            "s1",
-            &["f=check_email", "seq=0"],
-            200,
-            "{}",
-        )
-        .expect_header("cookie", "PHPSESSID=s1")]);
+        let http = ScriptedHttp::new(vec![
+            Step::get("s1", &["f=check_email", "seq=0"], 200, "{}")
+                .expect_header("cookie", "PHPSESSID=s1"),
+        ]);
         let req = HttpRequest::get("https://api.test/ajax.php?f=check_email&seq=0")
             .header("Cookie", "PHPSESSID=s1");
         let resp = http.request(req).await.unwrap();
@@ -489,6 +498,8 @@ mod tests {
     #[should_panic(expected = "missing fragment")]
     async fn scripted_panics_on_url_mismatch() {
         let http = ScriptedHttp::new(vec![Step::get("s", &["f=wrong"], 200, "{}")]);
-        let _ = http.request(HttpRequest::get("https://x.test/?f=right")).await;
+        let _ = http
+            .request(HttpRequest::get("https://x.test/?f=right"))
+            .await;
     }
 }

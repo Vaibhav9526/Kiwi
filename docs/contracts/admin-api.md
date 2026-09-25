@@ -49,8 +49,12 @@ act. See §13.
 
 - Org scoping: an actor whose session is bound to org X cannot exercise
   org-scoped permissions against org Y (`hasPermission()` in
-  `src/rbac/rbac.ts`). Platform-level actors (`org_id` null) may bootstrap
-  new orgs but hold no org-scoped rights until granted.
+  `src/rbac/rbac.ts`). Fail-closed (T-193/H2): an actor with NO org binding
+  holds NO org scope — a null org target denies nothing by itself, but any
+  non-null org target denies a null-org actor, so omitting `x-kiwi-org`
+  narrows rather than widens. Org-bound reads default to the caller's own
+  org (T-193/H4, §12.3). Platform-level actors (`org_id` null) holding
+  `org.create` may create new orgs but hold no org-scoped rights until granted.
 - Denials surface as `403` (or `AuthorizationDeniedError` in-process) and are
   always audited with `outcome: "denied"` and `details.permission`.
 
@@ -58,7 +62,7 @@ act. See §13.
 
 | Method + path | Service call | Permission | Notes |
 |---------------|--------------|------------|-------|
-| `POST /api/v1/orgs` | `OrgService.createOrg` | platform-level (bootstrap) | |
+| `POST /api/v1/orgs` | `OrgService.createOrg` | `org.create` (org_admin only; T-193/H5) | |
 | `GET  /api/v1/orgs/{orgId}/users` | `OrgService.listUsers` | `user.read` | T-134: users with roles, email-ordered |
 | `GET  /api/v1/orgs/{orgId}/devices` | `OrgService.listDevices` | `device.read` | T-188: device inventory; see §14 — **not implemented** |
 | `POST /api/v1/orgs/{orgId}/users` | `OrgService.createUser` | `user.invite` | |
@@ -69,7 +73,7 @@ act. See §13.
 | `POST /api/v1/policies/{policyId}/evaluate` | `PolicyService.evaluate` | `policy.read` on owning org | deterministic; single-policy check |
 | `POST /api/v1/orgs/{orgId}/policies/evaluate-outbound` | `PolicyService.evaluateOutbound` | `policy.read` on the org | T-108 send-path bridge; see §10 |
 | `POST /api/v1/mailflow/events` | `MailflowService.ingest` | `mailflow.ingest` | MailflowEvent schema §6 |
-| `GET  /api/v1/mailflow/events` | `MailflowService.query` | `mailflow.read` | filters: org, recipient domain, ts range, limit ≤ 1000 |
+| `GET  /api/v1/mailflow/events` | `MailflowService.query` | `mailflow.read` | filters: org, recipient domain, ts range, limit ≤ 1000; org-bound callers omitting org read their own org (T-193/H4) |
 | `GET  /api/v1/audit` | `AuditService.query` | `audit.read` | filters: org, ts range, limit ≤ 1000 |
 | `GET  /api/v1/audit/verify` | `AuditService.verify` | `audit.read` | replays hash chain; see §7 |
 | `GET  /api/v1/audit/export` | `AuditService.export` | `audit.export` | T-179 signed NDJSON of the FULL chain; see §13 |
@@ -107,7 +111,10 @@ migration `0001` in BOTH dialects (SQLite `RAISE(ABORT)`; PG plpgsql
 | `mailflow_events` | `id PK`, `org_id`, `direction CHECK('inbound','outbound')`, `sender`, `recipient`, `ts`, `message_id`, `tls_version`, `security_status`, `policy_verdict CHECK('allow','warn','block','unknown')`, `received_at` | indexed `(org_id, ts)`, `(recipient)`; **no body column by design** |
 | `audit_log` | `seq PK AUTOINCREMENT`, `ts`, `actor_subject`, `actor_roles`, `org_id`, `action`, `resource`, `outcome CHECK('allowed','denied','error')`, `request_id`, `details`, `prev_hash`, `entry_hash` | append-only; see §7 |
 
-Timestamps are Unix seconds (INTEGER). Booleans stored as 0/1.
+Timestamps are Unix milliseconds (INTEGER) — every service-stamped field
+(`created_at`, `granted_at`, `revoked_at`, audit `ts`, mailflow `received_at`,
+export `exported_at`). Caller-supplied mailflow message-time `ts` (§6) passes
+through as given in the same unit. Booleans stored as 0/1.
 
 ## 5. Policy object + evaluator semantics
 
@@ -179,7 +186,8 @@ represent a client-side block as complete organizational enforcement.
 - No `body`, subject, or content field exists at any layer. Adding one is a
   contract change requiring Lead review (prompt.md §6 Agent 4: no message
   bodies by default for admin analytics).
-- `ts` is message time; `received_at` (set by the service) is ingest time.
+- `ts` is caller-supplied message time in Unix milliseconds (§4);
+  `received_at` (set by the service, also milliseconds) is ingest time.
 
 ## 7. Audit event + hash chain
 
@@ -215,8 +223,7 @@ represent a client-side block as complete organizational enforcement.
   Tail truncation (deleting the newest rows) verifies clean without an
   external high-water mark. Mitigations: OS file ACLs on `kiwi-admin.db`,
   `verify()` on service startup, backup comparison for high-value
-  deployments. A retained signed export (`GET /api/v1/audit/export`, §13) is an externally verifiable high-water mark for its point in time: tail truncation after an export breaks against it. Multi-process appends still need a file lock (queued with
-  Lead) — single-process appends are serialized in-process.
+  deployments. A retained signed export (`GET /api/v1/audit/export`, §13) is an externally verifiable high-water mark for its point in time: tail truncation after an export breaks against it. Concurrent appends are serialized in the repository transaction (`AuditRepository.appendChained`, T-193/H6 — tail-read, `seq` assignment, hash, and insert in one driver transaction; Postgres additionally takes a transaction-scoped advisory lock), so no two appends share a `seq` even across processes, and the chain stays gapless, which is what the contiguity check above relies on.
 
 ## 8. Cross-service notes
 
@@ -383,10 +390,12 @@ than a rewrite:
 
 - `org` narrows to that org's rows, applied in SQL. Rows with a NULL `org_id`
   — platform-level acts such as `org.create` — belong to no org and are
-  excluded from an org-scoped read. Omitting `org` returns the whole log.
+  excluded from an org-scoped read. An org-bound caller (session `org_id`
+  set) who omits `org` reads their OWN org, never the whole log (T-193/H4);
+  only a platform (org-unbound) caller with no filter reads globally.
   Filtering must happen in the query rather than after it, so `limit` cannot
   truncate the window before the filter is applied.
-- `since`/`until` are Unix-second bounds on `ts`; rows come back ordered by
+- `since`/`until` are Unix-millisecond bounds on `ts`; rows come back ordered by
   `seq` ascending, which is the order `verify` requires.
 - An org-scoped caller (session `org_id` bound) cannot read another org's
   slice: `hasPermission` refuses the cross-org target with `403`.
@@ -402,9 +411,15 @@ honored (§13.3).
 Authorization requires **`audit.export`**, held only by `org_admin` (§2).
 `security_admin` and `viewer` hold `audit.read` and are still refused with
 `403 auth.denied`; absent or unrecognized `x-kiwi-roles` also fails closed.
-This is a platform-level audit action, so `x-kiwi-org` is not used to scope
-it. The `x-kiwi-*` headers remain development scaffolding, not production
-authentication (§12.2).
+
+The current service checks this permission with a `null` target, so the
+operation is **global, not org-scoped**: even an actor carrying
+`x-kiwi-org` receives the complete cross-org chain when its role is
+`org_admin`. This is explicit current behavior and a security decision Lead
+must ratify with §13. If global export is not intended, implementation must
+first add a genuine platform-role/permission gate; documentation alone cannot
+turn `audit.export` into an org-scoped permission. The `x-kiwi-*` headers
+remain development scaffolding, not production authentication (§12.2).
 
 Success is `200` with `content-type: application/x-ndjson; charset=utf-8`,
 `cache-control: no-store`, and a raw `\n`-delimited body. The evidence must
@@ -435,6 +450,16 @@ Record lines carry `seq`, `prev_hash`, and `entry_hash`, so a reader can
 recompute the chain from the export alone without calling back into the
 service. `chain_state` sits at index `rows + 1`.
 
+Exact integrity scope: `entry_hash` covers canonical JSON containing
+`actor.subject`, `actor.roles`, `org_id`, `action`, `resource`, `outcome`,
+`request_id`, `details`, and `prev_hash`. It does **not** cover `seq` or `ts`.
+`verifyChain` checks hash linkage and adjacency between returned rows; it
+does not independently require a non-empty export's `first_seq` to equal 1.
+"Full chain" therefore means every row returned by the repository range at
+snapshot time, not a proof that no historical prefix was omitted. Tightening
+either omission requires a code/format decision, not a documentation-only
+claim.
+
 ### 13.2 Signature
 
 `signature = HMAC-SHA256(key, lines 1..rows+2 joined by "\n")`, lowercase
@@ -452,7 +477,10 @@ hex, `alg: "hmac-sha256"`, `covers_through: rows + 2`.
   claim to be signed. There is no placeholder signature.
 
 Key source: `KIWI_AUDIT_EXPORT_KEY` (env, read once at startup; also
-settable per server for tests). Unset/blank → unsigned.
+settable per server for tests). The effective HMAC key is the UTF-8 bytes of
+the value after surrounding whitespace is removed; `key_id` is computed from
+that same trimmed value. Unset/blank → unsigned. Verifiers must trim before
+recomputing either value.
 
 ### 13.3 Whole chain only — no window, no `?org=`
 
@@ -476,12 +504,22 @@ A successful export appends an `audit.export` row (`org_id` null,
 `outcome: "allowed"`) with `details: { rows, signed, key_id }` — the
 fingerprint, never the key. Taking a signed copy of the whole log off-box
 must leave a trace, or the log could be exfiltrated with nothing to show
-for it. The row is appended **after** the snapshot, so the artifact covers
-the chain exactly as it stood immediately before its own record.
+for it. The row is appended **after** the snapshot. The current service does
+not hold the append gate across the range read and the subsequent append, so
+a concurrent successful mutation may land between them; the artifact is a
+complete chain prefix at snapshot time, not necessarily the row immediately
+preceding `audit.export`. If exact adjacency is required, snapshot + audit
+append must be serialized (or moved into one repository transaction).
 
-Denials are NOT self-audited, matching `query`/`verify`: the audit service
-is what writes the chain, so having it record its own refusals would make
-every refusal of a log read recurse into the log it was refused.
+Current implementation does **not** audit export denials, and §13.4's
+former "recursion" rationale is withdrawn: `AuditService.append` writes
+directly and does not re-enter the permission check, so a denial row is
+technically possible. This is a known deviation from binding §1/§2. Before
+§13 is approved, either implement denial-only rows for export (and decide
+whether query/verify follow the same rule) or amend the global invariant
+explicitly. A denial must never be recorded as `allowed`. If the required
+self-audit append fails, the endpoint must return `500 internal` and send no
+export body rather than deliver an unaudited successful export.
 
 ### 13.5 Line shapes (exact)
 
@@ -490,13 +528,15 @@ object below, in this order, with no whitespace. A producer that reorders keys
 produces a valid export that no independent verifier can check — the export's
 whole purpose — so these orders are normative, not illustrative.
 
-Exact types (`src/audit/export.ts` + `src/audit/model.ts`):
+Wire types and builder invariants (`src/audit/export.ts` +
+`src/audit/model.ts`; the source interface is wider than this valid wire
+union):
 
 ```ts
 type AuditExportHeader = {
   type: "header";
   version: string;                    // currently "kiwi.audit-export/1"
-  exported_at: number;                // safe integer, Unix seconds
+  exported_at: number;                // safe integer, Unix milliseconds
   rows: number;                       // 0..10000
   first_seq: number | null;           // null only when rows == 0
   last_seq: number | null;            // null only when rows == 0
@@ -541,11 +581,11 @@ all three value fields `null` by construction.
 
 ```jsonc
 // line 1
-{"type":"header","version":"kiwi.audit-export/1","exported_at":1726000000,
+{"type":"header","version":"kiwi.audit-export/1","exported_at":1726000000000,
  "rows":12,"first_seq":1,"last_seq":12}
 
 // lines 2..rows+1 — field order per src/audit/model.ts AuditRecord
-{"seq":1,"ts":1726000000,"actor_subject":"admin@acme.test",
+{"seq":1,"ts":1726000000000,"actor_subject":"admin@acme.test",
  "actor_roles":"[\"org_admin\"]","org_id":"org-…","action":"policy.create",
  "resource":"pol-…","outcome":"allowed","request_id":null,"details":"{}",
  "prev_hash":"genesis","entry_hash":"<hex64>"}
@@ -566,7 +606,7 @@ Notes that matter to an implementer:
   them once more to recompute the hash input. This is the easiest place to get
   an independent verifier subtly wrong.
 - `covers_through` is `rows + 2`, i.e. one less than the total line count.
-- `exported_at` is Unix **seconds** (§4).
+- `exported_at` is Unix **milliseconds** (§4).
 - The record `ts` is what the log actually holds. See §13.6.
 
 **Empty chain.** A chain with no rows exports as exactly three lines —
@@ -581,17 +621,22 @@ which agree by construction here.
 
 ### 13.6 Timestamp units in exported records
 
-`header.exported_at` is Unix **seconds**: the HTTP route supplies its `now`
-value directly to `buildAuditExport`. Record `ts` values pass through exactly
-as stored and are not normalized by the exporter.
+`header.exported_at` is Unix **milliseconds** (§4): the HTTP route supplies
+its `Date.now()` value directly to `buildAuditExport`. Record `ts` values
+pass through exactly as stored and are not normalized by the exporter.
 
-The current implementation writes audit rows with `Date.now()` (Unix
-milliseconds), although §4/§12.3 declare seconds. That is a repository-wide
-unit defect tracked by T-193, not an export-specific discrepancy: both ordinary
-audit rows and the post-snapshot `audit.export` row currently use the same
-millisecond clock. The export is byte-faithful to the stored chain either way;
-changing existing units would break every `entry_hash` and requires a
-migration/versioned format, never an in-place rewrite.
+Unit history (T-193/M1, settled): early revisions declared seconds in §4
+while the implementation stamped milliseconds, and the route-supplied `now`
+was seconds while every other service-stamped field was milliseconds. The
+contract now declares milliseconds everywhere service-stamped (§4) and the
+route supplies `Date.now()`, so all stored timestamps share one unit. No
+stored row was rewritten to get here; rewriting `ts` would destroy historical
+evidence, even though `ts` is not an `entry_hash` input (§7) and therefore does
+not technically require hash recomputation. Any such migration must be explicit
+and versioned. Deployments holding pre-T-193 rows may still contain
+second-unit `created_at` values from the old route clock; those rows predate the
+unit declaration and must be read with that in mind (local-dev only —
+`docker compose down -v` plus fresh migrations resets the clock).
 
 ## 14. Device inventory — T-188 (`GET /api/v1/orgs/{orgId}/devices`)
 
@@ -603,8 +648,11 @@ migration/versioned format, never an in-place rewrite.
 
 ### 14.1 Request and response
 
-Request: `GET /api/v1/orgs/{orgId}/devices`, no body and no query parameters
-in v1. The path identifier is trimmed and must match
+Request: `GET /api/v1/orgs/{orgId}/devices`, no body. The optional `limit`
+query parameter is a decimal integer, default `50`, clamped to `1..=500`,
+matching the other org-scoped list endpoints. Unknown query parameters are
+ignored. There is no offset/pagination cursor in v1; the response is bounded
+to the requested limit. The path identifier is trimmed and must match
 `assertIdentifier`: 1..=256 characters from `[A-Za-z0-9_.:@-]`; otherwise the
 response is `400 validation.failed`.
 
@@ -618,17 +666,19 @@ Success is `200` with `{ "items": DeviceView[] }`, matching
       "org_id": "org-…",
       "label": "Pixel 8",       // 1..=200 characters after trim
       "revoked": 0,             // integer 0|1, never JSON boolean
-      "revoked_at": null,       // integer Unix seconds, or null
-      "created_at": 1729000000 } // integer Unix seconds
+      "revoked_at": null,       // integer Unix milliseconds, or null
+      "created_at": 1729000000 } // integer Unix milliseconds
   ]
 }
 ```
 
-Every field above is required; only `revoked_at` is nullable. Unknown JSON
-fields are not introduced by this endpoint. Items are ordered by `created_at`
-ascending, then `id` ascending. The tie-breaker is mandatory: same-second (or,
-in current storage, same-millisecond) registrations otherwise have no total
-order.
+Every field above is required; only `revoked_at` is nullable. A valid row has
+`revoked = 0` and `revoked_at = null`, or `revoked = 1` and a non-null
+`revoked_at`; inconsistent legacy rows are not silently normalized and cause a
+sanitized `500 internal`. All service-stamped times are Unix milliseconds
+(§4). Unknown JSON fields are not introduced by this endpoint. Items are
+ordered by `created_at` ascending, then `id` ascending. The tie-breaker is
+mandatory: same-millisecond registrations otherwise have no total order.
 
 This is intentionally a superset of the current `createDevice`/`getDevice`
 row shape, which omits `revoked_at`. The repository projection must add that
@@ -664,7 +714,10 @@ current localhost scaffold, the actor comes from
 
 A cross-org request therefore returns `403` with
 `{"error":{"code":"auth.denied","message":"…","details":{"permission":"device.read"}}}`
-and must not reveal whether the target org or device exists.
+and must not reveal whether the target org or device exists. In the future
+authenticated transport, absent or invalid session credentials return
+`401 auth.required`; the current header scaffold has no such state and uses
+`403 auth.denied` for both missing and insufficient authority.
 
 ### 14.3 Auditing
 
@@ -674,46 +727,54 @@ authorization denial **must** be audited with `outcome: "denied"` and
 `details.permission: "device.read"`, as required by §1, without including
 device data in `details`.
 
-This distinction is explicit because a device inventory maps an org's enrolled
-endpoints. If successful inventory reads must also be logged later, that is a
-contract-wide change to read auditing, not a device-only exception.
+The denial row is fixed as `action: "device.list"`, `resource: orgId`,
+`org_id: orgId`, `outcome: "denied"`, `details: { permission: "device.read" }`,
+`request_id: null` in the current scaffold, and a millisecond `ts`. It must be
+written by a denial-only path, not `auditWrap` (which would also record a
+successful read). If that required append fails, fail closed with
+`500 internal` and do not return the inventory.
 
 ### 14.4 Relationship to the other device registries
 
-There are two device stores and they are **not** the same registry:
+There are three distinct device data models in the checkout. They are **not**
+the same registry and currently have no synchronization:
 
-| | `kiwi-admin` `devices` table | `kiwi-pair` `pair.db` `devices` |
-|---|---|---|
-| scope | org-scoped, multi-device per org | one endpoint, local profile |
-| id | `dev-<uuid>`, app-assigned | supplied at `register_device` |
-| states | `revoked` 0/1 | `pending`/`active`/`suspended`/`revoked` (terminal) |
-| holds | label, timestamps | public key, keystore ref, challenge state |
-| contract | this document | `contracts/pair.md`, `contracts/ipc.md` §9d |
+| | `kiwi-admin` `devices` table | current `kiwi-app` `DeviceRegistry`/index | `kiwi-pair` `pair.db` `devices` |
+|---|---|---|---|
+| scope | org-scoped, multi-device per org | one local endpoint, in-memory | one endpoint, persistent profile store |
+| id | `dev-<uuid>`, app-assigned | `dev-*`, app-assigned | supplied at `register_device` |
+| states | `revoked` 0/1 | `pending`/`active`/`suspended`/`revoked` | `pending`/`active`/`suspended`/`revoked` (terminal) |
+| holds | label, timestamps | public key, keystore ref, status | public key, keystore ref, challenge/replay state |
+| current caller | proposed admin route | `kiwi_list_devices` / `kiwi_revoke_device` | library API; not yet wired into kiwi-app |
+| contract | this document | `ipc.md` §§4/9 | `contracts/pair.md`, `ipc.md` §9d |
 
-Nothing synchronizes them today, so this endpoint does **not** answer "which
-authenticators are paired to this endpoint" — that is `kiwi_list_devices`
-(`ipc.md` §9) reading `pair.db`, and it is per-endpoint rather than per-org. A
-UI that presents one as the other would be wrong in a way no error would
-surface. Cross-registry reconciliation is unbuilt and not part of this section.
+This admin endpoint does **not** answer "which authenticators are paired to
+this endpoint." The current `kiwi_list_devices` reads the in-memory app
+registry, not `pair.db`; only a future approved migration can make the IPC
+device projection read kiwi-pair. A UI that presents these registries as the
+same thing would be wrong in a way no error would surface. Cross-registry
+reconciliation is unbuilt and not part of this section.
 
 ### 14.5 Implementation checklist (nothing built)
 
 1. `OrgRepository.listDevices(orgId)` — `db/interfaces.ts` (as
    `MaybePromise<DeviceRow[]>`), plus both implementations:
    `DrizzleOrgRepository` (sync, `db/repositories.ts`) and `PgOrgRepository`
-   (async, `db/repositories.pg.ts`). Return `revoked_at` in the row and order
-   by `created_at, id`; `getDevice(id)` exists, but neither driver has an
-   org-scoped list method.
+   (async, `db/repositories.pg.ts`). Return `revoked_at` in the row, enforce
+   `limit` in SQL, and order by `created_at, id`; `getDevice(id)` exists, but
+   neither driver has an org-scoped list method.
 2. `OrgService.listDevices(actor, orgId)` — `assertIdentifier(orgId,
    "orgId")`, then `requirePermission(actor, "device.read", orgId)` with the
    validated path target; do not use a nullable/defaulted target. Preserve an
    auditable `device.read` denial without auditing successful reads.
 3. A route in `src/server.ts` inside the existing `/api/v1/orgs/:org/…` block
-   (`rest[2] === "devices" && rest.length === 3`, `GET`), answering
-   `{ items }` like the users route and mapping the uniform errors from §3.
+   (`rest[2] === "devices" && rest.length === 3`, `GET`), parsing the bounded
+   `limit`, answering `{ items }` like the users route, and mapping the
+   uniform errors from §3.
 4. The §3 row above (added).
 5. Unit coverage in `tests/server.test.ts` — including a **cross-org denial
-   assertion**, a null-org denial, and an empty-unknown-org assertion.
+   assertion**, a null-org denial, an empty-unknown-org assertion, and the
+   default/`500` limit bound.
 6. e2e coverage in `infra/e2e/test_admin_e2e.py`, and the `rbac.ts` matrix
    needs no change (`device.read` already exists and is already granted).
 

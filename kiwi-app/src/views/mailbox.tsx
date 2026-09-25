@@ -96,6 +96,19 @@ export function MailboxView(props: MailboxProps) {
   const anchorRef = useRef<string | null>(null);
   const headingRef = useRef<HTMLHeadingElement | null>(null);
   const selectAllRef = useRef<HTMLInputElement | null>(null);
+  // Mailspring idiom: stacked rows when the list column is under ~540px.
+  const listColRef = useRef<HTMLElement | null>(null);
+  const [narrow, setNarrow] = useState(false);
+  useEffect(() => {
+    const el = listColRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width ?? 0;
+      setNarrow(w > 0 && w < 540);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   useEffect(() => {
     setPicked([]);
     anchorRef.current = null;
@@ -201,7 +214,7 @@ export function MailboxView(props: MailboxProps) {
 
   return (
     <div className="ms-mailbox ms-view-enter">
-      <section aria-label={`${folderLabel} message list`} className="ms-list-col">
+      <section aria-label={`${folderLabel} message list`} className={`ms-list-col${narrow ? " ms-narrow" : ""}`} ref={listColRef}>
         <div className="ms-list-header">
           <h1 ref={headingRef} tabIndex={-1} style={{ fontSize: "1.1rem", margin: 0 }}>
             {folderLabel} <small style={{ color: "var(--kiwi-ms-text-secondary)" }}>({folder === "outbox" ? props.outbox.length : messages.length})</small>

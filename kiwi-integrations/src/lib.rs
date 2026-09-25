@@ -33,4 +33,4 @@ mod error;
 pub mod http;
 pub mod tempmail;
 
-pub use error::IntegrationError;
+pub use error::{IntegrationError, TransportKind};

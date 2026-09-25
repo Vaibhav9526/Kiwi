@@ -119,3 +119,14 @@
   recorded for future NOTICE sweep.
 - gitleaks added to CI static-checks (was doc-only — F1 fix); Python
   secret_scan.py kept as fallback.
+
+## ADR-010 — External mail-service integrations behind `kiwi-integrations` (ADR-009 justification)
+
+- **Date:** 2026-09-25 · **Status:** proposed → Lead review · **By:** Agent 11 (T-226)
+- **Need / problem solved:** Two features on the roadmap require third-party mail services: (a) a disposable inbox for throwaway/outbound self-tests, (b) an independent deliverability/spam verdict on KIWI's own outbound mail (the security mission includes SPF/DKIM/DMARC outcomes observed by a real receiver — `kiwi-mailauth` verifies what *we* receive; it cannot tell us what a receiver thinks of what we *send*).
+- **Why not simpler alternatives:** Deterministic local scoring already exists (kiwi-mailauth T-122) but cannot observe receiver-side placement — that is only measurable by an external sink. GuerrillaMail is the standard no-auth disposable-inbox API; email-spam-tester needs no API key and returns per-check RFC-cited evidence rather than a bare score. Both are read-only against APIs; the real action (sending the message) stays in `kiwi-mail` under existing policy.
+- **Decision:** New crate `kiwi-integrations`: two traits (`TempMailProvider`, `DeliverabilityTester`) over one `HttpClient` seam; impls `GuerrillaMail` + `EmailSpamTester`; `reqwest` (`rustls` feature → rustls + platform verifier) as the HTTP stack — first crate in the workspace to need an HTTP client. Full contract: `docs/contracts/integrations.md`.
+- **Security implications (load-bearing):** HTTPS-only (constructor + transport double-check), redirects never followed, response bodies capped mid-stream, all secrets (PHPSESSID, `sid_token`, test slug — a capability secret) in memory only and redacted from Debug/errors, transport errors stripped of URLs. Temp inboxes are PUBLIC (contract §3.0) — UI must disclose via `PUBLIC_INBOX_NOTICE`; fetched bodies are provider-pre-filtered and synthesized into RFC822 — render via the sanitized path only. Opt-in per-run is the caller's duty; the crate never initiates sends.
+- **Perf/resource cost:** negligible — idle structs, a handful of small HTTPS calls per user-initiated action; GM rate limits push polling ≥10 s (contract §3.5).
+- **Testing strategy:** recorded-fixture only — `ScriptedHttp` replays transcript steps and asserts request shape; 30 tests, zero live calls. New external dependency surface: `reqwest`+`hyper-rustls`+`rustls-platform-verifier` (lockfile-pinned; `cargo audit` re-run is Agent 6's gate per SECURITY.md §7).
+- **Consequences:** kiwi-app can wire temp-inbox + deliverability-test IPC behind these traits without touching HTTP details. Any further third-party mail service lands here behind a trait — never ad-hoc `reqwest` calls elsewhere.

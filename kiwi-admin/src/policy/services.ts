@@ -154,31 +154,34 @@ export class PolicyService {
 
   async createPolicy(actor: Actor, orgId: string, name: string, input: ExternalPolicyInput): Promise<{ id: string }> {
     const id = `pol-${randomUUID()}`;
-    // Validate the whole rule set BEFORE writing anything (T-193/M3): an
-    // unchecked duplicate domain used to fail mid-loop on the primary key,
-    // leaving earlier rules committed — a policy that was neither requested
-    // nor nothing. Length is capped beside MAX_BRIDGE_RECIPIENTS.
-    if (input.domainRules.length > MAX_POLICY_DOMAIN_RULES) {
-      throw new RequestValidationError("domainRules", `exceeds ${MAX_POLICY_DOMAIN_RULES} entries`);
-    }
-    const seen = new Set<string>();
-    const rules = input.domainRules.map((rule) => {
-      const domain = assertNonEmptyString(rule.domain, "domain", 253);
-      if (rule.action !== "allow" && rule.action !== "block") {
-        throw new RequestValidationError("domainRules[].action", "must be allow|block");
-      }
-      const key = domain.toLowerCase();
-      if (seen.has(key)) throw new RequestValidationError("domainRules[]", `duplicate domain '${domain}'`);
-      seen.add(key);
-      return { domain, action: rule.action };
-    });
-    const policyName = assertNonEmptyString(name, "name", 200);
     return this.ctx.auditWrap(
       actor,
       orgId,
       "policy.create",
       id,
       async () => {
+        // Validate the whole rule set BEFORE writing anything (T-193/M3):
+        // an unchecked duplicate domain used to fail mid-loop on the
+        // primary key, leaving earlier rules committed — a policy that was
+        // neither requested nor nothing. Length is capped beside
+        // MAX_BRIDGE_RECIPIENTS. Validation lives INSIDE the audited work
+        // (not before auditWrap) so a rejected rule set leaves an `error`
+        // row instead of no trace at all.
+        if (input.domainRules.length > MAX_POLICY_DOMAIN_RULES) {
+          throw new RequestValidationError("domainRules", `exceeds ${MAX_POLICY_DOMAIN_RULES} entries`);
+        }
+        const seen = new Set<string>();
+        const rules = input.domainRules.map((rule) => {
+          const domain = assertNonEmptyString(rule.domain, "domain", 253);
+          if (rule.action !== "allow" && rule.action !== "block") {
+            throw new RequestValidationError("domainRules[].action", "must be allow|block");
+          }
+          const key = domain.toLowerCase();
+          if (seen.has(key)) throw new RequestValidationError("domainRules[]", `duplicate domain '${domain}'`);
+          seen.add(key);
+          return { domain, action: rule.action };
+        });
+        const policyName = assertNonEmptyString(name, "name", 200);
         await this.repos.policies.createPolicyWithRules(
           id,
           orgId,

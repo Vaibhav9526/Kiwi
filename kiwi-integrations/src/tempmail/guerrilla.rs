@@ -66,24 +66,39 @@ pub struct GuerrillaMail {
     state: Mutex<Session>,
 }
 
+/// Never prints session internals — `PHPSESSID`/`sid_token` stay out of logs.
+impl std::fmt::Debug for GuerrillaMail {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GuerrillaMail")
+            .field("base", &self.base)
+            .field("agent", &self.agent)
+            .field("state", &"[redacted]")
+            .finish()
+    }
+}
+
 impl GuerrillaMail {
     /// Provider over an injected transport (tests: [`crate::http::ScriptedHttp`]).
-    /// `base` must be `https://` — checked on first request, not here.
-    #[must_use]
-    pub fn new(http: Arc<dyn HttpClient>, base: &str, agent: &str) -> Self {
-        Self {
+    /// `base` must be `https://` — enforced here, not at first request.
+    pub fn new(
+        http: Arc<dyn HttpClient>,
+        base: &str,
+        agent: &str,
+    ) -> Result<Self, IntegrationError> {
+        let base = base.trim_end_matches('/');
+        crate::http::check_https_base(base)?;
+        Ok(Self {
             http,
-            base: base.trim_end_matches('/').to_string(),
+            base: base.to_string(),
             agent: agent.chars().take(160).collect(),
             state: Mutex::new(Session::default()),
-        }
+        })
     }
 
     /// Provider over the live reqwest transport (`GUERRILLA_API`, 30 s).
     pub fn live() -> Result<Self, IntegrationError> {
-        let http = ReqwestClient::new(crate::http::DEFAULT_TIMEOUT_MS)?
-            .with_body_cap(MAX_API_BODY);
-        Ok(Self::new(Arc::new(http), GUERRILLA_API, "KIWI/0.1"))
+        let http = ReqwestClient::new(crate::http::DEFAULT_TIMEOUT_MS)?.with_body_cap(MAX_API_BODY);
+        Self::new(Arc::new(http), GUERRILLA_API, "KIWI/0.1")
     }
 
     /// Shared request path: params → GET/POST → session-cookie maintenance →
@@ -99,16 +114,20 @@ impl GuerrillaMail {
             (s.php_sessid.clone(), s.sid_token.clone())
         };
 
-        let mut url = format!("{}?f={f}&ip={PARAM_IP}&agent={}", self.base, q(&self.agent));
+        let mut url = format!(
+            "{}?f={f}&ip={PARAM_IP}&agent={}",
+            self.base,
+            crate::http::encode_param(&self.agent)
+        );
         if let Some(t) = &sid {
             url.push_str("&sid_token=");
-            url.push_str(&q(t));
+            url.push_str(&crate::http::encode_param(t));
         }
         for (k, v) in extra {
             url.push('&');
             url.push_str(k);
             url.push('=');
-            url.push_str(&q(v));
+            url.push_str(&crate::http::encode_param(v));
         }
 
         let mut req = HttpRequest {
@@ -137,27 +156,24 @@ impl GuerrillaMail {
     }
 
     /// Re-read `PHPSESSID` from `Set-Cookie` (rotatable on every response).
-    /// Cookie values are capped + CTL-stripped; a bogus cookie is ignored.
+    /// Cookie values are charset-filtered + capped; a bogus cookie is ignored.
     fn absorb_cookies(&self, resp: &HttpResponse) {
-        for raw in resp.header_values("set-cookie") {
-            let Some((pair, _attrs)) = raw.split_once(';').map(|(p, a)| (p, Some(a)))
-                .or(Some((raw, None)))
-            else {
-                continue;
-            };
+        for raw in resp.header_values("set-cookie").take(16) {
+            let pair = raw.split(';').next().unwrap_or(raw);
             let Some((name, value)) = pair.split_once('=') else {
                 continue;
             };
-            if name.trim().eq_ignore_ascii_case("PHPSESSID") {
-                let v: String = value
-                    .trim()
-                    .chars()
-                    .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
-                    .take(128)
-                    .collect();
-                if !v.is_empty() {
-                    self.state.lock().expect("gm session").php_sessid = Some(v);
-                }
+            if !name.trim().eq_ignore_ascii_case("PHPSESSID") {
+                continue;
+            }
+            let v: String = value
+                .trim()
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                .take(128)
+                .collect();
+            if !v.is_empty() {
+                self.state.lock().expect("gm session").php_sessid = Some(v);
             }
         }
     }
@@ -175,7 +191,11 @@ impl TempMailProvider for GuerrillaMail {
 
     async fn get_email_address(&self) -> Result<TempAddress, IntegrationError> {
         let resp = self
-            .call(HttpMethod::Get, "get_email_address", &[("lang", "en".into())])
+            .call(
+                HttpMethod::Get,
+                "get_email_address",
+                &[("lang", "en".into())],
+            )
             .await?;
         let v = resp.json()?;
         let addr = parse_address(&v)?;
@@ -243,11 +263,7 @@ impl TempMailProvider for GuerrillaMail {
         let addr = self.address().ok_or(IntegrationError::NoSession)?;
         // Provider returns `true`; anything else is a rejection.
         let resp = self
-            .call(
-                HttpMethod::Post,
-                "forget_me",
-                &[("email_addr", addr)],
-            )
+            .call(HttpMethod::Post, "forget_me", &[("email_addr", addr)])
             .await?;
         let mut s = self.state.lock().expect("gm session");
         s.address = None;
@@ -428,21 +444,6 @@ fn synthesize_rfc822(
     Ok(bytes)
 }
 
-/// Percent-encode a query value: unreserved `[A-Za-z0-9._~-]` pass through,
-/// everything else is `%XX` (uppercase hex, UTF-8 bytes).
-fn q(v: &str) -> String {
-    let mut out = String::with_capacity(v.len());
-    for &b in v.as_bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'.' | b'_' | b'~' | b'-' => {
-                out.push(b as char)
-            }
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
-}
-
 /// Decode the HTML entities GuerrillaMail applies to subject/excerpt:
 /// named `amp lt gt quot apos` + decimal/hex numeric refs. Unknown entities
 /// pass through verbatim. Single pass, bounded by input length.
@@ -472,7 +473,9 @@ fn decode_entities(s: &str) -> String {
             "quot" => Some('"'),
             "apos" => Some('\''),
             _ if ent.starts_with("#x") || ent.starts_with("#X") => {
-                u32::from_str_radix(&ent[2..], 16).ok().and_then(char::from_u32)
+                u32::from_str_radix(&ent[2..], 16)
+                    .ok()
+                    .and_then(char::from_u32)
             }
             _ if ent.starts_with('#') => ent[1..].parse::<u32>().ok().and_then(char::from_u32),
             _ => None,
@@ -541,11 +544,7 @@ fn jbool(v: &Value, key: &str) -> Option<bool> {
 /// String field capped at `cap` chars, entity escapes untouched (callers
 /// decode where the provider escapes).
 fn field(v: &Value, key: &str, cap: usize) -> String {
-    jstr(v, key)
-        .unwrap_or_default()
-        .chars()
-        .take(cap)
-        .collect()
+    jstr(v, key).unwrap_or_default().chars().take(cap).collect()
 }
 
 /// Strip CTLs (incl. CR/LF — header-injection guard) and trim. `None` on
@@ -580,6 +579,7 @@ mod tests {
             "https://api.guerrillamail.com/ajax.php",
             "KIWI-test",
         )
+        .unwrap()
     }
 
     const ADDR_JSON: &str = r#"{
@@ -591,21 +591,28 @@ mod tests {
 
     #[tokio::test]
     async fn get_email_address_starts_session_and_echoes_cookie() {
-        let g = gm(vec![Step::get(
-            "init",
-            &["f=get_email_address", "ip=127.0.0.1", "agent=KIWI-test", "lang=en"],
-            200,
-            ADDR_JSON,
-        )
-        .respond_headers(&[(
-            "set-cookie",
-            "PHPSESSID=sess42; path=/; HttpOnly",
-        )])]);
+        let g = gm(vec![
+            Step::get(
+                "init",
+                &[
+                    "f=get_email_address",
+                    "ip=127.0.0.1",
+                    "agent=KIWI-test",
+                    "lang=en",
+                ],
+                200,
+                ADDR_JSON,
+            )
+            .respond_headers(&[("set-cookie", "PHPSESSID=sess42; path=/; HttpOnly")]),
+        ]);
         let a = g.get_email_address().await.unwrap();
         assert_eq!(a.address, "abc123@guerrillamailblock.com");
         assert_eq!(a.created_unix, Some(1_758_300_000));
         assert_eq!(a.sid_token.as_deref(), Some("tok_deadbeef"));
-        assert_eq!(g.address().as_deref(), Some("abc123@guerrillamailblock.com"));
+        assert_eq!(
+            g.address().as_deref(),
+            Some("abc123@guerrillamailblock.com")
+        );
     }
 
     #[tokio::test]
@@ -631,7 +638,10 @@ mod tests {
         assert_eq!(poll.messages[0].subject, "Hi <there>");
         assert_eq!(poll.messages[0].excerpt, "snip & go");
         assert!(!poll.messages[0].read);
-        assert_eq!(poll.address.as_deref(), Some("abc123@guerrillamailblock.com"));
+        assert_eq!(
+            poll.address.as_deref(),
+            Some("abc123@guerrillamailblock.com")
+        );
     }
 
     #[tokio::test]
@@ -696,8 +706,10 @@ mod tests {
         g.get_email_address().await.unwrap();
         let m = g.fetch_email("9").await.unwrap();
         let raw = String::from_utf8(m.raw_rfc822).unwrap();
-        assert!(!raw.contains("Bcc:"));
-        assert!(raw.starts_with("From: evil@x victim@y.test\r\n"));
+        // CRLF stripped ⇒ no injected header line; the "Bcc:" text is inert
+        // inside the single From value.
+        assert!(!raw.contains("\r\nBcc:"));
+        assert!(raw.starts_with("From: evil@xBcc: victim@y.test\r\n"));
     }
 
     #[tokio::test]
@@ -724,8 +736,13 @@ mod tests {
         let g = gm(vec![
             Step::get("init", &["f=get_email_address"], 200, ADDR_JSON)
                 .respond_headers(&[("set-cookie", "PHPSESSID=sess42; path=/")]),
-            Step::post("forget", &["f=forget_me", "email_addr=abc123%40guerrillamailblock.com"], 200, "true")
-                .expect_header("cookie", "PHPSESSID=sess42"),
+            Step::post(
+                "forget",
+                &["f=forget_me", "email_addr=abc123%40guerrillamailblock.com"],
+                200,
+                "true",
+            )
+            .expect_header("cookie", "PHPSESSID=sess42"),
         ]);
         g.get_email_address().await.unwrap();
         g.forget_me().await.unwrap();
@@ -740,7 +757,12 @@ mod tests {
     async fn extend_maps_outcome() {
         let g = gm(vec![
             Step::get("init", &["f=get_email_address"], 200, ADDR_JSON),
-            Step::post("ext", &["f=extend"], 200, r#"{"expired":false,"affected":1,"email_timestamp":"1758300000"}"#),
+            Step::post(
+                "ext",
+                &["f=extend"],
+                200,
+                r#"{"expired":false,"affected":1,"email_timestamp":"1758300000"}"#,
+            ),
         ]);
         g.get_email_address().await.unwrap();
         let o = g.extend().await.unwrap();
@@ -752,7 +774,12 @@ mod tests {
     async fn expired_address_extend_reports_expired() {
         let g = gm(vec![
             Step::get("init", &["f=get_email_address"], 200, ADDR_JSON),
-            Step::post("ext", &["f=extend"], 200, r#"{"expired":true,"affected":0}"#),
+            Step::post(
+                "ext",
+                &["f=extend"],
+                200,
+                r#"{"expired":true,"affected":0}"#,
+            ),
         ]);
         g.get_email_address().await.unwrap();
         let o = g.extend().await.unwrap();
@@ -762,13 +789,18 @@ mod tests {
     #[tokio::test]
     async fn check_email_without_session_fails_closed() {
         let g = gm(vec![]);
-        assert_eq!(g.check_email().await.unwrap_err(), IntegrationError::NoSession);
+        assert_eq!(
+            g.check_email().await.unwrap_err(),
+            IntegrationError::NoSession
+        );
     }
 
     #[tokio::test]
     async fn rate_limit_maps_and_reads_retry_after() {
-        let g = gm(vec![Step::get("init", &["f=get_email_address"], 429, "{}")
-            .respond_headers(&[("retry-after", "5")])]);
+        let g = gm(vec![
+            Step::get("init", &["f=get_email_address"], 429, "{}")
+                .respond_headers(&[("retry-after", "5")]),
+        ]);
         match g.get_email_address().await.unwrap_err() {
             IntegrationError::RateLimited { retry_after_ms } => {
                 assert_eq!(retry_after_ms, Some(5000));
@@ -779,7 +811,12 @@ mod tests {
 
     #[tokio::test]
     async fn malformed_json_is_an_error_not_a_panic() {
-        let g = gm(vec![Step::get("init", &["f=get_email_address"], 200, "not json")]);
+        let g = gm(vec![Step::get(
+            "init",
+            &["f=get_email_address"],
+            200,
+            "not json",
+        )]);
         assert!(matches!(
             g.get_email_address().await.unwrap_err(),
             IntegrationError::Malformed(_)
@@ -812,8 +849,18 @@ mod tests {
 
     #[test]
     fn query_encoding() {
+        use crate::http::encode_param as q;
         assert_eq!(q("a b@c"), "a%20b%40c");
         assert_eq!(q("plain.txt"), "plain.txt");
         assert_eq!(q("a&b=c"), "a%26b%3Dc");
+    }
+
+    #[tokio::test]
+    async fn http_base_is_refused() {
+        let http = Arc::new(ScriptedHttp::new(vec![]));
+        assert_eq!(
+            GuerrillaMail::new(http, "http://api.guerrillamail.com/ajax.php", "k").unwrap_err(),
+            IntegrationError::InsecureUrl
+        );
     }
 }

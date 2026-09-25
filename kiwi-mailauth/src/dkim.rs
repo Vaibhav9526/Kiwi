@@ -703,9 +703,9 @@ fn empty_b_value(field_value: &str) -> String {
             i += 1;
             continue;
         }
-        // Tag start iff the previous non-WSP char is ';' or the value start.
+        // Tag start iff the previous non-WSP/non-CRLF char is ';' or the value start.
         let mut j = i;
-        while j > 0 && (bytes[j - 1] == b' ' || bytes[j - 1] == b'\t') {
+        while j > 0 && (bytes[j - 1] == b' ' || bytes[j - 1] == b'\t' || bytes[j - 1] == b'\r' || bytes[j - 1] == b'\n') {
             j -= 1;
         }
         if j != 0 && bytes[j - 1] != b';' {
@@ -715,7 +715,7 @@ fn empty_b_value(field_value: &str) -> String {
         // Skip FWS between the tag name and '='. The `b` in `bh=` is not a
         // tag start (the next non-WSP char is 'h', not '=').
         let mut eq = i + 1;
-        while eq < bytes.len() && (bytes[eq] == b' ' || bytes[eq] == b'\t') {
+        while eq < bytes.len() && (bytes[eq] == b' ' || bytes[eq] == b'\t' || bytes[eq] == b'\r' || bytes[eq] == b'\n') {
             eq += 1;
         }
         if eq >= bytes.len() || bytes[eq] != b'=' {
@@ -981,13 +981,13 @@ mod tests {
         // l=0 -> "the body is completely unsigned" (§3.4.5): hash of "".
         assert_eq!(canon_body_bytes(CanonBody::Simple, body, Some(0)), b"");
         assert_eq!(canon_body_bytes(CanonBody::Relaxed, body, Some(0)), b"");
-        // l= exactly the canonicalized length -> the whole body.
+        // l= exactly the canonicalized length -> the whole body (13 bytes: "Hello World\r\n").
         assert_eq!(
-            canon_body_bytes(CanonBody::Simple, body, Some(12)),
+            canon_body_bytes(CanonBody::Simple, body, Some(13)),
             b"Hello World\r\n"
         );
         assert_eq!(
-            canon_body_bytes(CanonBody::Relaxed, body, Some(12)),
+            canon_body_bytes(CanonBody::Relaxed, body, Some(13)),
             b"Hello World\r\n"
         );
         // Mid-line truncation of the canonicalized body.
@@ -1227,6 +1227,32 @@ mod roundtrip_tests {
         assert_eq!(out.result, DkimResult::Pass, "{}", out.explanation);
     }
 
+    struct SimpleRng(u64);
+    impl rand_core::RngCore for SimpleRng {
+        fn next_u32(&mut self) -> u32 {
+            self.next_u64() as u32
+        }
+        fn next_u64(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+        fn fill_bytes(&mut self, dest: &mut [u8]) {
+            for chunk in dest.chunks_mut(8) {
+                let v = self.next_u64().to_le_bytes();
+                chunk.copy_from_slice(&v[..chunk.len()]);
+            }
+        }
+        fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
+            self.fill_bytes(dest);
+            Ok(())
+        }
+    }
+    impl rand_core::CryptoRng for SimpleRng {}
+
 ///
 /// Header canonicalization + hash-step-2 composition (RFC 6376 §3.4.1,
 /// §3.4.2, §3.4.5, §3.5, §3.7, §5.4.2).
@@ -1421,30 +1447,4 @@ mod header_canon_tests {
         assert_eq!(empty_b_value("v=1; d=b.com; b=SIG"), "v=1; d=b.com; b=");
     }
 }
-
-    struct SimpleRng(u64);
-    impl rand_core::RngCore for SimpleRng {
-        fn next_u32(&mut self) -> u32 {
-            self.next_u64() as u32
-        }
-        fn next_u64(&mut self) -> u64 {
-            let mut x = self.0;
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            self.0 = x;
-            x
-        }
-        fn fill_bytes(&mut self, dest: &mut [u8]) {
-            for chunk in dest.chunks_mut(8) {
-                let v = self.next_u64().to_le_bytes();
-                chunk.copy_from_slice(&v[..chunk.len()]);
-            }
-        }
-        fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
-            self.fill_bytes(dest);
-            Ok(())
-        }
-    }
-    impl rand_core::CryptoRng for SimpleRng {}
 }

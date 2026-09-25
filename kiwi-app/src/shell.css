@@ -808,6 +808,14 @@
   align-content: center;
 }
 
+.ms-narrow .ms-row-check {
+  grid-area: check;
+}
+
+.ms-narrow .ms-star {
+  grid-area: star;
+}
+
 .ms-narrow .ms-row-participants {
   grid-area: main;
 }

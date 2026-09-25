@@ -39,26 +39,39 @@ pub struct EmailSpamTester {
     base: String,
 }
 
+impl std::fmt::Debug for EmailSpamTester {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EmailSpamTester")
+            .field("base", &self.base)
+            .finish()
+    }
+}
+
 impl EmailSpamTester {
-    /// Provider over an injected transport. `base` must be `https://`.
-    #[must_use]
-    pub fn new(http: Arc<dyn HttpClient>, base: &str) -> Self {
-        Self {
+    /// Provider over an injected transport. `base` must be `https://` —
+    /// enforced here, not at first request.
+    pub fn new(http: Arc<dyn HttpClient>, base: &str) -> Result<Self, IntegrationError> {
+        let base = base.trim_end_matches('/');
+        crate::http::check_https_base(base)?;
+        Ok(Self {
             http,
-            base: base.trim_end_matches('/').to_string(),
-        }
+            base: base.to_string(),
+        })
     }
 
     /// Provider over the live reqwest transport (`SPAMTESTER_API`, 30 s).
     pub fn live() -> Result<Self, IntegrationError> {
         let http = ReqwestClient::new(crate::http::DEFAULT_TIMEOUT_MS)?;
-        Ok(Self::new(Arc::new(http), SPAMTESTER_API))
+        Self::new(Arc::new(http), SPAMTESTER_API)
     }
 
     async fn call(&self, req: HttpRequest) -> Result<HttpResponse, IntegrationError> {
-        let resp = self.http.request(req.header("accept", "application/json")).await?;
+        let resp = self
+            .http
+            .request(req.header("accept", "application/json"))
+            .await?;
         match resp.status {
-            200..=299 | 202 => Ok(resp),
+            200..=299 => Ok(resp),
             404 => Err(IntegrationError::NotFound),
             410 => Err(IntegrationError::Expired),
             429 => Err(IntegrationError::RateLimited {
@@ -81,7 +94,10 @@ impl DeliverabilityTester for EmailSpamTester {
 
     async fn reserve_inbox(&self) -> Result<TestReservation, IntegrationError> {
         let resp = self
-            .call(HttpRequest::post(format!("{}/inbox", self.base), Some(Vec::new())))
+            .call(HttpRequest::post(
+                format!("{}/inbox", self.base),
+                Some(Vec::new()),
+            ))
             .await?;
         let v = resp.json()?;
         parse_reservation(&v)
@@ -188,11 +204,17 @@ fn parse_report(v: &Value) -> Result<DeliverabilityReport, IntegrationError> {
             .collect::<String>();
         let id = obj
             .get("id")
-            .and_then(|v| v.as_str().map(str::to_string).or_else(|| v.as_u64().map(|n| n.to_string())))
+            .and_then(|v| {
+                v.as_str()
+                    .map(str::to_string)
+                    .or_else(|| v.as_u64().map(|n| n.to_string()))
+            })
             .unwrap_or_else(|| format!("check-{i}"));
         let citations = parse_citations(obj.get("citations"));
 
-        let tally = tallies.entry(category_raw.to_ascii_lowercase()).or_default();
+        let tally = tallies
+            .entry(category_raw.to_ascii_lowercase())
+            .or_default();
         match status {
             CheckStatus::Pass => tally.pass += 1,
             CheckStatus::Warn => tally.warn += 1,
@@ -224,8 +246,8 @@ fn parse_report(v: &Value) -> Result<DeliverabilityReport, IntegrationError> {
         .unwrap_or_default();
 
     Ok(DeliverabilityReport {
-        score_ours_milli: v.get("score_ours").map(|n| milli(n)).flatten(),
-        score_compat_milli: v.get("score_compat").map(|n| milli(n)).flatten(),
+        score_ours_milli: v.get("score_ours").and_then(milli),
+        score_compat_milli: v.get("score_compat").and_then(milli),
         complete: v.get("complete").and_then(Value::as_bool).unwrap_or(false),
         report_url: v
             .get("report_url")
@@ -282,7 +304,9 @@ fn milli(v: &Value) -> Option<u64> {
 }
 
 fn ju32(v: &Value, key: &str) -> Option<u32> {
-    v.get(key).and_then(Value::as_u64).and_then(|n| u32::try_from(n).ok())
+    v.get(key)
+        .and_then(Value::as_u64)
+        .and_then(|n| u32::try_from(n).ok())
 }
 
 /// Capped string field (missing/non-string → empty).
@@ -316,7 +340,7 @@ mod tests {
 
     fn est(steps: Vec<Step>) -> (EmailSpamTester, Arc<ScriptedHttp>) {
         let http = Arc::new(ScriptedHttp::new(steps));
-        let t = EmailSpamTester::new(http.clone(), "https://email-spam-tester.com/api/v1");
+        let t = EmailSpamTester::new(http.clone(), "https://email-spam-tester.com/api/v1").unwrap();
         (t, http)
     }
 
@@ -343,14 +367,24 @@ mod tests {
     async fn reserve_poll_report_happy_path() {
         let (t, http) = est(vec![
             Step::post("reserve", &["/inbox"], 200, RESERVE_JSON),
-            Step::get("status-pending", &["/tests/s3cr3t-capability-slug/status"], 202, "{}"),
+            Step::get(
+                "status-pending",
+                &["/tests/s3cr3t-capability-slug/status"],
+                202,
+                "{}",
+            ),
             Step::get(
                 "status-ready",
                 &["/tests/s3cr3t-capability-slug/status"],
                 200,
                 r#"{"analysis_status":"checks_ready","checks_done":41,"checks_total":41}"#,
             ),
-            Step::get("report", &["/tests/s3cr3t-capability-slug"], 200, REPORT_JSON),
+            Step::get(
+                "report",
+                &["/tests/s3cr3t-capability-slug"],
+                200,
+                REPORT_JSON,
+            ),
         ]);
 
         let res = t.reserve_inbox().await.unwrap();
@@ -389,7 +423,12 @@ mod tests {
         for (status, want) in [
             (410u16, IntegrationError::Expired),
             (404, IntegrationError::NotFound),
-            (429, IntegrationError::RateLimited { retry_after_ms: None }),
+            (
+                429,
+                IntegrationError::RateLimited {
+                    retry_after_ms: None,
+                },
+            ),
         ] {
             let (t, _http) = est(vec![
                 Step::post("reserve", &["/inbox"], 200, RESERVE_JSON),
@@ -404,10 +443,18 @@ mod tests {
     async fn analysis_failed_maps_to_error() {
         let (t, _http) = est(vec![
             Step::post("reserve", &["/inbox"], 200, RESERVE_JSON),
-            Step::get("status", &["/status"], 200, r#"{"analysis_status":"failed"}"#),
+            Step::get(
+                "status",
+                &["/status"],
+                200,
+                r#"{"analysis_status":"failed"}"#,
+            ),
         ]);
         let res = t.reserve_inbox().await.unwrap();
-        assert_eq!(t.poll_status(&res).await.unwrap_err(), IntegrationError::AnalysisFailed);
+        assert_eq!(
+            t.poll_status(&res).await.unwrap_err(),
+            IntegrationError::AnalysisFailed
+        );
     }
 
     #[tokio::test]
@@ -430,7 +477,10 @@ mod tests {
         ]);
         let res = t.reserve_inbox().await.unwrap();
         let s = t.poll_status(&res).await.unwrap();
-        assert_eq!(s.analysis_status, AnalysisStatus::Other("quantum_reviewing".into()));
+        assert_eq!(
+            s.analysis_status,
+            AnalysisStatus::Other("quantum_reviewing".into())
+        );
         assert!(!s.ready());
         let r = t.fetch_report(&res).await.unwrap();
         assert_eq!(r.score_ours_milli, None);
@@ -452,7 +502,12 @@ mod tests {
             t.reserve_inbox().await.unwrap_err(),
             IntegrationError::Malformed("address")
         );
-        let (t, _h) = est(vec![Step::post("reserve", &["/inbox"], 200, r#"{"address":"a@b.c"}"#)]);
+        let (t, _h) = est(vec![Step::post(
+            "reserve",
+            &["/inbox"],
+            200,
+            r#"{"address":"a@b.c"}"#,
+        )]);
         assert_eq!(
             t.reserve_inbox().await.unwrap_err(),
             IntegrationError::Malformed("slug")

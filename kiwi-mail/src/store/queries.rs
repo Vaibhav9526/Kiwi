@@ -35,7 +35,7 @@ fn map_message_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<MessageMeta> {
         has_attachments: r.get::<_, i64>(10)? != 0,
         snippet: r.get(11)?,
         body_path: r.get(12)?,
-        category: Category::from_str(&slug).unwrap_or_default(),
+        category: Category::from_slug(&slug).unwrap_or_default(),
     })
 }
 
@@ -255,12 +255,7 @@ impl MailStore {
     /// re-classification runs. Deliberately separate from `upsert_message`:
     /// re-upserts must not clobber a refined category with an envelope-only
     /// default, so the conflict clause above leaves `category` untouched.
-    pub fn set_category(
-        &self,
-        folder_id: i64,
-        uid: u64,
-        category: Category,
-    ) -> Result<bool> {
+    pub fn set_category(&self, folder_id: i64, uid: u64, category: Category) -> Result<bool> {
         let n = self.conn.execute(
             "UPDATE messages SET category = ?3 WHERE folder_id = ?1 AND uid = ?2",
             params![folder_id, uid as i64, category.as_str()],
@@ -294,7 +289,8 @@ impl MailStore {
     }
 
     /// Update only flags (used by incremental UID FETCH (FLAGS) sync).
-    pub fn update_flags(&self, folder_id: i64, uid: u64, flags: &[String]) -> Result<bool> {        let n = self.conn.execute(
+    pub fn update_flags(&self, folder_id: i64, uid: u64, flags: &[String]) -> Result<bool> {
+        let n = self.conn.execute(
             "UPDATE messages SET flags = ?3 WHERE folder_id = ?1 AND uid = ?2",
             params![folder_id, uid as i64, flags.join(" ")],
         )?;

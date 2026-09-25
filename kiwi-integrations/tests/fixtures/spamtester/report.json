@@ -1,0 +1,64 @@
+{
+    "score_ours": 87,
+    "score_compat": 9.1,
+    "complete": true,
+    "report_url": "https://email-spam-tester.example/r/fx-slug-9u2n4k",
+    "subscores": {
+        "auth": 95,
+        "infra_spam": 80,
+        "content": 88,
+        "compliance": 100
+    },
+    "checks": [
+        {
+            "id": "spf",
+            "category": "auth",
+            "status": "pass",
+            "title": "SPF",
+            "summary": "sender IP authorized by SPF record",
+            "citations": {
+                "standards": [
+                    {"title": "RFC 7208", "url": "https://www.rfc-editor.org/rfc/rfc7208"}
+                ]
+            }
+        },
+        {
+            "id": "dkim-align",
+            "category": "auth",
+            "status": "fail",
+            "title": "DKIM alignment",
+            "summary": "signature d= is the relay's domain, not the From domain",
+            "citations": {
+                "standards": [
+                    {"title": "RFC 6376 §3.1.1", "url": "https://www.rfc-editor.org/rfc/rfc6376"}
+                ],
+                "receiver": [
+                    {"title": "Google sender guidelines", "url": "https://support.google.com/mail"}
+                ]
+            }
+        },
+        {
+            "id": "rbl",
+            "category": "infra_spam",
+            "status": "pass",
+            "title": "Blocklists",
+            "summary": "sender IP not listed",
+            "citations": {}
+        },
+        {
+            "id": "link-text",
+            "category": "content",
+            "status": "warn",
+            "title": "Link/text mismatch",
+            "summary": "visible link text differs from href target"
+        },
+        {
+            "id": "bulk-sender",
+            "category": "compliance",
+            "status": "skip",
+            "title": "Bulk sender rules",
+            "summary": "volume below bulk threshold",
+            "citations": {}
+        }
+    ]
+}
