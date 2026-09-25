@@ -44,21 +44,14 @@ pub(crate) async fn list_folders_impl(
     account_id: &str,
 ) -> CmdResult<Vec<FolderView>> {
     bounded("accountId", account_id, 128)?;
-    let entries = state
-        .index
-        .lock()
-        .await
-        .folders
-        .get(account_id)
-        .cloned()
-        .unwrap_or_default();
+    if state.store.lock().await.get_account(account_id)?.is_none() {
+        return Err(IpcError::not_found("unknown account"));
+    }
     let store = state.store.lock().await;
     let mut out = Vec::new();
-    for e in entries {
-        if let Some(meta) = store.folder_meta(e.id)? {
-            let stats = store.folder_stats(e.id)?;
-            out.push(FolderView::from_meta(&meta, stats));
-        }
+    for meta in store.list_folders(account_id)? {
+        let stats = store.folder_stats(meta.id)?;
+        out.push(FolderView::from_meta(&meta, stats));
     }
     Ok(out)
 }

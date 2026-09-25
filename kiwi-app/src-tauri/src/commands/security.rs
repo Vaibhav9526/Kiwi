@@ -10,6 +10,7 @@ use kiwi_forensics::findings::Finding;
 use kiwi_forensics::report::{Limitation, ReportBuilder};
 
 use super::{bounded, gate};
+use crate::audit::AuditEventView;
 use crate::error::{CmdResult, IpcError};
 use crate::state::{AppState, now_unix};
 use crate::types::{EventRow, SessionDetailView, SessionView, SignalView};
@@ -141,6 +142,32 @@ pub(crate) async fn security_events_impl(
         })
         .collect();
     Ok(rows)
+}
+
+/// App audit trail (T-324): real rows from the hash-chained `audit.jsonl`
+/// store, newest first. The audit log is device-owner sensitive, so this
+/// reader is lock-gated like every other §8 command.
+#[tauri::command]
+pub async fn kiwi_audit_events(
+    state: State<'_, Arc<AppState>>,
+    before_unix: Option<i64>,
+    limit: Option<u32>,
+) -> CmdResult<Vec<AuditEventView>> {
+    gate(state.inner()).await?;
+    audit_events_impl(state.inner(), before_unix, limit).await
+}
+
+pub(crate) async fn audit_events_impl(
+    state: &AppState,
+    before_unix: Option<i64>,
+    limit: Option<u32>,
+) -> CmdResult<Vec<AuditEventView>> {
+    if before_unix.is_some_and(|value| value < 0) {
+        return Err(IpcError::invalid("beforeUnix must be >= 0"));
+    }
+    let limit = super::clamp_u32(limit, 100, 500) as usize;
+    let audit = state.audit.lock().await;
+    audit.read_recent(before_unix, limit as u32)
 }
 
 /// One finding's full detail: the complete `kiwi.forensics/1` object
@@ -681,6 +708,55 @@ mod tests {
         // Limit applies after the binding sort.
         let top = block_on(security_findings_impl(&state, None, None, Some(1))).unwrap();
         assert_eq!(top[0].rule_id, "KIWI-AUTH-001");
+    }
+
+    // -- T-324 audit read IPC ---------------------------------------------
+
+    #[test]
+    fn audit_read_is_empty_bounded_and_keyset_paged() {
+        let state = test_state("audit-read");
+        block_on(async {
+            assert!(
+                audit_events_impl(&state, None, None)
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            let mut log = state.audit.lock().await;
+            for i in 0..600 {
+                log.record("test-event", &format!("row={i}"), 1_000 + i)
+                    .unwrap();
+            }
+        });
+        let rows = block_on(audit_events_impl(&state, None, Some(9_000))).unwrap();
+        assert_eq!(rows.len(), 500, "renderer limit clamps to 500");
+        assert_eq!(rows[0].at_unix, 1_599, "newest real row first");
+        assert_eq!(rows[0].detail_json.as_deref(), Some("row=599"));
+        assert!(rows[0].actor.is_none(), "no invented actor");
+        let older = block_on(audit_events_impl(&state, Some(1_100), Some(500))).unwrap();
+        assert_eq!(older.len(), 100);
+        assert_eq!(older.last().unwrap().at_unix, 1_000);
+        let err = block_on(audit_events_impl(&state, Some(-1), None)).unwrap_err();
+        assert_eq!(err.code, "invalid-input");
+    }
+
+    #[test]
+    fn audit_read_respects_lock_gate() {
+        let state = test_state("audit-lock");
+        block_on(async {
+            state
+                .audit
+                .lock()
+                .await
+                .record("sensitive", "real", 10)
+                .unwrap();
+            state.trust.lock().await.force_lock();
+            assert!(
+                super::super::gate(&state)
+                    .await
+                    .is_err_and(|e| e.code == "locked")
+            );
+        });
     }
 
     // -- T-320 forensic report export -------------------------------------

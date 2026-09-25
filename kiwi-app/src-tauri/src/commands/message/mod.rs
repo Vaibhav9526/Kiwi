@@ -484,6 +484,87 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn copy_messages_guards_and_happy_path() {
+        let (state, dir) = pop3_state("copy");
+        let fid = seed_pop3(&state).await;
+        let dst = state
+            .store
+            .lock()
+            .await
+            .ensure_folder("a1", "Work")
+            .unwrap();
+
+        // src == dst → invalid.
+        assert!(
+            copy_messages_impl(&state, "a1".into(), fid, fid, vec![1])
+                .await
+                .is_err()
+        );
+        // dst on ANOTHER account → not-found (ownership check).
+        let other = {
+            let store = state.store.lock().await;
+            let mut acct = store.get_account("a1").unwrap().unwrap();
+            acct.account_id = "a2".into();
+            store.upsert_account(&acct).unwrap();
+            store.ensure_folder("a2", "Elsewhere").unwrap()
+        };
+        assert_eq!(
+            copy_messages_impl(&state, "a1".into(), fid, other, vec![1])
+                .await
+                .unwrap_err()
+                .code,
+            "not-found"
+        );
+        // Smart view / nonexistent folder id → not-found by construction.
+        assert_eq!(
+            copy_messages_impl(&state, "a1".into(), fid, 999_999, vec![1])
+                .await
+                .unwrap_err()
+                .code,
+            "not-found"
+        );
+        // System-origin dst refused — Trash is a system folder.
+        let trash = state
+            .store
+            .lock()
+            .await
+            .ensure_folder("a1", "Trash")
+            .unwrap();
+        assert_eq!(
+            copy_messages_impl(&state, "a1".into(), fid, trash, vec![1])
+                .await
+                .unwrap_err()
+                .code,
+            "invalid-input"
+        );
+
+        // Happy path: 1,3 → Work under fresh dst uids; source untouched.
+        let v = copy_messages_impl(&state, "a1".into(), fid, dst, vec![1, 3, 999])
+            .await
+            .unwrap();
+        assert_eq!(v.copied, 2);
+        // Fresh dst-local uids, folder-scoped: empty dst mints from 1.
+        assert_eq!(v.uid_map, [(1u64, 1u64), (3, 2)].into_iter().collect());
+        assert_eq!(
+            state.store.lock().await.folder_uids(fid).unwrap(),
+            vec![1, 2, 3],
+            "source rows survive a copy"
+        );
+        assert_eq!(state.store.lock().await.folder_uids(dst).unwrap().len(), 2);
+        // Audit: ids + counts only.
+        let audit = std::fs::read_to_string(dir.join("audit.jsonl")).unwrap();
+        let line = audit
+            .lines()
+            .find(|l| l.contains("messages-copied"))
+            .expect("copy must audit");
+        assert!(
+            line.contains("×2") && !line.contains("m1"),
+            "ids+counts only"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn bounded_uids_validates() {
         assert!(bounded_uids(&[]).is_err());

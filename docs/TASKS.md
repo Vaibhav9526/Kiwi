@@ -301,10 +301,11 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-321 | post-T-286: contract/docs sweep — consent-boundary semantics documented as-built | Agent 23 | open | `ipc.md`, `docs/contracts/` | T-286 |
 | T-322 | folder-mgmt UI over T-319 (ctx create/rename/delete, system/smart protected) | Agent 24 | done |
 | T-323 | audit-log view shipped behind honest pending state; auto-lights on T-324 | Agent 25 | done |
-| T-324 | kiwi_audit_events read IPC (bounded, keyset, lock-gated) — LIVE for A25 T-323 | Agent 15 | in-progress | `kiwi-mail/store/queries.rs`, `commands/` | T-323 | audit-log view shipped behind honest pending state; auto-lights on T-324 | Agent 25 | done |
+| T-324 | kiwi_audit_events read IPC (bounded keyset, lock-gated, honest nulls) | Agent 15 | done |
 | T-325 | kiwi_copy_messages (bytes duplicated, honest local-only, uidMap surfaced) | Agent 20 | done |
 | T-326 | import refuses synced folders by construction (resolver, policy-blocked pre-write, NOCASE) | Agent 19 | done |
 | T-327 | audit retention: bounded keep-N/age policy, sweep itself audited (id+count only) | Agent 21 | open | `kiwi-mail/store`, `commands/security.rs` | T-324 coord |
 | T-323-aux | Empty Trash/Junk via real delete loop + count-aware confirm | Agent 24 | done |
 | T-328 | IMAP server-folder CRUD: real CREATE/RENAME/DELETE wire cmds, local mirror post-ACK | Agent 19 | open | `kiwi-mail/imap*`, `commands/` folder IPCs | T-319 gap |
 | T-329 | new-mail OS notifications (tauri-plugin-notification, per-sync batched, pref-gated, junk-suppressed) | Agent 20 | open | `state.rs`, `commands/`, `capabilities` | |
+| T-330 | storage diagnostics IPC: real db_bytes/counts/integrity_check + compact (VACUUM) | Agent 15 | open | `kiwi-mail/store`, `commands/` | T-315 seam |

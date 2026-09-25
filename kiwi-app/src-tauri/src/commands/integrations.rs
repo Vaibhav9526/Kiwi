@@ -732,6 +732,7 @@ mod tests {
     use super::*;
     use crate::commands::accounts::add_account_impl;
     use crate::commands::send::tests::{acct_input, test_state};
+    use crate::send_consent::{FixedSendConsent, IntegrationDestinationKind};
     use crate::state::{OutboxMeta, PROVIDER_429_COOLDOWN_MS, PollCooldowns};
     use kiwi_integrations::deliverability::MAX_CHECKS;
     use kiwi_integrations::http::{HttpRequest, HttpResponse, ScriptedHttp, Step};
@@ -1300,6 +1301,179 @@ mod tests {
         assert_eq!(meta.class, OutboxClass::Ordinary);
         assert_eq!(meta.attempts, 0);
         assert!(!f.state.single_attempt.lock().await.contains(&sent.queue_id));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_send_never_prompts_for_native_confirmation() {
+        let state = test_state("consent-ordinary");
+        let consent = Arc::new(FixedSendConsent::denying());
+        *state.send_consent.lock().unwrap() = consent.clone();
+        let acct = add_account_impl(&state, acct_input()).await.unwrap();
+        crate::commands::send::send_impl(&state, &acct.id, compose(), None)
+            .await
+            .unwrap();
+        assert!(consent.requests().is_empty());
+        assert_eq!(state.send_queue.lock().await.pending_count(), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn deliverability_send_denial_never_enqueues() {
+        let f = state_with(
+            vec![Step::post("reserve", &["/api/v1/inbox"], 200, ST_RESERVE)],
+            "consent-deny",
+        );
+        let consent = Arc::new(FixedSendConsent::denying());
+        *f.state.send_consent.lock().unwrap() = consent.clone();
+        let acct = add_account_impl(&f.state, acct_input()).await.unwrap();
+        let begin = deliverability_begin_impl(&f.state).await.unwrap();
+        let err = deliverability_send_impl(
+            &f.state,
+            &begin.test_id,
+            &begin.consent_token,
+            &acct.id,
+            compose(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, "consent-required");
+        assert_eq!(f.state.send_queue.lock().await.pending_count(), 0);
+        assert!(
+            f.state
+                .store
+                .lock()
+                .await
+                .outbox_list(10)
+                .unwrap()
+                .is_empty()
+        );
+        let sessions = f.state.deliverability.lock().await;
+        let session = &sessions[&begin.test_id];
+        assert!(session.consent_consumed);
+        assert!(!session.enqueued);
+        assert!(session.queue_id.is_none());
+        drop(sessions);
+        let requests = consent.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].destinations[0].kind,
+            IntegrationDestinationKind::DeliverabilityTest
+        );
+        assert_eq!(requests[0].destinations[0].address, begin.address);
+        let log = audit_log(&f.state);
+        assert!(log.contains("send-consent-denied"));
+        assert!(log.contains("deliverability-send-intent"));
+        f.http.assert_exhausted();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_send_to_temp_inbox_prompts_and_can_be_denied() {
+        let f = state_with(
+            vec![Step::get("init", &["f=get_email_address"], 200, GM_ADDR)],
+            "consent-temp",
+        );
+        let consent = Arc::new(FixedSendConsent::denying());
+        *f.state.send_consent.lock().unwrap() = consent.clone();
+        let acct = add_account_impl(&f.state, acct_input()).await.unwrap();
+        let mailbox = tempmail_create_impl(&f.state, None).await.unwrap();
+        let mut message = compose();
+        message.to = vec![mailbox.address.clone()];
+        let err = crate::commands::send::send_impl(&f.state, &acct.id, message, None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "consent-required");
+        assert_eq!(f.state.send_queue.lock().await.pending_count(), 0);
+        let requests = consent.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].destinations[0].kind,
+            IntegrationDestinationKind::TempInbox
+        );
+        f.http.assert_exhausted();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn integration_prompt_burst_is_denied_and_audited() {
+        let f = state_with(
+            vec![Step::get("init", &["f=get_email_address"], 200, GM_ADDR)],
+            "consent-burst",
+        );
+        let consent = Arc::new(FixedSendConsent::denying());
+        *f.state.send_consent.lock().unwrap() = consent.clone();
+        let acct = add_account_impl(&f.state, acct_input()).await.unwrap();
+        let mailbox = tempmail_create_impl(&f.state, None).await.unwrap();
+        for _ in 0..3 {
+            let mut message = compose();
+            message.to = vec![mailbox.address.clone()];
+            let err = crate::commands::send::send_impl(&f.state, &acct.id, message, None)
+                .await
+                .unwrap_err();
+            assert_eq!(err.code, "consent-required");
+        }
+        let mut message = compose();
+        message.to = vec![mailbox.address.clone()];
+        let err = crate::commands::send::send_impl(&f.state, &acct.id, message, None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "consent-throttled");
+        assert_eq!(consent.requests().len(), 3);
+        assert!(audit_log(&f.state).contains("send-consent-burst-denied"));
+        assert_eq!(f.state.send_queue.lock().await.pending_count(), 0);
+        f.http.assert_exhausted();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_send_to_reserved_address_cannot_bypass_native_confirmation() {
+        let f = state_with(
+            vec![Step::post("reserve", &["/api/v1/inbox"], 200, ST_RESERVE)],
+            "consent-bypass",
+        );
+        let consent = Arc::new(FixedSendConsent::denying());
+        *f.state.send_consent.lock().unwrap() = consent.clone();
+        let acct = add_account_impl(&f.state, acct_input()).await.unwrap();
+        let begin = deliverability_begin_impl(&f.state).await.unwrap();
+        let mut message = compose();
+        message.to = vec![begin.address.clone()];
+        let err = crate::commands::send::send_impl(&f.state, &acct.id, message, None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "consent-required");
+        assert_eq!(f.state.send_queue.lock().await.pending_count(), 0);
+        let requests = consent.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].destinations[0].address, begin.address);
+        assert_eq!(
+            requests[0].destinations[0].kind,
+            IntegrationDestinationKind::DeliverabilityTest
+        );
+        f.http.assert_exhausted();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn deliverability_send_approval_prompts_once_then_enqueues() {
+        let f = state_with(
+            vec![Step::post("reserve", &["/api/v1/inbox"], 200, ST_RESERVE)],
+            "consent-approve",
+        );
+        let consent = Arc::new(FixedSendConsent::approving());
+        *f.state.send_consent.lock().unwrap() = consent.clone();
+        let acct = add_account_impl(&f.state, acct_input()).await.unwrap();
+        let begin = deliverability_begin_impl(&f.state).await.unwrap();
+        let sent = deliverability_send_impl(
+            &f.state,
+            &begin.test_id,
+            &begin.consent_token,
+            &acct.id,
+            compose(),
+        )
+        .await
+        .unwrap();
+        assert!(sent.enqueued && sent.consent_consumed);
+        assert_eq!(consent.requests().len(), 1);
+        assert_eq!(
+            consent.requests()[0].destinations[0].kind,
+            IntegrationDestinationKind::DeliverabilityTest
+        );
+        f.http.assert_exhausted();
     }
 
     #[tokio::test(flavor = "current_thread")]

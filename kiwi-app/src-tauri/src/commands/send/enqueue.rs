@@ -13,8 +13,10 @@ use kiwi_mail::smtp::{QueuedSend, SendRequest};
 use super::super::{bounded, gate, valid_addr};
 use super::drop_outbox;
 use crate::error::{CmdResult, IpcError};
+use crate::send_consent::{ConsentDecision, IntegrationSendRequest};
 use crate::state::{
-    AppState, MAX_OUTBOX_ITEM_BYTES, OutboxClass, OutboxMeta, new_id, now_unix, outbox_row_of,
+    AppState, MAX_OUTBOX_ITEM_BYTES, OutboxClass, OutboxMeta, new_id, now_unix, now_unix_ms,
+    outbox_row_of,
 };
 use crate::types::{ComposeInput, OutboxItem, SendOptions, SendReceipt};
 
@@ -159,6 +161,15 @@ pub(crate) async fn send_impl_class(
         message_id: new_id("msg"),
     };
     let mime_bytes = build_message(&outbound).map_err(IpcError::from)?;
+    confirm_integration_send(
+        state,
+        &acct.email,
+        &all_rcpts,
+        &message.subject,
+        message.attachments.len(),
+        mime_bytes.len(),
+    )
+    .await?;
 
     // --- enqueue ---------------------------------------------------------------
     let opts = options.unwrap_or(SendOptions {
@@ -231,6 +242,62 @@ pub(crate) async fn send_impl_class(
         not_before_unix: not_before,
         undo_window_until_unix: undo_until,
     })
+}
+
+async fn confirm_integration_send(
+    state: &AppState,
+    from: &str,
+    recipients: &[String],
+    subject: &str,
+    attachment_count: usize,
+    mime_bytes: usize,
+) -> CmdResult<()> {
+    let destinations = state.integration_destinations(recipients).await;
+    if destinations.is_empty() {
+        return Ok(());
+    }
+    let admitted = state
+        .send_consent_guard
+        .lock()
+        .map_err(|_| IpcError::new("internal", "send consent guard unavailable"))?
+        .admit(now_unix_ms());
+    let kinds = destinations
+        .iter()
+        .map(|d| match d.kind {
+            crate::send_consent::IntegrationDestinationKind::TempInbox => "temp-inbox",
+            crate::send_consent::IntegrationDestinationKind::DeliverabilityTest => "deliverability",
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    if !admitted {
+        state.audit.lock().await.record(
+            "send-consent-burst-denied",
+            &format!("{kinds} burst guard denied enqueue"),
+            now_unix(),
+        )?;
+        return Err(IpcError::consent_throttled());
+    }
+    let consent = state
+        .send_consent
+        .lock()
+        .map_err(|_| IpcError::new("internal", "send consent service unavailable"))?
+        .clone();
+    let request = IntegrationSendRequest {
+        from: from.to_string(),
+        subject: subject.to_string(),
+        destinations,
+        attachment_count,
+        body_bytes: mime_bytes,
+    };
+    if consent.request(&request).await != ConsentDecision::Approved {
+        state.audit.lock().await.record(
+            "send-consent-denied",
+            &format!("{kinds} native confirmation denied enqueue"),
+            now_unix(),
+        )?;
+        return Err(IpcError::consent_required());
+    }
+    Ok(())
 }
 
 /// Undo-send / unschedule: cancel while the send is still recallable —

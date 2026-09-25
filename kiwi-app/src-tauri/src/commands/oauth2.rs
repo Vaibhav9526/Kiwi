@@ -1,27 +1,27 @@
-﻿//! OAuth2 acquisition commands (T-230) â€” the account-wizard seam for
+//! OAuth2 acquisition commands (T-230) — the account-wizard seam for
 //! XOAUTH2 providers, over the `kiwi-autoconfig::oauth2` engine
 //! (`kiwi.oauth2/1`).
 //!
 //! Flow:
 //!
-//! 1. `kiwi_discover_account(email)` â€” the suggestion carries an `oauth2`
+//! 1. `kiwi_discover_account(email)` — the suggestion carries an `oauth2`
 //!    spec when its endpoints are OAuth2-capable.
-//! 2. `kiwi_oauth2_begin(provider, email?)` â€” device-code grants return
+//! 2. `kiwi_oauth2_begin(provider, email?)` — device-code grants return
 //!    `userCode`/`verificationUri` to display; loopback grants return
 //!    `authorizeUrl` to open in the system browser (the `127.0.0.1`
 //!    listener is already bound and a waiter thread is parked on it).
-//! 3. `kiwi_oauth2_poll(ticketId)` â€” `pending` / `complete` / `error`.
+//! 3. `kiwi_oauth2_poll(ticketId)` — `pending` / `complete` / `error`.
 //!    On complete the `TokenSet` is persisted through the
-//!    `CredentialStore` seam under `oauth2/<provider>/<email>` â€” or held
+//!    `CredentialStore` seam under `oauth2/<provider>/<email>` — or held
 //!    in the session when `begin` was called without an email.
 //! 4. `kiwi_add_account` with `incomingAuth/outgoingAuth`
 //!    `{kind:"xoauth2", oauth2Ticket}` binds the stored grant to the
-//!    account â€” token material never crosses IPC.
+//!    account — token material never crosses IPC.
 //!
 //! `kiwi_oauth2_status(accountId)` reports a stored account's grant
 //! posture (presence, expiry, refresh-token flag) without secrets.
 //!
-//! Secrets discipline (SECURITY.md, oauth2.md Â§5): the PKCE verifier,
+//! Secrets discipline (SECURITY.md, oauth2.md §5): the PKCE verifier,
 //! device code, and token bytes live only inside `PendingGrant`/
 //! `TokenSet` (Zeroizing + redacted Debug) and the OS credential store.
 //! IPC sees key names and lifecycle metadata only.
@@ -48,13 +48,13 @@ use crate::types::{
     OAuth2BeginView, OAuth2CancelView, OAuth2PollView, OAuth2SpecView, OAuth2StatusView,
 };
 
-/// Poll cadence hint returned for loopback grants â€” the provider controls
+/// Poll cadence hint returned for loopback grants — the provider controls
 /// device-code pacing but the loopback listener has no such signal; the
 /// UI re-polls on this fixed hint.
 const LOOPBACK_POLL_HINT_SECS: u64 = 1;
 
 // ---------------------------------------------------------------------------
-// Transport bridge â€” the shared integrations HttpClient IS an OAuthTransport
+// Transport bridge — the shared integrations HttpClient IS an OAuthTransport
 // (blanket impl), but `&dyn HttpClient` cannot unsize to `&dyn
 // OAuthTransport`, so a Clone+Send+Sync newtype re-exposes it.
 // ---------------------------------------------------------------------------
@@ -78,7 +78,7 @@ impl OAuthTransport for SharedTransport {
 // Config + error mapping
 // ---------------------------------------------------------------------------
 
-/// Public client id for a provider â€” deployment config, never a secret.
+/// Public client id for a provider — deployment config, never a secret.
 /// Resolution order: `KIWI_OAUTH2_<ID>_CLIENT_ID` env (admin-forced)
 /// beats the `oauth2.<id>.clientId` global pref (user/provisioned).
 async fn client_id_for(state: &AppState, provider_id: &str) -> CmdResult<String> {
@@ -100,13 +100,13 @@ async fn client_id_for(state: &AppState, provider_id: &str) -> CmdResult<String>
     Err(IpcError::new(
         "oauth2-not-configured",
         format!(
-            "no OAuth2 client_id configured for provider {provider_id:?} â€” \
+            "no OAuth2 client_id configured for provider {provider_id:?} — \
              set pref `oauth2.{provider_id}.clientId` or env `{env_key}`"
         ),
     ))
 }
 
-/// `OAuthError` â†’ IPC `(code, message)`. Codes are contract-stable;
+/// `OAuthError` → IPC `(code, message)`. Codes are contract-stable;
 /// messages are already secret-free by construction.
 fn oauth_code(e: &OAuthError) -> (&'static str, String) {
     use OAuthError::*;
@@ -129,7 +129,7 @@ fn oauth_code(e: &OAuthError) -> (&'static str, String) {
         Expired => ("oauth2-expired", "grant expired".to_string()),
         InvalidGrant => (
             "oauth2-reauth",
-            "grant invalid or revoked â€” re-authorization required".to_string(),
+            "grant invalid or revoked — re-authorization required".to_string(),
         ),
         StateMismatch => ("oauth2-error", "redirect state mismatch".to_string()),
         Malformed(field) => ("oauth2-error", format!("malformed oauth payload: {field}")),
@@ -164,7 +164,7 @@ fn is_terminal(e: &OAuthError) -> bool {
 // begin
 // ---------------------------------------------------------------------------
 
-/// `kiwi_oauth2_begin(provider, email?) â†’ OAuth2BeginView`.
+/// `kiwi_oauth2_begin(provider, email?) → OAuth2BeginView`.
 #[tauri::command]
 pub async fn kiwi_oauth2_begin(
     state: State<'_, Arc<AppState>>,
@@ -260,7 +260,7 @@ pub(crate) async fn oauth2_begin_impl(
         if sessions.len() >= MAX_OAUTH2_SESSIONS {
             evict_oauth2_sessions(&mut sessions, now);
             while sessions.len() >= MAX_OAUTH2_SESSIONS {
-                // Key order isn't insertion order â€” evict the OLDEST
+                // Key order isn't insertion order — evict the OLDEST
                 // session by creation time.
                 if let Some(oldest) = sessions
                     .iter()
@@ -319,7 +319,7 @@ fn evict_oauth2_sessions(
 
 /// Park a thread on the loopback listener: wait for the browser redirect
 /// (bounded by [`OAUTH2_LOOPBACK_TIMEOUT_SECS`]), then exchange the code.
-/// The grant â€” listener, PKCE verifier, state â€” moves into the thread;
+/// The grant — listener, PKCE verifier, state — moves into the thread;
 /// the slot receives the outcome exactly once.
 fn spawn_loopback_waiter(
     slot: Arc<std::sync::Mutex<Option<Result<TokenSet, OAuthError>>>>,
@@ -357,7 +357,7 @@ fn spawn_loopback_waiter(
 // poll
 // ---------------------------------------------------------------------------
 
-/// `kiwi_oauth2_poll(ticketId) â†’ OAuth2PollView`.
+/// `kiwi_oauth2_poll(ticketId) → OAuth2PollView`.
 #[tauri::command]
 pub async fn kiwi_oauth2_poll(
     state: State<'_, Arc<AppState>>,
@@ -393,8 +393,8 @@ fn error_view(ticket_id: &str, code: &'static str, message: String) -> OAuth2Pol
     }
 }
 
-/// Persist-or-defer on grant completion: email known â†’ `save_tokens` via
-/// the CredentialStore seam; unknown â†’ tokens stay in-session until
+/// Persist-or-defer on grant completion: email known → `save_tokens` via
+/// the CredentialStore seam; unknown → tokens stay in-session until
 /// `kiwi_add_account` binds an address.
 fn complete_grant(
     state: &AppState,
@@ -424,7 +424,7 @@ pub(crate) async fn oauth2_poll_impl(
     ticket_id: &str,
 ) -> CmdResult<OAuth2PollView> {
     bounded("ticketId", ticket_id, 64)?;
-    // The sessions lock is held across the provider poll deliberately â€”
+    // The sessions lock is held across the provider poll deliberately —
     // same reasoning as `tempmail_poll_impl`: one in-flight poll per
     // grant, and the flow takes no other `AppState` locks. A device poll
     // is a single bounded HTTPS POST; the loopback path does no I/O.
@@ -540,11 +540,11 @@ pub(crate) async fn oauth2_poll_impl(
 // cancel
 // ---------------------------------------------------------------------------
 
-/// `kiwi_oauth2_cancel(ticketId) â†’ OAuth2CancelView`.
+/// `kiwi_oauth2_cancel(ticketId) → OAuth2CancelView`.
 ///
 /// Drops the session. A loopback grant's listener keeps its OS socket
 /// bound in the waiter thread until the grant deadline (bounded, and the
-/// slot is gone so the outcome is discarded) â€” cancelling frees the
+/// slot is gone so the outcome is discarded) — cancelling frees the
 /// ticket and the wizard path, not the socket's remaining lifetime.
 #[tauri::command]
 pub async fn kiwi_oauth2_cancel(
@@ -567,10 +567,10 @@ pub(crate) async fn oauth2_cancel_impl(
 }
 
 // ---------------------------------------------------------------------------
-// status â€” a stored account's grant posture
+// status — a stored account's grant posture
 // ---------------------------------------------------------------------------
 
-/// `kiwi_oauth2_status(accountId) â†’ OAuth2StatusView`.
+/// `kiwi_oauth2_status(accountId) → OAuth2StatusView`.
 #[tauri::command]
 pub async fn kiwi_oauth2_status(
     state: State<'_, Arc<AppState>>,
@@ -604,7 +604,7 @@ pub(crate) async fn oauth2_status_impl(
     };
     let now = now_unix();
 
-    // Grant-key form `oauth2/<provider>/<email>` â†’ a parseable TokenSet.
+    // Grant-key form `oauth2/<provider>/<email>` → a parseable TokenSet.
     let mut view = OAuth2StatusView {
         account_id: account_id.to_string(),
         auth_method: auth_method.to_string(),
@@ -619,7 +619,7 @@ pub(crate) async fn oauth2_status_impl(
         view.provider = Some(provider_id.to_string());
         view.email = Some(email.to_string());
         // Credential present but not a parseable token blob (legacy
-        // inline-secret path) â€” report presence, no lifecycle detail.
+        // inline-secret path) — report presence, no lifecycle detail.
         if let Ok(Some(tokens)) = load_tokens(state.credentials.as_ref(), provider_id, email) {
             view.expires_at_unix = tokens.expires_at_unix();
             view.needs_refresh = Some(tokens.needs_refresh(now));
@@ -629,7 +629,7 @@ pub(crate) async fn oauth2_status_impl(
     Ok(view)
 }
 
-/// Split `oauth2/<provider>/<email>` â€” the credential-key form
+/// Split `oauth2/<provider>/<email>` — the credential-key form
 /// `kiwi-autoconfig::oauth2::credential_key` emits.
 fn parse_oauth2_key(key: &str) -> Option<(&str, &str)> {
     let rest = key.strip_prefix("oauth2/")?;
@@ -641,7 +641,7 @@ fn parse_oauth2_key(key: &str) -> Option<(&str, &str)> {
 }
 
 // ---------------------------------------------------------------------------
-// Ticket â†’ account binding (used by kiwi_add_account, commands/accounts.rs)
+// Ticket → account binding (used by kiwi_add_account, commands/accounts.rs)
 // ---------------------------------------------------------------------------
 
 /// Resolve the credential key for a completed OAuth2 ticket referenced by
@@ -651,7 +651,7 @@ fn parse_oauth2_key(key: &str) -> Option<(&str, &str)> {
 /// deferred grant, and returns the `oauth2/<provider>/<email>` key the
 /// `AuthRef`s should carry. `None` when no ticket is referenced.
 ///
-/// Does NOT consume the ticket â€” `consume_oauth2_ticket` runs only after
+/// Does NOT consume the ticket — `consume_oauth2_ticket` runs only after
 /// the account row exists, so a failed add leaves the grant usable.
 pub(crate) async fn oauth2_ticket_key(
     state: &AppState,
@@ -678,7 +678,7 @@ pub(crate) async fn oauth2_ticket_key(
     }
     if ids.iter().any(|id| *id != ids[0]) {
         return Err(IpcError::invalid(
-            "one OAuth2 grant covers both directions â€” incomingAuth and \
+            "one OAuth2 grant covers both directions — incomingAuth and \
              outgoingAuth must name the same oauth2Ticket",
         ));
     }
@@ -693,7 +693,7 @@ pub(crate) async fn oauth2_ticket_key(
         ));
     };
     // A grant begun with an email must bind to the same address
-    // (normalized, case-insensitive) â€” else a ticket for alice@ could
+    // (normalized, case-insensitive) — else a ticket for alice@ could
     // authorize tokens under bob@'s key.
     if let Some(e) = &session.email
         && !e.eq_ignore_ascii_case(input.email.trim())
@@ -721,28 +721,28 @@ pub(crate) async fn oauth2_ticket_key(
         }
         _ => Err(IpcError::new(
             "oauth2-incomplete",
-            "oauth2 grant has not completed â€” poll until status is \"complete\"",
+            "oauth2 grant has not completed — poll until status is \"complete\"",
         )),
     }
 }
 
-/// Consume a ticket after the account row exists â€” one grant binds one
+/// Consume a ticket after the account row exists — one grant binds one
 /// account. Best-effort: missing/expired sessions are already gone.
 pub(crate) async fn consume_oauth2_ticket(state: &AppState, ticket_id: &str) {
     state.oauth2_sessions.lock().await.remove(ticket_id);
 }
 
 // ---------------------------------------------------------------------------
-// Browser handoff â€” the OAuth2 UX needs the system browser, never a webview
+// Browser handoff — the OAuth2 UX needs the system browser, never a webview
 // navigation (provider sign-in inside an embedded webview is both blocked
 // by Google and a phishing surface).
 // ---------------------------------------------------------------------------
 
-/// `kiwi_open_external(url)` â€” open an HTTPS URL in the system browser.
+/// `kiwi_open_external(url)` — open an HTTPS URL in the system browser.
 ///
 /// Exists for the OAuth2 handoff (`authorizeUrl` / `verificationUri`) but
 /// is a generic gated utility. Validation is fail-closed: `https://`
-/// scheme only, bounded length, no whitespace/quotes â€” the URL is passed
+/// scheme only, bounded length, no whitespace/quotes — the URL is passed
 /// as a single argv element to the OS opener (no shell parsing anywhere).
 #[tauri::command]
 pub async fn kiwi_open_external(
@@ -788,7 +788,7 @@ pub(crate) async fn open_external_impl(
     Ok(())
 }
 
-/// The OS-native "open this URL" invocation â€” a direct exec, never a
+/// The OS-native "open this URL" invocation — a direct exec, never a
 /// shell, so the URL cannot inject arguments or commands.
 #[cfg(target_os = "windows")]
 fn browser_command(url: &str) -> std::process::Command {
@@ -809,7 +809,7 @@ fn browser_command(url: &str) -> std::process::Command {
     c
 }
 
-/// The `oauth2` spec attached to a discovery suggestion (ipc.md Â§5) â€”
+/// The `oauth2` spec attached to a discovery suggestion (ipc.md §5) —
 /// `Some` only when a shipped provider config can service the endpoint.
 pub(crate) fn oauth2_spec_for(
     suggestion: &kiwi_autoconfig::suggest::AccountSuggestion,
@@ -826,7 +826,7 @@ pub(crate) fn oauth2_spec_for(
 }
 
 // ---------------------------------------------------------------------------
-// Tests â€” ScriptedHttp replays every endpoint call; loopback tests use real
+// Tests — ScriptedHttp replays every endpoint call; loopback tests use real
 // 127.0.0.1 sockets (the listener is a real bound socket by design).
 // ---------------------------------------------------------------------------
 
@@ -839,7 +839,7 @@ mod tests {
     use kiwi_integrations::http::{ScriptedHttp, Step};
 
     /// The scripted transport handle is retained so every test can assert
-    /// the fixture replayed in full â€” an endpoint call that silently stopped
+    /// the fixture replayed in full — an endpoint call that silently stopped
     /// happening must fail the test, not pass on a half-replayed script.
     struct Fixture {
         state: AppState,
@@ -860,7 +860,7 @@ mod tests {
         Fixture { state, http }
     }
 
-    /// Set the provider's client id via the pref path (deterministic â€” no
+    /// Set the provider's client id via the pref path (deterministic — no
     /// env mutation races between parallel tests).
     async fn set_client_id(state: &AppState, provider: &str, id: &str) {
         let key = crate::state::pref_key(None, &format!("oauth2.{provider}.clientId"));
@@ -888,6 +888,7 @@ mod tests {
         let Fixture { state: s, http } = state_with(vec![], "badprov");
         let e = oauth2_begin_impl(&s, "aol", None).await.unwrap_err();
         assert_eq!(e.code, "invalid-input");
+        http.assert_exhausted();
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -897,6 +898,7 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(e.code, "oauth2-not-configured");
+        http.assert_exhausted();
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -936,7 +938,7 @@ mod tests {
             Some("oauth2/microsoft/u@outlook.com")
         );
 
-        // The blob landed in the credential store â€” never in the account DB.
+        // The blob landed in the credential store — never in the account DB.
         let blob = s
             .credentials
             .get("oauth2/microsoft/u@outlook.com")
@@ -946,6 +948,7 @@ mod tests {
         // Repeat poll is idempotent-complete until the ticket is consumed.
         let p = oauth2_poll_impl(&s, &b.ticket_id).await.unwrap();
         assert_eq!(p.status, "complete");
+        http.assert_exhausted();
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -967,6 +970,7 @@ mod tests {
         // Failed state is sticky.
         let p = oauth2_poll_impl(&s, &b.ticket_id).await.unwrap();
         assert_eq!(p.status, "error");
+        http.assert_exhausted();
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -982,6 +986,7 @@ mod tests {
                 .unwrap()
                 .cancelled
         );
+        http.assert_exhausted();
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1027,7 +1032,7 @@ mod tests {
                 other => panic!("expected xoauth2 ref, got {other:?}"),
             }
         }
-        // Ticket consumed â€” a second add cannot reuse the grant.
+        // Ticket consumed — a second add cannot reuse the grant.
         assert_eq!(
             oauth2_ticket_key(&s, &ticket_only_input(&b.ticket_id))
                 .await
@@ -1043,6 +1048,7 @@ mod tests {
         assert!(st.credential_present);
         assert_eq!(st.has_refresh_token, Some(true));
         assert_eq!(st.needs_refresh, Some(false));
+        http.assert_exhausted();
     }
 
     fn ticket_only_input(ticket: &str) -> AddAccountInput {
@@ -1077,6 +1083,7 @@ mod tests {
         input.email = "bob@outlook.com".to_string();
         let e = oauth2_ticket_key(&s, &input).await.unwrap_err();
         assert_eq!(e.code, "invalid-input");
+        http.assert_exhausted();
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1096,6 +1103,7 @@ mod tests {
             oauth2_ticket_key(&s, &input).await.unwrap_err().code,
             "oauth2-incomplete"
         );
+        http.assert_exhausted();
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1120,8 +1128,9 @@ mod tests {
         let st = oauth2_status_impl(&s, &view.id).await.unwrap();
         assert_eq!(st.auth_method, "xoauth2");
         assert!(st.credential_present);
-        // Legacy key isn't an oauth2/ grant key â€” no lifecycle detail.
+        // Legacy key isn't an oauth2/ grant key — no lifecycle detail.
         assert_eq!(st.provider, None);
+        http.assert_exhausted();
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1199,6 +1208,7 @@ mod tests {
             .unwrap()
             .expect("stored blob");
         assert!(blob.contains("AT-g"));
+        http.assert_exhausted();
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1223,7 +1233,7 @@ mod tests {
 
     /// `kiwi_open_external` fails closed: non-https schemes, quotes,
     /// whitespace, and oversized URLs are rejected before any spawn.
-    /// (The valid case would launch a real browser â€” not CI-testable.)
+    /// (The valid case would launch a real browser — not CI-testable.)
     #[tokio::test]
     async fn open_external_enforces_message_source_before_spawn() {
         let s = test_state("external-gate");
