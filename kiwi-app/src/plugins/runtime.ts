@@ -43,12 +43,16 @@ export interface PluginPane {
 
 const panes = new Map<string, PluginPane>(); // key `${pluginId}/${paneId}`
 const paneListeners = new Set<() => void>();
+// Cached snapshot — useSyncExternalStore needs a STABLE reference between
+// notifications; a fresh array per call loops React into max-update-depth.
+let paneSnapshot: PluginPane[] = [];
 
 function paneKey(pluginId: string, paneId: string) {
   return `${pluginId}/${paneId}`;
 }
 
 function panesChanged() {
+  paneSnapshot = [...panes.values()];
   for (const fn of paneListeners) {
     try {
       fn();
@@ -59,7 +63,7 @@ function panesChanged() {
 }
 
 export function listPluginPanes(): PluginPane[] {
-  return [...panes.values()];
+  return paneSnapshot;
 }
 
 export function subscribePluginPanes(fn: () => void): () => void {

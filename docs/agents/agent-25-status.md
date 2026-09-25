@@ -394,3 +394,43 @@ Full per-site mapping in `src/components/icons/README.md`.
   `title` (accessible name verified, none added).
 - Contrast: both stock themes re-verified rendering (T-275 CDP shots);
   new text uses existing `--kiwi-ms-*` tokens only.
+
+## T-290 — KIWI High Contrast stock theme (third package; format dogfood)
+
+### Files
+- `src/themes/stock/high-contrast/manifest.json` + `theme.css` — new package.
+- `src/themes/registry.ts` — 3-line stock registration (manifest + css +
+  STOCK_THEMES entry). Picker/topbar/select pick it up automatically.
+- `src/plugins/runtime.ts` — bugfix found by this task's live pass:
+  `listPluginPanes()` returned a fresh array per call →
+  `useSyncExternalStore` never saw a stable snapshot → SettingsView
+  crashed with "Maximum update depth exceeded". Now `panesChanged()`
+  rebuilds a cached `paneSnapshot`; `listPluginPanes` returns the stable
+  ref (all mutations already funnel through `panesChanged`).
+
+### Palette (WCAG-AA+, single hc-light variant — verified computationally)
+- Text `#000`/white = 21:1; secondary 12.6:1; muted 8.45:1.
+- Accent/link `#0b4db3` = 7.7:1; primary `#b34700` + white label = 5.5:1
+  (keeps the orange identity, darkened to pass).
+- Selection: tint `#c2d9f9` w/ black text 14.6:1 + accent border 7.7:1;
+  solid selection = accent-active + white 10.1:1.
+- Borders `#595959` = 7.0:1; divider `#6e6e6e` = 4.16:1 (fixed after an
+  initial 2.82:1 fail on `#8a8a8a`).
+- Status colors darkened to ≥5.5:1 on white and their tint bgs; focus
+  glow 50% accent + the T-287 2px focus-visible ring both ≥3:1.
+- 22 key pairs scripted-verified, all PASS (WCAG rel-luminance, min 4.5
+  text / 3.0 UI).
+- Legacy `--kiwi-*` tokens overridden too (pre-token surfaces theme along).
+
+### Verification (CDP, `artifacts/t290/`)
+- Picker lists "KIWI High Contrast v1.0.0" (registry auto-pickup proven —
+  the format genuinely supports a third theme).
+- Label click → `data-theme=high-contrast` + `kiwi.theme` pref set;
+  computed vars confirmed applied in-page; **persisted across reload**.
+- Screenshots: picker row + mail view in HC.
+- `tsc` 0 errors; `vite build` green; plugin e2e 30/30.
+
+### Regression note
+- The Settings crash found here was a T-280 latent defect (uncached
+  external-store snapshot), not a T-290 regression — fixed in runtime.ts,
+  Settings renders 8 tabs again.
