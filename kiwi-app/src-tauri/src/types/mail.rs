@@ -2,6 +2,7 @@
 
 use serde::Serialize;
 
+use kiwi_mail::attachrisk::{AttachRisk, AttachRiskReason};
 use kiwi_mail::authrisk::AuthRisk;
 use kiwi_mail::store::{FolderMeta, MessageMeta};
 
@@ -60,6 +61,10 @@ pub struct MessageView {
     /// the body has been fetched and evaluated — "not evaluated" is distinct
     /// from a `none` verdict, so the pill must render unknown, not safe.
     pub auth: Option<AuthView>,
+    /// Deterministic bounded attachment evidence (T-254). `None` means the
+    /// body has not been parsed yet. This is a hint only, never a finding and
+    /// never a blocking or mail-movement instruction.
+    pub attach_risk: Option<AttachRiskView>,
 }
 
 /// Wire row for `kiwi_search_messages` (T-231): an FTS hit with the owning
@@ -109,6 +114,15 @@ pub struct AuthView {
 }
 
 /// Wire view of upstream Authentication-Results evidence (T-240).
+/// Wire view of deterministic attachment evidence (T-254).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachRiskView {
+    pub risk: AttachRisk,
+    /// Fixed bounded reason vocabulary; no filenames or payload bytes.
+    pub reasons: Vec<AttachRiskReason>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpstreamAuthView {
@@ -229,6 +243,10 @@ impl From<&MessageMeta> for MessageView {
                     auth_risk: a.auth_risk,
                     upstream,
                 }
+            }),
+            attach_risk: m.attach_risk.as_ref().map(|a| AttachRiskView {
+                risk: a.risk,
+                reasons: a.reasons.clone(),
             }),
         }
     }

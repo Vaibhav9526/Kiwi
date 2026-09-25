@@ -392,8 +392,8 @@ fn fsv1_canonical_fixture_covers_every_enum() {
     );
     assert_canonical::<LinkType>("link_type", vec![LinkType::Ethernet, LinkType::Other(239)]);
 
-    // Fixture covers all 26 serde-carrying enums in one place.
-    assert_eq!(v.as_object().unwrap().len(), 27, "26 enum keys + comment");
+    // Fixture covers all 27 serde-carrying enums in one place.
+    assert_eq!(v.as_object().unwrap().len(), 28, "27 enum keys + comment");
 }
 
 #[test]
@@ -438,6 +438,14 @@ fn fsv1_legacy_spellings_accepted_on_read() {
             (Some(15), BulkCipher::ChaCha20Poly1305),
         ],
     );
+    assert_legacy::<FindingCategory>(
+        "finding_category",
+        vec![(Some(5), FindingCategory::StartTls)],
+    );
+    assert_legacy::<EvidenceKind>(
+        "evidence_kind",
+        vec![(Some(9), EvidenceKind::StartTlsNegotiation)],
+    );
     assert_legacy::<ChangeKind>(
         "change_kind",
         vec![(Some(0), ChangeKind::New), (Some(2), ChangeKind::Unchanged)],
@@ -455,13 +463,16 @@ fn fsv1_legacy_spellings_accepted_on_read() {
     assert_legacy::<CaptureFormat>(
         "capture_format",
         vec![
-            (Some(0), CaptureFormat::ClassicPcap { nanosecond: false }),
+            (Some(0), CaptureFormat::ClassicPcap { nanosecond: true }),
             (Some(1), CaptureFormat::PcapNg),
         ],
     );
     assert_legacy::<LinkType>(
         "link_type",
-        vec![(Some(0), LinkType::Ethernet), (Some(1), LinkType::Other(6))],
+        vec![
+            (Some(0), LinkType::Ethernet),
+            (Some(1), LinkType::Other(239)),
+        ],
     );
 }
 

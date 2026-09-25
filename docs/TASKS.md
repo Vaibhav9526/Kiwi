@@ -205,10 +205,10 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-242 | Integrations UI (TempMail panel, deliverability view, unsub chip) | Agent 11 | done |
 | T-243 | OAuth2 wizard UI + re-auth badge + kiwi_open_external (91/91) | Agent 19 | done |
 | T-244 | Rules preview + rule_failures + deferred staged eval (schema v9, 176/91) | Agent 15 | done |
-| T-245 | Implement ratified FSV-1 forensics serde vocab + legacy reader + contract updates | Agent 20 | open | `kiwi-forensics/` | T-238, T-196 |
+| T-245 | FSV-1 implemented (kiwi.forensics/2, dual-read, sentinel, 120 tests) | Agent 20 | done |
 <!-- QUEUE: ACFG-3..10 autoconfig-parser drift (ex-Agent-8 items) — assign when autoconfig owner frees. authstamp clippy -> A21 in-flight. -->
 | T-246 | ACFG-3..10 enumerated (autoconfig-drift-1.md; 7/8/9 = code-owner hardening) | Agent 22 | done |
-| T-247 | Wire-shape batch 2: FolderView/MessageView/vcardText/evidenceRef drift (IPC-T241-2..5) | queued (A20 after T-245) | backlog | `types/`, `ipc.md` | T-241 |
+| T-247 | Wire-shape batch 2 (IPC-6/7/8/9 + FOR-3/4/5) | Agent 20 | open | `types/`, `kiwi-forensics/` | T-241 |
 | T-249 | AuthRisk derived enum (clean/noted/failed truth table, authrisk.rs, 178/178) | Agent 21 | done |
 | T-250 | admin-api enumeration (admin-drift-1.md; ADM-08 §14 unimpl, ADM-01 projection gap) | Agent 22 | done |
 | T-251 | ACFG-7/8/9 parser hardening (PI whitelist, root strict, no fallback; 97/97) | Agent 19 | done |
