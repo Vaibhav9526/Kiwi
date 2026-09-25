@@ -116,8 +116,8 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-187 | Verify admin-review-1.md findings + apply safe (non-behavioral) fixes | Agent 6 | done (22/22 verified real; L6+L7 applied; H=Lead rulings) | `kiwi-admin/` | T-185 |
 | T-188 | Contract work: pair/challenge IPC section in ipc.md + admin devices/export endpoint specs | Agent 9 | open | `docs/contracts/` | T-185 |
 | T-189 | Snooze UI | Agent 5 | held — returns in TB idiom post-T-191 | `kiwi-app/src/` | T-182 |
-| T-190 | Mailspring archaeology: docs/ui-mailspring-map.md + tokens — layout/animations/inventory from reference/mailspring (GPL — study only) | Agent 5 | open | `source/comm/` → `docs/` | — |
-| T-191 | Rebuild kiwi-app/src Mailspring-faithful: sidebar, thread rows w/ hover actions, reading pane, composer modal, tabbed prefs, animations; preserve all IPC | Agent 5 | open | `kiwi-app/src/` | T-190 |
+| T-190 | Mailspring archaeology: ui-mailspring-map.md + mailspring-tokens.css (clean-room) | Agent 12 | done | `source/comm/` → `docs/` | — |
+| T-191 | Rebuild kiwi-app/src Mailspring-faithful (layout+animations+IPC preserved) | Agent 12 | in-progress | `kiwi-app/src/` | T-190 |
 | T-192 | Re-integrate KIWI security surfaces in Mailspring idiom | Agent 5 | open | `kiwi-app/src/` | T-191 |
 | T-193 | kiwi-admin H1-H8 fixes per Lead rulings + M1-M7 + e2e regression guards | Agent 6 | open | `kiwi-admin/` | T-187 |
 | T-194 | Mobile authenticator screens: pairing QR, approvals, devices, history (mock transport) | Agent 4 (Nemotron 3.5 Lightning) | open | `mobile/` | T-136 |
@@ -165,7 +165,7 @@ rebuild context. Lead handle is now term_c20c6737.
 | Agent | Model | Terminal | Assignment |
 |---|---|---|---|
 | 11 | Devin Pro | d869b293 | T-226 kiwi-integrations |
-| 12 | Muse Spark 1.3 xhigh | 4cc53da5 | T-190b Mailspring map → T-191/192 rebuild (frontend owner) |
+| 12 | Muse Spark 1.3 xhigh | 4cc53da5 | T-190b done → T-191 rebuild in-progress |
 | 13 | Muse Spark 1.3 xhigh | e5adf4d9 | T-193 admin H1-H8 + M fixes |
 | 14 | OpenCode Zen xhigh | e26f119b | T-180 done → T-201 F2 categorization |
 | 15 | Devin Pro | c47aa1d7 | T-181 finish/verify src-tauri splits |
