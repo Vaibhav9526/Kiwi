@@ -133,3 +133,75 @@ fix was applied during T-226 before the gates were run. Current state:
 - `cargo metadata --no-deps` (full-workspace resolution) → **clean**;
   the workspace is not red on this.
 - Only one reqwest declaration exists workspace-wide.
+
+## 2026-09-25 — T-227: wire `kiwi-integrations` into kiwi-app IPC
+
+**Status:** implemented + verified. Nine `kiwi_integrations_*` commands
+registered, all behind the lock gate (ipc.md §9e).
+`cargo test -p kiwi-app` → **59/59 pass** (7 new integration tests),
+`cargo clippy -p kiwi-app --all-targets -- -D warnings` clean,
+`cargo fmt` clean (kiwi-app + kiwi-integrations + kiwi-mail).
+ipc.md §9e written; typed wrappers in `src/ipc.ts` + views in
+`src/kiwi.ts` for Agent 12. ADR-011 filed (consent-capability +
+notice-on-every-response design). **No commit** — Lead integrates.
+
+### Surface
+
+- `tempmail_create(localPart?)` → `{address, addressCreatedUnix?,
+  publicInboxNotice}` — one GuerrillaMail session in `AppState`
+  (`Mutex<Option<GuerrillaMail>>`); localPart charset validated at the
+  boundary (`invalid-input`, not a provider round-trip).
+- `tempmail_poll` → `TempPollView` (seq cursor inside provider; the
+  session lock is held across the await deliberately — serializes the
+  mailbox, no other state locks taken inside).
+- `tempmail_fetch(mailId)` → parses synthesized RFC822 via
+  `kiwi_mail::mime::parse_message`, HTML through the shared
+  `sanitize_html` allowlist with remote resources HARD OFF (public
+  inbox ⇒ tracking surface; `remote_content_allowed` does not apply).
+  Raw MIME never crosses IPC.
+- `tempmail_discard` → local session cleared unconditionally;
+  `remoteForgotten` reports `forget_me` outcome.
+- `tempmail_extend` → `ExtendOutcome` view.
+- `deliverability_begin` → `{testId, address, expires*, consentToken,
+  consentNotice}`; slug stays backend-side (capability secret, in-memory).
+- `deliverability_send(testId, consentToken, accountId, message)` —
+  consent verified + consumed atomically under the sessions lock
+  (`consent-required`, single code for missing/wrong/consumed — no
+  oracle); recipients forced to the reserved address; rides the normal
+  outbox (`send-queued` audited, undo-send applies).
+- `deliverability_status`/`_report` → single-shot poll/report views;
+  `sent` flag surfaces consent consumption; tallies + authFailureIds
+  deterministic from `checks[]`.
+
+### Files changed
+
+`kiwi-app/src-tauri/Cargo.toml` (+`kiwi-integrations` dep),
+`src/state.rs` (+`integrations_http` transport field, `tempmail`
+session, `deliverability` map bounded at 32, `DeliverabilitySession`
+with redacting Debug, `open_test_with_http` injection point),
+`src/error.rs` (+`From<IntegrationError>`, +`MailError::InvalidInput`
+arm — new variant landed mid-task by another agent), `src/types/
+integrations.rs` (new), `src/types/mod.rs`, `src/commands/
+integrations.rs` (new), `src/commands/mod.rs`, `src/lib.rs`
+(registration), `docs/contracts/ipc.md` (§9e + §11 codes
+`consent-required`/`rate-limited`/`integration-error`), `src/kiwi.ts`
+(+views), `src/ipc.ts` (+wrappers), `docs/DECISIONS.md` (+ADR-011),
+this file.
+
+### Cross-agent repairs during this session (flag for owners)
+
+- `kiwi-mail/src/store/queries.rs` — doc comment swallowed
+  `fn map_message_row` signature (missing newline broke workspace
+  compile); single-line fix applied so `-p kiwi-app` gates run.
+- `kiwi-app/src/state/mailbox.ts` — `tsc` reports `MessageEnvelope`
+  missing `category`/`unsub`: the fields were added to `kiwi.ts` by the
+  T-202 work in flight; envelope builder not yet updated. NOT mine —
+  left for the owning agent; my additions typecheck clean.
+
+### Assumptions / gaps
+
+- Poll loops belong to the UI (`status`/`check_email` are single-shot);
+  GM spacing ≥10 s per integrations.md §3.5.
+- Sessions die with the process (by design — nothing persists).
+- Deliverability `report` before `ready` defers to the provider.
+- Live smoke remains env-gated follow-up (T-226 status entry).

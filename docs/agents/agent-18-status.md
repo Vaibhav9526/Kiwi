@@ -2,8 +2,8 @@
 
 ## 2026-09-25 — T-188: pair/challenge IPC + kiwi-admin device/export contracts
 
-**Status:** documentation pass complete; pending Lead review. No source code
-changed by Agent 18.
+**Status:** initial documentation pass complete; Lead rulings are applied in
+the second entry below. No source code changed by Agent 18.
 
 ### Delivered
 
@@ -55,7 +55,7 @@ The shared worktree also contains unrelated concurrent edits from other
 agents, including T-193 changes to `admin-api.md` and admin source/tests;
 those were preserved.
 
-### Assumptions and Lead decisions still open
+### Initial assumptions (superseded by the ratified entry below)
 
 - Lead must ratify or reject the T-188 command names, `nonceB64` wire
   migration, pairing-ticket-in-response exception, lock exemptions, and
@@ -67,6 +67,66 @@ those were preserved.
 - The proposed device endpoint is intentionally marked not implemented until
   repository/service/route/tests land.
 
+## 2026-09-25 — T-188 Lead rulings applied + T-229 OAuth2 contract review
+
+**Status:** T-188 rulings applied in `ipc.md` and `admin-api.md`; T-229
+OAuth2 drift review complete. Documentation only; no source code changed by
+Agent 18.
+
+### T-188 rulings recorded
+
+- `pair_begin`, `pair_status`, `unlock_challenge`, `device_list`, and
+  `device_revoke` are marked canonical/ratified; existing `kiwi_*` names are
+  compatibility aliases only.
+- `nonceB64` is documented as the canonical RFC 4648 standard-Base64 wire
+  field decoding to exactly 32 bytes; the current `nonceHex` backend is an
+  explicit migration gate.
+- The ticket/QR response is explicitly limited to local renderer display and
+  cannot cross admin/mobile trust boundaries or enter logs/preferences/
+  evidence.
+- `unlock_challenge` is always exempt; `pair_begin`/`pair_status` are exempt
+  only while a backend-owned pairing flow is active and gated otherwise.
+- The first-device TOFU path is marked approved, with authenticator
+  verification—not TOFU evidence—as the only activation authority.
+- `audit.export` is org-scoped: `org_admin` cannot use the legacy global NDJSON
+  route; only the future `system-admin` role may take the global path. The
+  future `/api/v1/orgs/{orgId}/audit/export` is ratified but not implemented.
+  Duplicate normalized org device names are rejected with `409 conflict`, and
+  listings never merge rows.
+- Device inventory remains explicitly **ratified but not implemented** until
+  repository, service, route, and tests land.
+
+### T-229 OAuth2 review
+
+`docs/contracts/oauth2.md` now distinguishes shipped matches from verified
+source gaps: secret-bearing `Debug` envelopes, stored-blob validation,
+public redirect construction, live-vs-injected transport guarantees, stateless
+grant replay/cadence, soft loopback bounds, and the unwired T-230 app seam.
+The test claim is corrected to 92 total / 32 OAuth tests and the gap register
+is explicit. No code was changed to hide or claim away these gaps.
+
+### Files changed by Agent 18 in this pass
+
+- `docs/contracts/ipc.md`
+- `docs/contracts/admin-api.md`
+- `docs/contracts/oauth2.md`
+- `docs/agents/agent-18-status.md`
+
+Concurrent Agent 19/T-193 worktree edits were preserved and not reset.
+
+### Verification for this pass
+
+- Source-parity review compared the OAuth2 contract against all current
+  `kiwi-autoconfig/src/oauth2/*.rs`, `kiwi-integrations/src/http.rs`,
+  `kiwi-mail/src/account.rs`, and OAuth2 tests.
+- `git diff --check` passed for all edited contract/status files.
+- T-229 runtime verification passed: `cargo test -p kiwi-autoconfig` — 92
+  tests, 0 failures (32 OAuth2 tests); `cargo clippy -p kiwi-autoconfig
+  --all-targets -- -D warnings` — clean; `cargo fmt -p kiwi-autoconfig --
+  --check` — clean. The shared worktree contains unrelated source changes
+  but none were modified by Agent 18.
+
 **Commands run:** read/glob/grep inspection; `git status --short`; targeted
-`git diff`; `git diff --check`; `npm run typecheck`; `cargo check -p
-kiwi-pair`; `cargo test -p kiwi-pair`; `npm test -- --run`. No commit made.
+`git diff`; `git diff --check`; `cargo test -p kiwi-autoconfig`; `cargo clippy
+-p kiwi-autoconfig --all-targets -- -D warnings`; `cargo fmt -p
+kiwi-autoconfig -- --check`. No commit made by Agent 18.

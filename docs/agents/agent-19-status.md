@@ -112,3 +112,29 @@ Risks / notes for integrators:
 - Not wired into src-tauri IPC yet — that is a follow-up task for the
   app layer (command + wizard surface); the crate API + store glue is
   complete and contract-pinned.
+
+## 2026-09-25 — Blocker report resolved (kiwi-autoconfig red at HEAD)
+
+Lead reported `cargo check -p kiwi-autoconfig` failing with 3× E0425.
+Root cause: checkpoint `859a347` had swept a **pre-fix** snapshot of the
+oauth2 sources and never captured `oauth2/tests.rs` (untracked), so HEAD
+was red even though the working tree was green. No errors were in my
+current edit state — `cargo check --all-targets`, `cargo test` (92/92),
+clippy and fmt were all clean on the tree.
+
+Action taken: committed the verified final state as **`de1970c`**
+("T-195 oauth2: land verified module state + recorded-fixture tests",
+7 files, +864/−29) — HEAD is now green for kiwi-autoconfig.
+
+Workspace remains red from other agents' in-flight edits (reported
+file:line to Lead, not edited — not my files):
+
+- `kiwi-mailauth/src/spf.rs:1351` — stray `}` after `mod tests` closes
+  at 1350 (unexpected closing delimiter).
+- `kiwi-mail/src/unsub.rs:252` — test code missing delimiters ~L246–249
+  (`parse_unsubscribe(&h(&[…` unclosed). Breaks `cargo check -p
+  kiwi-autoconfig` transitively (kiwi-autoconfig deps kiwi-mail).
+
+`orca terminal send` report to `term_c20c6737-…`: `accepted: true`
+(input_accepted; provider reports no delivery observation — same as the
+original DONE report).
