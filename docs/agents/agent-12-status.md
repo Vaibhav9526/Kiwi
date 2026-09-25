@@ -137,3 +137,253 @@
   no click-driver in this env — needs Tauri click-through); light theme
   still needs owner review (dark verified headlessly).
 - **Next:** idle until review feedback / Lead queue.
+
+## T-347 - README rebuild as the evidence-first front page
+
+**Status:** done, with one blocker for the Lead (screenshots are gitignored).
+**Ownership exercised:** `README.md` and this file only.
+
+### What was written
+
+`README.md` rebuilt (105 lines / 10 KB -> 208 lines / ~15 KB) in the 11
+required sections: banner header + tagline + badges, one-paragraph pitch,
+feature highlights with real screenshots, architecture embed, verified
+quickstart, crate map, security model, contracts index, dev commands,
+roadmap, license.
+
+The existing banner rule was kept: `images/banner.png` at 720px, unchanged.
+Only the surrounding `alt` text was repaired (the old one carried mojibake).
+
+### Every claim verified, with how
+
+| Claim | Verified against |
+|---|---|
+| Tagline "Email that proves its security" | `docs/ARCHITECTURE.md:16` |
+| Not a Thunderbird/Mailspring fork; both are read-only references | `docs/ARCHITECTURE.md:5-6`, ADR-005 in `docs/DECISIONS.md` |
+| License MPL-2.0 | root `Cargo.toml:18` + `LICENSE` |
+| 10 cargo workspace members + names | root `Cargo.toml:3-14` (listed all 10; `kiwi-admin`/`kiwi-admin-ui`/`mobile` confirmed NOT members) |
+| Crate responsibilities + key modules | `docs/ARCHITECTURE.md` sec 3 |
+| `TlsObservation` is a real type | `kiwi-mail/src/transport.rs:43` |
+| Audit is hash-chained | `kiwi-app/src-tauri/src/audit.rs:1-5` (`{seq, ts_unix, action, detail, prev, hash}`, `sha256`) |
+| `unsafe_code = "forbid"` workspace-wide | root `Cargo.toml:40` |
+| alpha + unsigned + no auto-update | `docs/RELEASING.md` header |
+| 9 settings tabs, named | CDP smoke output: "9 sections: General, Accounts, Identity, Appearance, Shortcuts, Mail Rules, Integrations, Plugins, About" |
+| compose services `mailpit` / `greenmail` exist | `docker-compose.yml:31,54` |
+| ports 1025 / 1100 / 8025 / 1143 | `docker-compose.yml:43-45,62` + `.env.example` |
+| `npm run tauri dev` works | `kiwi-app/package.json` scripts (`"tauri": "tauri"`) |
+| gates script exists and behaves | `scripts/gates.ps1`, `scripts/gates.sh` (T-344), incl. PASS/FAIL/SKIP + non-zero exit |
+| 14 contracts | directory listing of `docs/contracts/` |
+| roadmap phases 0-8 | `docs/ROADMAP.md:8-60` |
+| `kiwi-autoconfig` has an OAuth2 client | `kiwi-autoconfig/src/oauth2/` exists on disk |
+
+### Screenshots - inspected, then picked
+
+All four embedded shots were opened and visually checked before use (not
+guessed from filenames):
+
+- `artifacts/t275/01-mail-light.png` - light theme, "KIWI Light / default";
+  four-pane shell, All Inboxes, reader with a Secure verdict, agenda rail,
+  and an honest `demo data` badge. **Hero shot.**
+- `artifacts/t275/02-mail-dark.png` - same view, flagship dark.
+- `artifacts/t290/02-mail-hc.png` - high contrast with the security strip
+  expanded (unknown trust, open findings, unread/flagged/unreplied counts).
+- `artifacts/t275/03-settings-appearance.png` - settings Appearance tab
+  (theme, accent intensity, density, template store).
+
+Captions state that the shots are demo-mode captures with the Tauri backend
+unreachable, because the UI badges demo data rather than faking live state.
+
+### BLOCKER for the Lead - the four screenshots will 404 on GitHub
+
+`artifacts/` is **gitignored** (`.gitignore:34`), and `git ls-files
+artifacts` returns nothing. Verified per file:
+
+```
+TRACKED     images/banner.png
+TRACKED     docs/architecture.svg
+GITIGNORED  artifacts/t275/01-mail-light.png
+GITIGNORED  artifacts/t275/02-mail-dark.png
+GITIGNORED  artifacts/t275/03-settings-appearance.png
+GITIGNORED  artifacts/t290/02-mail-hc.png
+```
+
+So the image paths satisfy the brief and render for anyone with the local
+tree (including the gate reviewer), but will not resolve for a GitHub visitor
+until the files are tracked. The fix is one of:
+
+1. grant ownership to copy the four picks into a tracked path (e.g.
+   `docs/screenshots/`) and update the four `src=` lines in `README.md`, or
+2. add a `.gitignore` exception for those files, or
+3. decide the front page ships without screenshots until a tracked set exists.
+
+None of those are inside the T-347 ownership grant (README + this file), so
+it is escalated rather than done. `images/banner.png` and
+`docs/architecture.svg` are both tracked and are safe as-is.
+
+### Two accuracy bugs I caught in my own draft before shipping
+
+1. I first wrote "both bind to `127.0.0.1` only". Re-reading
+   `docker-compose.yml:45` shows the mailpit **web UI** (8025) is published
+   without a host restriction while SMTP/POP3/IMAP are 127.0.0.1-bound.
+   Corrected to state exactly that, with a warning not to run it on an
+   untrusted network.
+2. I first wrote that the integrations consent boundary is gated on R1-R8.
+   Not verifiable - R1-R8 are the authenticator rulings
+   (`docs/ARCHITECTURE.md` sec 8). Corrected to point at ADR-011 and the
+   integrations contract instead.
+
+### Rendering hygiene
+
+- **0 non-ASCII characters** in `README.md`, so it cannot hit the repo's
+  double-encoding class of bug (the previous README and several `.rs` files
+  were already victims of it).
+- All 31 relative link/image targets verified to exist on disk
+  (`missing targets: 0`) - every contract, doc, config and image path.
+
+### Honest limitation
+
+The badge for tests deliberately carries no number
+(`cargo + vitest + CDP smoke`): a workspace test count cannot be verified
+right now because the shared tree has three in-flight breakages (T-344 log),
+and a hardcoded count would rot. A numeric badge should be added once the
+workspace is green again.
+
+### T-347 follow-up - blocker resolved per Lead ruling
+
+Lead ruled: use a tracked `docs/screenshots/` directory (explicitly **not** a
+`.gitignore` exception, since `artifacts/` is per-task churn). Done.
+
+**1. Copies made (byte-identical, SHA-256 verified against source):**
+
+| source | tracked copy | sha256 (16) |
+|---|---|---|
+| `artifacts/t275/01-mail-light.png` | `docs/screenshots/mail-light.png` | `43C302584C35EF15` |
+| `artifacts/t275/02-mail-dark.png` | `docs/screenshots/mail-dark.png` | `8E473975A274AC5D` |
+| `artifacts/t290/02-mail-hc.png` | `docs/screenshots/mail-high-contrast.png` | `7654B00D85D91F83` |
+| `artifacts/t275/03-settings-appearance.png` | `docs/screenshots/settings-appearance.png` | `3B055112DEDA12EF` |
+
+**2. README repointed** - the four `<img src>` attributes now read
+`docs/screenshots/<name>.png`; all four `alt` texts were preserved verbatim.
+
+**3. Verification (the Lead's stated criteria):**
+
+- `git check-ignore docs/screenshots/<name>.png` for all four: **no output,
+  exit 1** (tracked-eligible). No `.gitignore` was modified.
+- Decisive functional test, beyond the letter of the criterion:
+  `git ls-files --others --exclude-standard -- docs/screenshots` lists all
+  four, and `git add --dry-run docs/screenshots` reports `add` for all four -
+  so they really are committable, not merely unmatched.
+- Full link check re-run: **31/31 targets pass** - each exists on disk, is
+  not gitignored, and is either already tracked or addable. `problems: 0`.
+- Stale `artifacts/` references remaining in README: **0**.
+- README non-ASCII characters: **0** (unchanged).
+- Image integrity: all four decode as valid PNG, identical 1568x1040, correct
+  8-byte PNG signature.
+
+**Anomaly worth one line at the gate:** while verifying, a *directory*-level
+`git check-ignore -v docs/screenshots/` reported a match at `.gitignore:45`
+whose pattern text (`docs/screenshots/`) was not present anywhere in the file
+- a direct `Select-String` for "screenshot" in `.gitignore` returned nothing,
+and `git status --short -- .gitignore` was clean against HEAD. I re-ran it
+three times over several seconds: the on-disk file never contained the rule
+(575 bytes, line 45 blank) while `check-ignore` kept reporting it. It appears
+to be a stale exclude cache in the shared `.git` directory during concurrent
+`.gitignore` churn, and it does **not** affect commitability (proved above by
+`ls-files --others --exclude-standard` and `git add --dry-run`). Flagged so
+the gate reviewer is not surprised if they see the same output.
+
+**Note on ownership:** this follow-up added files under `docs/screenshots/`
+(the Lead's explicit instruction) on top of the original `README.md` +
+status-file grant. Nothing else in the tree was touched; `docs/architecture.svg`
+and `scripts/gates.ps1` still show as modified in the shared worktree from the
+earlier Agent-26 tasks (T-344/T-346) and were not modified here.
+
+## EOD stand-down - Agent-12 (2026-09-25)
+
+**State: IDLE. No in-flight step.** The last atomic step (the T-347
+screenshot-path follow-up) finished and its DONE was accepted into
+`term_c20c6737` before the stand-down. Nothing half-written, nothing awaiting
+a tool result.
+
+**Files touched in this shift (all uncommitted on purpose - Agent 12 does not
+commit):**
+
+| File | State |
+|---|---|
+| `README.md` | rewritten, evidence-first front page (T-347) |
+| `docs/agents/agent-12-status.md` | this log |
+| `docs/screenshots/mail-light.png` | new, byte-identical copy of `artifacts/t275/01-mail-light.png` |
+| `docs/screenshots/mail-dark.png` | new, copy of `artifacts/t275/02-mail-dark.png` |
+| `docs/screenshots/mail-high-contrast.png` | new, copy of `artifacts/t290/02-mail-hc.png` |
+| `docs/screenshots/settings-appearance.png` | new, copy of `artifacts/t275/03-settings-appearance.png` |
+
+Earlier in the same shift, as **Agent-26** (separate, already-reported tasks):
+`scripts/gates.ps1`, `scripts/gates.sh`, `docs/TESTING.md`,
+`docs/architecture.svg`, `.github/workflows/ci.yml` (T-336/T-344/T-346),
+`kiwi-app/scripts/ui-smoke.mjs`, `docs/agents/agent-26-status.md`.
+
+**Verification state at stand-down:** 31/31 README link targets resolve to
+existing, non-gitignored, tracked-or-addable paths; 0 non-ASCII in README;
+all four screenshots committed-ready (`git add --dry-run` accepts them);
+`.gitignore` untouched by me.
+
+**Environment note for the restore map:** the docker test infra
+(mailpit / greenmail / db / admin) is going down, so **any live e2e will fail
+until it is restarted** - that includes the CI `infra-live` job, the
+`tests/infra` suite, and any `cargo` test that expects a live mail server on
+1025/1100/1143. Offline gates are unaffected: the crate/app suites use
+in-process fakes and loopback servers, and the `py` static gates need no
+daemon. Nothing of mine depends on the daemon, so nothing of mine is blocked
+by it.
+
+**Next exact action (tomorrow, on Lead go):** none queued for Agent 12. T-347
+is closed pending the Lead gate review. If the review returns notes, the only
+outstanding item I know of is optional: a numeric test-count badge once
+`cargo test --workspace` is green again (it is deliberately non-numeric today
+because the tree has in-flight breakages). Otherwise Agent 12 is available for
+a new assignment.
+
+## EOD stand-down (2026-09-25, Lead order)
+
+**In-flight state: none.** T-347 (README rebuild) and the Lead-ruled
+screenshot follow-up are both complete, verified and reported; the last
+`DONE: Agent-12 T-347` was sent and accepted. No command was running and no
+partial edit was outstanding when the stand-down arrived. Nothing was started
+after the order.
+
+**Files I touched (T-347 + follow-up), all UNCOMMITTED by me — I have never
+run `git add`/`git commit` in this repo:**
+
+- `README.md` — rebuilt (210 lines), 0 non-ASCII, 31/31 links verified.
+- `docs/agents/agent-12-status.md` — this file.
+- `docs/screenshots/mail-light.png`, `mail-dark.png`,
+  `mail-high-contrast.png`, `settings-appearance.png` — **untracked** (4 new
+  files, byte-identical copies of the `artifacts/` originals).
+
+Also dirty in the shared tree from the earlier Agent-26 tasks, not from
+T-347 and not re-verified tonight: `docs/architecture.svg` (T-346),
+`scripts/gates.ps1` + `scripts/gates.sh` (T-344), plus a large amount of
+other agents' in-flight work.
+
+**Next exact action (tomorrow, in order):**
+
+1. `git add docs/screenshots/ README.md` and commit them with the T-347
+   change — the four PNGs are addable and verified, but they are still
+   untracked, so a commit without this step would ship a README with dead
+   image links.
+2. Re-run the one-line gate set (`./scripts/gates.ps1 -Only rust,py,app`) and
+   get a green row before closing T-347: as of the last run it was
+   **7 PASS / 6 FAIL**, all six from other agents' in-flight files
+   (`lock_matrix.rs:265` syntax error, `kiwi-mail/src/store/mod.rs:590,603`
+   bad macro, `compose.tsx:488` TS2345, and two double-encoded
+   `kiwi-mail` files). If those are fixed, add the numeric tests badge to
+   `README.md` (deliberately omitted tonight because a workspace count could
+   not be verified).
+3. Take the next Lead-assigned task.
+
+**Environment caveat for whoever resumes:** the Lead is taking the Docker
+test infra (mailpit / greenmail / db / admin) down tonight, so **live e2e
+will fail until it is restarted** — `infra-live`, `tests/infra`, and the
+e2e mail-flow suites. Those failures are expected and are not regressions;
+offline gates (cargo, vitest, CDP smoke, `tests/tools`) are unaffected.
+Fleet restore map: `docs/agents/fleet-state-2026-09-25.md`.
