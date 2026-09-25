@@ -266,9 +266,9 @@ export function MailboxView(props: MailboxProps) {
   const backendTip = "Needs the Tauri backend";
   const ctxEntries: CtxEntry[] = ctxMenu
     ? [
-        { label: "Reply", icon: "reply", disabled: !ctxSingle, title: ctxSingle ? undefined : "Select a single message", onSelect: () => navigate({ name: "compose" }) },
-        { label: "Reply All", icon: "reply-all", disabled: !ctxSingle, title: ctxSingle ? undefined : "Select a single message", onSelect: () => navigate({ name: "compose" }) },
-        { label: "Forward", icon: "forward", disabled: !ctxSingle, title: ctxSingle ? undefined : "Select a single message", onSelect: () => navigate({ name: "compose" }) },
+        { label: "Reply", icon: "reply", disabled: !ctxSingle, title: ctxSingle ? undefined : "Select a single message", onSelect: () => seedCompose("reply", ctxSingle!, ctxSingle!.id === selectedId ? props.body : null) },
+        { label: "Reply All", icon: "reply-all", disabled: !ctxSingle, title: ctxSingle ? undefined : "Select a single message", onSelect: () => seedCompose("replyAll", ctxSingle!, ctxSingle!.id === selectedId ? props.body : null) },
+        { label: "Forward", icon: "forward", disabled: !ctxSingle, title: ctxSingle ? undefined : "Select a single message", onSelect: () => seedCompose("forward", ctxSingle!, ctxSingle!.id === selectedId ? props.body : null) },
         "divider",
         ...(ctxSingle
           ? ([
@@ -776,10 +776,10 @@ export function MailboxView(props: MailboxProps) {
           } else if (e.ctrlKey || e.metaKey || e.altKey) return;
           else if (!selected) return;
           else if (e.key === "r" || e.key === "a" || e.key === "f") {
-            // Reply / reply-all / forward all open the composer — the
-            // compose route owns prefill when it exists.
+            // Reply / reply-all / forward seed the composer via the
+            // sessionStorage handoff (to/subject/quote — T-314).
             e.preventDefault();
-            navigate({ name: "compose" });
+            seedCompose(e.key === "r" ? "reply" : e.key === "a" ? "replyAll" : "forward", selected, selected.id === selectedId ? props.body : null);
           }
         }}
       >
@@ -1375,6 +1375,49 @@ function ThreadRow({
 /* ---------------- reader: stacked message cards ---------------- */
 
 /** T-310: normalize an RFC822 Message-ID header for matching. */
+/** T-314: one-shot compose handoff — the composer consumes `kiwi.replySeed`
+ *  on mount (same pattern as the contacts `kiwi.composeTo` Write handoff).
+ *  Quote attaches ONLY when `body` is provably this message's (callers pass
+ *  null when it belongs to another envelope — never fabricate a quote).
+ *  Storage denied → the composer still opens, just unseeded. */
+export type ComposeSeedMode = "reply" | "replyAll" | "forward";
+export function seedCompose(mode: ComposeSeedMode, m: MessageEnvelope, body: MessageBodyView | null): void {
+  const addr = (s: string) => (s.match(/<([^>]+)>/)?.[1] ?? s).trim();
+  const seed: { to: string[]; cc: string[]; subject: string; quote: string | null } = { to: [], cc: [], subject: "", quote: null };
+  if (mode === "forward") {
+    seed.subject = /^fwd?:/i.test(m.subject) ? m.subject : `Fwd: ${m.subject}`;
+  } else {
+    seed.to = [addr(m.from)];
+    if (mode === "replyAll" && body) {
+      const self = m.accountEmail.toLowerCase();
+      const seen = new Set([addr(m.from).toLowerCase(), self]);
+      for (const raw of [...body.to, ...body.cc]) {
+        const a = addr(raw);
+        const k = a.toLowerCase();
+        if (a && !seen.has(k)) {
+          seen.add(k);
+          seed.cc.push(a);
+        }
+      }
+    }
+    seed.subject = /^re:/i.test(m.subject) ? m.subject : `Re: ${m.subject}`;
+  }
+  const text = body?.textBody;
+  if (text) {
+    const quoted = text
+      .split(/\r?\n/)
+      .map((l) => `> ${l}`)
+      .join("\n");
+    seed.quote = `On ${m.date}, ${m.from} wrote:\n${quoted}\n`;
+  }
+  try {
+    window.sessionStorage.setItem("kiwi.replySeed", JSON.stringify(seed));
+  } catch {
+    // storage denied — composer opens blank, nothing lost.
+  }
+  navigate({ name: "compose" });
+}
+
 function normMsgId(s: string | null | undefined): string {
   return (s ?? "").trim().replace(/^<|>$/g, "").trim().toLowerCase();
 }
@@ -1451,7 +1494,7 @@ function MessageCard({
           <button
             type="button"
             className="em-iconbtn"
-            onClick={() => navigate({ name: "compose" })}
+            onClick={() => seedCompose("reply", m, body)}
             title="Reply (r)"
             aria-label={`Reply to ${m.from}`}
           >
@@ -1551,7 +1594,7 @@ function MessageCard({
             <p className="em-card-snippet">{m.snippet}</p>
           )}
           <div className="em-card-actions">
-            <button type="button" className="ms-btn" onClick={() => navigate({ name: "compose" })} title="Reply (r)">
+            <button type="button" className="ms-btn" onClick={() => seedCompose("reply", m, body)} title="Reply (r)">
               <IconReply size={12} /> Reply
             </button>
             <button

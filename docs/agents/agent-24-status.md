@@ -652,3 +652,50 @@ Documented, not faked.
 equals the Unread chip's declared count AND the status line reads
 "N of M shown", sender chip narrows 1..total, Clear restores full rows +
 empty status. **12/12 PASS** on real Edge headless.
+
+## T-314 — smoke suite deepened to FLOW checks (+ real reply prefill landed)
+
+**Feature discovery (filed-and-fixed, not faked):** the flow audit exposed
+that "Reply" anywhere in the app — ctx menu, reader card, r/a/f keys,
+toolbar — opened a BLANK composer; the old comment even admitted "compose
+route owns prefill when it exists". Real implementation landed rather
+than a faked test:
+
+- `seedCompose(mode, m, body)` (exported from mailbox.tsx) writes a
+  one-shot `kiwi.replySeed` to sessionStorage then navigates — same
+  pattern as T-312's `kiwi.composeTo` handoff. Reply seeds `Re:` subject
+  (no double-Re) + To=original sender; Reply-All adds cc = body's
+  to/cc minus self minus sender (needs the loaded body — honest); Forward
+  seeds `Fwd:` + quote with empty recipients.
+- **Quote only when provable:** `> `-prefixed lines + "On … wrote:" attach
+  ONLY when `body` belongs to that message (`m.id === selectedId` /
+  card-gated `isSelected`) — a right-click on an unselected row seeds
+  without a quote rather than fabricate one. Storage denied → composer
+  opens blank.
+- ComposeView consumes the seed post-draft-restore: recipients merge
+  dedup'd, subject fills only if empty, quote appends below existing
+  draft text — restored drafts never clobbered.
+- Wired: ctx-menu ×3, card header + actions Reply, r/a/f keys, App
+  toolbar Reply/ReplyAll/Forward.
+
+**Suite:** `check()` gained a `kind` ("smoke"|"flow"); results + a
+`flows` array both land in SMOKE_JSON. New flow checks (state-change
+assertions, restore afterwards so the suite is order-independent):
+
+- `rail` — agenda rail collapse→expand roundtrip via the real toggle.
+- `ctxmark` — ctx-menu Mark read/unread flips `.em-row.is-unread`, then
+  restores via the same menu.
+- `reply-prefill` — row→Reply→compose: `Re:` subject + To chip asserted;
+  quote honestly gated in demo (no message-body IPC) and said so in the
+  detail string.
+- `demo-send` — recipient commit via #compose-to+Add → Send → "Demo:
+  sending" toast → Undo action → "back to draft" status. Honest demo
+  path, no fake IPC.
+- `pref-roundtrip` — dark theme → real `Page.reload` → still dark →
+  restore light (localStorage roundtrip proven on real browser).
+- `quickfilter` re-tagged as the flow it already was.
+- `lock` stays a smoke check — demo cannot reach the locked overlay
+  (documented honestly; positive render is live-only).
+
+**Result:** 18/18 PASS (12 smoke + 6 flow) on real Edge headless, ~15s.
+`tsc && vite build` green.

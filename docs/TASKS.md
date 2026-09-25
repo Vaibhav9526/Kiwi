@@ -291,6 +291,6 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-311 | draft rulings for 8 authenticator contract contradictions → ADR-013 + proposal doc | Agent 20 | done |
 | T-312 | contacts depth (server search, compose handoff) + agenda sandbox row lit | Agent 25 | done |
 | T-313 | quick-filter chips (unread/starred/attachments/sender; live counts, AND-combine) | Agent 24 | done |
-| T-314 | deepen CDP smoke: flow checks (reply prefill, ctx-menu state flip, settings roundtrip, demo send, filter narrowing, agenda, lock) | Agent 24 | open | `kiwi-app/scripts/ui-smoke.mjs` | T-305 |
+| T-314 | deepen CDP smoke: flow checks (reply prefill, ctx-menu state flip, settings roundtrip, demo send, filter narrowing, agenda, lock) | Agent 24 | done | `kiwi-app/scripts/ui-smoke.mjs` | T-305 |
 | T-315 | About tab: real version, honest diagnostics (omit un-IPC-able stats), shared keymap panel | Agent 25 | open | `kiwi-app/src/views/settings.tsx` | |
 | T-316 | mbox export IPC (symmetric to T-309; temp+rename, partial-honest result, audited) | Agent 20 | open | `kiwi-app/commands`, `kiwi-mail/mbox.rs` | T-309 |

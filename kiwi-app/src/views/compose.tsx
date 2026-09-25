@@ -304,11 +304,24 @@ export function ComposeView({
   useEffect(() => {
     try {
       const addr = window.sessionStorage.getItem("kiwi.composeTo");
-      if (!addr) return;
-      window.sessionStorage.removeItem("kiwi.composeTo");
-      setRecipients((r) => (r.includes(addr) ? r : [...r, addr]));
+      if (addr) {
+        window.sessionStorage.removeItem("kiwi.composeTo");
+        setRecipients((r) => (r.includes(addr) ? r : [...r, addr]));
+      }
+      // T-314: reply/reply-all/forward seed — same one-shot handoff.
+      // Merge recipients; subject only fills an empty field; the quote
+      // appends below existing draft text (never clobbers).
+      const raw = window.sessionStorage.getItem("kiwi.replySeed");
+      if (raw) {
+        window.sessionStorage.removeItem("kiwi.replySeed");
+        const seed = JSON.parse(raw) as { to?: string[]; cc?: string[]; subject?: string; quote?: string | null };
+        if (Array.isArray(seed.to)) setRecipients((r) => [...new Set([...r, ...seed.to!])]);
+        if (Array.isArray(seed.cc)) setCcRecipients((c) => [...new Set([...c, ...seed.cc!])]);
+        if (typeof seed.subject === "string" && seed.subject) setSubject((s) => (s.trim() ? s : seed.subject!));
+        if (typeof seed.quote === "string" && seed.quote) setBody((b) => (b.trim() ? `${b.replace(/\s+$/, "")}\n\n${seed.quote}` : seed.quote!));
+      }
     } catch {
-      // storage denied — nothing to seed.
+      // storage denied / malformed — nothing to seed.
     }
   }, []);
 

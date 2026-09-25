@@ -56,7 +56,7 @@ import { CommandPalette } from "./components/palette";
 import type { PaletteAction } from "./components/palette";
 import { ShortcutsHelp } from "./components/shortcuts";
 import { ToastStack } from "./components/toasts";
-import { MailboxView } from "./views/mailbox";
+import { MailboxView, seedCompose } from "./views/mailbox";
 import { ComposeView } from "./views/compose";
 import { SetupWizardView } from "./views/setup";
 import { SettingsView } from "./views/settings";
@@ -1344,9 +1344,9 @@ export default function App() {
         syncing={syncing}
         hasSelection={!!selectedEnvelope}
         inTrash={folderKey === "trash" || /trash|deleted|bin/i.test(folderLabel)}
-        onReply={() => navigate({ name: "compose" })}
-        onReplyAll={() => navigate({ name: "compose" })}
-        onForward={() => navigate({ name: "compose" })}
+        onReply={() => selectedEnvelope && seedCompose("reply", selectedEnvelope, body)}
+        onReplyAll={() => selectedEnvelope && seedCompose("replyAll", selectedEnvelope, body)}
+        onForward={() => selectedEnvelope && seedCompose("forward", selectedEnvelope, body)}
         onMarkRead={(read) => {
           if (selectedEnvelope) void bulkPatch([selectedEnvelope.id], { seen: read }, read ? "Marked read" : "Marked unread");
         }}
@@ -1537,6 +1537,7 @@ export default function App() {
           <SettingsView
             mode={mode}
             accounts={accountsRaw}
+            appInfo={appInfo}
             orgBinding={appInfo?.org ?? null}
             onAccountsChanged={() => void refreshAccounts()}
             onStatusChanged={() => void refreshStatus()}

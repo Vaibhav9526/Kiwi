@@ -38,8 +38,8 @@ const BOOT_TIMEOUT = 30000;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];
-function report(id, status, detail = "") {
-  results.push({ id, status, detail });
+function report(id, status, detail = "", kind = "smoke") {
+  results.push({ id, status, detail, kind });
   const tag = status === "pass" ? "PASS" : status === "fail" ? "FAIL" : "SKIP";
   console.log(`${tag}  ${id}${detail ? ` — ${detail}` : ""}`);
 }
@@ -203,10 +203,13 @@ const ctxMenu = (sel) =>
 // -------------------------------------------------------------- checks --
 
 async function runChecks(cdp, sid) {
-  const check = async (id, desc, fn) => {
-    try { const detail = await fn(); report(id, "pass", `${desc}${detail ? ` (${detail})` : ""}`); }
-    catch (e) { report(id, "fail", `${desc} — ${e instanceof Error ? e.message : e}`); }
+  const check = async (id, desc, fn, kind = "smoke") => {
+    try { const detail = await fn(); report(id, "pass", `${desc}${detail ? ` (${detail})` : ""}`, kind); }
+    catch (e) { report(id, "fail", `${desc} — ${e instanceof Error ? e.message : e}`, kind); }
   };
+  // T-314: flow checks assert real-DOM state CHANGES (prefill, flips,
+  // persistence roundtrips) — never mere element presence.
+  const flow = (id, desc, fn) => check(id, desc, fn, "flow");
   const skip = (id, desc, why) => report(id, "skip", `${desc} — ${why}`);
 
   await check("boot", "app shell boots", async () => {
@@ -236,7 +239,7 @@ async function runChecks(cdp, sid) {
     return "reader card populated";
   });
 
-  await check("quickfilter", "filter chips narrow the loaded list honestly", async () => {
+  await flow("quickfilter", "filter chips narrow the loaded list honestly", async () => {
     // Flatten to list mode so .em-row count == visible message count.
     await cdp.eval(sid, `(() => { const b=[...document.querySelectorAll('[role=switch]')].find(x=>x.getAttribute('aria-checked')==='true'); if(b) b.click(); })()`);
     await waitFor(cdp, sid, `[...document.querySelectorAll('[role=switch]')].every(x=>x.getAttribute('aria-checked')==='false')`);
@@ -300,6 +303,23 @@ async function runChecks(cdp, sid) {
     return `${names.length} sections: ${names.join(", ")}`;
   });
 
+  await check("about", "About tab — real version + honest diagnostics", async () => {
+    await cdp.eval(sid,
+      `[...document.querySelectorAll("button[role=tab]")].find(b=>b.textContent.trim()==="About")?.click()`);
+    if (!(await waitFor(cdp, sid, `document.querySelector("[role=tabpanel] h1")?.textContent?.trim()==="About"`, 4000)))
+      throw new Error("About section did not mount");
+    const text = await cdp.eval(sid, `document.querySelector("[role=tabpanel]").textContent ?? ""`);
+    if (!/v\d+\.\d+\.\d+/.test(text)) throw new Error("no build version rendered");
+    if (!/Diagnostics/.test(text)) throw new Error("no diagnostics dl");
+    if (!/Keyboard shortcuts/.test(text)) throw new Error("no shortcut reference");
+    if (!/Mozilla Public License/.test(text)) throw new Error("no license line");
+    // Backend-only stats must be omitted in demo — not fabricated.
+    const demoMode = await cdp.eval(sid, `/demo data/i.test(document.body.innerText)`);
+    if (demoMode && /Backend.*kiwi\.ipc|Sessions observed/i.test(text))
+      throw new Error("backend stats rendered without a backend");
+    return `version + dl + shortcuts + license all render${demoMode ? "; backend rows honestly absent in demo" : ""}`;
+  });
+
   await check("devices", "Identity → Devices surface honest in demo", async () => {
     await cdp.eval(sid,
       `[...document.querySelectorAll("button[role=tab]")].find(b=>b.textContent.trim()==="Identity")?.click()`);
@@ -356,6 +376,112 @@ async function runChecks(cdp, sid) {
     if (!/locked/i.test(title ?? "")) throw new Error("overlay present but no lock title");
     return "locked — overlay rendered with title";
   });
+
+  // ---------------- T-314 flows — state-change assertions ----------------
+
+  await flow("rail", "agenda rail toggles collapsed↔expanded", async () => {
+    await cdp.eval(sid, "window.location.hash = '#/mail'");
+    await waitFor(cdp, sid, qs(".em-rows"), 5000);
+    const wasCollapsed = await cdp.eval(sid, qs("aside.em-rail-collapsed"));
+    const toggle = `document.querySelector(".em-rail button, .em-rail-collapsed button")?.click()`;
+    await cdp.eval(sid, toggle);
+    if (!(await waitFor(cdp, sid, wasCollapsed ? qs("aside.em-rail:not(.em-rail-collapsed)") : qs("aside.em-rail-collapsed"), 4000)))
+      throw new Error("rail did not toggle");
+    await cdp.eval(sid, toggle); // restore
+    await waitFor(cdp, sid, wasCollapsed ? qs("aside.em-rail-collapsed") : qs("aside.em-rail:not(.em-rail-collapsed)"), 4000);
+    return wasCollapsed ? "collapsed→expanded→restored" : "expanded→collapsed→restored";
+  });
+
+  await flow("ctxmark", "context-menu mark read/unread flips the row", async () => {
+    await cdp.eval(sid, "window.location.hash = '#/mail'");
+    await waitFor(cdp, sid, `${qsa(".em-row")} > 0`, 5000);
+    const probe = `(()=>{const el=document.querySelector('.em-row');return {id:el.id||'',unread:el.classList.contains('is-unread')}})()`;
+    const before = await cdp.eval(sid, probe);
+    if (!(await cdp.eval(sid, ctxMenu(".em-row")))) throw new Error("no row");
+    if (!(await waitFor(cdp, sid, qs(".em-ctx[role=menu]"), 4000))) throw new Error("menu did not open");
+    const label = before.unread ? "Mark as read" : "Mark as unread";
+    const clicked = await cdp.eval(sid,
+      `(()=>{const it=[...document.querySelectorAll('.em-ctx-item')].find(x=>x.textContent.trim()===${JSON.stringify(label)});if(!it)return false;it.click();return true})()`);
+    if (!clicked) throw new Error(`menu item "${label}" absent`);
+    const flipExpr = `(()=>{const el=document.getElementById(${JSON.stringify("ID")}) || document.querySelectorAll('.em-row')[0];return el.classList.contains('is-unread')})()`.replace("ID", before.id.replace(/'/g, ""));
+    if (!(await waitFor(cdp, sid, `${flipExpr} === ${!before.unread}`, 4000)))
+      throw new Error("row .is-unread did not flip");
+    // Restore original state via the same path.
+    await cdp.eval(sid, ctxMenu(".em-row"));
+    await waitFor(cdp, sid, qs(".em-ctx[role=menu]"), 4000);
+    await cdp.eval(sid,
+      `(()=>{const it=[...document.querySelectorAll('.em-ctx-item')].find(x=>{const t=x.textContent.trim();return t==='Mark as read'||t==='Mark as unread'});it?.click();return !!it})()`);
+    await waitFor(cdp, sid, `${flipExpr} === ${before.unread}`, 4000);
+    return `${before.unread ? "unread→read→restored" : "read→unread→restored"}`;
+  });
+
+  await flow("reply-prefill", "Reply seeds composer to/subject/quote", async () => {
+    await cdp.eval(sid, "window.location.hash = '#/mail'");
+    await waitFor(cdp, sid, `${qsa(".em-row")} > 0`, 5000);
+    await cdp.eval(sid, "document.querySelector('.em-row').click()");
+    await waitFor(cdp, sid, qs(".em-reader .em-card-actions"), 5000);
+    await cdp.eval(sid, "document.querySelector('.em-reader .em-card-actions .ms-btn[title^=\"Reply\"]')?.click()");
+    if (!(await waitFor(cdp, sid, qs("section[aria-label='Compose message']"), 5000))) throw new Error("compose did not open");
+    const subject = await cdp.eval(sid,
+      `[...document.querySelectorAll("section[aria-label='Compose message'] input")].find(i=>(i.previousSibling?.textContent||'').includes('Subject')||(i.parentElement?.textContent||'').includes('Subject'))?.value || ''`);
+    if (!/^re:/i.test(subject)) throw new Error(`subject not seeded with Re: (got "${subject.slice(0, 30)}")`);
+    const toChip = await cdp.eval(sid,
+      `(document.querySelector("section[aria-label='Compose message'] p[aria-label='Recipients']")?.textContent||'')`);
+    if (!/To:\s*\S/.test(toChip)) throw new Error(`no To: chip seeded (${toChip.slice(0, 40)})`);
+    const body = await cdp.eval(sid,
+      `document.querySelector("section[aria-label='Compose message'] textarea")?.value || ''`);
+    const quoted = /wrote:|^> /m.test(body);
+    // Demo mode has no message-body IPC — quote is honestly absent there;
+    // live mode seeds "On … wrote:" + "> " lines from the real body.
+    return `Re:+To chip${quoted ? "+quote" : " (quote gated: demo carries no body)"}`;
+  });
+
+  await flow("demo-send", "compose → demo send → undo roundtrip", async () => {
+    await cdp.eval(sid, "window.location.hash = '#/compose'");
+    if (!(await waitFor(cdp, sid, qs("section[aria-label='Compose message']"), 5000))) throw new Error("compose missing");
+    // Commit a recipient via the To input + its Add button.
+    await cdp.eval(sid, `(()=>{
+      const i=document.getElementById('compose-to');
+      const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
+      set.call(i,'smoke@example.test'); i.dispatchEvent(new Event('input',{bubbles:true}));
+      [...i.closest('p').querySelectorAll('button')].find(b=>b.textContent.trim()==='Add')?.click();
+    })()`);
+    if (!(await waitFor(cdp, sid, `document.querySelector("p[aria-label='Recipients']").textContent.includes('smoke@example.test')`, 4000)))
+      throw new Error("recipient chip never committed");
+    await cdp.eval(sid, `[...document.querySelectorAll("section[aria-label='Compose message'] .kiwi-btn-primary")].find(b=>b.textContent.includes('Send'))?.click()`);
+    if (!(await waitFor(cdp, sid, `document.body.textContent.includes('Demo: sending')`, 5000)))
+      throw new Error("demo send toast did not appear");
+    await cdp.eval(sid, `[...document.querySelectorAll('.kiwi-toast .kiwi-btn-primary')].find(b=>b.textContent.includes('Undo'))?.click()`);
+    if (!(await waitFor(cdp, sid, `document.body.textContent.includes('back to draft')`, 5000)))
+      throw new Error("undo did not restore draft state");
+    return "demo send→undo→'back to draft' honest";
+  });
+
+  await flow("pref-roundtrip", "theme pref survives a real page reload", async () => {
+    await cdp.eval(sid, "window.location.hash = '#/settings'");
+    await waitFor(cdp, sid, `${qsa("button[role=tab]")} >= 5`, 5000);
+    await cdp.eval(sid, `[...document.querySelectorAll("button[role=tab]")].find(b=>b.textContent.trim()==="Appearance")?.click()`);
+    await waitFor(cdp, sid, qs("[role=radiogroup][aria-label='Color theme']"), 4000);
+    const clickTheme = (re) =>
+      `[...document.querySelectorAll("[role=radiogroup] label")].find(l=>${re}.test(l.textContent))?.querySelector("input")?.click()`;
+    await cdp.eval(sid, clickTheme("/\\bdark\\b/i"));
+    if (!(await waitFor(cdp, sid, `document.documentElement.getAttribute("data-theme")==="dark"`, 4000)))
+      throw new Error("dark did not apply pre-reload");
+    await cdp.send("Page.reload", {}, sid);
+    if (!(await waitFor(cdp, sid, qs("header.em-chrome"), BOOT_TIMEOUT))) throw new Error("app did not reboot after reload");
+    const persisted = await waitFor(cdp, sid, `document.documentElement.getAttribute("data-theme")==="dark"`, 5000);
+    if (!persisted) {
+      await cdp.eval(sid, clickTheme("/\\bdefault\\b/i")).catch(() => {});
+      throw new Error("theme pref did not survive reload");
+    }
+    await cdp.eval(sid, "window.location.hash = '#/settings'");
+    await waitFor(cdp, sid, `${qsa("button[role=tab]")} >= 5`, 5000);
+    await cdp.eval(sid, `[...document.querySelectorAll("button[role=tab]")].find(b=>b.textContent.trim()==="Appearance")?.click()`);
+    await waitFor(cdp, sid, qs("[role=radiogroup][aria-label='Color theme']"), 4000);
+    await cdp.eval(sid, clickTheme("/\\bdefault\\b/i"));
+    await waitFor(cdp, sid, `document.documentElement.getAttribute("data-theme")==="light"`, 4000);
+    return "dark→reload→still dark→restored";
+  });
 }
 
 // ----------------------------------------------------------------- main --
@@ -379,7 +505,7 @@ async function main() {
   const pass = results.filter((r) => r.status === "pass").length;
   const fail = results.filter((r) => r.status === "fail").length;
   const skipp = results.filter((r) => r.status === "skip").length;
-  const summary = { suite: "ui-smoke", url, pass, fail, skip: skipp, results };
+  const summary = { suite: "ui-smoke", url, pass, fail, skip: skipp, results, flows: results.filter((r) => r.kind === "flow") };
   console.log(`SMOKE_JSON${JSON.stringify(summary)}`);
   console.log(`ui-smoke: ${pass} pass, ${fail} fail, ${skipp} skip`);
   process.exitCode = fail > 0 ? 1 : 0;
