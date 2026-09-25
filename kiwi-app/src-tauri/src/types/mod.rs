@@ -14,6 +14,7 @@
 pub mod accounts;
 pub mod contacts;
 pub mod devices;
+pub mod endpoint;
 pub mod mail;
 pub mod message;
 pub mod prefs;
@@ -24,6 +25,7 @@ pub mod system;
 pub use accounts::*;
 pub use contacts::*;
 pub use devices::*;
+pub use endpoint::*;
 pub use mail::*;
 pub use message::*;
 pub use prefs::*;

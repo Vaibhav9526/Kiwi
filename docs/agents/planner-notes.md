@@ -6,9 +6,14 @@
 
 ## Handoff channel
 
-- Leader terminal: `term_a262bc09-3426-4675-bcd2-9c13d31755da`
+- Leader terminal: `term_c20c6737-9b80-4911-bcd2-38aa5113e4d7`
+  (updated 2026-09-25 — old handle term_a262bc09 went stale after an
+  Orca runtime restart; identified by title "Contact Other Open
+  Terminals" + agentIdentity devin. Handles are runtime-scoped: if a
+  send fails `terminal_handle_stale`, re-run `orca terminal list --json`
+  and find the replacement — never dual-send to old + new.)
 - Send format:
-  `orca terminal send --terminal term_a262bc09-3426-4675-bcd2-9c13d31755da --text "PLAN: <structured spec>" --enter`
+  `orca terminal send --terminal term_c20c6737-9b80-4911-bcd2-38aa5113e4d7 --text "PLAN: <structured spec>" --enter`
 - Verify receipt: check `accepted: true` in the response; use
   `--wait-submit 10` if submission proof is needed.
 
@@ -162,3 +167,11 @@ Risks/conflicts: <contract conflicts, shared-file contention, unknowns>
   its security." Leader to record in ARCHITECTURE §1 + README; evidence-
   first language rule for all UI/report copy; parity never compromises
   deterministic-security rules.
+- 2026-09-25 — SENT PLAN: kiwi-integrations crate — Guerrilla temp-mail
+  (public-inbox warning, 60min TTL, HTTPS-only, gentle polling) +
+  email-spam-tester deliverability (per-send consent — content leaves
+  device; slug = capability-secret; score + evidence/RFC-cited checks;
+  placement-beta excluded). Deps: reqwest-rustls, ADR-009 entry.
+  Leader handle had gone stale; re-listed terminals, resent to new
+  leader term_c20c6737. Context: project pushed to GitHub now
+  (Vaibhav9526/Kiwi); T-183/194/195 exist — OAuth2 gap (T-195) queued.

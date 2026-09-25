@@ -1,11 +1,8 @@
-//! Device / endpoint wire views — authenticator registry, endpoint
-//! signal reports.
+//! Device wire views — authenticator registry.
 
 use serde::{Deserialize, Serialize};
 
 use kiwi_core::device::{Device, DeviceStatus, KeyAlgorithm};
-
-use super::SecurityStatusView;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,15 +49,6 @@ pub struct RegisterDeviceInput {
     pub public_key_b64: String,
     #[serde(default)]
     pub keystore_ref: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EndpointReportView {
-    pub collected_at_unix: i64,
-    pub observations: Vec<crate::signals::EndpointObservation>,
-    /// Full trust verdict after folding these signals in.
-    pub status: SecurityStatusView,
 }
 
 pub fn key_algorithm(a: KeyAlgorithm) -> &'static str {

@@ -1,11 +1,13 @@
 # Contract — Tauri IPC Command Catalog (`kiwi.ipc/1`)
 
-> Owner: Agent 7 · **Contract version: `kiwi.ipc/1`** · Status: implemented
-> (T-120, T-121, T-142, T-144, T-146, T-157, T-163, T-164, T-169, T-175)
-> Implemented by `kiwi-app/src-tauri` (Rust, Tauri 2). This document is
-> authoritative for the frontend ↔ backend boundary; the registered handler
-> list in `kiwi-app/src-tauri/src/lib.rs` is the reference implementation.
-> Changes require Lead review (API_CONTRACTS.md rule) → record in DECISIONS.md.
+> Owner: Agent 7 · **Contract version: `kiwi.ipc/1`** · Status: implemented for
+> the registered command catalog (T-120, T-121, T-142, T-144, T-146, T-157,
+> T-163, T-164, T-169, T-175); §9d is a proposed T-188 extension, not
+> implemented. Implemented by `kiwi-app/src-tauri` (Rust, Tauri 2). This
+> document is authoritative for the frontend ↔ backend boundary; the registered
+> handler list in `kiwi-app/src-tauri/src/lib.rs` is the reference
+> implementation. Changes require Lead review (API_CONTRACTS.md rule) → record
+> in DECISIONS.md.
 
 Parties: **kiwi-app webview** (React, untrusted — SECURITY.md B2) →
 **kiwi-app backend** (trusted; enforces the lock gate, input validation,
@@ -13,9 +15,13 @@ secret handling). The backend never delegates security decisions to the UI.
 
 ## 1. Conventions
 
-- All commands are `invoke("kiwi_*", args)`. Arg and field names are
+- All implemented commands are `invoke("kiwi_*", args)`. Arg and field names are
   `camelCase` on the wire (`serde rename_all`). Rust types live in
   `kiwi-app/src-tauri/src/types.rs` (request) and view structs (response).
+  §9d uses the logical command names assigned by T-188 (`pair_begin`, etc.);
+  a Tauri registration would follow the same prefix rule, for example
+  `invoke("kiwi_pair_begin", request)`. The names are documentation only until
+  Lead approves and the handlers are registered.
 - **`kiwi_ping()`** returns `"kiwi backend ok"` and reports the contract
   version via `kiwi_app_info().contractVersion` (`"kiwi.ipc/1"`).
 - Errors serialize as `{ "code": string, "message": string }` — see §8.
@@ -613,13 +619,14 @@ JSON ≤ 64 KiB serialized; 1024 entries total.
 
 ## 9d. Commands — pairing engine, kiwi-pair **[partly gated]** (T-188, proposed)
 
-> **Status: PROPOSED — pending Lead review.** Drafted by Agent 9 (T-188) from
-> `kiwi-pair`'s public API (`kiwi-pair/src/{lib,engine,store,crypto}.rs`) and
-> `docs/contracts/pair.md`. Nothing here is implemented: `kiwi-app/src-tauri`
-> does not call `kiwi-pair` today. Two of the five commands are new; **three
-> duplicate commands already declared in §4 and §9** — see §9d.11 item 1,
-> which needs a ruling before any of this is built. Per this document's header,
-> changes require Lead review.
+> **Status: PROPOSED — pending Lead review.** Agent 9 drafted this section
+> from `kiwi-pair`; Agent 18 revalidated it against the current public API for
+> T-188 on 2026-09-25. Nothing here is implemented: `kiwi-app/src-tauri` does
+> not call `kiwi-pair` today. Two commands are new; **three duplicate commands
+> already declared in §4 and §9** — see §9d.11 item 1. `pair_status` also needs
+> both a read-only engine API and a persisted ticket-to-device link before it
+> can have the response below. Per this document's header, changes require Lead
+> review.
 
 `kiwi-pair` (T-174) is the desktop-side pairing engine: pairing tickets,
 device records, and Ed25519 challenge issue/verify over kiwi-core's canonical
@@ -632,261 +639,310 @@ the `pair.db` schema; this section only fixes the wire shapes.
 
 | IPC command | `PairEngine` call | Notes |
 |-------------|-------------------|-------|
-| `pair_begin` | `issue_pairing_ticket(label, os_nonce(), now)` then `qr_payload_json(...)` | nonce is backend-generated; never UI-supplied |
-| `pair_status` | **none — engine gap, see §9d.9** | needs a read-only ticket lookup |
-| `unlock_challenge` | `issue_challenge(ChallengeSpec{event: Unlock}, now, ttl)` | duplicates §4 `kiwi_request_challenge` |
-| `device_list` | `list_devices()` + `device_fingerprint(id)` | duplicates §9 `kiwi_list_devices` |
-| `device_revoke` | `revoke_device(id, now)` | duplicates §9 `kiwi_revoke_device` |
+| `pair_begin` | `issue_pairing_ticket(deviceLabel, os_nonce()?, now)` then `qr_payload_json(ticket, desktopEndpoint, deviceLabel, desktopPublicKeyB64, now)` | nonce, clock, LAN endpoint, and desktop key are backend-owned; never renderer-supplied |
+| `pair_status` | **none today** | requires a non-mutating ticket lookup plus ticket-to-device linkage; see §9d.3 |
+| `unlock_challenge` | `issue_challenge(ChallengeSpec { challenge_id, device_id, session_id, event: Unlock, nonce }, now, CHALLENGE_TTL_SECS)` | backend generates every field except `device_id` |
+| `device_list` | `list_devices()` + `device_fingerprint(device_id)` per row | projects `DeviceRow`; never returns the raw public key |
+| `device_revoke` | `revoke_device(deviceId, now)`, then re-read through `store().get_device(deviceId)` | `revoke_device` itself returns `Result<()>` |
 
-`challenge_id` and `session_id` are backend-generated per issue; the boot
-session id is the same one §4 already binds (`SessionView`, §12). `match` on
-the engine's `PairError` is a one-to-one mapping to §9d.6 — no variant is
-swallowed and none is re-worded at this layer.
+`challenge_id` and `session_id` are backend-generated per issue; the session is
+the same boot-session id §4 binds. `now` is one backend clock read per request.
+`PairError` mapping is fixed by §9d.9.
 
-### 9d.2 `pair_begin(deviceLabel) → PairBeginView` **[exempt]**
+### 9d.2 `pair_begin({ deviceLabel }) → PairBeginView` **[exempt]**
 
 ```jsonc
 // request
-{ "deviceLabel": "Pixel 8" }        // 1..=128 printable chars
+{ "deviceLabel": "Pixel 8" }        // string, 1..=128 UTF-8 bytes, no ASCII controls
 
 // response
-{ "ticket": "…",                    // 43 chars, [A-Za-z0-9_-] — BEARER SECRET, see below
-  "expiresUnix": 0,                 // issued + 300 (QR_TTL_SECS)
-  "qrPayload": "{\"v\":1,…}",       // exact string to render as the QR code
-  "desktopEndpoint": "…",           // 1..=256 printable
-  "desktopPublicKeyB64": "ed25519:…" }
+{ "ticket": "…",                    // string; 43 base64url chars — BEARER SECRET
+  "expiresUnix": 1729000300,        // integer Unix seconds; now + QR_TTL_SECS (300)
+  "qrPayload": "{\"desktop_endpoint\":…,…}" }
 ```
 
-`qrPayload` is the engine's own serialization (`qr_payload_json`) and is
-**rendered verbatim** — the frontend must not re-encode it, since the field
-set and order are part of the pairing protocol. Its members are fixed:
-`v`, `type` (`"kiwi-pairing"`), `pairing_ticket`, `desktop_endpoint`,
-`device_label`, `desktop_public_key_b64`, `issued_unix`, `expires_unix`.
+This is the direct projection of `PairingTicket { ticket, expires_unix }` plus
+the `String` returned by `qr_payload_json`. `desktopEndpoint` and
+`desktopPublicKeyB64` are **not request fields**: the backend must obtain them
+from a trusted pairing-channel configuration/identity store. The renderer
+must not be able to substitute another desktop key or a non-loopback/LAN
+endpoint. If that backend identity is unavailable, the command fails closed;
+it must not invent one.
 
-**The ticket is a bearer credential for its 300-second lifetime.** It is
-single-use, but until it is consumed anyone holding it can claim the pairing
-slot. That has three consequences the implementation must honor:
+`qrPayload` is rendered verbatim. It is a compact JSON **string** whose current
+`serde_json` field order is:
 
-- `ticket` and `qrPayload` (which embeds it) are **never logged**, never
-  written to `prefs` (9c), never included in a `SignalView.evidenceRef`, and
-  never echoed by `pair_status`. Errors must not quote the offending value.
-- §1's rule that no IPC response contains a token has a deliberate, narrow
-  exception here: the ticket must reach the frontend or there is no QR to
-  display. The authorization is *physical* — the local user is looking at the
-  screen the QR is drawn on. This is the one place the desktop hands a
-  credential to the renderer, and it is why the response is scoped to
-  `pair_begin` alone.
-- `desktopPublicKeyB64` must carry the `ed25519:` prefix. The engine fails
-  closed with `UnsupportedAlgorithm` without it (`engine.rs:158`), which
-  surfaces as `unsupported-algorithm` naming the *desktop* key — a confusing
-  error for a backend wiring bug, so the backend should assert the prefix
-  before calling.
+```jsonc
+{ "desktop_endpoint": "wss://192.168.1.20:49310/pair",
+  "desktop_public_key_b64": "ed25519:<base64 of 32 bytes>",
+  "device_label": "Pixel 8", "expires_unix": 1729000300,
+  "issued_unix": 1729000000, "pairing_ticket": "…",
+  "type": "kiwi-pairing", "v": 1 }
+```
 
-### 9d.3 `pair_status(ticket) → PairStatusView` **[exempt]**
+The engine validates the endpoint/label bounds and requires the
+`ed25519:` prefix, but it treats the key text as opaque. The IPC boundary must
+also require the suffix to decode to exactly 32 bytes before calling it.
+`ticket` and `qrPayload` must never be logged, written to `prefs` (§9c), put
+in an evidence reference, quoted in an error, or echoed by `pair_status`.
+
+**Bearer-secret exception.** The ticket authorizes one pairing claim until it
+expires. §1's no-token-in-a-response rule therefore has one narrow exception:
+`pair_begin` must return the ticket/QR for the local user to render. It grants
+no mailbox access by itself; activation still requires the registered device's
+Ed25519 signature over a `device-pairing` challenge.
+
+### 9d.3 `pair_status({ ticket }) → PairStatusView` **[exempt]**
 
 ```jsonc
 // request
-{ "ticket": "…" }
+{ "ticket": "…" }                    // 8..128 chars, [A-Za-z0-9_-]
 
 // response
 { "state": "awaiting-phone | claimed | expired",
-  "device": DeviceView | null,      // non-null once claimed
-  "expiresUnix": 0 }
+  "device": PairDeviceView | null,
+  "expiresUnix": 1729000300 }
 ```
 
-Poll target for the pairing UI: `awaiting-phone` is an issued, unconsumed,
-unexpired ticket; `claimed` means the phone presented it (so `device` is the
-record the phone registered, still `pending` until the challenge in §4
-verifies); `expired` is past `expiresUnix` while unconsumed. A ticket that
-never existed and a ticket already consumed are **indistinguishable by
-design** — the store returns one `InvalidTicket` for both (`store.rs:224`) —
-and `pair_status` must not narrow that, since distinguishing them would give
-an unauthenticated caller an oracle for guessing live tickets.
+State invariants are normative:
 
-The response never contains the ticket, only its expiry.
+- `awaiting-phone`: ticket exists, is linked to no device, and `now <
+  expiresUnix`; `device` is `null`.
+- `claimed`: the pairing transaction has persisted the registered device id;
+  `device` is non-null and initially `pending`.
+- `expired`: the ticket is still unclaimed and `now >= expiresUnix`; `device`
+  is `null`. A claimant is never reported as successful merely because its
+  ticket expired.
 
-### 9d.4 `unlock_challenge(deviceId, sessionId?) → ChallengeView` **[exempt]**
+Unknown or malformed tickets fail with `pairing-ticket-invalid`. Unknown and
+already-consumed-but-unlinked tickets deliberately produce the same error, so
+polling is not a live-ticket oracle. The response never echoes the ticket.
+
+**This shape is not implementable from today's public API.** `PairEngine` has
+only mutating `consume_pairing_ticket`; there is no read-only lookup.
+Moreover, `pairing_tickets` stores only `device_label`, while
+`register_device` neither accepts a ticket nor writes a ticket-to-device link.
+A correct implementation therefore requires BOTH:
+
+1. a persistent, non-consuming engine method that returns ticket state and
+   the linked device id; and
+2. a schema/registration extension that atomically binds the ticket to the
+   `device_id` created by the pairing-channel registration.
+
+Calling `consume_pairing_ticket` from a polling UI would be a correctness and
+security defect. Caching the bearer ticket in kiwi-app to work around the gap
+is also refused; the cache would create a second secret store outside
+`pair.db`.
+
+### 9d.4 `unlock_challenge({ deviceId }) → ChallengeView` **[exempt]**
 
 ```jsonc
 // request
-{ "deviceId": "dev-…", "sessionId": "boot-…" | null }
+{ "deviceId": "dev-…" }              // string, 1..=128 UTF-8 bytes, no ASCII controls
 
-// response — identical shape to §4 kiwi_request_challenge
-{ "challengeId": "chal-…", "deviceId": "dev-…", "sessionId": "boot-…",
-  "event": "unlock", "nonceB64": "…", "canonicalBytesB64": "…",
-  "issuedUnix": 0, "expiresUnix": 0 }
+// response — same projection as §4 kiwi_request_challenge
+{ "challengeId": "chal-…",
+  "deviceId": "dev-…",
+  "sessionId": "boot-…",              // backend boot session; not caller-selectable
+  "event": "unlock",                 // fixed by this command
+  "nonceB64": "…",                   // standard Base64, exactly 32 decoded bytes
+  "canonicalBytesB64": "…",          // standard Base64 of kiwi-core canonical bytes
+  "issuedUnix": 1729000000,
+  "expiresUnix": 1729000120 }
 ```
 
-`sessionId` omitted/`null` binds the current boot session. `event` is always
-`"unlock"` for this command; the other three events go through §4.
+The renderer supplies only `deviceId`. The backend generates `challengeId`,
+uses `os_nonce()` for the 32-byte nonce, binds the current boot `sessionId`,
+reads the clock once, fixes `event = Unlock`, and passes
+`CHALLENGE_TTL_SECS` (120; engine maximum 300). No `nonce`, `sessionId`,
+`challengeId`, `event`, or `ttlSecs` request field exists: each would let an
+untrusted renderer weaken binding or replay protection.
 
-`nonceB64` is 32 bytes of `os_nonce()` output produced by the **backend**.
-The renderer must never supply a nonce: replay protection is a nonce ledger
-(`pair.md` §4.3), so a UI-chosen nonce lets the same signature be replayed.
-No `ttlSecs` argument is exposed either — the default is `120`
-(`CHALLENGE_TTL_SECS`), and the engine clamps to `1..=300`. An untrusted
-renderer has no reason to lengthen a challenge window, so it cannot.
+`unlock` requires an `active` device. Pending/suspended devices return
+`device-not-active`; revoked devices return `device-revoked` and can never be
+challenged again. The signed response is submitted through §4's
+`kiwi_submit_challenge` shape; when this proposed catalog is wired to
+`kiwi-pair`, that handler must delegate to `verify_response` and must not keep
+a second in-memory `ChallengeBook`.
 
-Status gate (engine-enforced, `engine.rs:283`): `unlock` requires an `active`
-device; a `pending` device gets `device-not-active`; a `revoked` device gets
-`device-revoked` and can never be challenged again.
-
-### 9d.5 `device_list() → DeviceView[]` **[gated]**
+### 9d.5 `device_list({}) → PairDeviceView[]` **[gated]**
 
 ```jsonc
-{ "deviceId": "dev-…", "label": "…", "algorithm": "ed25519",
-  "status": "pending | active | suspended | revoked",
+// request
+{}
+
+// response
+[{ "deviceId": "dev-…",
+   "label": "Pixel 8",
+   "algorithm": "ed25519",            // only live verifier today
+   "status": "pending | active | suspended | revoked",
+   "fingerprint": "6668-7AAD-F862-BD77-6C8F-C18B-8E9F-8E20",
+   "keystoreRef": "android-key-alias" | null,
+   "registeredUnix": 1729000000,
+   "lastSeenUnix": 1729000000,
+   "revokedUnix": null }]
+```
+
+This is a safe projection of `DeviceRow` plus
+`device_fingerprint(device_id)`. It is a superset of §9's `DeviceView`, so it
+is additive if the existing command adopts it. The raw `public_key` is
+deliberately omitted: the fingerprint is for human out-of-band comparison and
+is never an automatic trust input. `keystoreRef` is an opaque alias, not key
+material or a secret.
+
+The IPC projection MUST impose a total order: `registeredUnix` ascending,
+then `deviceId` ascending. The store currently orders only by
+`registeredUnix`; equal-second rows therefore need an IPC-level tie-breaker to
+make output deterministic across SQLite and repeated calls.
+
+`lastSeenUnix` is set at registration and advanced by `set_device_status`; it
+is not updated by challenge issue or successful verification. The UI must not
+label it "last authenticated". A true last-seen signal needs an engine/schema
+change.
+
+### 9d.6 `device_revoke({ deviceId }) → PairDeviceView` **[gated]**
+
+```jsonc
+// request
+{ "deviceId": "dev-…" }
+
+// response
+{ "deviceId": "dev-…", "label": "Pixel 8", "algorithm": "ed25519",
+  "status": "revoked",
   "fingerprint": "6668-7AAD-F862-BD77-6C8F-C18B-8E9F-8E20",
-  "keystoreRef": "…" | null,
-  "registeredUnix": 0, "lastSeenUnix": 0, "revokedUnix": 0 | null }
+  "keystoreRef": null,
+  "registeredUnix": 1729000000, "lastSeenUnix": 1729000300,
+  "revokedUnix": 1729000300 }
 ```
 
-Superset of §9's `DeviceView`, adding `fingerprint`, `keystoreRef`, and
-`revokedUnix` (additive, so not a break). Ordered by `registeredUnix` — the
-store's order, stable across calls.
+`revoke_device` returns `Result<()>`, so the backend re-reads the row through
+`PairStore::get_device` after success and projects the same `PairDeviceView` as
+§9d.5. Unknown id is `not-found`. Revocation is terminal and idempotent: a
+second call succeeds and returns the original revoked row/timestamp rather
+than advancing `revokedUnix`. The device can never return to `pending` or
+`active`, and both `verify_response` and `issue_challenge` refuse it.
 
-Two deliberate omissions:
-
-- **The public key is not returned.** `fingerprint` is the display form and
-  is the only thing the UI needs; shipping the raw key invites a frontend
-  trust decision, and `device_fingerprint` is *display-only*, never a trust
-  input (`pair.md`, `crypto.rs:68`). Comparison against a printed fingerprint
-  is an out-of-band human check.
-- `lastSeenUnix` is only advanced by status writes today
-  (`set_device_status`, `store.rs:160`), not by every verify. Reading it as
-  "last authenticated" would overstate it; it is "last status change touching
-  this row". A true last-seen needs an engine change.
-
-### 9d.6 `device_revoke(deviceId) → DeviceView` **[gated]**
-
-```jsonc
-{ "deviceId": "dev-…" }             // → the updated DeviceView, status "revoked"
-```
-
-Terminal and idempotent: the second revoke returns `Ok` rather than an error,
-so operator retries are safe, but the device can never return to `pending` or
-`active`. Revoked devices fail both `verify_response` (`device-revoked`) and
-`issue_challenge`, so a stolen device is refused rather than merely ignored.
-
-The backend **must audit `device-revoked`** as an elevated action
-(`pair.md`, SECURITY.md rule 11) — including the idempotent no-op case, since
-"someone tried to revoke an already-revoked device" is itself worth a record.
+The backend MUST audit `device-revoked` on both the transition and the
+idempotent retry; a failed authorization attempt is a security event too.
 
 ### 9d.7 Lock gate
 
-Per §2, gated commands fail `locked` while `state == "locked"`. Applied here:
+Per §2, gated commands fail with `code: "locked"` whenever
+`SecurityStatusView.state == "locked"`.
 
-| command | gate | rationale |
-|---------|------|-----------|
-| `pair_begin`, `pair_status` | **exempt** | pairing a first device is how a locked endpoint becomes unlockable at all. Consistent with §2 already exempting `kiwi_request_challenge`/`kiwi_submit_challenge` — the whole pairing path is exempt today. The ticket is the authorization, not the lock state. |
-| `unlock_challenge` | **exempt** | it is §4's challenge path, which §2 exempts. |
-| `device_list`, `device_revoke` | **gated** | reading the device inventory and destroying a device record are not lock-lift operations. |
+| command | locked | rationale |
+|---------|--------|-----------|
+| `pair_begin` | **allowed (exempt)** | recovery/first-device setup must remain reachable; issuing a QR does not unlock or disclose mail |
+| `pair_status` | **allowed (exempt)** | renderer must be able to finish/expire its visible QR; possession of the ticket is the capability |
+| `unlock_challenge` | **allowed (exempt)** | this is the existing §4 challenge/lift path |
+| `device_list` | **blocked** | inventory read is not required to render or submit the unlock flow |
+| `device_revoke` | **blocked** | destructive device administration is not a lock-lift operation |
 
-The `pair_begin`/`pair_status` exemption is the one to argue about: it lets any
-local process with IPC access display a pairing QR while locked, and the
-authorization is the local user's physical presence at the screen. That is the
-standard device-pairing model, but it is a trust-boundary decision and is
-listed in §9d.9 for sign-off rather than assumed.
+Exemption is not authentication: it only keeps the renderer synchronized with
+the locked security state. A locked renderer's `pair_begin` response still
+contains a short-lived bearer ticket, so Lead must ratify that trust-boundary
+choice. The mobile pairing-channel handler must register the device inside the
+trusted backend; it must not evade the gate by calling a gated renderer
+command. Issuing a pairing ticket alone never changes lock state.
 
-### 9d.8 Bounds (engine-enforced, `engine.rs:37`)
+### 9d.8 Bounds and validation
 
-| field | bound | failure |
-|-------|-------|---------|
-| `deviceLabel` / `label` | 1..=128 printable; control bytes (`<0x20`, `0x7f`) refused | `invalid-input` (field named) |
-| `deviceId` / `challengeId` | 1..=128 printable | `invalid-input` |
-| `sessionId` | 1..=256 printable | `invalid-input` |
-| `keystoreRef` | 1..=256 printable, optional | `invalid-input` |
-| `desktopEndpoint` | 1..=256 printable | `invalid-input` |
-| ticket | 8..=128 chars, `[A-Za-z0-9_-]` only, checked before any store touch | `invalid-input` |
-| challenge `ttlSecs` | 1..=300 (not caller-exposed) | — |
-| public key | exactly 32 bytes, Ed25519 only | `invalid-input` / `unsupported-algorithm` |
+Rust's `str::len()` is bytes, so the engine limits below are UTF-8 byte
+bounds, not Unicode scalar counts. `check_field` rejects empty/overlong values
+and ASCII control bytes (`< 0x20` or `0x7f`); the IPC layer MUST NOT relax
+them.
 
-`InvalidField`'s `reason` is a fixed format string and never echoes the
-offending value, so these errors are safe to return verbatim.
+| value | bound / rule | failure |
+|-------|--------------|---------|
+| `deviceLabel` (pair ticket/register label) | 1..=128 UTF-8 bytes, no ASCII controls | `invalid-input` naming `device_label`/`label` |
+| `deviceId`, generated `challengeId` | 1..=128 UTF-8 bytes, no ASCII controls | `invalid-input` |
+| generated `sessionId` | 1..=256 UTF-8 bytes, no ASCII controls | `invalid-input` |
+| `keystoreRef` | optional; 1..=256 UTF-8 bytes, no ASCII controls | `invalid-input` |
+| backend `desktopEndpoint` | 1..=256 UTF-8 bytes, no ASCII controls | `invalid-input` |
+| ticket input | 8..=128 ASCII chars, `[A-Za-z0-9_-]`; generated tickets are exactly 43 | `pairing-ticket-invalid` |
+| challenge TTL | 1..=300 seconds; fixed at 120 and not caller-exposed | `invalid-input` only on backend wiring fault |
+| device public key | exactly 32 bytes, Ed25519 only | `invalid-input` / `unsupported-algorithm` |
+| desktop public-key text | `ed25519:` prefix; suffix must decode to exactly 32 bytes | `unsupported-algorithm` / `invalid-input` |
+
+`InvalidField.reason` is fixed and does not echo the value. Store/IO messages
+still require sanitization (§9d.9).
 
 ### 9d.9 Error mapping (`PairError` → §11)
 
-`pair.md` requires the IPC layer to map these verbatim, so the mapping is
-fixed rather than stylistic:
+`pair.md` requires semantic names to survive the boundary. The mapping is
+normative, not stylistic:
 
-| `PairError` | §11 code |
-|-------------|----------|
-| `Challenge(UnknownChallenge)` | `unknown-challenge` |
-| `Challenge(Expired)` | `challenge-expired` |
-| `Challenge(AlreadyConsumed)` | `already-consumed` |
-| `Challenge(BindingMismatch)` | `binding-mismatch` |
-| `Challenge(InvalidSignature)` | `invalid-signature` |
-| `DeviceNotFound` | `not-found` |
-| `DeviceNotActive(status)` | `device-not-active` |
-| `ReplayDetected` | `replay-detected` |
-| `UnsupportedAlgorithm` | `unsupported-algorithm` |
-| `BadKeyLength`, `InvalidField`, `InvalidTicket`, `TicketConsumed` | `invalid-input` |
-| `TicketExpired` | proposed `pairing-ticket-expired` |
-| `DeviceExists` | proposed `device-exists` |
-| `DeviceRevoked` | proposed `device-revoked` |
-| `Entropy` | `internal` |
-| `Store` | `store-error` |
+| `PairError` | IPC code | response message rule |
+|-------------|----------|-----------------------|
+| `Challenge(UnknownChallenge)` | `unknown-challenge` | fixed, bounded |
+| `Challenge(Expired)` | `challenge-expired` | fixed, bounded |
+| `Challenge(AlreadyConsumed)` | `already-consumed` | fixed, bounded |
+| `Challenge(BindingMismatch)` | `binding-mismatch` | fixed, bounded |
+| `Challenge(InvalidSignature)` | `invalid-signature` | fixed, bounded |
+| `DeviceNotFound` | `not-found` | do not echo the id |
+| `DeviceNotActive(status)` | `device-not-active` | status may be named; id may not |
+| `DeviceRevoked` | `device-revoked` | do not echo the id |
+| `DeviceExists` | `device-exists` | do not echo the id |
+| `ReplayDetected` | `replay-detected` | fixed |
+| `UnsupportedAlgorithm` | `unsupported-algorithm` | fixed; do not echo key material |
+| `BadKeyLength` | `invalid-input` | name `publicKey`; no bytes |
+| `InvalidField` | `invalid-input` | fixed engine reason is safe |
+| `InvalidTicket` | `pairing-ticket-invalid` | never quote the ticket |
+| `TicketConsumed` | `pairing-ticket-consumed` | never quote the ticket |
+| `TicketExpired` | `pairing-ticket-expired` | never quote the ticket |
+| `Entropy` | `internal` | fixed generic message |
+| `Store` | `store-error` | fixed generic message |
+| `Io` | `io-error` | fixed generic message; never expose a path |
 
-Four codes are **proposed additions to §11**; nothing existing fits them, and
-overloading `invalid-input` for `device-revoked` would lose the terminal,
-distinct from `device-not-active`, which is recoverable. `TicketExpired` is
-separated from `InvalidTicket` because "your QR timed out, press refresh" is a
-different user action from "that code is not valid" — the engine already
-distinguishes them (`store.rs:225`), so collapsing them at the boundary would
-throw away information the UI needs.
-
-`Store` needs care: `rusqlite::Error`'s `Display` can carry SQL text and
-object names. Mapped to `store-error`, the message must be replaced with a
-generic string at this boundary rather than forwarded — the same defect class
-the T-185 review logged against `kiwi-admin`'s 500 handler (M4 there).
+The five pairing/device codes in the middle are proposed additions to §11.
+`device-revoked` must not collapse into `device-not-active`: terminal
+revocation and a recoverable status mismatch require different operator
+responses. `Store.display()` can contain SQL/object names and `Io.display()`
+can contain local paths, so neither is forwarded verbatim.
 
 ### 9d.10 Invariants the IPC layer must not violate
 
-- **Canonical bytes are kiwi-core's.** `canonical_bytes` is never re-encoded,
-  re-ordered, or normalized at this layer — the desktop and the phone must
-  sign the same bytes, and `challenge.rs:57` is the single definition.
+- **Canonical bytes are kiwi-core's.** Never re-encode, reorder, or normalize
+  them; desktop and phone must sign the same bytes.
 - **No private key material exists in `kiwi-pair` or `kiwi-app`.** The phone's
-  keystore signs; the desktop only verifies. `DeviceSigner` is a test fixture
-  and must never be reachable from a command.
-- **Ed25519 only.** `ecdsa-p256`/`rsa3072` are reserved names that fail
-  closed; §9's `RegisterDeviceInput.algorithm` accepting them is a declaration
-  of the wire enum, not a promise they work.
-- **Replay state is persistent.** A consumed challenge or seen nonce stays
-  dead across restarts, so the backend must not attempt a "reset the replay
-  ledger" recovery path — there is no safe one.
-- **No ambient randomness or clock in the engine.** `now` and every nonce are
-  caller-supplied; the backend supplies them from one clock read per request.
-  Tests rely on this for determinism.
+  keystore signs; the desktop verifies. `DeviceSigner` is a test fixture and
+  must not be reachable from a command.
+- **Ed25519 only.** `ecdsa-p256`/`rsa3072` remain reserved and fail closed.
+- **Replay state is persistent.** Consumed challenges and seen nonces remain
+  dead across restarts. There is no IPC reset/recovery path for either.
+- **The engine has no ambient clock or RNG.** The backend supplies `now`,
+  challenge id, boot session, and `os_nonce()` values. The renderer supplies
+  only the values shown in the request objects above.
+- **The renderer cannot choose desktop identity or transport.** Endpoint and
+  desktop public key come from the trusted pairing backend; QR text is opaque
+  and rendered verbatim.
+- **Tickets are never an audit/evidence value.** Only non-secret status,
+  expiry, row count, and action may be audited.
 
 ### 9d.11 Open items requiring a Lead ruling
 
-1. **Duplicate commands.** `unlock_challenge`, `device_list`, and
+1. **Duplicate command names.** `unlock_challenge`, `device_list`, and
    `device_revoke` overlap §4 `kiwi_request_challenge(deviceId, "unlock")` and
-   §9 `kiwi_list_devices`/`kiwi_revoke_device`, which are already marked
-   implemented. Adding the §9d spellings creates two names for one command and
-   splits the frontend's call sites. Recommendation: keep §4/§9's names and
-   treat §9d.4–9d.6 as the **shape extensions and engine bindings** for them,
-   adding only `pair_begin` and `pair_status` as new commands. `DeviceView`
-   widens additively either way.
-2. **`pair_status` has no engine method.** `PairEngine` exposes
-   `consume_pairing_ticket` (mutating) and a private ticket table — there is
-   no read-only "look up a ticket" call, and adding one belongs to kiwi-pair
-   (Agent 10), not the IPC layer. Until it exists, `pair_status` cannot be
-   implemented without either a new engine method or the app caching ticket
-   state, and caching it in the app would put a bearer credential in a second
-   place. The engine method is the right answer.
-3. **The `pair_begin`/`pair_status` lock exemption** (§9d.7) — a trust-boundary
-   call, not a shape question.
-4. **The ticket-in-IPC-response exception** to §1's no-secrets rule (§9d.2).
-   Either §1 gains a documented exception or the QR must be rendered
-   backend-side, and the latter is not possible with this architecture.
-5. **`fingerprint` display rule.** `device_fingerprint` is display-only and
-   never a trust input. If the UI ever compares a fingerprint automatically
-   rather than showing it for human comparison, that promise is broken — worth
-   stating in §9d.5's terms and enforcing in review.
-6. **`lastSeenUnix` semantics** (§9d.5) — needs an engine change or the field
-   should be dropped from the view rather than documented as something it
-   is not.
+   §9 `kiwi_list_devices`/`kiwi_revoke_device`. Recommendation: keep the
+   existing §4/§9 names, adopt §9d's richer projections/engine bindings, and
+   register only `pair_begin` plus a future `pair_status`. Two names for one
+   operation split frontend error handling for no benefit.
+2. **`pair_status` needs an engine + schema change.** A read-only API alone is
+   insufficient; registration must atomically persist ticket-to-device linkage
+   (§9d.3). This is a kiwi-pair task, not an IPC-only task.
+3. **Pairing identity/transport provisioning.** `pair_begin` also needs an
+   approved source for the desktop Ed25519 identity and LAN/WSS endpoint plus
+   the actual pairing-channel handler. None is part of `PairEngine` today.
+4. **The `pair_begin`/`pair_status` lock exemption** (§9d.7) is a
+   trust-boundary decision, not merely a shape choice.
+5. **The ticket-in-response exception** to §1 (§9d.2) must be ratified. The
+   alternative — backend-rendered QR — is incompatible with the current
+   webview architecture.
+6. **Fingerprint use.** The UI may display it for human comparison; it must
+   never auto-accept/pin based on it.
+7. **`lastSeenUnix`.** Either add a real verification-time update in
+   `kiwi-pair` or omit/rename the field. The current value is registration or
+   last status mutation, not last authenticator use.
 
 ## 10. Commands — endpoint signals **[exempt]** (T-121)
 
@@ -935,7 +991,8 @@ Collection caps at 32 observations per run.
 | `policy-blocked` | org policy blocked the send |
 | `invalid-signature` | challenge signature mismatch |
 | `challenge-expired` / `already-consumed` / `binding-mismatch` / `unknown-challenge` | challenge lifecycle |
-| `device-not-active` / `device-error` / `unsupported-algorithm` | device path |
+| `device-not-active` / `device-error` / `device-exists` / `device-revoked` / `unsupported-algorithm` | device path |
+| `pairing-ticket-invalid` / `pairing-ticket-consumed` / `pairing-ticket-expired` | pairing-ticket path |
 | `unsupported-event` | verified challenge for unwired flow |
 | `replay-detected` | challenge nonce collision |
 | `audit-corrupt` | audit-log chain break |

@@ -2,8 +2,8 @@
 
 > Owner: Agent 4 · **Contract version: 1.3** (T-134 list endpoints + dev HTTP
 > transport by Agent 5; **Lead-reviewed 2026-09-20 — approved**) · §13 (T-179
-> audit export, Agent 9) and §14 (device inventory, Agent 9, T-188) are
-> **additions pending Lead review** · Status: active
+> audit export) is implemented but **pending Lead review**; §14 (device
+> inventory, T-188) is a **proposed, not-implemented** addition · Status: active
 > Implemented by `kiwi-admin/` (Node + TypeScript). Reference implementation:
 > `src/services.ts` (service layer) + `src/policy/evaluator.ts` (deterministic
 > evaluator). The REST transport is layered over these services; the endpoint
@@ -74,9 +74,13 @@ act. See §13.
 | `GET  /api/v1/audit/verify` | `AuditService.verify` | `audit.read` | replays hash chain; see §7 |
 | `GET  /api/v1/audit/export` | `AuditService.export` | `audit.export` | T-179 signed NDJSON of the FULL chain; see §13 |
 
-Error shape (uniform): `{ "error": { "code": string, "message": string, "details"?: object } }`
-with codes `auth.required`, `auth.denied`, `validation.failed`, `not.found`,
-`conflict`. Validation failures name the offending field.
+Error shape (uniform): `{ "error": { "code": string, "message": string, "details"?: object } }`.
+Stable codes are `auth.required` (reserved for the future authenticated
+transport), `auth.denied`, `validation.failed`, `not.found`, `conflict`, and
+`internal`. The current header-actor scaffold reports missing/unusable
+credentials as `403 auth.denied`, not `401 auth.required`. Validation failures
+name the offending field; `internal` messages expose only a correlation
+reference.
 
 <!-- CONTINUED-1 -->
 
@@ -389,14 +393,32 @@ than a rewrite:
 
 ## 13. Audit export — T-179 (`GET /api/v1/audit/export`)
 
-Signed NDJSON snapshot of the audit chain. Permission **`audit.export`**,
-held only by `org_admin` (§2). `security_admin` and `viewer` hold
-`audit.read` and are still refused with `403 auth.denied` — the two
-permissions are deliberately independent.
+Signed NDJSON snapshot of the complete audit chain.
 
-Response: `200` with `content-type: application/x-ndjson; charset=utf-8`
-and `cache-control: no-store`. The log is evidence; a cached or
-intermediary-transformed copy is worse than none.
+Request: `GET` with no body. There are no supported query parameters;
+`org`, `since`, `until`, and `limit` are ignored by the current route, not
+honored (§13.3).
+
+Authorization requires **`audit.export`**, held only by `org_admin` (§2).
+`security_admin` and `viewer` hold `audit.read` and are still refused with
+`403 auth.denied`; absent or unrecognized `x-kiwi-roles` also fails closed.
+This is a platform-level audit action, so `x-kiwi-org` is not used to scope
+it. The `x-kiwi-*` headers remain development scaffolding, not production
+authentication (§12.2).
+
+Success is `200` with `content-type: application/x-ndjson; charset=utf-8`,
+`cache-control: no-store`, and a raw `\n`-delimited body. The evidence must
+not be JSON-encoded into one string or served from a cache. Failure responses
+use §3's JSON error envelope:
+
+| status | code | condition |
+|--------|------|-----------|
+| `400` | `validation.failed` | chain exceeds `AUDIT_EXPORT_MAX_ROWS` (10000); it is refused, never truncated |
+| `403` | `auth.denied` | missing/unusable role or role without `audit.export`; `details.permission = "audit.export"` |
+| `500` | `internal` | storage/audit-append failure; message contains only a correlation reference |
+
+The current localhost transport does not emit `401 auth.required`; missing
+credentials fail through the permission check as `403 auth.denied`.
 
 ### 13.1 Line layout
 
@@ -468,6 +490,55 @@ object below, in this order, with no whitespace. A producer that reorders keys
 produces a valid export that no independent verifier can check — the export's
 whole purpose — so these orders are normative, not illustrative.
 
+Exact types (`src/audit/export.ts` + `src/audit/model.ts`):
+
+```ts
+type AuditExportHeader = {
+  type: "header";
+  version: string;                    // currently "kiwi.audit-export/1"
+  exported_at: number;                // safe integer, Unix seconds
+  rows: number;                       // 0..10000
+  first_seq: number | null;           // null only when rows == 0
+  last_seq: number | null;            // null only when rows == 0
+};
+
+type AuditExportRecord = {
+  seq: number;
+  ts: number;
+  actor_subject: string | null;
+  actor_roles: string | null;         // JSON-encoded string, not string[]
+  org_id: string | null;
+  action: string;
+  resource: string | null;
+  outcome: "allowed" | "denied" | "error";
+  request_id: string | null;
+  details: string | null;             // JSON-encoded object string, or null
+  prev_hash: string;
+  entry_hash: string;                 // lowercase SHA-256 hex
+};
+
+type AuditExportChainState = {
+  type: "chain_state";
+  valid: boolean;
+  error: string | null;
+  checked: number;
+  head_hash: string;                  // "genesis" for an empty chain
+  first_seq: number | null;
+  last_seq: number | null;
+};
+
+type AuditExportSignature =
+  | { type: "signature"; alg: "hmac-sha256"; signed: true;
+      key_id: string; signature: string; covers_through: number }
+  | { type: "signature"; alg: "none"; signed: false;
+      key_id: null; signature: null; covers_through: null };
+```
+
+For a signed trailer, `key_id` is exactly 16 lowercase hex characters,
+`signature` exactly 64 lowercase hex characters, and `covers_through` is the
+1-based line number of `chain_state` (`rows + 2`). The unsigned variant has
+all three value fields `null` by construction.
+
 ```jsonc
 // line 1
 {"type":"header","version":"kiwi.audit-export/1","exported_at":1726000000,
@@ -500,75 +571,100 @@ Notes that matter to an implementer:
 
 **Empty chain.** A chain with no rows exports as exactly three lines —
 `header`, `chain_state`, `signature` — with `rows: 0`, `first_seq`/`last_seq`
-`null`, `head_hash: "genesis"`, `covers_through: 2`, and `chain_state.valid`
-`true`. This is honest rather than vacuous: with no rows there is nothing that
-could fail to verify. It is also definitionally different from
-`GET /api/v1/audit/verify?limit=0`, which reports `checked: 0` against a log
-that *does* have rows — the T-185 review logged that as a false attestation
-(`docs/audits/admin-review-1.md` H8). Read `checked` against `rows`: here they
-agree by construction.
+`null`, `head_hash: "genesis"`, and `chain_state.valid: true`. A signed empty
+export has `covers_through: 2`; an unsigned empty export has
+`covers_through: null`, as required by the discriminated trailer type above.
+This is honest rather than vacuous: with no rows there is nothing that could
+fail to verify. It is also definitionally different from a bounded verify
+against a populated log; read `chain_state.checked` against `header.rows`,
+which agree by construction here.
 
-### 13.6 Known discrepancy — the export's own audit row is in the wrong unit
+### 13.6 Timestamp units in exported records
 
-Open code defect, **not** a contract statement; recorded so a reader is not
-misled by a log that mixes units. T-185 finding M2: the `audit.export` row is
-appended with `opts.now` (Unix **seconds**, `src/server.ts:210`), while every
-other audit row is written with `Date.now()` (**milliseconds**,
-`src/services.ts:134,139`). So the one record proving an export happened is
-~1000x smaller on the `ts` axis than its neighbours.
+`header.exported_at` is Unix **seconds**: the HTTP route supplies its `now`
+value directly to `buildAuditExport`. Record `ts` values pass through exactly
+as stored and are not normalized by the exporter.
 
-§4 and §12.3 are the authority: `ts` is Unix seconds, and the millisecond
-writes are the defect, not the export. Fixing it is T-187's scope; it cannot be
-done by rewriting existing rows, because `ts` is inside every `entry_hash`.
-See `docs/audits/admin-review-1.md` M1/M2.
+The current implementation writes audit rows with `Date.now()` (Unix
+milliseconds), although §4/§12.3 declare seconds. That is a repository-wide
+unit defect tracked by T-193, not an export-specific discrepancy: both ordinary
+audit rows and the post-snapshot `audit.export` row currently use the same
+millisecond clock. The export is byte-faithful to the stored chain either way;
+changing existing units would break every `entry_hash` and requires a
+migration/versioned format, never an in-place rewrite.
 
 ## 14. Device inventory — T-188 (`GET /api/v1/orgs/{orgId}/devices`)
 
-> **PROPOSED — pending Lead review** (Agent 9, T-188). **Not implemented:**
-> this endpoint does not exist in `src/` today. The section fixes the shape and
-> the RBAC scoping requirement so the implementation cannot silently choose
-> weaker ones; §14.5 lists exactly what has to be written.
+> **PROPOSED — pending Lead review.** Agent 9 drafted this shape; Agent 18
+> revalidated it against the current repository/RBAC code on 2026-09-25.
+> **Not implemented:** no `OrgRepository.listDevices` or HTTP route exists
+> today. The section fixes the wire shape and fail-closed org scoping;
+> §14.5 lists what implementation must add.
 
-### 14.1 Shape
+### 14.1 Request and response
 
-`200` with `{ "items": DeviceView[] }`, matching `GET /orgs/{orgId}/users`
-(§3). Devices are ordered by `created_at` ascending, ties broken by `id` — a
-total order, because `created_at` is a millisecond value and two devices
-registered in the same millisecond would otherwise come back in whatever order
-the driver chose. Deterministic output is a binding invariant (§1).
+Request: `GET /api/v1/orgs/{orgId}/devices`, no body and no query parameters
+in v1. The path identifier is trimmed and must match
+`assertIdentifier`: 1..=256 characters from `[A-Za-z0-9_.:@-]`; otherwise the
+response is `400 validation.failed`.
+
+Success is `200` with `{ "items": DeviceView[] }`, matching
+`GET /orgs/{orgId}/users` (§3):
 
 ```jsonc
-{ "id": "dev-…",            // PK, `dev-` + UUID
-  "org_id": "org-…",
-  "label": "…",             // 1..=200 chars
-  "revoked": 0,             // 0/1 — booleans are integers (§4)
-  "revoked_at": null,       // Unix seconds, null unless revoked
-  "created_at": 0 }         // Unix seconds
+{
+  "items": [
+    { "id": "dev-…",            // PK, `dev-` + UUID
+      "org_id": "org-…",
+      "label": "Pixel 8",       // 1..=200 characters after trim
+      "revoked": 0,             // integer 0|1, never JSON boolean
+      "revoked_at": null,       // integer Unix seconds, or null
+      "created_at": 1729000000 } // integer Unix seconds
+  ]
+}
 ```
 
-Superset of what `OrgService.createDevice` returns (§3), which omits
-`revoked_at`. Either both carry it or neither should; a create that cannot
-report the field its own list view reports is an asymmetry with no rationale.
+Every field above is required; only `revoked_at` is nullable. Unknown JSON
+fields are not introduced by this endpoint. Items are ordered by `created_at`
+ascending, then `id` ascending. The tie-breaker is mandatory: same-second (or,
+in current storage, same-millisecond) registrations otherwise have no total
+order.
 
-An unknown `orgId` returns `200 { "items": [] }`, consistent with `listUsers`
-(which does not check org existence either). A `404` for an unknown org is
-arguably better and would be a change to both endpoints — a decision for the
-Lead, not a divergence to introduce quietly on one of them.
+This is intentionally a superset of the current `createDevice`/`getDevice`
+row shape, which omits `revoked_at`. The repository projection must add that
+column rather than fabricate `null` for revoked rows. An unknown but
+syntactically valid `orgId` returns `200 { "items": [] }`, consistent with
+`listUsers`; changing both list endpoints to return `404` for an unknown org
+is a separate contract decision.
 
-### 14.2 Permission and scoping
+Failure responses use §3's JSON envelope: `400 validation.failed` for the path
+identifier, `403 auth.denied` for RBAC/scope failure, and a sanitized
+`500 internal` for storage failure. The route must never return a device row
+for a different `org_id`.
 
-Permission **`device.read`**, held by all three roles (§2). Two requirements
-that are not optional:
+### 14.2 Permission, authentication, and scoping
 
-- The permission check must use the **real `orgId` from the path**, never
-  `null`. `hasPermission` skips org scoping when the target is null
-  (`src/rbac/rbac.ts:91`), so passing null would hand every org's device
-  inventory to a caller bound to one org. The T-185 review logged exactly this
-  pattern as defects H3/H4 against `revokeDevice` and the unscoped read
-  filters; this endpoint must not join them.
-- `orgId` must pass `assertIdentifier` before use, as `listUsers` does
-  (`src/policy/services.ts:113`). The path segment is attacker-controlled and
-  the identifier gate is what keeps it a value rather than a shape.
+Permission **`device.read`**, held by all three roles (§2). The production
+contract requires an authenticated session bound to the target org. In the
+current localhost scaffold, the actor comes from
+`x-kiwi-subject` / `x-kiwi-roles` / `x-kiwi-org` (§12.2):
+
+- `x-kiwi-roles` must contain a recognized role. Missing/unknown roles yield
+  an empty role set and `403 auth.denied`.
+- `x-kiwi-org` must equal the path `{orgId}`. Current `hasPermission` is
+  fail-closed for org-scoped targets: a null-org actor is not global and is
+  denied for a non-null path target.
+- The service must call `requirePermission(actor, "device.read", orgId)` with
+  the **real path org id**, then validate that id with `assertIdentifier`
+  before querying. It must not pass `null` as the target or silently default a
+  missing `x-kiwi-org` to the path.
+- A platform/bootstrap actor with no org session is not an exception to this
+  endpoint. It has no legitimate device-inventory scope until an org-bound
+  session exists.
+
+A cross-org request therefore returns `403` with
+`{"error":{"code":"auth.denied","message":"…","details":{"permission":"device.read"}}}`
+and must not reveal whether the target org or device exists.
 
 ### 14.3 Auditing
 
@@ -602,17 +698,18 @@ surface. Cross-registry reconciliation is unbuilt and not part of this section.
 1. `OrgRepository.listDevices(orgId)` — `db/interfaces.ts` (as
    `MaybePromise<DeviceRow[]>`), plus both implementations:
    `DrizzleOrgRepository` (sync, `db/repositories.ts`) and `PgOrgRepository`
-   (async, `db/repositories.pg.ts`). `getDevice(id)` exists; there is no
-   org-scoped list method on either driver.
-2. `OrgService.listDevices(actor, orgId)` — `requirePermission(actor,
-   "device.read", orgId)` then `assertIdentifier(orgId, "orgId")`, mirroring
-   `listUsers`.
+   (async, `db/repositories.pg.ts`). Return `revoked_at` in the row and order
+   by `created_at, id`; `getDevice(id)` exists, but neither driver has an
+   org-scoped list method.
+2. `OrgService.listDevices(actor, orgId)` — `assertIdentifier(orgId,
+   "orgId")`, then `requirePermission(actor, "device.read", orgId)` with the
+   validated path target; do not use a nullable/defaulted target.
 3. A route in `src/server.ts` inside the existing `/api/v1/orgs/:org/…` block
    (`rest[2] === "devices" && rest.length === 3`, `GET`), answering
-   `{ items }` like the users route.
+   `{ items }` like the users route and mapping the uniform errors from §3.
 4. The §3 row above (added).
 5. Unit coverage in `tests/server.test.ts` — including a **cross-org denial
-   assertion**, which is the test that would have caught H3/H4 had it existed.
+   assertion**, a null-org denial, and an empty-unknown-org assertion.
 6. e2e coverage in `infra/e2e/test_admin_e2e.py`, and the `rbac.ts` matrix
    needs no change (`device.read` already exists and is already granted).
 

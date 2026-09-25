@@ -5,6 +5,7 @@ members = [
     "kiwi-contacts",
     "kiwi-core",
     "kiwi-forensics",
+    "kiwi-integrations",
     "kiwi-mail",
     "kiwi-mailauth",
     "kiwi-pair",

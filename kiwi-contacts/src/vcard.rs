@@ -340,7 +340,7 @@ pub fn parse_vcards(input: &str, limits: &VCardLimits) -> Result<Vec<RawCard>, V
                 line: line_no,
                 detail: "no ':' separating property name from value".to_string(),
             })?;
-        let property = parse_property(&left, value, line_no, limits)?;
+        let property = parse_property(left, value, line_no, limits)?;
         // Cloned so the default arm below can move the property into the card.
         let name = property.name.clone();
 
@@ -581,20 +581,20 @@ fn unfold(input: &str, limits: &VCardLimits) -> Result<Vec<(usize, String)>, VCa
     let mut out: Vec<(usize, String)> = Vec::new();
     for (i, raw) in input.lines().enumerate() {
         let line_no = i + 1;
-        if let Some(rest) = raw.strip_prefix(' ').or_else(|| raw.strip_prefix('\t')) {
-            if let Some((_, last)) = out.last_mut() {
-                if last.len() + rest.len() > limits.max_line_bytes {
-                    return Err(VCardError::LineTooLong {
-                        line: line_no,
-                        limit: limits.max_line_bytes,
-                    });
-                }
-                last.push_str(rest);
-                continue;
+        if let Some(rest) = raw.strip_prefix(' ').or_else(|| raw.strip_prefix('\t'))
+            && let Some((_, last)) = out.last_mut()
+        {
+            if last.len() + rest.len() > limits.max_line_bytes {
+                return Err(VCardError::LineTooLong {
+                    line: line_no,
+                    limit: limits.max_line_bytes,
+                });
             }
-            // A continuation with nothing to continue: fall through and treat
-            // it as a plain line.
+            last.push_str(rest);
+            continue;
         }
+        // A continuation with nothing to continue: fall through and treat
+        // it as a plain line.
         if raw.len() > limits.max_line_bytes {
             return Err(VCardError::LineTooLong {
                 line: line_no,
@@ -653,7 +653,7 @@ fn parse_property(
                 if key.is_empty() {
                     continue;
                 }
-                let values = parse_param_values(&raw_values);
+                let values = parse_param_values(raw_values);
                 params.push((key, values));
             }
             // Bare parameter: the vCard 3.0 shorthand. `PREF` is a flag;
@@ -829,7 +829,7 @@ pub fn parse_timestamp(raw: &str) -> Option<i64> {
         return None;
     }
     let (body, offset) = split_offset(s);
-    let (date, time) = match body.find(|c| c == 'T' || c == 't') {
+    let (date, time) = match body.find(['T', 't']) {
         Some(i) => (body.get(..i)?, body.get(i + 1..).unwrap_or("")),
         None => (body, ""),
     };
@@ -852,10 +852,10 @@ pub fn format_timestamp(unix: i64) -> String {
 /// returning the remainder and the offset in seconds. A date like `2024-01-01`
 /// has no offset and is returned unchanged.
 fn split_offset(s: &str) -> (&str, i64) {
-    if matches!(s.chars().last(), Some('Z') | Some('z')) {
-        if let Some(body) = s.get(..s.len().saturating_sub(1)) {
-            return (body, 0);
-        }
+    if matches!(s.chars().last(), Some('Z') | Some('z'))
+        && let Some(body) = s.get(..s.len().saturating_sub(1))
+    {
+        return (body, 0);
     }
     let Some(idx) = s.rfind(['+', '-']) else {
         return (s, 0);

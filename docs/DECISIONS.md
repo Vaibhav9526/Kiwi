@@ -108,3 +108,14 @@
 
 - **Date:** 2026-09-20 · **Status:** accepted (owner directive)
 - Before adding any DB, Docker service, Redis, VM/sandbox component, or external service, the implementing agent must document in `docs/DECISIONS.md` or its status file: why required, problem solved, why a simpler alternative is insufficient, security implications, perf/resource cost, testing strategy. Prefer the simplest secure implementation.
+
+## ADR-0xx — License boundary + notices (T-197)
+
+- Repo ships MPL-2.0 (LICENSE file added; was missing — F3 fix).
+- `reference/` (mailspring GPL-3.0, mailflow AGPL-3.0) is gitignored study-only;
+  verified zero copied lines via 45-char overlap scan (audit
+  license-secret-scan-1.md). The same scan is the merge gate for T-190/T-191.
+- webpki-roots is CDLA-Permissive-2.0 (file-level copyleft, compatible) —
+  recorded for future NOTICE sweep.
+- gitleaks added to CI static-checks (was doc-only — F1 fix); Python
+  secret_scan.py kept as fallback.

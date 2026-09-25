@@ -78,6 +78,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
       - run: python tests/tools/secret_scan.py
       - run: python tests/tools/check_fixtures.py
       - run: python tests/tools/check_csp.py

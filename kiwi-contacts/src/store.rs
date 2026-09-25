@@ -271,11 +271,10 @@ impl ContactStore {
              FROM contacts WHERE id = ?1",
             params![id],
         )?;
-        Ok(rows
-            .drain(..)
+        rows.drain(..)
             .next()
             .map(|c| self.hydrate_one(c))
-            .transpose()?)
+            .transpose()
     }
 
     /// Page of contacts, ordered by display name then id (deterministic).
@@ -349,11 +348,10 @@ impl ContactStore {
              LIMIT 1",
             params![address],
         )?;
-        Ok(rows
-            .drain(..)
+        rows.drain(..)
             .next()
             .map(|c| self.hydrate_one(c))
-            .transpose()?)
+            .transpose()
     }
 
     /// Contact imported from this vCard `UID`, if any (re-import dedup).
@@ -365,11 +363,10 @@ impl ContactStore {
              FROM contacts WHERE source_uid = ?1 ORDER BY id LIMIT 1",
             params![uid],
         )?;
-        Ok(rows
-            .drain(..)
+        rows.drain(..)
             .next()
             .map(|c| self.hydrate_one(c))
-            .transpose()?)
+            .transpose()
     }
 
     /// Distinct tags with usage counts, most-used first then alphabetical.

@@ -21,6 +21,12 @@ pub const MAX_VOID_LOOKUPS: u8 = 2;
 /// Max redirect/include recursion depth (loop protection; RFC has no number
 /// — this is a hard bound, documented in the contract).
 pub const MAX_RECURSION: u8 = 5;
+/// Max address (A/AAAA) queries one `mx` mechanism may issue before
+/// `permerror` (RFC 7208 §4.6.4).
+pub const MAX_MX_ADDR_LOOKUPS: usize = 10;
+/// Max address (A/AAAA) queries one `ptr` mechanism may issue; further PTR
+/// records are ignored (RFC 7208 §4.6.4).
+pub const MAX_PTR_ADDR_LOOKUPS: usize = 10;
 /// Max expanded domain-spec length (bounded evidence).
 pub const MAX_EXPANDED_LEN: usize = 253;
 
@@ -221,7 +227,12 @@ fn fetch_record<R: DnsResolver>(
     Ok(found.pop().unwrap().clone())
 }
 
-fn eval_domain<R: DnsResolver>(ctx: &mut Ctx<R>, domain: &DomainName, top: bool) -> SpfOutput {
+/// Evaluate the SPF record published at `domain`.
+///
+/// A `none` result (no record at this domain) is returned to the caller
+/// unchanged: the top level reports absence of a record, while `include`
+/// (§5.2) and `redirect` (§6.1) must turn it into `permerror`.
+fn eval_domain<R: DnsResolver>(ctx: &mut Ctx<R>, domain: &DomainName) -> SpfOutput {
     if ctx.depth > MAX_RECURSION {
         return with_record(
             out(ctx, SpfResult::PermError, Some("redirect/include loop")),
@@ -231,19 +242,7 @@ fn eval_domain<R: DnsResolver>(ctx: &mut Ctx<R>, domain: &DomainName, top: bool)
     }
     let record = match fetch_record(ctx, domain) {
         Ok(r) => r,
-        Err(o) => {
-            if top || o.result != SpfResult::None {
-                return o;
-            }
-            if ctx.charge_void().is_err() {
-                let mut p = out(ctx, SpfResult::PermError, None);
-                p.explanation = "void lookup limit exceeded".to_string();
-                return p;
-            }
-            let mut o = out(ctx, SpfResult::Neutral, None);
-            o.explanation = "include target has no SPF record".to_string();
-            return o;
-        }
+        Err(o) => return o,
     };
     eval_terms(ctx, domain, &record)
 }
@@ -453,12 +452,23 @@ fn split_terms(s: &str) -> Result<Vec<String>, ()> {
     Ok(parts)
 }
 
-/// `(domain-spec, cidr4_len, cidr6_len)` from a `:spec[/cidr[/cidr6]]` tail.
+/// `(domain-spec, cidr4_len, cidr6_len)` from a mechanism tail
+/// `[:domain-spec][/cidr4[/cidr6]]` (RFC 7208 §5.3/§5.4:
+/// `a = "a" [ ":" domain-spec ] [ dual-cidr-length ]`).
+///
+/// `Some(("", None, None))` means "no arguments at all" (use the current
+/// domain); `None` is a syntax error (`a:`, `a//64`, non-numeric CIDR,
+/// over-long spec). A tail with no colon (`a/24`) is a CIDR-only form.
 fn split_dual_cidr(tail: &str) -> Option<(&str, Option<u8>, Option<u8>)> {
     if tail.is_empty() {
         return Some(("", None, None));
     }
-    let body = tail.strip_prefix(':')?;
+    let body = match tail.strip_prefix(':') {
+        // "a:" / "exists:" — an empty domain-spec is a syntax error.
+        Some(b) if b.is_empty() => return None,
+        Some(b) => b,
+        None => tail,
+    };
     // Find the first '/' that is NOT inside a %{...} macro.
     let mut depth = 0usize;
     let mut cut: Option<usize> = None;
