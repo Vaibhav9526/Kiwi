@@ -238,6 +238,9 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-270 | authenticator↔mobile/pair audit — fail-closed scaffold verdict + 8 contract decisions needed | Agent 23 | done |
 | T-271 | mail-changed event wired (debounce+toast) + IPC-5 docs + 25 rows closed | Agent 20 | done |
 
+<!-- FLEET PAUSED 2026-09-25 EOD — terminals idled, docker compose down,
+  watchers stopped. Restore map: docs/agents/fleet-state-2026-09-25.md -->
+
 <!-- CURRENT-OWNERSHIP (watcher keys on this; updated at each sweep)
   kiwi-app/src/views,chrome,shell,App   -> A24 (T-267)
   kiwi-app/src/components/icons,themes,plugins -> A25 (T-268)
@@ -248,6 +251,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
   kiwi-forensics + types/ + ipc.ts      -> A20 (T-271)
   kiwi-admin                            -> A11 (T-259 done)
   docs/contracts+audits                 -> A22 (T-260) / A23 (T-270)
+  README.md (repo front page)           -> A12 (T-347)
 -->
 | T-272 | register finish: FOR-10 limitation codes emitted (honest absence), IPC-15 wrappers landed, AUTH-1→A11 | Agent 20 | done |
 | T-273 | link-click policy gate: kiwi_link_click verdicts + open_external risk-gated (no bypass), audited | Agent 21 | done |
@@ -323,5 +327,6 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-342 | UI pass#2 (planner): disposable-inbox sidebar promo + density + radius tokens — LIVE | Agent 25 | in-progress | `chrome.tsx`, `tokens.css` | owner-directed |
 | T-343 | Gmail floating compose dock — LIVE (post-T-335) | Agent 24 | in-progress | `compose.tsx`, `App.tsx` | owner-directed |
 | T-344 | local gates script ps1+sh (mirrors CI, honest SKIP, surfaced 3 in-flight breakages) | Agent 26 | done |
-| T-345 | system tray: icon+unread tooltip, show/compose/quit menu, close-to-tray pref, honest degrade | Agent 20 | open | `src-tauri` setup, `tauri.conf` | |
-| T-346 | regenerate docs/architecture.svg to match as-built ARCHITECTURE.md | Agent 26 | open | `docs/architecture.svg` | ARCHITECTURE rewrite |
+| T-345 | system tray: icon+unread tooltip, show/compose/quit menu, close-to-tray pref, honest degrade | Agent 20 | done (Lead-verified: 234 app + 255 mail green, tray tests incl. quit-guard/tooltip/pref matrix) | `src-tauri` setup, `tauri.conf`, `tray.rs` | |
+| T-346 | regenerate docs/architecture.svg to match as-built ARCHITECTURE.md | Agent 26 | done (ASCII-safe, render-verified; committed f991f27) | `docs/architecture.svg` | ARCHITECTURE rewrite |
+| T-347 | README rebuild: evidence-first GitHub front page — tagline, badges, screenshots from artifacts/t275+t290, architecture embed, verified quickstart, crate map, security summary, docs index, roadmap, license | Agent 12 | done (Lead-verified: all image/doc refs resolve & unignored; screenshots moved to tracked docs/screenshots/) | `README.md`, `docs/screenshots/` | — |
