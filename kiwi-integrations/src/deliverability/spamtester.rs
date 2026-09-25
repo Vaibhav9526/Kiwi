@@ -13,9 +13,16 @@
 //!   title, summary, citations{<kind>: [{title,url}]}}`.
 //!
 //! The `slug` is a **capability secret**: possession authorizes polling +
-//! reading the report. It is carried in `TestSlug` (Debug/Display redacted),
-//! never placed in error strings — URLs containing it are dropped by the
-//! transport-error rule in [`crate::http`].
+//! reading the report. It is carried in `TestSlug` (Debug/Display redacted,
+//! not serializable, zeroized on drop), never placed in error strings — URLs
+//! containing it are dropped by the transport-error rule in [`crate::http`]
+//! and by [`public_url`] for provider-supplied links.
+//!
+//! Every success parse runs the crate's in-band error-envelope rejection
+//! first: the service answers `200` with `{"error": …}` on logical failures,
+//! and a body that carries an error envelope is never a success. The `202`
+//! pending body is checked the same way whenever the service sends a JSON
+//! object in it.
 
 use std::sync::Arc;
 
@@ -27,11 +34,14 @@ use super::{
     DeliverabilityTester, MAX_CHECKS, MAX_CITATIONS, MAX_TEXT, TestReservation, TestSlug,
     TestStatus,
 };
-use crate::error::IntegrationError;
-use crate::http::{HttpClient, HttpRequest, HttpResponse, ReqwestClient};
+use crate::error::{IntegrationError, reject_in_band_error};
+use crate::http::{HttpClient, HttpRequest, HttpResponse, LiveRefused, ReqwestClient};
 
 /// Production base — HTTPS only, hardcoded.
 pub const SPAMTESTER_API: &str = "https://email-spam-tester.com/api/v1";
+
+/// Longest provider-supplied URL kept in a report.
+const MAX_PUBLIC_URL: usize = 2048;
 
 /// email-spam-tester deliverability provider.
 pub struct EmailSpamTester {
@@ -60,9 +70,15 @@ impl EmailSpamTester {
     }
 
     /// Provider over the live reqwest transport (`SPAMTESTER_API`, 30 s).
-    pub fn live() -> Result<Self, IntegrationError> {
-        let http = ReqwestClient::new(crate::http::DEFAULT_TIMEOUT_MS)?;
-        Self::new(Arc::new(http), SPAMTESTER_API)
+    ///
+    /// Fail-closed opt-in: this refuses unless [`crate::http::LIVE_ENV`] is `1`
+    /// and no CI marker is set (see [`LiveRefused`]). Offline tests build over
+    /// [`crate::http::ScriptedHttp`] and never reach this path.
+    pub fn live() -> Result<Self, LiveRefused> {
+        crate::http::live_gate_from_env()?;
+        let http =
+            ReqwestClient::new(crate::http::DEFAULT_TIMEOUT_MS).map_err(LiveRefused::Build)?;
+        Self::new(Arc::new(http), SPAMTESTER_API).map_err(LiveRefused::Build)
     }
 
     async fn call(&self, req: HttpRequest) -> Result<HttpResponse, IntegrationError> {
@@ -107,6 +123,9 @@ impl DeliverabilityTester for EmailSpamTester {
         let url = format!("{}/tests/{}/status", self.base, q(res.slug.as_str()));
         let resp = self.call(HttpRequest::get(url)).await?;
         if resp.status == 202 {
+            if resp.body.trim_ascii().first() == Some(&b'{') {
+                reject_in_band_error(&resp.json()?)?;
+            }
             return Ok(TestStatus {
                 analysis_status: AnalysisStatus::Pending,
                 checks_done: 0,
@@ -114,6 +133,7 @@ impl DeliverabilityTester for EmailSpamTester {
             });
         }
         let v = resp.json()?;
+        reject_in_band_error(&v)?;
         let status = v
             .get("analysis_status")
             .and_then(Value::as_str)
@@ -136,7 +156,7 @@ impl DeliverabilityTester for EmailSpamTester {
         let url = format!("{}/tests/{}", self.base, q(res.slug.as_str()));
         let resp = self.call(HttpRequest::get(url)).await?;
         let v = resp.json()?;
-        parse_report(&v)
+        parse_report(&v, res.slug.as_str())
     }
 }
 
@@ -145,6 +165,7 @@ impl DeliverabilityTester for EmailSpamTester {
 // ---------------------------------------------------------------------------
 
 fn parse_reservation(v: &Value) -> Result<TestReservation, IntegrationError> {
+    reject_in_band_error(v)?;
     let address = v
         .get("address")
         .and_then(Value::as_str)
@@ -167,20 +188,24 @@ fn parse_reservation(v: &Value) -> Result<TestReservation, IntegrationError> {
     };
     Ok(TestReservation {
         address,
-        slug: TestSlug(slug_raw.to_string()),
+        slug: TestSlug::new(slug_raw.to_string()),
         expires_at_unix,
         expires_at_raw,
     })
 }
 
 /// Report parser — tolerant on optional fields, strict on shape. Scores land
-/// in milli-units (floats never cross the boundary). `checks[]` truncated at
-/// `MAX_CHECKS` (the service documents ~41 and growing).
-fn parse_report(v: &Value) -> Result<DeliverabilityReport, IntegrationError> {
+/// in milli-units (floats never cross the boundary). `checks[]` is truncated at
+/// `MAX_CHECKS` and the truncation is recorded in
+/// [`DeliverabilityReport::checks_truncated`] so the auth gate can refuse to
+/// pass. `slug` is used only to drop provider URLs that embed the capability.
+fn parse_report(v: &Value, slug: &str) -> Result<DeliverabilityReport, IntegrationError> {
+    reject_in_band_error(v)?;
     let checks_v = v
         .get("checks")
         .and_then(Value::as_array)
         .ok_or(IntegrationError::Malformed("checks"))?;
+    let checks_truncated = checks_v.len() > MAX_CHECKS;
 
     let mut checks = Vec::with_capacity(checks_v.len().min(MAX_CHECKS));
     let mut tallies: std::collections::BTreeMap<String, super::CategoryTally> =
@@ -210,7 +235,7 @@ fn parse_report(v: &Value) -> Result<DeliverabilityReport, IntegrationError> {
                     .or_else(|| v.as_u64().map(|n| n.to_string()))
             })
             .unwrap_or_else(|| format!("check-{i}"));
-        let citations = parse_citations(obj.get("citations"));
+        let citations = parse_citations(obj.get("citations"), slug);
 
         let tally = tallies
             .entry(category_raw.to_ascii_lowercase())
@@ -252,16 +277,19 @@ fn parse_report(v: &Value) -> Result<DeliverabilityReport, IntegrationError> {
         report_url: v
             .get("report_url")
             .and_then(Value::as_str)
-            .map(|s| s.chars().take(2048).collect()),
+            .and_then(|raw| public_url(raw, slug)),
         subscores,
         tallies,
         checks,
+        checks_truncated,
     })
 }
 
 /// `citations` is an object of `kind -> [{title,url}]`; flattened to a list
-/// preserving `kind` so a consumer can group. Unknown shapes are dropped.
-fn parse_citations(v: Option<&Value>) -> Vec<CitedSource> {
+/// preserving `kind` so a consumer can group. Unknown shapes are dropped and
+/// every URL is validated by [`public_url`]; a rejected URL becomes
+/// [`CitedSource::REJECTED_URL`].
+fn parse_citations(v: Option<&Value>, slug: &str) -> Vec<CitedSource> {
     let mut out = Vec::new();
     let Some(obj) = v.and_then(Value::as_object) else {
         return out;
@@ -272,16 +300,15 @@ fn parse_citations(v: Option<&Value>) -> Vec<CitedSource> {
             let Some(t) = e.get("title").and_then(Value::as_str) else {
                 continue;
             };
+            let url = e
+                .get("url")
+                .and_then(Value::as_str)
+                .and_then(|raw| public_url(raw, slug))
+                .unwrap_or_else(|| CitedSource::REJECTED_URL.to_string());
             out.push(CitedSource {
                 kind: kind.chars().take(32).collect(),
                 title: t.chars().take(MAX_TEXT).collect(),
-                url: e
-                    .get("url")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .chars()
-                    .take(2048)
-                    .collect(),
+                url,
             });
             if out.len() >= MAX_CITATIONS {
                 return out;
@@ -289,6 +316,89 @@ fn parse_citations(v: Option<&Value>) -> Vec<CitedSource> {
         }
     }
     out
+}
+
+/// Validate a provider-supplied link before KIWI shows or copies it.
+///
+/// Kept only when the URL is: absolute `https://`, ASCII graphic (no spaces,
+/// no controls, no raw non-ASCII), an authority with no userinfo and a
+/// plausible host, no fragment, within [`MAX_PUBLIC_URL`], and free of the
+/// reservation slug in raw, percent-encoded, or percent-decoded form.
+/// Everything else is `None`: a rejected link is omitted, never repaired.
+fn public_url(raw: &str, slug: &str) -> Option<String> {
+    let candidate = raw.trim();
+    if candidate.is_empty()
+        || candidate.len() > MAX_PUBLIC_URL
+        || !candidate.bytes().all(|b| b.is_ascii_graphic())
+        || candidate.contains('\\')
+    {
+        return None;
+    }
+    let parsed = reqwest::Url::parse(candidate).ok()?;
+    if parsed.scheme() != "https"
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.fragment().is_some()
+        || carries_capability(candidate, slug)
+        || carries_capability(parsed.as_str(), slug)
+    {
+        return None;
+    }
+    Some(parsed.to_string())
+}
+
+/// Does `url` contain the capability `slug`, raw or percent-encoded (up to
+/// three decode rounds, so single and double encoding cannot slip through)?
+fn carries_capability(url: &str, slug: &str) -> bool {
+    if slug.is_empty() {
+        return false;
+    }
+    if url.contains(slug) {
+        return true;
+    }
+    let encoded = crate::http::encode_param(slug);
+    if url.contains(&encoded)
+        || url
+            .to_ascii_lowercase()
+            .contains(&encoded.to_ascii_lowercase())
+    {
+        return true;
+    }
+    let mut cur = url.to_string();
+    for _ in 0..3 {
+        let next = percent_decode(&cur);
+        if next == cur {
+            break;
+        }
+        if next.contains(slug) {
+            return true;
+        }
+        cur = next;
+    }
+    false
+}
+
+/// Percent-decode a URL body into a lossy UTF-8 string (bounded by input).
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            let decoded = std::str::from_utf8(&b[i + 1..i + 3])
+                .ok()
+                .and_then(|h| u8::from_str_radix(h, 16).ok());
+            if let Some(v) = decoded {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// JSON number → milli-units (`value * 1000`, rounded). Floats stay inside
@@ -335,6 +445,7 @@ fn q(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::deliverability::{AuthEvidenceGap, AuthGate};
     use crate::http::{ScriptedHttp, Step};
     use std::sync::Arc;
 
@@ -516,9 +627,234 @@ mod tests {
 
     #[test]
     fn slug_never_leaks_into_debug_or_display() {
-        let t = TestSlug("super-secret-slug".into());
+        let t = TestSlug::new("super-secret-slug".into());
         assert!(!format!("{t:?}").contains("secret"));
         assert!(!format!("{t}").contains("secret"));
-        assert!(!format!("{t:?}").is_empty()); // prints [redacted]
+        assert!(!format!("{t:?}").is_empty());
+    }
+
+    #[test]
+    fn public_urls_are_https_and_capability_free() {
+        let slug = "secret/value";
+        assert_eq!(
+            public_url("https://reports.test/public/result", slug).as_deref(),
+            Some("https://reports.test/public/result")
+        );
+        for raw in [
+            "http://reports.test/public",
+            "https://user@reports.test/public",
+            "https://reports.test/public#fragment",
+            "https://reports.test/secret/value",
+            "https://reports.test/secret%2Fvalue",
+            "https://reports.test/secret%2fvalue",
+            "https://reports.test/secret%252Fvalue",
+            "https://",
+            "not a url",
+        ] {
+            assert_eq!(public_url(raw, slug), None, "accepted {raw}");
+        }
+        let oversized = format!("https://reports.test/{}", "a".repeat(MAX_PUBLIC_URL));
+        assert_eq!(public_url(&oversized, slug), None);
+    }
+
+    #[test]
+    fn report_and_citation_urls_drop_the_reservation_slug() {
+        let value = serde_json::json!({
+            "complete": true,
+            "report_url": "https://reports.test/r/secret%2Fvalue",
+            "checks": [{
+                "id": "auth",
+                "category": "auth",
+                "status": "pass",
+                "citations": {
+                    "receiver": [
+                        {"title": "raw", "url": "https://reports.test/secret/value"},
+                        {"title": "safe", "url": "https://reports.test/public"}
+                    ]
+                }
+            }]
+        });
+        let report = parse_report(&value, "secret/value").unwrap();
+        assert_eq!(report.report_url, None);
+        assert_eq!(report.checks[0].citations[0].url, CitedSource::REJECTED_URL);
+        assert_eq!(
+            report.checks[0].citations[1].url,
+            "https://reports.test/public"
+        );
+    }
+
+    #[test]
+    fn auth_gate_blocks_unknown_status_and_category() {
+        let unknown_status = parse_report(
+            &serde_json::json!({
+                "checks": [{"id":"future","category":"auth","status":"review"}]
+            }),
+            "unused",
+        )
+        .unwrap();
+        assert_eq!(
+            unknown_status.auth_gate(),
+            AuthGate::Incomplete {
+                failed_ids: vec![],
+                gap: AuthEvidenceGap::UnknownAuthStatus,
+            }
+        );
+
+        let unknown_category = parse_report(
+            &serde_json::json!({
+                "checks": [{"id":"future","category":"identity","status":"pass"}]
+            }),
+            "unused",
+        )
+        .unwrap();
+        assert_eq!(
+            unknown_category.auth_gate(),
+            AuthGate::Incomplete {
+                failed_ids: vec![],
+                gap: AuthEvidenceGap::UnknownCategory,
+            }
+        );
+    }
+
+    #[test]
+    fn auth_gate_requires_auth_evidence_and_blocks_failures() {
+        let no_auth = parse_report(
+            &serde_json::json!({
+                "checks": [{"id":"content","category":"content","status":"pass"}]
+            }),
+            "unused",
+        )
+        .unwrap();
+        assert_eq!(
+            no_auth.auth_gate(),
+            AuthGate::Incomplete {
+                failed_ids: vec![],
+                gap: AuthEvidenceGap::NoAuthChecks,
+            }
+        );
+
+        let failed = parse_report(
+            &serde_json::json!({
+                "checks": [{"id":"dkim","category":"auth","status":"fail"}]
+            }),
+            "unused",
+        )
+        .unwrap();
+        assert_eq!(
+            failed.auth_gate(),
+            AuthGate::Blocked {
+                failed_ids: vec!["dkim".into()],
+            }
+        );
+
+        let clear = parse_report(
+            &serde_json::json!({
+                "checks": [{"id":"spf","category":"auth","status":"pass"}]
+            }),
+            "unused",
+        )
+        .unwrap();
+        assert_eq!(clear.auth_gate(), AuthGate::Clear);
+    }
+
+    #[test]
+    fn auth_gate_marks_over_cap_reports_incomplete() {
+        let checks = (0..=MAX_CHECKS)
+            .map(|i| {
+                serde_json::json!({
+                    "id": format!("auth-{i}"),
+                    "category": "auth",
+                    "status": "pass"
+                })
+            })
+            .collect::<Vec<_>>();
+        let report = parse_report(
+            &serde_json::json!({"complete": true, "checks": checks}),
+            "unused",
+        )
+        .unwrap();
+        assert_eq!(report.checks.len(), MAX_CHECKS);
+        assert!(report.checks_truncated);
+        assert_eq!(
+            report.auth_gate(),
+            AuthGate::Incomplete {
+                failed_ids: vec![],
+                gap: AuthEvidenceGap::TruncatedChecks,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn reservation_rejects_in_band_error() {
+        let (t, http) = est(vec![Step::post(
+            "reserve",
+            &[],
+            200,
+            r#"{"error":"quota","address":"a@b.test","slug":"secret"}"#,
+        )]);
+        assert!(matches!(
+            t.reserve_inbox().await.unwrap_err(),
+            IntegrationError::ProviderRejected(_)
+        ));
+        http.assert_exhausted();
+    }
+
+    #[tokio::test]
+    async fn status_rejects_in_band_error_before_success_parsing() {
+        for status in [200, 202] {
+            let (t, http) = est(vec![
+                Step::post("reserve", &[], 200, RESERVE_JSON),
+                Step::get(
+                    "status",
+                    &[],
+                    status,
+                    r#"{"error":"not ownership","analysis_status":"checks_ready"}"#,
+                ),
+            ]);
+            let reservation = t.reserve_inbox().await.unwrap();
+            assert!(matches!(
+                t.poll_status(&reservation).await.unwrap_err(),
+                IntegrationError::ProviderRejected(_)
+            ));
+            http.assert_exhausted();
+        }
+    }
+
+    #[tokio::test]
+    async fn report_rejects_in_band_error_before_success_parsing() {
+        let (t, http) = est(vec![
+            Step::post("reserve", &[], 200, RESERVE_JSON),
+            Step::get(
+                "report",
+                &[],
+                200,
+                r#"{"error":"not_found","complete":true,"checks":[]}"#,
+            ),
+        ]);
+        let reservation = t.reserve_inbox().await.unwrap();
+        assert!(matches!(
+            t.fetch_report(&reservation).await.unwrap_err(),
+            IntegrationError::ProviderRejected(_)
+        ));
+        http.assert_exhausted();
+    }
+
+    #[test]
+    fn live_constructor_is_env_gated() {
+        if crate::http::live_gate_from_env().is_ok() {
+            return;
+        }
+        assert!(EmailSpamTester::live().is_err());
+    }
+
+    #[tokio::test]
+    async fn reservation_debug_never_exposes_the_capability() {
+        let (t, http) = est(vec![Step::post("reserve", &[], 200, RESERVE_JSON)]);
+        let reservation = t.reserve_inbox().await.unwrap();
+        let line = format!("{reservation:?}");
+        assert!(!line.contains("s3cr3t-capability-slug"));
+        assert!(line.contains("[redacted]"));
+        assert!(line.contains("test-abc@in.email-spam-tester.com"));
+        http.assert_exhausted();
     }
 }

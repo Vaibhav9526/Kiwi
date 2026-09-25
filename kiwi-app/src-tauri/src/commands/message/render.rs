@@ -100,11 +100,26 @@ pub(crate) fn truncate_to_byte_cap(s: String, max_bytes: usize) -> String {
 ///
 /// Returns (sanitized_html, remote_images_stripped).
 pub fn sanitize_html(html: &str, allow_remote: bool) -> (String, u32) {
+    sanitize_fragment(html, allow_remote, true)
+}
+
+/// Temp-mail variant: display-only. The tag set drops `a` and no element
+/// carries `href`, so nothing in the fragment can navigate the webview — a
+/// public inbox is hostile content and its links must never be activatable
+/// without the normal message-link policy. Link text survives; the link
+/// does not.
+pub fn sanitize_html_display_only(html: &str) -> (String, u32) {
+    sanitize_fragment(html, false, false)
+}
+
+fn sanitize_fragment(html: &str, allow_remote: bool, allow_links: bool) -> (String, u32) {
     use std::collections::{HashMap, HashSet};
     let stripped = Arc::new(AtomicU32::new(0));
     let stripped_ref = stripped.clone();
     let mut tag_attrs: HashMap<&str, HashSet<&str>> = HashMap::new();
-    tag_attrs.insert("a", ["href", "title"].into_iter().collect());
+    if allow_links {
+        tag_attrs.insert("a", ["href", "title"].into_iter().collect());
+    }
     tag_attrs.insert(
         "img",
         ["src", "alt", "title", "width", "height"]
@@ -113,63 +128,61 @@ pub fn sanitize_html(html: &str, allow_remote: bool) -> (String, u32) {
     );
     tag_attrs.insert("td", ["colspan", "rowspan"].into_iter().collect());
     tag_attrs.insert("th", ["colspan", "rowspan", "scope"].into_iter().collect());
+    let mut tags: Vec<&str> = [
+        "abbr",
+        "b",
+        "blockquote",
+        "br",
+        "code",
+        "dd",
+        "del",
+        "div",
+        "dl",
+        "dt",
+        "em",
+        "figcaption",
+        "figure",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "hr",
+        "i",
+        "img",
+        "ins",
+        "li",
+        "ol",
+        "p",
+        "pre",
+        "s",
+        "span",
+        "strike",
+        "strong",
+        "sub",
+        "sup",
+        "table",
+        "tbody",
+        "td",
+        "tfoot",
+        "th",
+        "thead",
+        "tr",
+        "u",
+        "ul",
+    ]
+    .into_iter()
+    .collect();
+    if allow_links {
+        tags.push("a");
+    }
+    let schemes: HashSet<&str> = ["http", "https", "mailto", "cid", "data"].into_iter().collect();
     let out = ammonia::Builder::default()
-        .tags(
-            [
-                "a",
-                "abbr",
-                "b",
-                "blockquote",
-                "br",
-                "code",
-                "dd",
-                "del",
-                "div",
-                "dl",
-                "dt",
-                "em",
-                "figcaption",
-                "figure",
-                "h1",
-                "h2",
-                "h3",
-                "h4",
-                "h5",
-                "h6",
-                "hr",
-                "i",
-                "img",
-                "ins",
-                "li",
-                "ol",
-                "p",
-                "pre",
-                "s",
-                "span",
-                "strike",
-                "strong",
-                "sub",
-                "sup",
-                "table",
-                "tbody",
-                "td",
-                "tfoot",
-                "th",
-                "thead",
-                "tr",
-                "u",
-                "ul",
-            ]
-            .into_iter()
-            .collect(),
-        )
+        .tags(tags.into_iter().collect())
         .generic_attributes(["title", "lang", "dir"].into_iter().collect())
         .tag_attributes(tag_attrs)
-        .url_schemes(
-            ["http", "https", "mailto", "cid", "data"]
-                .into_iter()
-                .collect(),
-        )
+        .url_schemes(schemes)
         .link_rel(Some("noopener noreferrer nofollow"))
         .attribute_filter(move |element, attribute, value| {
             // Remote-resource filter on <img src> (the only remote-loadable

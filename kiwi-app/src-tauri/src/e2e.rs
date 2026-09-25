@@ -41,12 +41,8 @@ fn test_state(tag: &str, net: MockNet) -> Arc<AppState> {
             .unwrap_or(0)
     ));
     Arc::new(
-        AppState::open_test_with_net(
-            dir,
-            crate::state::integrations_transport().unwrap(),
-            Arc::new(net),
-        )
-        .unwrap(),
+        AppState::open_test_with_net(dir, crate::state::rejecting_transport(), Arc::new(net))
+            .unwrap(),
     )
 }
 

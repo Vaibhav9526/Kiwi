@@ -78,6 +78,9 @@ BASE = f"http://127.0.0.1:{ADMIN_PORT}"
 ORG_ADMIN = {"x-kiwi-subject": "e2e-admin", "x-kiwi-roles": "org_admin"}
 SECURITY_ADMIN = {"x-kiwi-subject": "e2e-security", "x-kiwi-roles": "security_admin"}
 VIEWER = {"x-kiwi-subject": "e2e-viewer", "x-kiwi-roles": "viewer"}
+# T-259/§13: the only identity the GLOBAL whole-chain export accepts.
+# org_admin keeps `audit.export` org-scoped (the /orgs/{id}/audit/export route).
+SYSTEM_ADMIN = {"x-kiwi-subject": "e2e-sysadmin", "x-kiwi-roles": "system-admin"}
 
 
 def export_key():
@@ -411,13 +414,16 @@ class AdminE2E(unittest.TestCase):
         """orgs -> users -> roles -> policies -> evaluate -> mailflow. Returns the org id."""
         stamp = str(int(time.time() * 1000))
         org = self.create_org(f"E2E Org {stamp}")
+        # Org-scoped calls bind the org (T-193/H2): a null-org actor holds no
+        # org scope, so the platform bootstrap headers stop working here.
+        bound = {"x-kiwi-subject": "e2e-admin", "x-kiwi-roles": "org_admin", "x-kiwi-org": org}
 
         status, user = http(
-            "POST", f"/api/v1/orgs/{org}/users", {"email": f"user{stamp}@kiwi-test.invalid"}, ORG_ADMIN
+            "POST", f"/api/v1/orgs/{org}/users", {"email": f"user{stamp}@kiwi-test.invalid"}, bound
         )
         self.assertEqual(status, 201, f"create user failed: {status} {user}")
 
-        status, listed = http("GET", f"/api/v1/orgs/{org}/users", None, ORG_ADMIN)
+        status, listed = http("GET", f"/api/v1/orgs/{org}/users", None, bound)
         self.assertEqual(status, 200)
         self.assertTrue(
             any(u["email"] == f"user{stamp}@kiwi-test.invalid" for u in listed["items"]),
@@ -425,7 +431,7 @@ class AdminE2E(unittest.TestCase):
         )
 
         status, _ = http(
-            "PUT", f"/api/v1/orgs/{org}/users/{user['id']}/role", {"role": "viewer"}, ORG_ADMIN
+            "PUT", f"/api/v1/orgs/{org}/users/{user['id']}/role", {"role": "viewer"}, bound
         )
         self.assertEqual(status, 200, "grant role failed")
 
@@ -442,7 +448,7 @@ class AdminE2E(unittest.TestCase):
                 "external_recipients": "warn",
                 "domain_rules": [{"domain": "blocked.invalid", "action": "block"}],
             },
-            ORG_ADMIN,
+            bound,
         )
         self.assertEqual(status, 201, f"create policy failed: {status} {policy}")
 
@@ -450,7 +456,7 @@ class AdminE2E(unittest.TestCase):
             "POST",
             f"/api/v1/orgs/{org}/policies/evaluate-outbound",
             {"sender": "a@kiwi-test.invalid", "recipients": ["b@blocked.invalid"], "tls_version": "tls1.2"},
-            ORG_ADMIN,
+            bound,
         )
         self.assertEqual(status, 200, f"evaluate failed: {status} {verdict}")
 
@@ -469,11 +475,11 @@ class AdminE2E(unittest.TestCase):
                 "policy_verdict": "block",
                 "org_id": org,
             },
-            ORG_ADMIN,
+            bound,
         )
         self.assertEqual(status, 201, f"mailflow ingest failed: {status} {ingested}")
 
-        status, events = http("GET", f"/api/v1/mailflow/events?org={org}&limit=10", None, ORG_ADMIN)
+        status, events = http("GET", f"/api/v1/mailflow/events?org={org}&limit=10", None, bound)
         self.assertEqual(status, 200)
         self.assertTrue(events["items"], "ingested mailflow event must be queryable")
         return org
@@ -533,7 +539,7 @@ class TransportLeg(AdminE2E):
         """T-179: the export is NDJSON, covers every row, and carries the
         chain-state verdict for exactly those rows."""
         self.exercise_full_flow()
-        status, ctype, text = http_text("GET", "/api/v1/audit/export", ORG_ADMIN)
+        status, ctype, text = http_text("GET", "/api/v1/audit/export", SYSTEM_ADMIN)
         self.assertEqual(status, 200, f"export failed: {status} {text[:200]}")
         # NDJSON: a JSON response would have escaped the newlines and destroyed
         # the line structure the format is defined by.
@@ -576,7 +582,7 @@ class TransportLeg(AdminE2E):
                 ".env — an existing .env predating T-179 will not have it."
             )
         self.exercise_full_flow()
-        status, _, text = http_text("GET", "/api/v1/audit/export", ORG_ADMIN)
+        status, _, text = http_text("GET", "/api/v1/audit/export", SYSTEM_ADMIN)
         self.assertEqual(status, 200)
         lines = [line for line in text.split("\n") if line]
         signature = json.loads(lines[-1])
@@ -597,7 +603,7 @@ class TransportLeg(AdminE2E):
         calling back into the service, so a reader does not have to trust the
         `chain_state` line it was handed."""
         self.exercise_full_flow()
-        status, _, text = http_text("GET", "/api/v1/audit/export", ORG_ADMIN)
+        status, _, text = http_text("GET", "/api/v1/audit/export", SYSTEM_ADMIN)
         self.assertEqual(status, 200)
         lines = [line for line in text.split("\n") if line]
         header = json.loads(lines[0])
@@ -637,11 +643,13 @@ class TransportLeg(AdminE2E):
         self.assertEqual(prev, json.loads(lines[-2])["head_hash"], "recomputed head must match chain_state")
 
     def test_audit_export_needs_more_than_audit_read(self):
-        """T-179: `audit.export` is org_admin only — reading the log is not
-        enough, and neither is being a security_admin."""
+        """T-179/T-259: the GLOBAL export is system-admin only — reading the
+        log is not enough, and neither is org_admin (org-scoped `audit.export`
+        now) or security_admin."""
         for headers in (
             VIEWER,
             SECURITY_ADMIN,
+            ORG_ADMIN,
             {"x-kiwi-subject": "e2e-anonymous"},
             {"x-kiwi-subject": "typo", "x-kiwi-roles": "org-admin,admin"},
         ):
@@ -684,7 +692,12 @@ class DialectLeg(AdminE2E):
     def test_audit_org_filter_actually_narrows(self):
         """Regression guard (defect 4): `?org=` was accepted and ignored."""
         org = self.exercise_full_flow()
-        scoped = self.fetch_audit(f"?org={org}&limit=1000")["items"]
+        # Org-scoped reads bind the org (T-193/H2) — the platform headers
+        # hold no org scope, so the scoped calls below carry it explicitly.
+        bound = {"x-kiwi-subject": "e2e-admin", "x-kiwi-roles": "org_admin", "x-kiwi-org": org}
+        status, scoped = http("GET", f"/api/v1/audit?org={org}&limit=1000", None, bound)
+        self.assertEqual(status, 200, f"scoped audit read failed: {status} {scoped}")
+        scoped = scoped["items"]
         everything = self.fetch_audit()["items"]
 
         self.assertTrue(scoped, "the org's own audit rows must come back")
@@ -842,7 +855,164 @@ class T193Regression(AdminE2E):
         finally:
             backend.delete_device(dev)
 
-    # -- H4: org-bound reads default to the caller's own org -----------------
+    # -- T-253: §14 device inventory (GET /orgs/{org}/devices) ---------------
+
+    def test_t253_device_inventory_route(self):
+        """Ratified wire shape, ordering, org scope, and the denial audit row."""
+        org = self.fresh_org()
+        other = self.fresh_org()
+        bound = self.org_headers("org_admin", org)
+        backend = self.live_backend()
+        dev_a = backend.create_device(org, "e2e phone")
+        dev_b = backend.create_device(org, "e2e laptop")
+        stray = backend.create_device(other, "stray device")
+        try:
+            # Revoke one through the real route so revoked_at is populated.
+            status, _ = http(
+                "POST", f"/api/v1/devices/{dev_b}/revoke", None, self.org_headers("org_admin", org)
+            )
+            self.assertEqual(status, 200)
+
+            status, body = http("GET", f"/api/v1/orgs/{org}/devices", None, bound)
+            self.assertEqual(status, 200, f"inventory failed: {status} {body}")
+            items = body["items"]
+            ids = [i["id"] for i in items]
+            # §14.1 total order: created_at ASC, id ASC (ids are random, so
+            # verify the (created_at, id) pairs are monotonically sorted —
+            # the id tie-breaker only orders same-millisecond rows).
+            keys = [(i["created_at"], i["id"]) for i in items]
+            self.assertEqual(keys, sorted(keys), "rows must arrive in created_at,id order")
+            self.assertIn(dev_a, ids)
+            self.assertIn(dev_b, ids)
+            self.assertNotIn(stray, ids, "the other org's device leaked")
+            for item in items:
+                self.assertEqual(
+                    sorted(item.keys()),
+                    ["created_at", "id", "label", "org_id", "revoked", "revoked_at"],
+                )
+                self.assertEqual(item["org_id"], org)
+                self.assertIn(item["revoked"], (0, 1))
+            revoked = next(i for i in items if i["id"] == dev_b)
+            self.assertEqual(revoked["revoked"], 1)
+            self.assertIsInstance(revoked["revoked_at"], int, "revoked row must carry revoked_at")
+
+            # Bounds: ?limit=1 yields one row; a non-decimal limit is a 400.
+            status, one = http("GET", f"/api/v1/orgs/{org}/devices?limit=1", None, bound)
+            self.assertEqual(status, 200)
+            self.assertEqual(len(one["items"]), 1)
+            status, err = http("GET", f"/api/v1/orgs/{org}/devices?limit=abc", None, bound)
+            self.assertEqual(status, 400)
+            self.assertEqual(err["error"]["code"], "validation.failed")
+
+            # Scope: cross-org and null-org are denied AND audited (§14.3).
+            status, err = http(
+                "GET", f"/api/v1/orgs/{org}/devices", None, self.org_headers("org_admin", other)
+            )
+            self.assertEqual(status, 403, f"cross-org read must be refused: {status} {err}")
+            self.assertEqual(err["error"]["details"]["permission"], "device.read")
+            status, _ = http("GET", f"/api/v1/orgs/{org}/devices", None, ORG_ADMIN)
+            self.assertEqual(status, 403, "null-org actor holds no org scope")
+
+            audit = self.fetch_audit(f"?org={org}&limit=1000")
+            denials = [
+                r for r in audit["items"]
+                if r["action"] == "device.list" and r["outcome"] == "denied"
+            ]
+            self.assertGreaterEqual(len(denials), 2, "denied device reads must be audited")
+            for row in denials:
+                self.assertEqual(json.loads(row["details"]).get("permission"), "device.read")
+
+            # Unknown-but-valid org id: 200 with an empty list (§14.1,
+            # consistent with listUsers — not a 404).
+            ghost = "org-e2e-nonexistent"
+            status, body = http(
+                "GET", f"/api/v1/orgs/{ghost}/devices", None, self.org_headers("org_admin", ghost)
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(body["items"], [])
+        finally:
+            backend.delete_device(dev_a)
+            backend.delete_device(dev_b)
+            backend.delete_device(stray)
+
+    def test_t259_admin_drift_fixes(self):
+        """T-259 (ADM-T250-*): org-scoped audit export, denial audit on reads,
+        full audit records, honest verify window, and ghost-org not.found."""
+        org = self.fresh_org()
+        bound = self.org_headers("org_admin", org)
+        other = self.fresh_org()
+        bound_other = self.org_headers("org_admin", other, subject="t259-other")
+
+        # -- ADM-T250-07: org-scoped export serves only the path org's rows --
+        status, ctype, text = http_text("GET", f"/api/v1/orgs/{org}/audit/export", bound)
+        self.assertEqual(status, 200, f"org export failed: {status} {text[:200]}")
+        self.assertIn("application/x-ndjson", ctype)
+        lines = [l for l in text.split("\n") if l]
+        header = json.loads(lines[0])
+        self.assertEqual(header["version"], "kiwi.audit-export-org/1")
+        self.assertEqual(header["scope"], "org")
+        self.assertEqual(header["org_id"], org)
+        # Trailer is scope_state — never a whole-chain claim.
+        scope = json.loads(lines[-2])
+        self.assertEqual(scope["type"], "scope_state")
+        self.assertEqual(scope["chain_claim"], "none")
+        self.assertNotIn('"chain_state"', text)
+        for line in lines[1:-2]:
+            self.assertEqual(json.loads(line)["org_id"], org, "a foreign-org row leaked")
+
+        # Cross-org + the platform-only system-admin are both refused.
+        status, _, _ = http_text("GET", f"/api/v1/orgs/{org}/audit/export", bound_other)
+        self.assertEqual(status, 403, "a foreign org's export must deny")
+        status, _, _ = http_text("GET", f"/api/v1/orgs/{org}/audit/export", SYSTEM_ADMIN)
+        self.assertEqual(status, 403, "system-admin is global-only, not org-scoped")
+
+        # -- ADM-T250-02: audit rows carry the full record --
+        status, body = http("GET", "/api/v1/audit?limit=5", None, ORG_ADMIN)
+        self.assertEqual(status, 200)
+        row = body["items"][0]
+        for key in ("seq", "actor_roles", "org_id", "resource", "request_id", "prev_hash", "entry_hash"):
+            self.assertIn(key, row, f"audit row missing {key}")
+
+        # -- ADM-T250-03: a truncated verify window cannot claim validity ------
+        status, body = http("GET", "/api/v1/audit/verify?limit=1", None, ORG_ADMIN)
+        self.assertEqual(status, 200)
+        self.assertFalse(body["complete"], "a 1-row window must report complete:false")
+        self.assertFalse(body["valid"], "a truncated window must not attest the chain")
+
+        # -- ADM-T250-04: a refused READ is audited ----------------------------
+        status, _ = http("GET", f"/api/v1/orgs/{org}/users", None, bound_other)
+        self.assertEqual(status, 403)
+        status, body = http("GET", f"/api/v1/audit?org={org}&limit=100", None, bound)
+        denied = [r for r in body["items"] if r["action"] == "user.list" and r["outcome"] == "denied"]
+        self.assertTrue(denied, "the cross-org read denial must be audited")
+
+        # -- ADM-T250-13: writes on a ghost org are 404, not an FK 500 --------
+        ghost = "org-00000000-0000-0000-0000-000000000000"
+        ghost_headers = {"x-kiwi-subject": "t259-ghost", "x-kiwi-roles": "org_admin", "x-kiwi-org": ghost}
+        status, err = http("POST", f"/api/v1/orgs/{ghost}/users", {"email": "g@x.test"}, ghost_headers)
+        self.assertEqual(status, 404, f"ghost-org createUser must be 404: {status} {err}")
+        self.assertEqual(err["error"]["code"], "not.found")
+
+        # -- ADM-T250-01/12: canonical wire shapes ----------------------------
+        status, body = http(
+            "POST", f"/api/v1/orgs/{org}/policies",
+            {"name": "t259", "enabled": True, "min_tls": None,
+             "external_recipients": "allow", "domain_rules": []},
+            bound,
+        )
+        self.assertEqual(status, 201)
+        pid = body["id"]
+        status, body = http("GET", f"/api/v1/orgs/{org}/policies", None, bound)
+        p = body["items"][0]
+        self.assertIn("org_id", p)
+        self.assertIn("min_tls", p)
+        self.assertNotIn("minTls", p)
+        status, body = http(
+            "POST", f"/api/v1/policies/{pid}/evaluate",
+            {"direction": "outbound", "sender": "a@x.test", "recipient": "b@y.test", "tlsVersion": None},
+            bound,
+        )
+        self.assertEqual(body["policyId"], pid, "evaluate must emit the canonical policyId field")
 
     def test_h4_unfiltered_reads_stay_inside_the_callers_org(self):
         org_a = self.fresh_org()

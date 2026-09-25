@@ -19,7 +19,9 @@ pub enum TransportKind {
     Timeout,
     /// The response could not be read/decoded.
     Decode,
-    /// Anything else (redirects refused, builder errors, aborts).
+    /// Anything else (client-build errors, request aborts). A refused redirect
+    /// is **not** here: redirects are never
+    /// followed, so a 3xx comes back as [`IntegrationError::Http`].
     Other,
 }
 
@@ -30,11 +32,13 @@ pub enum IntegrationError {
     #[error("transport failure ({kind:?})")]
     Transport { kind: TransportKind },
 
-    /// The provider answered with a non-2xx status we do not specialize.
+    /// The provider answered with a status the operation does not specialize,
+    /// including any 3xx because redirects are never followed.
     #[error("unexpected HTTP status {status}")]
     Http { status: u16 },
 
-    /// 429 or an explicit Retry-After. `retry_after_ms` is the server's hint.
+    /// HTTP 429. `retry_after_ms` is the server's `Retry-After` hint when it
+    /// sent a parseable seconds value; no other status maps here.
     #[error("rate limited")]
     RateLimited { retry_after_ms: Option<u64> },
 
@@ -67,8 +71,27 @@ pub enum IntegrationError {
     #[error("no active session")]
     NoSession,
 
-    /// Provider reported a logical failure in-band (e.g. GuerrillaMail
-    /// returning an error payload).
+    /// The provider reported a logical failure in-band (a top-level `error`
+    /// envelope, or a body that is not the operation's documented success
+    /// shape). The `&'static str` is a fixed code, never provider text.
     #[error("provider rejected request: {0}")]
     ProviderRejected(&'static str),
+}
+
+/// Reject a provider's top-level error envelope before any success parse.
+///
+/// Both integrated services answer logical failures with `200` and a body like
+/// `{"error": "not_found"}`; parsing that as a success is the failure mode this
+/// guards. A missing, `null`, or empty-string `error` is not an envelope, and
+/// the returned code is a fixed `&'static str` — provider text never reaches an
+/// error string.
+pub(crate) fn reject_in_band_error(value: &serde_json::Value) -> Result<(), IntegrationError> {
+    match value.get("error") {
+        None | Some(serde_json::Value::Null) => Ok(()),
+        Some(serde_json::Value::String(s)) if s.trim().is_empty() => Ok(()),
+        Some(serde_json::Value::String(s)) if s.trim() == "not ownership" => {
+            Err(IntegrationError::ProviderRejected("not_ownership"))
+        }
+        Some(_) => Err(IntegrationError::ProviderRejected("provider_error")),
+    }
 }

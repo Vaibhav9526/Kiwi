@@ -26,6 +26,9 @@ use crate::state::AppState;
 /// Idempotent.
 pub(crate) async fn drop_outbox(state: &AppState, queue_id: &str) {
     state.outbox_meta.lock().await.remove(queue_id);
+    if state.single_attempt.lock().await.forget(queue_id).is_err() {
+        eprintln!("[kiwi-app] single-attempt ledger write failed for {queue_id}");
+    }
     if let Err(e) = state.store.lock().await.outbox_delete(queue_id) {
         eprintln!("[kiwi-app] outbox delete {queue_id} failed: {e}");
     }
@@ -40,7 +43,7 @@ pub(crate) mod tests {
     use super::super::gate;
     use super::*;
     use crate::error::IpcError;
-    use crate::state::{OutboxMeta, now_unix};
+    use crate::state::{OutboxClass, OutboxMeta, now_unix};
     use crate::types::{AddAccountInput, AuthInput, ComposeInput, SendOptions, ServerInput};
 
     pub fn block_on<F: std::future::Future>(f: F) -> F::Output {
@@ -338,6 +341,7 @@ pub(crate) mod tests {
             attempts: 2,
             // Legacy fixture predates T-298 — no recorded reason.
             last_error: None,
+            class: OutboxClass::Ordinary,
         };
         let od = dir.join("outbox");
         std::fs::create_dir_all(&od).unwrap();

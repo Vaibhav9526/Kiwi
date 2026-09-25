@@ -18,11 +18,16 @@
 //!   sessions idle out ~18 min (any call refreshes; a `get_email_address`
 //!   on an expired session mints a *new* address — `set_email_user` brings
 //!   the old one back while it lives).
+//! - Logical failures arrive as `200` plus a top-level `{"error": …}` envelope,
+//!   so every success parse runs `reject_in_band_error` first, and `forget_me`
+//!   accepts only its documented `true` token.
 //!
-//! Privacy posture: the API asks for the end user's `ip` and `agent`. We send
-//! constants (`127.0.0.1`, `KIWI/<ver>`) — the user's real IP and UA are none
-//! of the provider's business. The whole session (cookie, token, address)
-//! is in-memory `Mutex` state; nothing is persisted.
+//! Privacy posture: the API asks for the end user's `ip` and `agent`. KIWI puts
+//! constants (`127.0.0.1`, `KIWI/<ver>`) in those parameters — it never places
+//! the user's real IP or user-agent there (the network path still reveals the
+//! connection source IP to the provider, as any HTTPS request does). The whole
+//! session (cookie, token, address) is in-memory `Mutex` state; nothing is
+//! persisted, and the two capability strings are zeroized when it is dropped.
 
 use std::sync::{Arc, Mutex};
 
@@ -33,8 +38,9 @@ use super::{
     ExtendOutcome, InboxPoll, MAX_FIELD, MAX_LOCAL_PART, MAX_MAIL_BODY, MAX_RFC822, TempAddress,
     TempMailProvider, TempMessage, TempMessageSummary,
 };
-use crate::error::IntegrationError;
-use crate::http::{HttpClient, HttpMethod, HttpRequest, HttpResponse, ReqwestClient};
+use crate::error::{IntegrationError, reject_in_band_error};
+use crate::http::{HttpClient, HttpMethod, HttpRequest, HttpResponse, LiveRefused, ReqwestClient};
+use crate::secret::SecretString;
 
 /// Production endpoint — HTTPS only, hardcoded. (The historical docs say
 /// `http://`; the host serves HTTPS fine and we refuse plaintext.)
@@ -47,11 +53,19 @@ const PARAM_IP: &str = "127.0.0.1";
 /// `MAX_MAIL_BODY` + slack, applied per-request).
 const MAX_API_BODY: usize = MAX_MAIL_BODY + 1024 * 1024;
 
-/// In-memory session. Cleared entirely on `forget_me`/`Drop`.
+/// The only accepted `forget_me` success body, after ASCII trimming. The API
+/// answers the bare token `true`; anything else — an `{"error": …}` envelope,
+/// `false`, an HTML error page — is a rejection.
+const FORGET_ME_OK: &[u8] = b"true";
+
+/// In-memory session. The two capability strings are [`SecretString`]: redacted
+/// on print, zeroized when the session is dropped. `forget_me` clears the
+/// address but deliberately keeps the session (the API docs say the session
+/// itself persists server-side).
 #[derive(Debug, Default)]
 struct Session {
-    php_sessid: Option<String>,
-    sid_token: Option<String>,
+    php_sessid: Option<SecretString>,
+    sid_token: Option<SecretString>,
     address: Option<String>,
     created_unix: Option<u64>,
     /// Highest numeric `mail_id` seen — the `seq` cursor for `check_email`.
@@ -96,50 +110,60 @@ impl GuerrillaMail {
     }
 
     /// Provider over the live reqwest transport (`GUERRILLA_API`, 30 s).
-    pub fn live() -> Result<Self, IntegrationError> {
-        let http = ReqwestClient::new(crate::http::DEFAULT_TIMEOUT_MS)?.with_body_cap(MAX_API_BODY);
-        Self::new(Arc::new(http), GUERRILLA_API, "KIWI/0.1")
+    ///
+    /// Fail-closed opt-in: this refuses unless [`crate::http::LIVE_ENV`] is `1`
+    /// and no CI marker is set (see [`LiveRefused`]). Offline tests build over
+    /// [`crate::http::ScriptedHttp`] and never reach this path.
+    pub fn live() -> Result<Self, LiveRefused> {
+        crate::http::live_gate_from_env()?;
+        let http = ReqwestClient::new(crate::http::DEFAULT_TIMEOUT_MS)
+            .map_err(LiveRefused::Build)?
+            .with_body_cap(MAX_API_BODY);
+        Self::new(Arc::new(http), GUERRILLA_API, "KIWI/0.1").map_err(LiveRefused::Build)
     }
 
     /// Shared request path: params → GET/POST → session-cookie maintenance →
     /// status mapping. Returns the raw response for the caller to parse.
+    ///
+    /// The URL and the `Cookie` header necessarily carry the session
+    /// capability; they are built under the state lock so no extra copy of the
+    /// secret exists outside the request, and `HttpRequest` redacts itself on
+    /// `Debug`.
     async fn call(
         &self,
         method: HttpMethod,
         f: &str,
         extra: &[(&str, String)],
     ) -> Result<HttpResponse, IntegrationError> {
-        let (sessid, sid) = {
+        let req = {
             let s = self.state.lock().expect("gm session");
-            (s.php_sessid.clone(), s.sid_token.clone())
+            let mut url = format!(
+                "{}?f={f}&ip={PARAM_IP}&agent={}",
+                self.base,
+                crate::http::encode_param(&self.agent)
+            );
+            if let Some(t) = s.sid_token.as_ref() {
+                url.push_str("&sid_token=");
+                url.push_str(&crate::http::encode_param(t.expose()));
+            }
+            for (k, v) in extra {
+                url.push('&');
+                url.push_str(k);
+                url.push('=');
+                url.push_str(&crate::http::encode_param(v));
+            }
+            let mut req = HttpRequest {
+                method,
+                url,
+                headers: vec![("accept".into(), "application/json".into())],
+                body: None,
+            };
+            if let Some(id) = s.php_sessid.as_ref() {
+                req.headers
+                    .push(("cookie".into(), format!("PHPSESSID={}", id.expose())));
+            }
+            req
         };
-
-        let mut url = format!(
-            "{}?f={f}&ip={PARAM_IP}&agent={}",
-            self.base,
-            crate::http::encode_param(&self.agent)
-        );
-        if let Some(t) = &sid {
-            url.push_str("&sid_token=");
-            url.push_str(&crate::http::encode_param(t));
-        }
-        for (k, v) in extra {
-            url.push('&');
-            url.push_str(k);
-            url.push('=');
-            url.push_str(&crate::http::encode_param(v));
-        }
-
-        let mut req = HttpRequest {
-            method,
-            url,
-            headers: vec![("accept".into(), "application/json".into())],
-            body: None,
-        };
-        if let Some(id) = &sessid {
-            req.headers
-                .push(("cookie".into(), format!("PHPSESSID={id}")));
-        }
 
         let resp = self.http.request(req).await?;
         self.absorb_cookies(&resp);
@@ -173,7 +197,7 @@ impl GuerrillaMail {
                 .take(128)
                 .collect();
             if !v.is_empty() {
-                self.state.lock().expect("gm session").php_sessid = Some(v);
+                self.state.lock().expect("gm session").php_sessid = Some(SecretString::new(v));
             }
         }
     }
@@ -203,7 +227,7 @@ impl TempMailProvider for GuerrillaMail {
         s.address = Some(addr.address.clone());
         s.created_unix = addr.created_unix;
         if let Some(t) = jstr(&v, "sid_token") {
-            s.sid_token = Some(t.chars().take(160).collect());
+            s.sid_token = Some(SecretString::new(t.chars().take(160).collect()));
         }
         s.last_seq = 0;
         Ok(addr)
@@ -261,7 +285,6 @@ impl TempMailProvider for GuerrillaMail {
 
     async fn forget_me(&self) -> Result<(), IntegrationError> {
         let addr = self.address().ok_or(IntegrationError::NoSession)?;
-        // Provider returns `true`; anything else is a rejection.
         let resp = self
             .call(HttpMethod::Post, "forget_me", &[("email_addr", addr)])
             .await?;
@@ -272,10 +295,13 @@ impl TempMailProvider for GuerrillaMail {
         // PHPSESSID intentionally survives — the session itself persists
         // server-side per API docs.
         let body = resp.body.trim_ascii();
-        if body != b"true" && !body.starts_with(b"{") {
-            return Err(IntegrationError::ProviderRejected("forget_me"));
+        if body == FORGET_ME_OK {
+            return Ok(());
         }
-        Ok(())
+        if let Ok(value) = serde_json::from_slice::<Value>(body) {
+            reject_in_band_error(&value)?;
+        }
+        Err(IntegrationError::ProviderRejected("forget_me"))
     }
 
     async fn extend(&self) -> Result<ExtendOutcome, IntegrationError> {
@@ -283,12 +309,7 @@ impl TempMailProvider for GuerrillaMail {
             return Err(IntegrationError::NoSession);
         }
         let resp = self.call(HttpMethod::Post, "extend", &[]).await?;
-        let v = resp.json()?;
-        Ok(ExtendOutcome {
-            expired: jbool(&v, "expired").unwrap_or(false),
-            extended: ju64(&v, "affected") == Some(1),
-            address_created_unix: ju64(&v, "email_timestamp"),
-        })
+        parse_extend(&resp.json()?)
     }
 }
 
@@ -297,12 +318,7 @@ impl TempMailProvider for GuerrillaMail {
 // ---------------------------------------------------------------------------
 
 fn parse_address(v: &Value) -> Result<TempAddress, IntegrationError> {
-    if let Some(e) = jstr(v, "error") {
-        return Err(IntegrationError::ProviderRejected(match e {
-            "not ownership" => "not_ownership",
-            _ => "provider_error",
-        }));
-    }
+    reject_in_band_error(v)?;
     let address = jstr(v, "email_addr")
         .map(|s| s.chars().take(320).collect::<String>())
         .filter(|s| !s.is_empty())
@@ -314,7 +330,34 @@ fn parse_address(v: &Value) -> Result<TempAddress, IntegrationError> {
     })
 }
 
+/// `extend` success shape: `expired` and `affected` are required, `affected`
+/// is `0` or `1`, and `email_timestamp` must be numeric when present. A missing
+/// or nonsensical field is `Malformed` rather than a guessed `false`.
+fn parse_extend(v: &Value) -> Result<ExtendOutcome, IntegrationError> {
+    reject_in_band_error(v)?;
+    if !v.is_object() {
+        return Err(IntegrationError::Malformed("extend"));
+    }
+    let expired = jbool(v, "expired").ok_or(IntegrationError::Malformed("expired"))?;
+    let affected = ju64(v, "affected").ok_or(IntegrationError::Malformed("affected"))?;
+    if affected > 1 {
+        return Err(IntegrationError::Malformed("affected"));
+    }
+    let address_created_unix = match v.get("email_timestamp") {
+        None => None,
+        Some(_) => {
+            Some(ju64(v, "email_timestamp").ok_or(IntegrationError::Malformed("email_timestamp"))?)
+        }
+    };
+    Ok(ExtendOutcome {
+        expired,
+        extended: affected == 1,
+        address_created_unix,
+    })
+}
+
 fn parse_poll(v: &Value, state: &Mutex<Session>) -> Result<InboxPoll, IntegrationError> {
+    reject_in_band_error(v)?;
     let list = v
         .get("list")
         .and_then(Value::as_array)
@@ -363,12 +406,7 @@ fn parse_poll(v: &Value, state: &Mutex<Session>) -> Result<InboxPoll, Integratio
 }
 
 fn parse_fetch(v: &Value, to: Option<&str>) -> Result<TempMessage, IntegrationError> {
-    if let Some(e) = jstr(v, "error") {
-        return Err(IntegrationError::ProviderRejected(match e {
-            "not ownership" => "not_ownership",
-            _ => "provider_error",
-        }));
-    }
+    reject_in_band_error(v)?;
     let id = jstr(v, "mail_id")
         .unwrap_or_default()
         .chars()
@@ -570,8 +608,7 @@ fn retry_after(resp: &HttpResponse) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http::ScriptedHttp;
-    use crate::http::Step;
+    use crate::http::{ScriptedHttp, Step};
 
     fn gm(steps: Vec<Step>) -> GuerrillaMail {
         GuerrillaMail::new(
@@ -588,6 +625,8 @@ mod tests {
         "sid_token": "tok_deadbeef",
         "s_active": "N", "s_date": "", "s_time": "", "s_time_expires": ""
     }"#;
+
+    const ERR_JSON: &str = r#"{"error":"email_addr not valid","f":"get_email_address"}"#;
 
     #[tokio::test]
     async fn get_email_address_starts_session_and_echoes_cookie() {
@@ -862,5 +901,259 @@ mod tests {
             GuerrillaMail::new(http, "http://api.guerrillamail.com/ajax.php", "k").unwrap_err(),
             IntegrationError::InsecureUrl
         );
+    }
+
+    #[tokio::test]
+    async fn fetch_email_rejects_error_envelope_even_with_usable_fields() {
+        let g = gm(vec![Step::get(
+            "fetch",
+            &["f=fetch_email"],
+            200,
+            r#"{"error":"not ownership","mail_id":"7"}"#,
+        )]);
+        assert_eq!(
+            g.fetch_email("7").await.unwrap_err(),
+            IntegrationError::ProviderRejected("not_ownership")
+        );
+    }
+
+    #[tokio::test]
+    async fn error_envelope_wins_over_plausible_success_fields() {
+        let g = gm(vec![
+            Step::get("init", &["f=get_email_address"], 200, ADDR_JSON),
+            Step::post(
+                "ext",
+                &["f=extend"],
+                200,
+                r#"{"error":"busy","expired":false,"affected":1}"#,
+            ),
+        ]);
+        g.get_email_address().await.unwrap();
+        assert_eq!(
+            g.extend().await.unwrap_err(),
+            IntegrationError::ProviderRejected("provider_error")
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // In-band error envelopes (INTG-04)
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn get_email_address_rejects_error_envelope() {
+        let g = gm(vec![Step::get(
+            "init",
+            &["f=get_email_address"],
+            200,
+            ERR_JSON,
+        )]);
+        assert_eq!(
+            g.get_email_address().await.unwrap_err(),
+            IntegrationError::ProviderRejected("provider_error")
+        );
+    }
+
+    #[tokio::test]
+    async fn set_email_user_rejects_error_envelope() {
+        let g = gm(vec![
+            Step::get("init", &["f=get_email_address"], 200, ADDR_JSON),
+            Step::post("set", &["f=set_email_user"], 200, ERR_JSON),
+        ]);
+        g.get_email_address().await.unwrap();
+        assert_eq!(
+            g.set_email_user("newbox").await.unwrap_err(),
+            IntegrationError::ProviderRejected("provider_error")
+        );
+    }
+
+    #[tokio::test]
+    async fn check_email_rejects_error_envelope() {
+        let g = gm(vec![
+            Step::get("init", &["f=get_email_address"], 200, ADDR_JSON),
+            Step::get("poll", &["f=check_email"], 200, ERR_JSON),
+        ]);
+        g.get_email_address().await.unwrap();
+        assert_eq!(
+            g.check_email().await.unwrap_err(),
+            IntegrationError::ProviderRejected("provider_error")
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_email_rejects_error_envelope() {
+        let g = gm(vec![
+            Step::get("init", &["f=get_email_address"], 200, ADDR_JSON),
+            Step::get("fetch", &["f=fetch_email"], 200, ERR_JSON),
+        ]);
+        g.get_email_address().await.unwrap();
+        assert_eq!(
+            g.fetch_email("7001").await.unwrap_err(),
+            IntegrationError::ProviderRejected("provider_error")
+        );
+    }
+
+    #[tokio::test]
+    async fn extend_rejects_error_envelope() {
+        let g = gm(vec![
+            Step::get("init", &["f=get_email_address"], 200, ADDR_JSON),
+            Step::post("ext", &["f=extend"], 200, ERR_JSON),
+        ]);
+        g.get_email_address().await.unwrap();
+        assert_eq!(
+            g.extend().await.unwrap_err(),
+            IntegrationError::ProviderRejected("provider_error")
+        );
+    }
+
+    #[tokio::test]
+    async fn not_ownership_keeps_its_own_code() {
+        let v: Value = serde_json::from_str(r#"{"error":"not ownership"}"#).unwrap();
+        assert_eq!(
+            reject_in_band_error(&v).unwrap_err(),
+            IntegrationError::ProviderRejected("not_ownership")
+        );
+    }
+
+    #[test]
+    fn empty_or_absent_error_is_not_an_envelope() {
+        for body in [
+            r#"{}"#,
+            r#"{"error":null}"#,
+            r#"{"error":""}"#,
+            r#"{"error":"  "}"#,
+        ] {
+            let v: Value = serde_json::from_str(body).unwrap();
+            assert!(reject_in_band_error(&v).is_ok(), "{body} must parse");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // forget_me / extend shapes
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn forget_me_requires_the_exact_success_token() {
+        for body in ["false", "1", r#"{"status":"ok"}"#, "trueish", r#""true""#] {
+            let g = gm(vec![
+                Step::get("init", &["f=get_email_address"], 200, ADDR_JSON),
+                Step::post("forget", &["f=forget_me"], 200, body),
+            ]);
+            g.get_email_address().await.unwrap();
+            assert_eq!(
+                g.forget_me().await.unwrap_err(),
+                IntegrationError::ProviderRejected("forget_me"),
+                "body {body:?} must not count as success"
+            );
+            assert_eq!(g.address(), None);
+        }
+    }
+
+    #[tokio::test]
+    async fn forget_me_rejects_error_envelope_with_envelope_code() {
+        let g = gm(vec![
+            Step::get("init", &["f=get_email_address"], 200, ADDR_JSON),
+            Step::post("forget", &["f=forget_me"], 200, ERR_JSON),
+        ]);
+        g.get_email_address().await.unwrap();
+        assert_eq!(
+            g.forget_me().await.unwrap_err(),
+            IntegrationError::ProviderRejected("provider_error")
+        );
+    }
+
+    #[tokio::test]
+    async fn forget_me_tolerates_surrounding_whitespace() {
+        let g = gm(vec![
+            Step::get("init", &["f=get_email_address"], 200, ADDR_JSON),
+            Step::post("forget", &["f=forget_me"], 200, "true\n"),
+        ]);
+        g.get_email_address().await.unwrap();
+        g.forget_me().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn extend_requires_its_documented_fields() {
+        for (body, want) in [
+            (r#"{}"#, IntegrationError::Malformed("expired")),
+            (
+                r#"{"expired":false}"#,
+                IntegrationError::Malformed("affected"),
+            ),
+            (
+                r#"{"expired":"maybe","affected":1}"#,
+                IntegrationError::Malformed("expired"),
+            ),
+            (
+                r#"{"expired":false,"affected":5}"#,
+                IntegrationError::Malformed("affected"),
+            ),
+            (
+                r#"{"expired":false,"affected":1,"email_timestamp":"soon"}"#,
+                IntegrationError::Malformed("email_timestamp"),
+            ),
+        ] {
+            let g = gm(vec![
+                Step::get("init", &["f=get_email_address"], 200, ADDR_JSON),
+                Step::post("ext", &["f=extend"], 200, body),
+            ]);
+            g.get_email_address().await.unwrap();
+            assert_eq!(g.extend().await.unwrap_err(), want, "body {body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn extend_accepts_string_encoded_numbers() {
+        let g = gm(vec![
+            Step::get("init", &["f=get_email_address"], 200, ADDR_JSON),
+            Step::post(
+                "ext",
+                &["f=extend"],
+                200,
+                r#"{"expired":"false","affected":"1","email_timestamp":"1758300000"}"#,
+            ),
+        ]);
+        g.get_email_address().await.unwrap();
+        let o = g.extend().await.unwrap();
+        assert!(o.extended && !o.expired);
+    }
+
+    // -----------------------------------------------------------------------
+    // Secret hygiene + live gate
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn debug_never_exposes_session_capabilities() {
+        let g = gm(vec![
+            Step::get("init", &["f=get_email_address"], 200, ADDR_JSON)
+                .respond_headers(&[("set-cookie", "PHPSESSID=sess42; path=/")]),
+        ]);
+        g.get_email_address().await.unwrap();
+        let line = format!("{g:?}");
+        assert!(!line.contains("sess42"));
+        assert!(!line.contains("tok_deadbeef"));
+        assert!(line.contains("[redacted]"));
+    }
+
+    #[test]
+    fn temp_address_debug_redacts_and_serde_skips_the_token() {
+        let a = TempAddress {
+            address: "abc123@guerrillamailblock.com".into(),
+            created_unix: Some(1),
+            sid_token: Some("tok_deadbeef".into()),
+        };
+        let line = format!("{a:?}");
+        assert!(!line.contains("tok_deadbeef"));
+        assert!(line.contains("[redacted]"));
+        let json = serde_json::to_string(&a).unwrap();
+        assert!(!json.contains("tok_deadbeef"));
+        assert!(json.contains("abc123@guerrillamailblock.com"));
+    }
+
+    #[test]
+    fn live_constructor_is_env_gated() {
+        if crate::http::live_gate_from_env().is_ok() {
+            return;
+        }
+        assert!(GuerrillaMail::live().is_err());
     }
 }

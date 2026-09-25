@@ -17,6 +17,11 @@ pub struct IpcError {
     pub code: &'static str,
     /// Sanitized human-readable detail — never secrets.
     pub message: String,
+    /// Structured backoff hint in milliseconds. Present only when the
+    /// failure carries a server-sent or backend-enforced wait, so a caller
+    /// can poll on the provider's cadence instead of parsing prose.
+    #[serde(rename = "retryAfterMs", skip_serializing_if = "Option::is_none")]
+    pub retry_after_ms: Option<u64>,
 }
 
 impl IpcError {
@@ -24,7 +29,23 @@ impl IpcError {
         Self {
             code,
             message: message.into(),
+            retry_after_ms: None,
         }
+    }
+
+    pub fn rate_limited(message: impl Into<String>, retry_after_ms: Option<u64>) -> Self {
+        Self {
+            code: "rate-limited",
+            message: message.into(),
+            retry_after_ms,
+        }
+    }
+
+    /// Same failure, re-issued with a backoff hint.
+    #[must_use]
+    pub fn with_retry_after(mut self, retry_after_ms: Option<u64>) -> Self {
+        self.retry_after_ms = retry_after_ms;
+        self
     }
 
     /// The lock-state gate's error: every gated command returns this while
@@ -181,14 +202,15 @@ impl From<kiwi_integrations::IntegrationError> for IpcError {
     fn from(e: kiwi_integrations::IntegrationError) -> Self {
         use kiwi_integrations::IntegrationError::*;
         use kiwi_integrations::TransportKind;
-        let (code, msg) = match &e {
+        let (code, msg, retry_after_ms) = match &e {
             Transport {
                 kind: TransportKind::Connect | TransportKind::Timeout,
-            } => ("connect-failed", e.to_string()),
-            Transport { .. } => ("integration-error", e.to_string()),
+            } => ("connect-failed", e.to_string(), None),
+            Transport { .. } => ("integration-error", e.to_string(), None),
             Http { status } => (
                 "integration-error",
                 format!("provider returned unexpected HTTP {status}"),
+                None,
             ),
             RateLimited { retry_after_ms } => (
                 "rate-limited",
@@ -196,35 +218,45 @@ impl From<kiwi_integrations::IntegrationError> for IpcError {
                     Some(ms) => format!("provider rate-limited; retry after {ms} ms"),
                     None => "provider rate-limited".to_string(),
                 },
+                *retry_after_ms,
             ),
             Expired => (
                 "expired",
                 "provider reports the address or test expired".to_string(),
+                None,
             ),
-            NotFound => ("not-found", "not found on provider".to_string()),
+            NotFound => ("not-found", "not found on provider".to_string(), None),
             AnalysisFailed => (
                 "integration-error",
                 "provider-side analysis failed".to_string(),
+                None,
             ),
             Malformed(field) => (
                 "integration-error",
                 format!("provider response malformed ({field})"),
+                None,
             ),
             BodyTooLarge => (
                 "integration-error",
                 "provider response too large".to_string(),
+                None,
             ),
             InsecureUrl => (
                 "integration-error",
                 "refused non-HTTPS provider URL".to_string(),
+                None,
             ),
-            NoSession => ("not-found", "no active temp-mail session".to_string()),
+            NoSession => ("not-found", "no active temp-mail session".to_string(), None),
             ProviderRejected(why) => (
                 "server-reject",
                 format!("provider rejected the request: {why}"),
+                None,
             ),
         };
-        Self::new(code, msg)
+        match retry_after_ms {
+            None => Self::new(code, msg),
+            Some(ms) => Self::new(code, msg).with_retry_after(Some(ms)),
+        }
     }
 }
 

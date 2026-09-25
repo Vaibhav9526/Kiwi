@@ -13,7 +13,9 @@ use kiwi_mail::smtp::{QueuedSend, SendRequest};
 use super::super::{bounded, gate, valid_addr};
 use super::drop_outbox;
 use crate::error::{CmdResult, IpcError};
-use crate::state::{AppState, MAX_OUTBOX_ITEM_BYTES, OutboxMeta, new_id, now_unix, outbox_row_of};
+use crate::state::{
+    AppState, MAX_OUTBOX_ITEM_BYTES, OutboxClass, OutboxMeta, new_id, now_unix, outbox_row_of,
+};
 use crate::types::{ComposeInput, OutboxItem, SendOptions, SendReceipt};
 
 const MAX_RECIPIENTS: usize = 100;
@@ -38,6 +40,23 @@ pub(crate) async fn send_impl(
     account_id: &str,
     message: ComposeInput,
     options: Option<SendOptions>,
+) -> CmdResult<SendReceipt> {
+    send_impl_class(
+        state,
+        account_id,
+        message,
+        options,
+        OutboxClass::Ordinary,
+    )
+    .await
+}
+
+pub(crate) async fn send_impl_class(
+    state: &AppState,
+    account_id: &str,
+    message: ComposeInput,
+    options: Option<SendOptions>,
+    class: OutboxClass,
 ) -> CmdResult<SendReceipt> {
     bounded("accountId", account_id, 128)?;
     let acct = state
@@ -170,15 +189,26 @@ pub(crate) async fn send_impl(
         undo_window_until_unix: undo_until,
         attempts: 0,
         last_error: None,
+        class,
     };
     if mime_bytes.len() > MAX_OUTBOX_ITEM_BYTES {
         return Err(IpcError::invalid("queued message exceeds 32 MiB"));
+    }
+    // Single-attempt class is durable BEFORE the outbox row exists: a crash
+    // between the two must not resurrect the item as an ordinary retry.
+    if class.is_single_attempt() {
+        state.single_attempt.lock().await.mark(&queue_id)?;
     }
     // T-142: persist BEFORE enqueue — a crash between the two must not
     // lose a committed send. One row in mail.db's outbox table is the
     // atomic write (meta + MIME together).
     let row = outbox_row_of(&queue_id, &meta, mime_bytes, now);
-    state.store.lock().await.outbox_put(&row)?;
+    if let Err(e) = state.store.lock().await.outbox_put(&row) {
+        if class.is_single_attempt() {
+            let _ = state.single_attempt.lock().await.forget(&queue_id);
+        }
+        return Err(e.into());
+    }
     state.send_queue.lock().await.enqueue(QueuedSend {
         queue_id: queue_id.clone(),
         request: SendRequest {

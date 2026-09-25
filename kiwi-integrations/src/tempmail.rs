@@ -18,8 +18,11 @@
 //! residue. All methods are `&self` with interior locking so the provider can
 //! sit behind IPC.
 
+use std::fmt;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroize;
 
 use crate::IntegrationError;
 
@@ -41,7 +44,13 @@ pub const PUBLIC_INBOX_NOTICE: &str = "Temporary inboxes are PUBLIC: anyone who 
      messages pass through a third-party server. Never receive personal or sensitive mail here.";
 
 /// A disposable address as the provider reports it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `sid_token` is secret material: it is redacted on `Debug`, skipped by
+/// `Serialize`, and zeroized when the value is dropped. It is deliberately
+/// **not** `Deserialize`able — a value that can be rebuilt from JSON is a value
+/// that can be logged into JSON. The zeroizing `Drop` impl means fields are
+/// read, not destructured.
+#[derive(Clone, PartialEq, Eq, Serialize)]
 pub struct TempAddress {
     /// The full address (e.g. `abc123@guerrillamailblock.com`).
     pub address: String,
@@ -52,6 +61,24 @@ pub struct TempAddress {
     /// (GuerrillaMail `sid_token`). Opaque; never logged.
     #[serde(skip_serializing)]
     pub sid_token: Option<String>,
+}
+
+impl fmt::Debug for TempAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TempAddress")
+            .field("address", &self.address)
+            .field("created_unix", &self.created_unix)
+            .field("sid_token", &self.sid_token.as_ref().map(|_| "[redacted]"))
+            .finish()
+    }
+}
+
+impl Drop for TempAddress {
+    fn drop(&mut self) {
+        if let Some(t) = &mut self.sid_token {
+            t.zeroize();
+        }
+    }
 }
 
 /// One inbox row from a poll.

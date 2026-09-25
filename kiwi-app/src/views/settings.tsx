@@ -22,7 +22,7 @@ import { SHORTCUT_ROWS } from "../components/shortcuts";
 import { Icon, isIconName } from "../components/icons/index";
 import { PairQrFlow } from "../components/pair";
 import { ThemePicker, useTheme } from "../themes";
-import { emitToPlugin, removePlugin, setPluginEnabled, useInstalledPlugins, usePluginPanes } from "../plugins";
+import { emitToPlugin, installPlugin, removePlugin, setPluginEnabled, useInstalledPlugins, usePluginPanes } from "../plugins";
 
 // T-191 tabbed preferences (Mailspring idiom): the eight legacy sections
 // fold into seven tabs — General (general + notifications + privacy +
@@ -73,8 +73,13 @@ export function SettingsView({
   const [devices, setDevices] = useState<DeviceView[]>([]);
   const [devicesError, setDevicesError] = useState<string | null>(null);
   const [pairOpen, setPairOpen] = useState(false);
+  /** This desktop's own device id (SecurityStatusView.deviceId) — marks the
+   *  "this device" row when the local endpoint is registered (T-308). */
+  const [localDeviceId, setLocalDeviceId] = useState<string | null>(null);
   const [testResults, setTestResults] = useState<Record<string, VerifyResult[]>>({});
   const [actionError, setActionError] = useState<string | null>(null);
+  const [pluginErrs, setPluginErrs] = useState<string[]>([]);
+  const pluginFileRef = useRef<HTMLInputElement>(null);
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   const [confirmRevoke, setConfirmRevoke] = useState<string | null>(null);
   const [bindOrgId, setBindOrgId] = useState("");
@@ -280,10 +285,50 @@ export function SettingsView({
     if (mode !== "live") return;
     setDevicesError(null);
     try {
-      setDevices(await api.listDevices());
+      const [rows, status] = await Promise.all([api.listDevices(), api.securityStatus()]);
+      setDevices(rows);
+      setLocalDeviceId(status.deviceId);
     } catch (e) {
       setDevicesError(errText(e));
     }
+  };
+
+  /**
+   * T-307 sideload install: read every picked package file as text
+   * (webkitRelativePath carries the folder layout; the top-level dir name is
+   * stripped so `manifest.json` lands at the package root). Registry-side
+   * validation (manifest schema, capability names, safe paths) returns
+   * readable errors which surface verbatim in the banner — no silent fails.
+   */
+  const installPluginFiles = async (files: FileList | null, input: HTMLInputElement) => {
+    input.value = ""; // allow re-picking the same folder
+    if (!files || files.length === 0) return;
+    const errs: string[] = [];
+    const map: Record<string, string> = {};
+    const MAX_FILES = 64;
+    const MAX_BYTES = 512 * 1024;
+    const picked = Array.from(files);
+    if (picked.length > MAX_FILES) errs.push(`package has ${picked.length} files — max ${MAX_FILES}`);
+    for (const f of picked.slice(0, MAX_FILES)) {
+      const rel = (f.webkitRelativePath || f.name).split("/").slice(1).join("/") || f.name;
+      if (f.size > MAX_BYTES) {
+        errs.push(`"${rel}" is ${Math.ceil(f.size / 1024)}KB — max 512KB`);
+        continue;
+      }
+      try {
+        map[rel] = await f.text();
+      } catch {
+        errs.push(`couldn't read "${rel}"`);
+      }
+    }
+    if (errs.length === 0 && !("manifest.json" in map)) {
+      errs.push("no manifest.json at the package root — pick the plugin folder itself");
+    }
+    if (errs.length === 0) {
+      const r = installPlugin(map["manifest.json"], map);
+      if (!r.ok) errs.push(...(r.errors ?? ["install failed"]));
+    }
+    setPluginErrs(errs);
   };
 
   useEffect(() => {
@@ -744,7 +789,7 @@ export function SettingsView({
               <p style={{ color: "var(--kiwi-text-secondary)" }}>
                 <small>
                   {mode === "live"
-                    ? "No devices registered."
+                    ? "No paired devices."
                     : "Device management needs the backend."}
                 </small>
               </p>
@@ -778,13 +823,42 @@ export function SettingsView({
                 </button>
               </p>
             )}
+            {/* T-308: rows project the real §9d.5 DeviceView — fingerprint
+                (full dash-grouped, display-only) + keystoreRef presence +
+                paired/last-seen/revoked timestamps; "this device" marks the
+                local endpoint when its id appears. Nothing invented. */}
             <ul>
               {devices.map((d) => (
                 <li key={d.deviceId}>
                   {d.label}{" "}
+                  {d.deviceId === localDeviceId && (
+                    <span className="ms-badge ms-badge-alt" title="This desktop's own device record">
+                      this device
+                    </span>
+                  )}{" "}
+                  <span
+                    className={`ms-badge${d.status === "revoked" ? "" : " ms-badge-alt"}`}
+                    title={
+                      d.status === "revoked"
+                        ? "Revoked — terminal; cannot satisfy challenges"
+                        : `Status: ${d.status}`
+                    }
+                  >
+                    {d.status}
+                  </span>
+                  <br />
+                  <small style={{ color: "var(--kiwi-text-secondary)" }}>
+                    {d.deviceId} · {d.algorithm} · paired{" "}
+                    {new Date(d.registeredUnix * 1000).toLocaleDateString()} · last seen{" "}
+                    {new Date(d.lastSeenUnix * 1000).toLocaleDateString()}
+                    {d.revokedUnix != null &&
+                      ` · revoked ${new Date(d.revokedUnix * 1000).toLocaleDateString()}`}
+                    {" · keystore: "}
+                    {d.keystoreRef ?? "none"}
+                  </small>
+                  <br />
                   <small>
-                    ({d.deviceId}, {d.algorithm}, {d.status}, fp …{d.keyFingerprintTail}
-                    {d.revokedUnix != null && `, revoked ${new Date(d.revokedUnix * 1000).toLocaleDateString()}`})
+                    fingerprint <code title="SHA-256 of the public key — display only, never a trust input">{d.fingerprint}</code>
                   </small>{" "}
                   {confirmRevoke === d.deviceId ? (
                     <>
@@ -796,7 +870,12 @@ export function SettingsView({
                       </button>
                     </>
                   ) : (
-                    <button type="button" onClick={() => setConfirmRevoke(d.deviceId)} disabled={d.status === "revoked"}>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmRevoke(d.deviceId)}
+                      disabled={d.status === "revoked"}
+                      title={d.status === "revoked" ? "Already revoked" : undefined}
+                    >
                       Revoke…
                     </button>
                   )}
@@ -1041,11 +1120,48 @@ export function SettingsView({
 
         {section === "Plugins" && (
           <>
+            {/* T-307: sideload install — the folder picker feeds every package
+                file into installPlugin (manifest validation + capability gate
+                rejections surface verbatim in the error banner). */}
+            <p>
+              <button
+                type="button"
+                className="ms-btn"
+                onClick={() => pluginFileRef.current?.click()}
+                title="Pick a plugin folder containing manifest.json — sideloaded plugins run as trusted code (see src/plugins/GETTING-STARTED.md)"
+              >
+                <Icon name="puzzle" size={13} /> Install plugin…
+              </button>{" "}
+              <small style={{ color: "var(--kiwi-text-secondary)" }}>
+                Sideload-only alpha — plugins run as trusted code in a Worker (no DOM/localStorage).
+              </small>
+            </p>
+            <input
+              ref={pluginFileRef}
+              type="file"
+              // @ts-expect-error webkitdirectory is non-standard but supported by WebView2/WKWebView/Chromium
+              webkitdirectory=""
+              multiple
+              style={{ display: "none" }}
+              aria-label="Plugin package folder"
+              onChange={(e) => void installPluginFiles(e.target.files, e.target)}
+            />
+            {pluginErrs.length > 0 && (
+              <div className="kiwi-banner error" role="alert">
+                <small>
+                  Plugin not installed:
+                  <ul style={{ margin: "0.2rem 0 0", paddingLeft: "1.1rem" }}>
+                    {pluginErrs.map((e) => (
+                      <li key={e}>{e}</li>
+                    ))}
+                  </ul>
+                </small>
+              </div>
+            )}
             {installedPlugins.length === 0 ? (
               <p style={{ color: "var(--kiwi-text-secondary)" }}>
                 <small>
-                  No plugins installed. Sideload-only v1 — see <code>src/plugins/GETTING-STARTED.md</code>
-                  ("alpha: plugins run as trusted code").
+                  No plugins installed. Sideload-only v1 — see <code>src/plugins/GETTING-STARTED.md</code>.
                 </small>
               </p>
             ) : (
@@ -1058,9 +1174,15 @@ export function SettingsView({
                     </small>
                   </h2>
                   <p>
-                    <small>
-                      capabilities: {p.manifest.permissions.length ? p.manifest.permissions.join(", ") : "none"}
-                    </small>
+                    {p.manifest.permissions.length === 0 ? (
+                      <small style={{ color: "var(--kiwi-text-secondary)" }}>no capabilities declared</small>
+                    ) : (
+                      p.manifest.permissions.map((cap) => (
+                        <span key={cap} className="ms-badge" style={{ marginRight: "0.3rem" }} title={`Declared capability: ${cap}`}>
+                          {cap}
+                        </span>
+                      ))
+                    )}
                   </p>
                   <p>
                     <label>

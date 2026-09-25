@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
+use zeroize::Zeroizing;
 
 use kiwi_autoconfig::net::DiscoveryNet;
 use kiwi_autoconfig::oauth2::{OAuthError, PendingGrant, ProviderConfig, TokenSet};
@@ -27,7 +28,7 @@ use kiwi_core::policy::TrustPolicy;
 use kiwi_core::session::SecuritySession;
 use kiwi_core::trust::{SignalKind, TrustMachine, TrustSignal};
 use kiwi_forensics::findings::Finding;
-use kiwi_integrations::deliverability::TestReservation;
+use kiwi_integrations::deliverability::{TestReservation, TestStatus};
 use kiwi_integrations::http::HttpClient;
 use kiwi_integrations::tempmail::GuerrillaMail;
 use kiwi_mail::account::CredentialStore;
@@ -142,6 +143,83 @@ pub struct OutboxMeta {
     /// the field.
     #[serde(default)]
     pub last_error: Option<String>,
+    #[serde(default)]
+    pub class: OutboxClass,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum OutboxClass {
+    #[default]
+    Ordinary,
+    SingleAttempt,
+}
+
+impl OutboxClass {
+    #[must_use]
+    pub fn is_single_attempt(self) -> bool {
+        self == Self::SingleAttempt
+    }
+}
+
+pub const MAX_SINGLE_ATTEMPT_IDS: usize = 256;
+
+pub struct SingleAttemptBook {
+    path: PathBuf,
+    ids: std::collections::BTreeSet<String>,
+}
+
+impl SingleAttemptBook {
+    pub fn open(dir: &Path) -> CmdResult<Self> {
+        let path = dir.join("outbox_single_attempt.json");
+        let ids = match std::fs::read(&path) {
+            Ok(b) => serde_json::from_slice::<Vec<String>>(&b).unwrap_or_default(),
+            Err(_) => Vec::new(),
+        };
+        Ok(Self {
+            path,
+            ids: ids.into_iter().collect(),
+        })
+    }
+
+    fn persist(&self) -> CmdResult<()> {
+        let list: Vec<&String> = self.ids.iter().collect();
+        std::fs::write(
+            &self.path,
+            serde_json::to_vec(&list)
+                .map_err(|e| IpcError::new("internal", format!("encode single-attempt ids: {e}")))?,
+        )?;
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn contains(&self, queue_id: &str) -> bool {
+        self.ids.contains(queue_id)
+    }
+
+    pub fn mark(&mut self, queue_id: &str) -> CmdResult<()> {
+        if self.ids.insert(queue_id.to_string()) {
+            while self.ids.len() > MAX_SINGLE_ATTEMPT_IDS {
+                if let Some(first) = self.ids.iter().next().cloned() {
+                    self.ids.remove(&first);
+                }
+            }
+            self.persist()?;
+        }
+        Ok(())
+    }
+
+    pub fn forget(&mut self, queue_id: &str) -> CmdResult<()> {
+        if self.ids.remove(queue_id) {
+            self.persist()?;
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)] // callers land with the single-attempt tests
+    pub fn ids(&self) -> Vec<String> {
+        self.ids.iter().cloned().collect()
+    }
 }
 
 /// Local admin-service binding (kiwi-admin, localhost only).
@@ -224,16 +302,17 @@ pub enum OAuth2SessionState {
 }
 
 /// One in-flight deliverability test (T-227). `reservation.slug` is a
-/// capability secret; `consent_token` is the single-use capability
-/// `kiwi_integrations_deliverability_send` must present — minted by
-/// `..._begin`, consumed on first valid send. Never serialized, never
+/// capability secret; `consent_token` is the single-use anti-replay
+/// capability `kiwi_integrations_deliverability_send` must present — minted
+/// by `..._begin`, consumed on first valid send. Never serialized, never
 /// persisted, never audited.
 pub struct DeliverabilitySession {
     pub reservation: TestReservation,
-    /// `Some` until `deliverability_send` consumes it.
-    pub consent_token: Option<String>,
-    /// Consent consumed and a send enqueued for this test.
-    pub sent: bool,
+    pub consent_token: Option<Zeroizing<String>>,
+    pub consent_consumed: bool,
+    pub enqueued: bool,
+    pub queue_id: Option<String>,
+    pub last_status: Option<TestStatus>,
 }
 
 impl std::fmt::Debug for DeliverabilitySession {
@@ -244,7 +323,9 @@ impl std::fmt::Debug for DeliverabilitySession {
                 "consent_token",
                 &self.consent_token.as_ref().map(|_| "[redacted]"),
             )
-            .field("sent", &self.sent)
+            .field("consent_consumed", &self.consent_consumed)
+            .field("enqueued", &self.enqueued)
+            .field("queue_id", &self.queue_id)
             .finish()
     }
 }
@@ -542,9 +623,17 @@ pub struct AppState {
     /// unlocks the flow-scoped exemption for pair_begin/pair_status while
     /// the endpoint is locked. Renderers can never set or extend it.
     pub pair_flow: Mutex<Option<PairFlow>>,
+    /// Pre-bound dev claim listener (T-304): present only when
+    /// `KIWI_PAIR_LISTEN` enabled it at open. `run()`'s setup takes the
+    /// socket (single listener lifecycle) and spawns `pairing_listen::serve`.
+    /// `std::sync` — a one-shot take from the sync setup closure.
+    pub pair_listen_socket: std::sync::Mutex<Option<std::net::TcpListener>>,
     pub send_queue: Mutex<SendQueue>,
     /// queue_id → send metadata (SendQueue exposes no item iterator).
     pub outbox_meta: Mutex<BTreeMap<String, OutboxMeta>>,
+    /// Durable single-attempt queue ids — the restart half of
+    /// `OutboxClass::SingleAttempt` (mail.db has no class column).
+    pub single_attempt: Mutex<SingleAttemptBook>,
     /// Observed sessions, newest last (bounded ring).
     pub sessions: Mutex<VecDeque<SessionRecord>>,
     /// Findings deduped by finding id (latest observation wins).
@@ -572,6 +661,10 @@ pub struct AppState {
     /// are constructed per command against this; the seam is what makes
     /// integration flows testable offline.
     pub integrations_http: Arc<dyn HttpClient>,
+    /// Test-only handle on the network-rejecting transport `open_test`
+    /// installs, so a test can prove the call never left the process.
+    #[cfg(test)]
+    pub offline_http: Option<Arc<OfflineHttp>>,
     /// The one live disposable-inbox session (GuerrillaMail sessions are
     /// single-mailbox). Session state (PHPSESSID, sid_token, address)
     /// lives inside the provider, in memory only — nothing persists.
@@ -579,6 +672,12 @@ pub struct AppState {
     /// In-flight deliverability tests keyed by opaque `test_id`. Bounded
     /// at [`MAX_DELIVERABILITY_SESSIONS`]; sessions die with the process.
     pub deliverability: Mutex<BTreeMap<String, DeliverabilitySession>>,
+    /// `test_id`s whose status poll is currently in flight — the poll
+    /// single-flight set. A second concurrent poll is refused with a
+    /// `retry_after_ms` hint instead of amplifying one provider call.
+    pub deliverability_polling: std::sync::Mutex<std::collections::BTreeSet<String>>,
+    /// Per-test provider 429 cooldown deadlines (unix ms).
+    pub deliverability_cooldown: std::sync::Mutex<PollCooldowns>,
     /// In-flight OAuth2 grants keyed by opaque `ticket_id` (T-230).
     /// Bounded at [`MAX_OAUTH2_SESSIONS`]; sessions die with the process.
     pub oauth2_sessions: Mutex<BTreeMap<String, OAuth2Session>>,
@@ -623,10 +722,21 @@ impl AppState {
     }
 
     /// Test open: file-backed mail store under `dir` (restart-resume is
-    /// exercised) + in-memory credentials; index + audit real files.
+    /// exercised) + in-memory credentials; index + audit real files. The
+    /// integration transport rejects every request, so a test can only
+    /// reach a provider by injecting a fixture through
+    /// [`AppState::open_test_with_http`].
     #[cfg(test)]
     pub fn open_test(data_dir: PathBuf) -> CmdResult<Self> {
-        Self::open_test_with_http(data_dir, integrations_transport()?)
+        let offline = Arc::new(OfflineHttp::new());
+        let mut s = Self::open_test_with_http(data_dir, offline.clone())?;
+        s.offline_http = Some(offline);
+        Ok(s)
+    }
+
+    #[cfg(test)]
+    pub fn offline_attempts(&self) -> bool {
+        self.offline_http.as_ref().is_some_and(|h| h.attempts() > 0)
     }
 
     /// Test open with an injected integration transport — `ScriptedHttp`
@@ -714,6 +824,26 @@ impl AppState {
             }
         };
         for row in rows {
+            let single_attempt = self
+                .single_attempt
+                .get_mut()
+                .contains(&row.queue_id);
+            if single_attempt {
+                if let Err(e) = self.store.get_mut().outbox_delete(&row.queue_id) {
+                    eprintln!("[kiwi-app] single-attempt drop {e}");
+                }
+                if let Err(e) = self.single_attempt.get_mut().forget(&row.queue_id) {
+                    eprintln!("[kiwi-app] single-attempt ledger write failed: {e}");
+                }
+                if let Err(e) = self.audit.get_mut().record(
+                    "send-abandoned-no-retry",
+                    &format!("{} abandoned after restart: single-attempt class", row.queue_id),
+                    now_unix(),
+                ) {
+                    eprintln!("[kiwi-app] single-attempt audit failed: {e}");
+                }
+                continue;
+            }
             self.send_queue
                 .get_mut()
                 .enqueue(kiwi_mail::smtp::QueuedSend {
@@ -739,6 +869,7 @@ impl AppState {
                     undo_window_until_unix: row.undo_window_until_unix,
                     attempts: row.attempts,
                     last_error: row.last_error,
+                    class: OutboxClass::Ordinary,
                 },
             );
         }
@@ -755,14 +886,18 @@ impl AppState {
         autoconfig_net: Arc<dyn DiscoveryNet>,
         sandbox: Arc<dyn kiwi_sandbox::SandboxProvider>,
     ) -> CmdResult<Self> {
+        let (provisioned_channel, listen_socket) =
+            provision_pair_channel(&data_dir, credentials.as_ref());
+        let single_attempt_book = SingleAttemptBook::open(&data_dir)?;
         Ok(Self {
             contacts: Mutex::new(
                 kiwi_contacts::ContactStore::open(&data_dir, now_unix())
                     .map_err(|e| IpcError::new("contacts", format!("open contacts.db: {e}")))?,
             ),
             pair: Mutex::new(kiwi_pair::PairEngine::open(&data_dir).map_err(IpcError::from)?),
-            pair_channel: provision_pair_channel(&data_dir, credentials.as_ref()),
+            pair_channel: provisioned_channel,
             pair_flow: Mutex::new(None),
+            pair_listen_socket: std::sync::Mutex::new(listen_socket),
             data_dir,
             store: Mutex::new(store),
             credentials,
@@ -770,6 +905,7 @@ impl AppState {
             policy: TrustPolicy::default(),
             send_queue: Mutex::new(SendQueue::new()),
             outbox_meta: Mutex::new(BTreeMap::new()),
+            single_attempt: Mutex::new(single_attempt_book),
             sessions: Mutex::new(VecDeque::new()),
             findings: Mutex::new(BTreeMap::new()),
             endpoint_signals: Mutex::new(Vec::new()),
@@ -779,8 +915,12 @@ impl AppState {
             policy_warned: std::sync::atomic::AtomicBool::new(false),
             no_org_warned: std::sync::atomic::AtomicBool::new(false),
             integrations_http,
+            #[cfg(test)]
+            offline_http: None,
             tempmail: Mutex::new(None),
             deliverability: Mutex::new(BTreeMap::new()),
+            deliverability_polling: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+            deliverability_cooldown: std::sync::Mutex::new(PollCooldowns::default()),
             oauth2_sessions: Mutex::new(BTreeMap::new()),
             autoconfig_net,
             sandbox,
@@ -881,8 +1021,8 @@ fn desktop_pair_key_b64(credentials: &dyn CredentialStore) -> Option<String> {
 fn provision_pair_channel(
     data_dir: &Path,
     credentials: &dyn CredentialStore,
-) -> Option<PairChannel> {
-    let endpoint = std::env::var("KIWI_PAIR_ENDPOINT")
+) -> (Option<PairChannel>, Option<std::net::TcpListener>) {
+    let configured = std::env::var("KIWI_PAIR_ENDPOINT")
         .ok()
         .filter(|s| !s.is_empty())
         .or_else(|| {
@@ -892,18 +1032,39 @@ fn provision_pair_channel(
                 .get("desktopEndpoint")?
                 .as_str()
                 .map(str::to_string)
-        })?;
+        });
+    // T-304: absent explicit provisioning, `KIWI_PAIR_LISTEN` binds the dev
+    // claim listener (plaintext — the wss/TLS ruling is still pending
+    // Lead ratification, authenticator.md §3.2). Its bound endpoint is the
+    // channel address the QR advertises. Explicit config always wins.
+    let mut listen_socket = None;
+    let endpoint = match configured {
+        Some(e) => e,
+        None => match crate::pairing_listen::bind() {
+            Some((socket, e)) => {
+                listen_socket = Some(socket);
+                e
+            }
+            None => return (None, None),
+        },
+    };
     // §9d.8 bound — provisioning must not invent or smuggle a bad value.
     if endpoint.is_empty()
         || endpoint.len() > 256
         || endpoint.bytes().any(|b| b < 0x20 || b == 0x7f)
     {
-        return None;
+        return (None, listen_socket);
     }
-    Some(PairChannel {
-        desktop_endpoint: endpoint,
-        desktop_public_key_b64: desktop_pair_key_b64(credentials)?,
-    })
+    let Some(desktop_public_key_b64) = desktop_pair_key_b64(credentials) else {
+        return (None, listen_socket);
+    };
+    (
+        Some(PairChannel {
+            desktop_endpoint: endpoint,
+            desktop_public_key_b64,
+        }),
+        listen_socket,
+    )
 }
 
 fn configured_sandbox(data_dir: &Path) -> Arc<dyn kiwi_sandbox::SandboxProvider> {
@@ -924,14 +1085,87 @@ fn configured_sandbox(data_dir: &Path) -> Arc<dyn kiwi_sandbox::SandboxProvider>
 /// Build the production integration transport: reqwest+rustls, HTTPS-only,
 /// redirects never followed. Body cap covers a fetched temp-mail body
 /// embedded in provider JSON (`MAX_MAIL_BODY` + envelope slack).
-/// `pub(crate)` for tests that need a real transport-shaped arg into
-/// `open_test_with_net` (they never call it — MockNet answers).
 pub(crate) fn integrations_transport() -> CmdResult<Arc<dyn HttpClient>> {
     let client =
         kiwi_integrations::http::ReqwestClient::new(kiwi_integrations::http::DEFAULT_TIMEOUT_MS)
             .map_err(IpcError::from)?
             .with_body_cap(kiwi_integrations::tempmail::MAX_MAIL_BODY + 2 * 1024 * 1024);
     Ok(Arc::new(client))
+}
+
+pub const PROVIDER_429_COOLDOWN_MS: u64 = 30_000;
+
+#[derive(Default)]
+pub struct PollCooldowns {
+    until_ms: BTreeMap<String, i64>,
+}
+
+impl PollCooldowns {
+    pub fn note(&mut self, test_id: &str, hint_ms: Option<u64>, now_ms: i64) -> i64 {
+        let wait = hint_ms
+            .unwrap_or(PROVIDER_429_COOLDOWN_MS)
+            .max(PROVIDER_429_COOLDOWN_MS) as i64;
+        let until = now_ms + wait;
+        self.until_ms.insert(test_id.to_string(), until);
+        while self.until_ms.len() > MAX_DELIVERABILITY_SESSIONS {
+            if let Some(first) = self.until_ms.keys().next().cloned() {
+                self.until_ms.remove(&first);
+            }
+        }
+        until
+    }
+
+    #[must_use]
+    pub fn remaining(&self, test_id: &str, now_ms: i64) -> Option<u64> {
+        let until = *self.until_ms.get(test_id)?;
+        let left = until - now_ms;
+        (left > 0).then_some(left as u64)
+    }
+
+    pub fn forget(&mut self, test_id: &str) {
+        self.until_ms.remove(test_id);
+    }
+}
+
+#[cfg(test)]
+pub struct OfflineHttp {
+    attempts: std::sync::atomic::AtomicU64,
+}
+
+#[cfg(test)]
+impl OfflineHttp {
+    pub fn new() -> Self {
+        Self {
+            attempts: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    #[allow(dead_code)] // callers land with the offline-transport tests
+    pub fn attempts(&self) -> u64 {
+        self.attempts.load(Ordering::Relaxed)
+    }
+}
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl HttpClient for OfflineHttp {
+    async fn request(
+        &self,
+        _req: kiwi_integrations::http::HttpRequest,
+    ) -> Result<
+        kiwi_integrations::http::HttpResponse,
+        kiwi_integrations::IntegrationError,
+    > {
+        self.attempts.fetch_add(1, Ordering::Relaxed);
+        Err(kiwi_integrations::IntegrationError::Transport {
+            kind: kiwi_integrations::TransportKind::Connect,
+        })
+    }
+}
+
+#[cfg(test)]
+pub fn rejecting_transport() -> Arc<dyn HttpClient> {
+    Arc::new(OfflineHttp::new())
 }
 
 #[cfg(test)]

@@ -76,6 +76,12 @@ services:
         required: true
     environment:
       DATABASE_URL: ${DATABASE_URL}
+      # Bind-all INSIDE the container (T-193): published-port traffic arrives
+      # on the container's eth0, so the 127.0.0.1 default would be unreachable
+      # from the host. The loopback guard here is the publish binding below
+      # (`127.0.0.1:...:3001`) — the port never leaves the host. Never change
+      # the publish side to a LAN address while header actors are the auth.
+      KIWI_ADMIN_HOST: "0.0.0.0"
       # The service reads KIWI_ADMIN_PORT (src/server.ts), NOT PORT — compose
       # previously set PORT, so the container listened on the 8471 default while
       # the published port, the healthcheck below and the image's HEALTHCHECK
