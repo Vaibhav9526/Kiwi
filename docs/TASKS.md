@@ -107,7 +107,7 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-178 | Autoconfig IPC contract + ISPDB expansion + chain test | Agent 8 | done | `kiwi-autoconfig/`, `ipc.md` | T-158 |
 | T-179 | kiwi-admin audit export endpoint (NDJSON, org_admin) + e2e | Agent 9 | open | `kiwi-admin/` | T-149 |
 | T-180 | Phase C1: kiwi-mail file splits — freeze window required | Agent 10 | in-progress | `kiwi-mail/src/` | — |
-| T-181 | Phase C2: src-tauri splits — freeze window | Agent 7 | in-progress | `kiwi-app/src-tauri/` | — |
+| T-181 | Phase C2: src-tauri splits verified+finished (types/ + commands/{message,send}/) | Agent 15 | done | `kiwi-app/src-tauri/` | — |
 | T-182 | Phase C3: App.tsx split | Agent 5 | SUPERSEDED by T-191 rebuild | `kiwi-app/src/` | — |
 | T-183 | kiwi-mailauth hardening: DKIM canonicalization, SPF lookup limits, DMARC alignment | Agent 8 (Nemotron 3 Ultra) | in-progress | `kiwi-mailauth/` | T-178 |
 | T-184 | Finish T-172 items (lint, transport decision, wording) | Agent 6 (handoff) | done (lint 0/0 + tests/typecheck green; 4x S10 items in contract) | `mobile/`, `docs/contracts/authenticator.md` | T-172 |
@@ -151,7 +151,7 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-223 | i18n locale framework — Phase 8 | unassigned | deferred-P8 | `kiwi-app/` | — |
 | T-224 | AI assistant (summarize/draft/ask) — Phase 7, non-authoritative per SECURITY.md | unassigned | deferred-P7 | TBD | — |
 | T-225 | Spam-learning classifier — Phase 7, deterministic-first | unassigned | deferred-P7 | `kiwi-mail/` | — |
-| T-226 | New crate `kiwi-integrations`: TempMailProvider (Guerrilla, HTTPS-only, public-inbox rules, no credential persistence) + DeliverabilityTester (email-spam-tester, consent-gated, slug secrecy) + recorded-fixture tests + integrations.md contract + ADR-009 | Agent 11 (Devin Pro) | open | `kiwi-integrations/` | — |
+| T-226 | kiwi-integrations crate: temp-mail + deliverability providers, fixtures, contract, ADR-010 | Agent 11 | done (30 tests) | `kiwi-integrations/` | — |
 
 ## Fleet note — runtime restart wiped agent sessions
 
@@ -164,11 +164,11 @@ rebuild context. Lead handle is now term_c20c6737.
 
 | Agent | Model | Terminal | Assignment |
 |---|---|---|---|
-| 11 | Devin Pro | d869b293 | T-226 kiwi-integrations |
+| 11 | Devin Pro | d869b293 | T-226 done → T-227 integrations IPC |
 | 12 | Muse Spark 1.3 xhigh | 4cc53da5 | T-190b done → T-191 rebuild in-progress |
 | 13 | Muse Spark 1.3 xhigh | e5adf4d9 | T-193 admin H1-H8 + M fixes |
 | 14 | OpenCode Zen xhigh | e26f119b | T-180 done → T-201 F2 categorization |
-| 15 | Devin Pro | c47aa1d7 | T-181 finish/verify src-tauri splits |
+| 15 | Devin Pro | c47aa1d7 | T-181 done → T-228 rules engine core |
 | 16 | DeepSeek V4.1 Flash | 87c46343 | T-183 mailauth hardening |
 | 17 | DeepSeek V4.1 Flash | 71a0b324 | T-194 mobile authenticator screens |
 | 18 | Space Bunny Free | f7e88089 | T-188 pair/challenge + admin contracts |
@@ -184,3 +184,5 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-197 | License-compliance + secret scan (GPL boundary, secrets, dep licenses) → docs/audits/license-secret-scan-1.md | Agent 21 | open | repo-wide, read-only | — |
 | T-198 | copy_overlap.py gate tool (45-char verbatim scan, CI static-checks) | Agent 21 | open | `tests/tools/` | T-197 |
 | T-199 | Dependency vulnerability audit → dep-vuln-1.md (vitest crit + mobile lockfile + workspace-red catches) | Agent 21 | done | — | — |
+| T-227 | IPC for kiwi-integrations: tempmail commands (public-inbox flag on every response) + deliverability consent-token flow (non-bypassable server-side) | Agent 11 | open | `kiwi-app/src-tauri/`, `ipc.md` | T-226 |
+| T-228 | F1 rules engine core: predicate AST + ordered eval + block-list-first + store table/CRUD (pure, deterministic) | Agent 15 | open | `kiwi-mail/src/rules/` | T-181 |
