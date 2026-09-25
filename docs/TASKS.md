@@ -287,3 +287,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-307 | plugin install UX: file-picker sideload button + error surfaces + cap badges + live install demo | Agent 25 | open | `kiwi-app/src` settings+plugins | T-302,T-306 |
 | T-308 | device-management surface vs canonical T-269 cmds: real device list + revoke + fingerprint display | Agent 24 | done | `kiwi-app/src` settings/security | T-269,T-303 |
 | T-309 | mbox import: parser (From_ boundaries, flags map) + kiwi_import_mbox IPC + audit | Agent 19 | open | `kiwi-mail`, `commands/` | onboarding/migration |
+| T-310 | reader polish: quoted-text collapse, in-reply-to jump links, sig de-emphasis (presentation-only) | Agent 24 | open | `kiwi-app/src` reader | eM/Thunderbird parity |
