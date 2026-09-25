@@ -5,7 +5,7 @@
  * renders the T-112 fixtures, badged.
  */
 import { useEffect, useState } from "react";
-import type { FindingInfo, SecurityEventRow, Severity } from "../kiwi";
+import type { FindingInfo, SecurityEventRow, SecuritySessionView, Severity } from "../kiwi";
 import { severityGlyph, severityLabel } from "../kiwi";
 import { api } from "../ipc";
 
@@ -30,7 +30,10 @@ export function SecurityCenterView({
 }) {
   const [accountFilter, setAccountFilter] = useState("");
   const [severityFilter, setSeverityFilter] = useState<"" | Severity>("");
-  const [session, setSession] = useState<Record<string, unknown> | null>(null);
+  // T-260: the typed SessionView (ipc.md §3). `null` is a real state — an
+  // unrecognized/malformed envelope — and the view below says so rather than
+  // rendering a blank or half-parsed card.
+  const [session, setSession] = useState<SecuritySessionView | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [reportError, setReportError] = useState<string | null>(null);
 
@@ -64,7 +67,15 @@ export function SecurityCenterView({
     if (!id) return;
     setSessionError(null);
     try {
-      setSession(await api.sessionDetail(id));
+      const detail = await api.sessionDetail(id);
+      // T-260: a null detail means the envelope didn't match the §3 shape.
+      // Say so — silence would read as "the session is fine".
+      if (!detail) {
+        setSession(null);
+        setSessionError("Session detail was not in the expected format.");
+        return;
+      }
+      setSession(detail);
     } catch (e) {
       setSessionError(e instanceof Error ? e.message : String(e));
     }

@@ -30,6 +30,7 @@ import type {
   FolderView,
   MailChangedEvent,
   LinkClickVerdict,
+  MboxImportView,
   MessageBodyView,
   MessagePatch,
   MessageRef,
@@ -51,6 +52,7 @@ import type {
   RulesApplyView,
   RuleView,
   SearchHit,
+  SecuritySessionView,
   SandboxOpenView,
   SandboxSessionsView,
   SecurityStatusView,
@@ -76,7 +78,7 @@ import type {
   VCardImportView,
   VerifyResult,
 } from "./kiwi";
-import { parseAutoconfigSuggestion, parseContact, parseOAuth2Begin, parseOAuth2Poll, parseOAuth2Status, parseSandboxSessions, parseSearchHit } from "./kiwi";
+import { parseAutoconfigSuggestion, parseContact, parseOAuth2Begin, parseOAuth2Poll, parseOAuth2Status, parseSandboxSessions, parseSearchHit, parseSecuritySession } from "./kiwi";
 import {
   decodeDeliverabilityBeginView,
   decodeDeliverabilityReportView,
@@ -457,6 +459,12 @@ export const api = {
   setPop3Policy(accountId: string, deleteAfterDownload: boolean): Promise<Pop3PolicyView> {
     return call<Pop3PolicyView>("kiwi_set_pop3_policy", { accountId, deleteAfterDownload });
   },
+  /** T-309: import a Berkeley-mbox file into an account folder (default the
+   * local `Import` folder). Report counts are honest — duplicates/expunged/
+   * failed members are skipped and counted, never silently dropped. */
+  importMbox(accountId: string, path: string, folder?: string): Promise<MboxImportView> {
+    return call<MboxImportView>("kiwi_import_mbox", { accountId, path, folder });
+  },
   linkClick(accountId: string, folderId: number, uid: number, url: string): Promise<LinkClickVerdict> {
     return call<LinkClickVerdict>("kiwi_link_click", { accountId, folderId, uid, url });
   },
@@ -661,8 +669,14 @@ export const api = {
   async securityEvents(limit?: number): Promise<Record<string, unknown>[]> {
     return asArray<Record<string, unknown>>(await call<unknown>("kiwi_security_events", { limit }));
   },
-  sessionDetail(sessionId: string): Promise<Record<string, unknown>> {
-    return call<Record<string, unknown>>("kiwi_session_detail", { sessionId });
+  /**
+   * T-260: typed `SecuritySessionView` (ipc.md §3 canonical shape) with
+   * safe-render normalization — an unrecognized enum token degrades to its
+   * honest unknown form instead of rendering verbatim. A malformed envelope
+   * surfaces as `null` so the view can say so rather than show a blank card.
+   */
+  async sessionDetail(sessionId: string): Promise<SecuritySessionView | null> {
+    return parseSecuritySession(await call<unknown>("kiwi_session_detail", { sessionId }));
   },
   findingDetail(findingId: string): Promise<FindingDetailView> {
     return call<FindingDetailView>("kiwi_finding_detail", { findingId });

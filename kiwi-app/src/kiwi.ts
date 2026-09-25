@@ -297,6 +297,118 @@ export type LinkRiskReason =
   | "unicodeHost"
   | "credentialsInUrl";
 
+/* ---------------- security session vocabulary (T-260) ---------------- */
+
+/**
+ * Session-view enum tokens (docs/contracts/security-session.md §2/§3).
+ * These are the *session-view* spellings, deliberately distinct from the
+ * forensics FSV-1 serde tags (`tls13`, `hostname_mismatch`, `x_o_auth2`).
+ */
+export type SessionTransport = "plaintext" | "starttls" | "tls";
+export type SessionTlsVersion = "ssl3" | "tls1.0" | "tls1.1" | "tls1.2" | "tls1.3" | "unknown";
+export type SessionKeyExchange =
+  | "x25519" | "secp256r1" | "secp384r1" | "secp521r1"
+  | "ffdhe2048" | "ffdhe3072" | "ffdhe4096"
+  | "static" | "unknown" | `other:${string}`;
+export type ChainValidationToken =
+  | "valid" | "invalid" | "untrusted" | "expired" | "hostname-mismatch" | "unknown";
+/**
+ * Provenance. `live-client` supersedes the pre-pivot `thunderbird-hook`.
+ * `unknown` is the safe-render form for a token this build doesn't know — it
+ * is NOT "clean" or any real provenance; it means the value was not recognized.
+ */
+export type SessionSourceToken =
+  | "live-client" | "forensic-pcap" | "test-fixture" | "unknown";
+
+/** `kiwi_session_detail` result — T-269 canonical shape (ipc.md §3). */
+export interface SecuritySessionView {
+  schemaVersion: number;
+  sessionId: string;
+  accountId: string | null;
+  deviceId: string | null;
+  protocol: "smtp" | "imap" | "pop3";
+  serverHost: string;
+  serverPort: number;
+  transport: SessionTransport;
+  tlsVersion: SessionTlsVersion | null;
+  keyExchangeGroup: SessionKeyExchange | null;
+  certChain: { presentedLen: number; validation: ChainValidationToken } | null;
+  starttlsOffered: boolean | null;
+  starttlsUsed: boolean;
+  authMechanism: string;
+  authSucceeded: boolean | null;
+  establishedUnix: number;
+  source: SessionSourceToken;
+}
+
+/**
+ * Safe-render parser for a session view. An unrecognized enum token degrades
+ * to its honest unknown form rather than being displayed verbatim or crashing
+ * a view: a future backend spelling must render as "unknown"/absent, never as
+ * a confident-looking wrong value.
+ */
+export function parseSecuritySession(raw: unknown): SecuritySessionView | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+  const oneOf = <T extends string>(v: unknown, allowed: readonly T[], fallback: T): T =>
+    typeof v === "string" && (allowed as readonly string[]).includes(v) ? (v as T) : fallback;
+
+  const sessionId = str(r["sessionId"]);
+  const serverHost = str(r["serverHost"]);
+  if (!sessionId || !serverHost) return null;
+
+  const chain = r["certChain"] as Record<string, unknown> | null | undefined;
+  const certChain =
+    chain && typeof chain === "object"
+      ? {
+          presentedLen: num(chain["presentedLen"]) ?? 0,
+          validation: oneOf<ChainValidationToken>(
+            chain["validation"],
+            ["valid", "invalid", "untrusted", "expired", "hostname-mismatch", "unknown"],
+            "unknown",
+          ),
+        }
+      : null;
+
+  return {
+    schemaVersion: num(r["schemaVersion"]) ?? 1,
+    sessionId,
+    accountId: typeof r["accountId"] === "string" ? r["accountId"] : null,
+    deviceId: typeof r["deviceId"] === "string" ? r["deviceId"] : null,
+    protocol: oneOf(r["protocol"], ["smtp", "imap", "pop3"] as const, "imap"),
+    serverHost,
+    serverPort: num(r["serverPort"]) ?? 0,
+    transport: oneOf<SessionTransport>(r["transport"], ["plaintext", "starttls", "tls"], "plaintext"),
+    tlsVersion:
+      r["tlsVersion"] === null || r["tlsVersion"] === undefined
+        ? null
+        : oneOf<SessionTlsVersion>(
+            r["tlsVersion"],
+            ["ssl3", "tls1.0", "tls1.1", "tls1.2", "tls1.3", "unknown"],
+            "unknown",
+          ),
+    keyExchangeGroup:
+      typeof r["keyExchangeGroup"] === "string" && r["keyExchangeGroup"]
+        ? (r["keyExchangeGroup"] as SessionKeyExchange)
+        : null,
+    certChain,
+    starttlsOffered: typeof r["starttlsOffered"] === "boolean" ? r["starttlsOffered"] : null,
+    starttlsUsed: r["starttlsUsed"] === true,
+    // Open vocabulary: `other:<name>` is a server-supplied token, so a new
+    // mechanism must still render rather than be discarded.
+    authMechanism: str(r["authMechanism"]) ?? "unknown",
+    authSucceeded: typeof r["authSucceeded"] === "boolean" ? r["authSucceeded"] : null,
+    establishedUnix: num(r["establishedUnix"]) ?? 0,
+    source: oneOf<SessionSourceToken>(
+      r["source"],
+      ["live-client", "forensic-pcap", "test-fixture", "unknown"],
+      "unknown",
+    ),
+  };
+}
+
 export interface LinkRiskView {
   risk: LinkRisk;
   reasons: LinkRiskReason[];
@@ -494,6 +606,36 @@ export interface MessageSourceView {
 export interface Pop3PolicyView {
   accountId: string;
   deleteAfterDownload: boolean;
+}
+
+/**
+ * `kiwi_import_mbox` (T-309) — per-member failure inside an mbox import.
+ * `index` is the 1-based `From ` member ordinal (0 marks a file-level note);
+ * `detail` is bounded and never contains a body fragment or a filename.
+ */
+export interface MboxImportIssueView {
+  index: number;
+  detail: string;
+}
+
+/**
+ * `kiwi_import_mbox` report. Counts sum to the members processed
+ * (`min(messagesFound, MAX_MBOX_MESSAGES)`); `truncated` marks members left
+ * unprocessed past the cap. `ruleFailures` counts ingest-rule errors on
+ * imported rows only — the members still landed.
+ */
+export interface MboxImportView {
+  accountId: string;
+  folder: string;
+  folderId: number;
+  messagesFound: number;
+  imported: number;
+  skippedDuplicates: number;
+  skippedExpunged: number;
+  failed: number;
+  truncated: boolean;
+  ruleFailures: number;
+  issues: MboxImportIssueView[];
 }
 
 /** `kiwi_message_unsubscribe` action selector (T-234). */

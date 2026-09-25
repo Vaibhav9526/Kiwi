@@ -10,7 +10,8 @@ import { useEffect, useRef, useState } from "react";
 import type { ComponentProps } from "react";
 import { accountPref, applyPrefsBag, applyUiPrefs, collectPrefs, loadMuted, loadPref, savePref } from "../prefs";
 import { api, BackendUnavailableError, IpcError } from "../ipc";
-import type { AccountView, DeviceView, FolderView, OAuth2StatusView, VerifyResult } from "../kiwi";
+import type { AccountView, AppInfoView, DeviceView, FolderView, OAuth2StatusView, VerifyResult } from "../kiwi";
+import { APP_LICENSE, APP_NAME, APP_VERSION } from "../version";
 import { OAuth2SignIn, oauth2ProviderLabel } from "../components/oauth2";
 import { navigate } from "../router";
 import { EDIT_HANDOFF_KEY, localAutoconfigGuess } from "./setup";
@@ -18,6 +19,7 @@ import { FiltersView } from "./filters";
 import { IntegrationsView } from "./integrations";
 import { RulesView } from "./rules";
 import { TemplatesManager } from "./templates";
+import { DEMO_ACCOUNTS } from "../mock";
 import { SHORTCUT_ROWS } from "../components/shortcuts";
 import { Icon, isIconName } from "../components/icons/index";
 import { PairQrFlow } from "../components/pair";
@@ -28,8 +30,8 @@ import { emitToPlugin, installPlugin, removePlugin, setPluginEnabled, useInstall
 // fold into seven tabs — General (general + notifications + privacy +
 // advanced), Accounts, Identity (KIWI Security), Appearance (appearance +
 // templates), Shortcuts, Mail Rules (embedded filters), Integrations
-// (temp mail + deliverability, T-242).
-const SECTIONS = ["General", "Accounts", "Identity", "Appearance", "Shortcuts", "Mail Rules", "Integrations", "Plugins"] as const;
+// (temp mail + deliverability, T-242). T-315 appends About.
+const SECTIONS = ["General", "Accounts", "Identity", "Appearance", "Shortcuts", "Mail Rules", "Integrations", "Plugins", "About"] as const;
 type Section = (typeof SECTIONS)[number];
 
 function errText(e: unknown): string {
@@ -39,6 +41,7 @@ function errText(e: unknown): string {
 export function SettingsView({
   mode,
   accounts,
+  appInfo,
   orgBinding,
   onAccountsChanged,
   onStatusChanged,
@@ -49,6 +52,8 @@ export function SettingsView({
 }: {
   mode: "live" | "demo";
   accounts: AccountView[];
+  /** Backend self-report (kiwi_app_info) — null in demo/unavailable. */
+  appInfo?: AppInfoView | null;
   orgBinding: { orgId: string; baseUrl: string } | null;
   onAccountsChanged: () => void;
   onStatusChanged: () => void;
@@ -1210,6 +1215,87 @@ export function SettingsView({
                 ))}
               </>
             )}
+          </>
+        )}
+
+        {section === "About" && (
+          <>
+            {/* T-315 — every stat comes from a real source: APP_VERSION is
+                the build manifest version (src/version.ts), appInfo rows are
+                kiwi_app_info (live only), accounts/plugins are real stores.
+                Nothing is estimated — a stat with no source is omitted. */}
+            <div className="kiwi-card" style={{ marginBottom: "0.8rem" }}>
+              <h2 style={{ marginTop: 0 }}>
+                {APP_NAME} Mail <small style={{ fontWeight: "normal" }}>v{APP_VERSION}</small>
+              </h2>
+              <p style={{ color: "var(--kiwi-text-secondary)", marginTop: 0 }}>
+                <small>Security-first desktop mail — evidence-first trust model.</small>
+              </p>
+            </div>
+
+            <h2>Diagnostics</h2>
+            <dl style={{ display: "grid", gridTemplateColumns: "max-content 1fr", gap: "0.25rem 1rem", marginTop: 0 }}>
+              <dt>App version</dt>
+              <dd style={{ margin: 0 }}><code>{APP_VERSION}</code> (build manifest)</dd>
+              <dt>Accounts</dt>
+              {/* Demo's sidebar accounts come from DEMO_ACCOUNTS (mock.ts) —
+                  the live IPC list is empty there; count the source the UI
+                  actually renders, never a number that disagrees on screen. */}
+              <dd style={{ margin: 0 }}>
+                {mode === "demo" ? `${DEMO_ACCOUNTS.length} (demo fixtures)` : accounts.length}
+              </dd>
+              <dt>Plugins installed</dt>
+              <dd style={{ margin: 0 }}>{installedPlugins.length}</dd>
+              {appInfo && (
+                <>
+                  <dt>Backend</dt>
+                  <dd style={{ margin: 0 }}><code>{appInfo.version}</code> · IPC <code>{appInfo.contractVersion}</code></dd>
+                  <dt>Security sessions observed</dt>
+                  <dd style={{ margin: 0 }}>{appInfo.sessionsObserved}</dd>
+                  <dt>This device</dt>
+                  <dd style={{ margin: 0 }}><code>{appInfo.deviceId}</code></dd>
+                  {appInfo.org && (
+                    <>
+                      <dt>Organization</dt>
+                      <dd style={{ margin: 0 }}>{appInfo.org.orgId} — {appInfo.org.baseUrl}</dd>
+                    </>
+                  )}
+                </>
+              )}
+            </dl>
+            {!appInfo && (
+              <p style={{ color: "var(--kiwi-text-secondary)" }}>
+                <small>
+                  Backend stats unavailable{mode === "demo" ? " in demo mode" : ""} — backend
+                  version, sessions, and device id appear when a backend answers
+                  <code> kiwi_app_info</code>. Profile dir and store size are omitted: no IPC
+                  exposes them, and estimates are not shown.
+                </small>
+              </p>
+            )}
+
+            <h2>Keyboard shortcuts</h2>
+            <p style={{ color: "var(--kiwi-text-secondary)", marginTop: 0 }}>
+              <small>The same map as the <code>?</code> overlay and the Shortcuts tab — one source.</small>
+            </p>
+            <table style={{ borderCollapse: "collapse", width: "100%" }} aria-label="Keyboard shortcuts">
+              <tbody>
+                {SHORTCUT_ROWS.map(([keys, what]) => (
+                  <tr key={keys}>
+                    <td style={{ padding: "0.3rem 0.6rem 0.3rem 0", whiteSpace: "nowrap" }}>
+                      <code>{keys}</code>
+                    </td>
+                    <td style={{ padding: "0.3rem 0" }}>{what}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+
+            <p style={{ color: "var(--kiwi-text-secondary)" }}>
+              <small>
+                {APP_NAME} contributors · {APP_LICENSE} — see <code>LICENSE</code>.
+              </small>
+            </p>
           </>
         )}
       </section>
