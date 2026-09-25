@@ -305,4 +305,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-325 | kiwi_copy_messages IPC (copy vs move; local-only dst semantics documented) | Agent 20 | open | `commands/message`, `store` | |
 | T-326 | import/synced-folder expunge edge: refuse synced dst OR minted-uid reconcile skip | Agent 19 | open | `commands/import.rs`, `imap` reconcile | T-309 caveat |
 | T-327 | audit retention: bounded keep-N/age policy, sweep itself audited (id+count only) | Agent 21 | open | `kiwi-mail/store`, `commands/security.rs` | T-324 coord |
-| T-323-aux | Empty Trash/Junk ctx action via existing delete path w/ destructive confirm | Agent 24 | open | `mailbox.tsx` ctx-menu | |
+| T-323-aux | Empty Trash/Junk via real delete loop + count-aware confirm | Agent 24 | done |
