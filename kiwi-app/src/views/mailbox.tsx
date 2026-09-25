@@ -17,8 +17,9 @@
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
-import type { FindingInfo, MessageBodyView, MessageEnvelope, MessagePatch, OutboxItem, RenderedBodyView } from "../kiwi";
-import { severityGlyph, severityLabel } from "../kiwi";
+import type { FindingInfo, MessageBodyView, MessageEnvelope, MessagePatch, OutboxItem, RenderedBodyView, UnsubscribeInfo } from "../kiwi";
+import { CATEGORY_TABS, severityGlyph, severityLabel } from "../kiwi";
+import type { MessageCategory } from "../kiwi";
 import { listen } from "@tauri-apps/api/event";
 import { api, isTauri } from "../ipc";
 import { loadPref, savePref } from "../prefs";
@@ -87,7 +88,21 @@ export interface MailboxProps {
 }
 
 export function MailboxView(props: MailboxProps) {
-  const { folder, folderLabel, messages, selectedId, findings, locked } = props;
+  const { folder, folderLabel, messages: allMessages, selectedId, findings, locked } = props;
+  // F2 category tabs (T-231): the backend classifies per message
+  // (`MessageView.category`); tabs filter the loaded list with counts.
+  // No `list_messages_by_category` command exists, so scoping is the
+  // loaded list — labeled on the tabs.
+  const [catTab, setCatTab] = useState<MessageCategory>("primary");
+  const messages = useMemo(
+    () => allMessages.filter((m) => (m.category ?? "primary") === catTab),
+    [allMessages, catTab],
+  );
+  const catCounts = useMemo(() => {
+    const counts: Record<MessageCategory, number> = { primary: 0, newsletters: 0, social: 0, notifications: 0, other: 0 };
+    for (const m of allMessages) counts[(m.category ?? "primary") as MessageCategory] += 1;
+    return counts;
+  }, [allMessages]);
   const selected = messages.find((m) => m.id === selectedId) ?? messages[0];
 
   // Bulk selection (T-162): explicit id list + range anchor. Cleared on
@@ -112,7 +127,7 @@ export function MailboxView(props: MailboxProps) {
   useEffect(() => {
     setPicked([]);
     anchorRef.current = null;
-  }, [folder]);
+  }, [folder, catTab]);
 
   const togglePick = (id: string, range: boolean) => {
     if (range && anchorRef.current) {
@@ -217,7 +232,7 @@ export function MailboxView(props: MailboxProps) {
       <section aria-label={`${folderLabel} message list`} className={`ms-list-col${narrow ? " ms-narrow" : ""}`} ref={listColRef}>
         <div className="ms-list-header">
           <h1 ref={headingRef} tabIndex={-1} style={{ fontSize: "1.1rem", margin: 0 }}>
-            {folderLabel} <small style={{ color: "var(--kiwi-ms-text-secondary)" }}>({folder === "outbox" ? props.outbox.length : messages.length})</small>
+            {folderLabel} <small style={{ color: "var(--kiwi-ms-text-secondary)" }}>({folder === "outbox" ? props.outbox.length : `${messages.length} of ${allMessages.length}`})</small>
           </h1>
           {folder !== "outbox" ? (
             <>
@@ -313,6 +328,45 @@ export function MailboxView(props: MailboxProps) {
             </button>
           )}
         </div>
+        {folder !== "outbox" && (
+          <div
+            className="ms-tabs ms-cat-tabs"
+            role="tablist"
+            aria-label="Inbox categories (loaded messages)"
+            onKeyDown={(e) => {
+              const tabs = Array.from(
+                (e.currentTarget as HTMLElement).querySelectorAll<HTMLElement>('[role="tab"]'),
+              );
+              const i = tabs.indexOf(e.target as HTMLElement);
+              if (i < 0) return;
+              let n: number | null = null;
+              if (e.key === "ArrowRight" || e.key === "ArrowDown") n = (i + 1) % tabs.length;
+              else if (e.key === "ArrowLeft" || e.key === "ArrowUp") n = (i - 1 + tabs.length) % tabs.length;
+              else if (e.key === "Home") n = 0;
+              else if (e.key === "End") n = tabs.length - 1;
+              if (n !== null) {
+                e.preventDefault();
+                setCatTab(CATEGORY_TABS[n].slug);
+                tabs[n]?.focus();
+              }
+            }}
+          >
+            {CATEGORY_TABS.map((t) => (
+              <button
+                key={t.slug}
+                type="button"
+                role="tab"
+                aria-selected={catTab === t.slug}
+                className="ms-tab"
+                tabIndex={catTab === t.slug ? 0 : -1}
+                title={`${catCounts[t.slug]} of the loaded messages`}
+                onClick={() => setCatTab(t.slug)}
+              >
+                {t.label} <span className="ms-badge" aria-hidden="true">{catCounts[t.slug]}</span>
+              </button>
+            ))}
+          </div>
+        )}
         {picked.length > 0 && folder !== "outbox" && (
           <BulkBar
             count={picked.length}
@@ -366,7 +420,11 @@ export function MailboxView(props: MailboxProps) {
                 <span className="kiwi-empty-icon" aria-hidden="true">✉</span>
                 <strong>Nothing here</strong>
                 <br />
-                <small>No messages in this folder yet.</small>
+                <small>
+                  {allMessages.length === 0
+                    ? "No messages in this folder yet."
+                    : `No ${CATEGORY_TABS.find((t) => t.slug === catTab)?.label ?? catTab} messages in the loaded list.`}
+                </small>
               </div>
             )}
             <div
@@ -509,6 +567,7 @@ export function MailboxView(props: MailboxProps) {
                 <small>{contactNote}</small>
               </p>
             )}
+            <UnsubscribeChip unsub={selected.unsub} />
             {locked ? (
               <p role="note">Message body unavailable — mailbox is locked.</p>
             ) : props.bodyLoading ? (
@@ -559,6 +618,91 @@ export function MailboxView(props: MailboxProps) {
           </>
         )}
       </section>
+    </div>
+  );
+}
+
+/**
+ * T-202 unsubscribe affordance (T-231): banner chip on messages carrying
+ * List-Unsubscribe endpoints. Dormant (renders nothing) until the backend
+ * exposes the fields. HTTPS links and mailto addresses are validated by
+ * parseUnsubscribe; actions are confirm-gated and copy-based — the webview
+ * never navigates to a remote URL and nothing is sent without consent.
+ * One-click POST/open via shell integration is flagged as follow-up.
+ */
+function UnsubscribeChip({ unsub }: { unsub: UnsubscribeInfo | undefined }) {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState<string | null>(null);
+  useEffect(() => {
+    setOpen(false);
+    setCopied(null);
+  }, [unsub?.url, unsub?.mailto]);
+  if (!unsub || (!unsub.url && !unsub.mailto)) return null;
+  const hostOf = (u: string): string => {
+    try {
+      return new URL(u).host;
+    } catch {
+      return u;
+    }
+  };
+  const copy = async (text: string, what: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(`${what} copied to the clipboard.`);
+    } catch {
+      setCopied(`Copy failed — ${what.toLowerCase()}: ${text}`);
+    }
+  };
+  return (
+    <div className="ms-unsub">
+      {!open ? (
+        <button
+          type="button"
+          className="ms-btn"
+          onClick={() => setOpen(true)}
+          title="This sender offers one-click unsubscribe"
+        >
+          Unsubscribe
+        </button>
+      ) : (
+        <div className="ms-unsub-panel" role="group" aria-label="Unsubscribe options">
+          <p style={{ margin: "0 0 0.4rem" }}>
+            <small>
+              {unsub.oneClick
+                ? "One-click endpoint offered — until shell integration lands, copy it instead. Nothing is sent automatically."
+                : "Sender endpoints below — copy to use. Nothing is sent automatically."}
+            </small>
+          </p>
+          {unsub.url && (
+            <p style={{ margin: "0 0 0.4rem" }}>
+              <small>
+                Link ({hostOf(unsub.url)}):{" "}
+                <button type="button" className="ms-btn" onClick={() => void copy(unsub.url as string, "Link")}>
+                  Copy link
+                </button>
+              </small>
+            </p>
+          )}
+          {unsub.mailto && (
+            <p style={{ margin: "0 0 0.4rem" }}>
+              <small>
+                Email (<code>{unsub.mailto}</code>):{" "}
+                <button type="button" className="ms-btn" onClick={() => void copy(unsub.mailto as string, "Address")}>
+                  Copy address
+                </button>
+              </small>
+            </p>
+          )}
+          {copied && (
+            <p role="status" style={{ margin: "0 0 0.4rem" }}>
+              <small>{copied}</small>
+            </p>
+          )}
+          <button type="button" className="ms-btn" onClick={() => setOpen(false)}>
+            Close
+          </button>
+        </div>
+      )}
     </div>
   );
 }

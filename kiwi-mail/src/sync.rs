@@ -68,6 +68,13 @@ pub async fn sync_folder(
 
     // 4a. New messages: metadata fetch in bounded chunks.
     let new_uids: Vec<u64> = remote.difference(&local).copied().collect();
+    // T-233: rules decide placement at ingest. Gated to INBOX — syncing
+    // Sent/Archive/etc. must not re-fire rules on already-filed mail;
+    // an explicit re-run is `rules::apply_now`. Envelope facts only at
+    // this stage (sender/recipient/subject) — header/body predicates
+    // refine when the body lands (`fetch_missing_bodies`). A block-list
+    // verdict trashes the message before its body is ever fetched.
+    let rules_at_ingest = folder.eq_ignore_ascii_case("INBOX");
     for chunk in new_uids.chunks(FETCH_CHUNK) {
         let set = uid_set(chunk);
         let items = client
@@ -79,6 +86,16 @@ pub async fn sync_folder(
         for item in &items {
             store.upsert_message(folder_id, &to_meta(item), now)?;
             report.new_messages += 1;
+            if rules_at_ingest && let Some(uid) = item.uid {
+                let _ = crate::rules::apply_on_ingest(
+                    store,
+                    account_id,
+                    folder_id,
+                    uid,
+                    &envelope_pseudo(item),
+                    now,
+                );
+            }
         }
     }
 
@@ -105,13 +122,54 @@ pub async fn sync_folder(
 
 /// Fetch full bodies for messages that only have metadata so far
 /// (`BODY[]` per message; callers may throttle/queue this).
+///
+/// Body fetch only — no Authentication-Results stamp is written. Kept as the
+/// default entry point so existing callers (and the transcript-replay test
+/// harness) are unaffected; use [`fetch_missing_bodies_with_auth`] to stamp.
 pub async fn fetch_missing_bodies(
     client: &mut ImapClient,
     store: &MailStore,
     folder_id: i64,
     limit: usize,
+    now: i64,
+) -> Result<u64> {
+    fetch_missing_bodies_inner(client, store, folder_id, limit, now, None, None).await
+}
+
+/// [`fetch_missing_bodies`] plus the T-232 Authentication-Results stamp.
+///
+/// `sealer` supplies the DNS seam; `receipt` is the optional SMTP receipt
+/// context SPF needs (absent on IMAP, where the client IP and envelope
+/// sender are not knowable — SPF then records `none` with an explicit
+/// comment rather than a fabricated verdict).
+pub async fn fetch_missing_bodies_with_auth(
+    client: &mut ImapClient,
+    store: &MailStore,
+    folder_id: i64,
+    limit: usize,
+    now: i64,
+    sealer: &dyn crate::authstamp::AuthSealer,
+    receipt: Option<&crate::authstamp::SmtpReceipt>,
+) -> Result<u64> {
+    fetch_missing_bodies_inner(client, store, folder_id, limit, now, Some(sealer), receipt).await
+}
+
+async fn fetch_missing_bodies_inner(
+    client: &mut ImapClient,
+    store: &MailStore,
+    folder_id: i64,
+    limit: usize,
+    now: i64,
+    sealer: Option<&dyn crate::authstamp::AuthSealer>,
+    receipt: Option<&crate::authstamp::SmtpReceipt>,
 ) -> Result<u64> {
     let missing = store.uids_without_body(folder_id)?;
+    // T-233: rules refine on the full parse — the INBOX-only gate matches
+    // `sync_folder`'s (other folders are already-filed mail).
+    let (inbox_scope, account_id) = match store.folder_meta(folder_id)? {
+        Some(m) => (m.name.eq_ignore_ascii_case("INBOX"), m.account_id),
+        None => (false, String::new()),
+    };
     let mut done = 0u64;
     for uid in missing.into_iter().take(limit) {
         let items = client
@@ -121,11 +179,36 @@ pub async fn fetch_missing_bodies(
             && let Some((_, bytes)) = item.bodies.first()
         {
             store.store_body(folder_id, uid, bytes)?;
-            // Headers just arrived: refine the envelope-only category.
-            // Parse failures keep the existing value (absent fact, no guess).
+            // Headers just arrived: refine the envelope-only category and
+            // fill the unsubscribe offer. Parse failures keep the existing
+            // values (absent fact, no guess).
             if let Ok(parsed) = crate::mime::parse_message(bytes) {
                 let category = crate::category::categorize(&parsed).category;
                 let _ = store.set_category(folder_id, uid, category);
+                if let Some(info) = &parsed.unsubscribe {
+                    let _ = store.set_unsubscribe(folder_id, uid, info);
+                }
+                // Full predicates now — body/header/attachment matchers
+                // only become decidable here. Flag merges and
+                // already-moved no-ops make re-eval idempotent.
+                if inbox_scope {
+                    let _ = crate::rules::apply_on_ingest(
+                        store,
+                        &account_id,
+                        folder_id,
+                        uid,
+                        &parsed,
+                        now,
+                    );
+                }
+                // T-232: Authentication-Results. Runs only when the caller
+                // supplied a resolver; `None` writes no stamp (see
+                // `authstamp::AuthSealer`). Failures are swallowed — a
+                // security-stamp problem must not fail the body fetch.
+                if let Some(sealer) = sealer {
+                    let stamp = sealer.evaluate_and_stamp(&parsed, bytes, now, receipt);
+                    let _ = store.set_auth(folder_id, uid, &stamp);
+                }
             }
             done += 1;
         }
@@ -142,6 +225,9 @@ pub struct Pop3SyncReport {
 
 /// POP3 ingest: UIDL-diff → RETR unseen → optional DELE (leave-on-server is
 /// the default; deleting is an explicit caller choice).
+///
+/// Body ingest only — no Authentication-Results stamp. Use
+/// [`sync_pop3_with_auth`] to stamp.
 pub async fn sync_pop3(
     client: &mut Pop3Client,
     store: &MailStore,
@@ -149,6 +235,58 @@ pub async fn sync_pop3(
     folder_name: &str,
     delete_after_download: bool,
     now: i64,
+) -> Result<Pop3SyncReport> {
+    sync_pop3_inner(
+        client,
+        store,
+        account_id,
+        folder_name,
+        delete_after_download,
+        now,
+        None,
+        None,
+    )
+    .await
+}
+
+/// [`sync_pop3`] plus the T-232 Authentication-Results stamp. POP3 carries no
+/// SMTP receipt, so SPF is always recorded as `none` with an explicit comment
+/// (the client IP and envelope sender are simply not knowable here).
+/// ([`sync_pop3`] shape plus the sealer and optional receipt.)
+#[allow(clippy::too_many_arguments)]
+pub async fn sync_pop3_with_auth(
+    client: &mut Pop3Client,
+    store: &MailStore,
+    account_id: &str,
+    folder_name: &str,
+    delete_after_download: bool,
+    now: i64,
+    sealer: &dyn crate::authstamp::AuthSealer,
+    receipt: Option<&crate::authstamp::SmtpReceipt>,
+) -> Result<Pop3SyncReport> {
+    sync_pop3_inner(
+        client,
+        store,
+        account_id,
+        folder_name,
+        delete_after_download,
+        now,
+        Some(sealer),
+        receipt,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn sync_pop3_inner(
+    client: &mut Pop3Client,
+    store: &MailStore,
+    account_id: &str,
+    folder_name: &str,
+    delete_after_download: bool,
+    now: i64,
+    sealer: Option<&dyn crate::authstamp::AuthSealer>,
+    receipt: Option<&crate::authstamp::SmtpReceipt>,
 ) -> Result<Pop3SyncReport> {
     let folder_id = store.ensure_folder(account_id, folder_name)?;
     let uidls = client.uidl().await?;
@@ -183,9 +321,31 @@ pub async fn sync_pop3(
             snippet: Some(parsed.snippet.clone()),
             // Full headers are in hand — classify with the complete ruleset.
             category: crate::category::categorize(&parsed).category,
+            // …and record any unsubscribe offer (F3).
+            unsub_http: parsed.unsubscribe.as_ref().and_then(|u| u.http_url.clone()),
+            unsub_mailto: parsed.unsubscribe.as_ref().and_then(|u| u.mailto.clone()),
+            unsub_oneclick: parsed.unsubscribe.as_ref().is_some_and(|u| u.one_click),
         };
         store.upsert_message(folder_id, &meta, now)?;
         store.store_body(folder_id, number as u64, &bytes)?;
+        // T-233: the POP3 drop folder *is* the inbox — rules run on the
+        // full parse at ingest (POP3 has no envelope-only stage).
+        let _ = crate::rules::apply_on_ingest(
+            store,
+            account_id,
+            folder_id,
+            number as u64,
+            &parsed,
+            now,
+        );
+        // T-232: Authentication-Results. `receipt` is always `None` on POP3 —
+        // there is no SMTP client IP or envelope sender to evaluate SPF
+        // against, so it records `none` with an explicit comment instead of a
+        // fabricated verdict. Failures never abort the download.
+        if let Some(sealer) = sealer {
+            let stamp = sealer.evaluate_and_stamp(&parsed, &bytes, now, receipt);
+            let _ = store.set_auth(folder_id, number as u64, &stamp);
+        }
         store.pop3_mark_seen(account_id, &uidl, now)?;
         report.downloaded += 1;
         if delete_after_download {
@@ -216,6 +376,30 @@ fn parse_internal_date(s: &str) -> Option<i64> {
         .map(|d| d.unix_timestamp())
 }
 
+/// Envelope-only pseudo-message for the deterministic passes that run
+/// before bodies arrive (`category`, `rules::apply_on_ingest`). Header,
+/// body, and attachment predicates simply don't fire on it — absent
+/// fact, no guess.
+fn envelope_pseudo(item: &FetchItem) -> crate::mime::ParsedMessage {
+    let env = item.envelope.clone().unwrap_or_default();
+    let map = |list: &[crate::imap::Mailbox]| {
+        list.iter()
+            .map(|m| crate::mime::Addr {
+                name: None,
+                email: m.email.clone(),
+            })
+            .collect()
+    };
+    crate::mime::ParsedMessage {
+        message_id: env.message_id,
+        subject: env.subject,
+        from: map(&env.from),
+        to: map(&env.to),
+        cc: map(&env.cc),
+        ..Default::default()
+    }
+}
+
 fn to_meta(item: &FetchItem) -> NewMessageMeta {
     let env = item.envelope.clone().unwrap_or_default();
     let join = |list: &[crate::imap::Mailbox]| {
@@ -229,17 +413,7 @@ fn to_meta(item: &FetchItem) -> NewMessageMeta {
     // Metadata fetch carries no headers — classify from the envelope From
     // address only (social / no-reply domain rules still fire). The body
     // path (`fetch_missing_bodies`) refines this once headers arrive.
-    let pseudo = crate::mime::ParsedMessage {
-        from: env
-            .from
-            .iter()
-            .map(|m| crate::mime::Addr {
-                name: None,
-                email: m.email.clone(),
-            })
-            .collect(),
-        ..Default::default()
-    };
+    let pseudo = envelope_pseudo(item);
     NewMessageMeta {
         uid: item.uid.unwrap_or(0),
         message_id: env.message_id,
@@ -256,6 +430,11 @@ fn to_meta(item: &FetchItem) -> NewMessageMeta {
             .unwrap_or(false),
         snippet: None,
         category: crate::category::categorize(&pseudo).category,
+        // No headers at metadata time → no unsubscribe offer yet; the body
+        // path refines this via `set_unsubscribe` once headers arrive.
+        unsub_http: None,
+        unsub_mailto: None,
+        unsub_oneclick: false,
     }
 }
 

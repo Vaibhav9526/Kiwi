@@ -43,3 +43,42 @@ No Rust, TypeScript, or Agent 18 files were changed.
 - `cargo test -p kiwi-mail` passed 156/156.
 - Required Orca T-236 completion report sent to terminal
   `term_c20c6737-9b80-4911-bcd2-38aa5113e4d7`; receipt returned `accepted: true`.
+
+## 2026-09-25 — T-238: forensics serde vocabulary proposal
+
+**Status:** done (ruling request written; Lead canonical-vocabulary decision still required).
+
+### Files changed
+
+- `docs/audits/for-serde-vocab-1.md` — new read-only audit and ruling-request proposal covering all 31 `kiwi-forensics` enums, current serde forms, contract promises, FSV-1, and stored-report migration.
+- `docs/agents/agent-22-status.md` — this entry.
+
+No Rust, TypeScript, schema, or contract implementation files were changed.
+
+### Evidence and findings
+
+- Scanned every `.rs` file under `kiwi-forensics/src/`: 31 enums total, 27 serde-derived, 24 ordinary `#[serde(rename_all = "snake_case")]` enums, one internally tagged `EvidenceValue`, and four enums without serde.
+- Reproduced FOR-1/FOR-2: current report JSON uses `tls12`, `start_tls`, `x_o_auth2`, and `{"unknown":N}` while `forensics.md` promises `as_str()` forms such as `tls1.2`, `starttls`, `xoauth2`, and bare `unknown`.
+- Compared enum promises against `docs/contracts/forensics.md` and `docs/contracts/ipc.md`, including `Grade`, `ChangeKind`, PCAP enums, and the separate FOR-6 unknown-variant gap.
+- Recommended FSV-1: lower `snake_case` external enum tags, retain the `EvidenceValue` internal-tag exception, preserve `TlsVersion::Unknown` payloads, and keep `as_str()` semantic/evidence/stable-key text separate.
+- Added versioned dual-read/single-write migration notes for existing reports and a separate forward-compatibility implementation gate.
+
+### Commands run
+
+- Read-only `glob`, `grep`, and `read` inspection of `contract-drift-1.md`, `forensics.md`, `ipc.md`, `API_CONTRACTS.md`, `report/mod.rs`, `lib.rs`, and all enum-bearing source files.
+- `cargo test -p kiwi-forensics` — **115 passed, 0 failed** (96 unit, 5 capture-pipeline, 9 pcap-ng, 3 sync-send, 1 vertical-flow, 1 doc-test).
+- No source formatting, implementation, or code-writing command was run.
+
+### Assumptions / risks
+
+- T-238 is a ruling request, not approval of FSV-1; no code owner may treat the proposal as ratified until the Lead records the decision.
+- `TlsVersion::Unknown` migration must not fabricate a raw value when reading a legacy bare `"unknown"` string.
+- FOR-6 remains open: a spelling rule alone cannot provide forward-compatible deserialization for future or data-bearing enum variants.
+- `ipc.md` currently mixes core/session vocabulary (`tls1.3`, `xoauth2`, `hostname-mismatch`) with embedded forensic Serde values; the proposal keeps that boundary explicit.
+- Concurrent shared-worktree changes were preserved.
+
+### Verification
+
+- `git diff --check` passed for the new audit file and status log.
+- T-238 Orca DONE report sent to terminal
+  `term_c20c6737-9b80-4911-bcd2-38aa5113e4d7`; receipt returned `accepted: true`.

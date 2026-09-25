@@ -92,3 +92,23 @@ pub struct RemoteContentView {
     pub account_id: String,
     pub remote_content_allowed: bool,
 }
+
+/// `kiwi_message_unsubscribe` result (T-234). `action` echoes which
+/// endpoint was used; exactly one of `httpStatus` / `queueId` is set.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnsubscribeResultView {
+    /// The endpoint executed: `"http"` | `"mailto"`.
+    pub action: &'static str,
+    /// True when the request left this process — http: a response was
+    /// received (any status); mailto: the message is in the outbox.
+    pub executed: bool,
+    /// HTTP status for `action=http`. <400 means the endpoint accepted
+    /// the unsubscribe; 4xx/5xx is still `executed` (the POST went out)
+    /// but signals rejection to the UI.
+    pub http_status: Option<u16>,
+    /// Outbox queue id for `action=mailto`.
+    pub queue_id: Option<String>,
+    /// Undo-send deadline for `action=mailto` (normal outbox grace).
+    pub undo_window_until_unix: Option<i64>,
+}

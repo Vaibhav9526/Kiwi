@@ -2,6 +2,96 @@
 
 > Append dated entries: status, files changed, commands run, tests, assumptions, risks.
 
+## 2026-09-25 — T-232 Authentication-Results stamping (inherited from Agent 16)
+
+**Status:** COMPLETE. All four parts landed. **Verification: `cargo test -p
+kiwi-mail` = 162 passed / 0 failed (exit 0); `cargo clippy -p kiwi-mail
+--all-targets -- -D warnings` clean; `cargo fmt --check` clean; `kiwi-app`
+`tsc --noEmit` exit 0.** No live DNS anywhere — `MockResolver` only.
+
+**Files changed (7):**
+- `kiwi-mail/src/authstamp.rs` — **new module**: evaluation + RFC 8601 stamping.
+- `kiwi-mail/Cargo.toml` — added `kiwi-mailauth` path dep.
+- `kiwi-mail/src/lib.rs` — registered the module.
+- `kiwi-mail/src/store/schema.rs` — **SCHEMA_VERSION 6 → 7** + `message_auth` table.
+- `kiwi-mail/src/store/mod.rs` — `AuthMeta`, `MessageMeta.auth`, 6 migration tests.
+- `kiwi-mail/src/store/queries.rs` — `set_auth`/`get_auth`/`attach_auth`/`uids_without_auth`.
+- `kiwi-mail/src/sync.rs` — ingest hooks (see conflicts below).
+- `kiwi-app/src-tauri/src/types/mail.rs` — `MessageView.auth` + `AuthView`.
+- `kiwi-app/src/kiwi.ts` — `AuthResultsView` on the TS `MessageView`.
+
+**Design decisions worth Lead attention:**
+
+1. **SPF cannot be honestly evaluated at IMAP/POP3 ingest.** It needs the SMTP
+   connection IP and MAIL FROM envelope, which a fetch does not have. Rather
+   than invent a sender IP (a fabricated security finding, forbidden by
+   `SECURITY.md` rule 2), SPF records **`none` with an explicit
+   `spf_comment="no SMTP receipt context…"`**. An optional `SmtpReceipt` lets an
+   SMTP-receipt caller supply the real values and get a real SPF verdict; both
+   paths are tested.
+2. **`temperror` and `none` are not failures.** `AuthStamp::has_failure()`
+   returns true only for `fail`/`permerror`; `is_inconclusive()` covers
+   `temperror`. A test asserts `temperror` is inconclusive and **not** a
+   failure, so the pill can never render "could not check" as "spoofed".
+3. **No stamp ≠ `none` verdict.** `MessageMeta.auth` is `None` until the body
+   is fetched and evaluated; `None` is "not evaluated", a different state from
+   a `none` verdict. Tested explicitly.
+4. **Sealed-by-default on missing DNS.** The ingest paths take
+   `Option<&dyn AuthSealer>`. `None` writes **no stamp at all** rather than
+   running against an empty resolver — a stub resolver's NXDOMAIN is an
+   artefact of the stub, not evidence a DKIM key is missing (which would have
+   produced a false `dkim=fail`).
+
+**Schema v7 — a separate table, deliberately.** `message_auth` is a new table
+keyed `(folder_id, uid)` rather than more `messages` columns. The `messages`
+SELECT text is shared with the unsub/junk and rules owners; adding a join
+there would have created exactly the conflict the task told me to avoid. The
+verdicts are attached by one extra `SELECT … FROM message_auth` per list
+(`attach_auth`). `uids_without_auth` is provided for a future backfill pass
+(backfilling would need live DNS, so I did **not** backfill existing rows —
+that would fabricate timestamps/verdicts for already-stored mail).
+
+**Ingest touch — minimised, and the conflict is real.** Both existing public
+signatures (`fetch_missing_bodies`, `sync_pop3`) are **unchanged**; the loops
+were extracted into private `_inner` functions and new
+`fetch_missing_bodies_with_auth` / `sync_pop3_with_auth` entry points were
+added alongside. A15's rules code and A14's unsub/junk calls therefore keep
+working untouched. Ingest changes are one guarded block each, inside the
+existing `if let Ok(parsed)` body-fetch branch, after the rules hook.
+
+**Conflicts encountered (both pre-existing, not introduced by me):**
+- `kiwi-mail/src/rules/apply.rs` is **untracked** (A15's in-flight file) and
+  briefly broke the whole crate build (`record_rule_hits` / `set_flag` missing
+  from `MailStore`). I did **not** touch it; A15 landed a fix mid-task and the
+  build recovered. Flagging because it means **`cargo test -p kiwi-mail` can go
+  red for reasons unrelated to auth stamping** while A15 works.
+- Three real bugs in **my own** first cut, caught by tests rather than review:
+  a broken dedup check (compared the whole line instead of the field name, so
+  re-ingest would have duplicated the header), a moved-value error, and two
+  clippy findings (`collapsible_if`, `too_many_arguments`). The idempotency bug
+  is the one worth noting: it would have let an attacker pre-seed
+  `Authentication-Results:` to suppress our real stamp.
+
+**Tests added (20).** `authstamp`: 14 — no-records→`none` (not fail), SPF
+absent-without-receipt, SPF pass/fail with a `MockResolver`, DMARC none/fail/
+`temperror`/unparsable-From, header bounded + CRLF-safe, mbox `From `
+preservation, **idempotency**, header ordering, and a header-injection test
+proving a CRLF-bearing explanation cannot escape the comment. `store`: 6 —
+roundtrip, refresh-not-duplicate, list + category-list attach, `uids_without_auth`,
+and a **v6→v7 migration test**. All offline.
+
+**Assumptions / limits:**
+- No live-DNS backfill of existing messages (see above).
+- The `Authorization-Results` header is stamped **in memory for the returned
+  value**; the persisted `header_value` is the record of what was stamped. I
+  did **not** rewrite the on-disk `.eml` bodies in place — mutating stored mail
+  bytes would break any existing DKIM signature over the body. Flagging as a
+  decision for the Lead.
+- `MessageView` carries verdicts but **no pill component was written** — the
+  task asked to surface the fields; the pill UI is the frontend owner's.
+  `AuthResultsView` documents the `none`/`temperror` semantics for whoever
+  builds it.
+
 ## 2026-09-25 — T-199 dependency vulnerability audit delivered
 
 **Status:** COMPLETE. `cargo audit` (0.22.2, 1,269 advisories, 579 crates) +

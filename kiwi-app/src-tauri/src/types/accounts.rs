@@ -43,6 +43,12 @@ pub struct AuthInput {
     /// `kiwi_add_account`, used transiently by `kiwi_verify_server`.
     #[serde(default)]
     pub secret: Option<String>,
+    /// Completed-grant ticket from `kiwi_oauth2_begin`/`_poll` (T-230).
+    /// Valid only with `kind: "xoauth2"`; when present the backend binds
+    /// the already-stored grant (`oauth2/<provider>/<email>` key) to BOTH
+    /// auth directions — token material never crosses IPC.
+    #[serde(default)]
+    pub oauth2_ticket: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -104,6 +110,79 @@ pub struct VerifyResult {
     pub findings: Vec<kiwi_forensics::findings::Finding>,
     /// Endpoint trust after folding this session in.
     pub trust: SecurityStatusView,
+}
+
+// ---------------------------------------------------------------------------
+// Autoconfig discovery (kiwi_discover_account, ipc.md §5 — T-230)
+// ---------------------------------------------------------------------------
+
+/// One server side of a discovery suggestion.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SuggestedIncomingView {
+    /// "imap" | "pop3".
+    pub kind: String,
+    pub host: String,
+    pub port: u16,
+    /// "tls" | "starttls" | "plaintext".
+    pub security: String,
+    /// "password" | "xoauth2" — same spelling `AddAccountInput` takes.
+    pub auth: String,
+    pub username: String,
+}
+
+/// Outgoing side (SMTP) of a discovery suggestion.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SuggestedOutgoingView {
+    pub host: String,
+    pub port: u16,
+    /// "tls" | "starttls" | "plaintext".
+    pub security: String,
+    /// "password" | "xoauth2".
+    pub auth: String,
+    pub username: String,
+}
+
+/// The winning suggestion — feeds `kiwi_add_account` fields verbatim.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SuggestionView {
+    /// "ispdb" | "autoconfig_host" | "well_known" | "mx_heuristic" | "manual".
+    pub source: String,
+    pub email: String,
+    pub display_name: String,
+    pub incoming: SuggestedIncomingView,
+    pub outgoing: SuggestedOutgoingView,
+    /// OAuth2 provider spec when the suggestion's endpoints are ones a
+    /// shipped provider config can mint tokens for — the wizard passes
+    /// `provider` straight to `kiwi_oauth2_begin` (ipc.md §9f).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oauth2: Option<crate::types::oauth2::OAuth2SpecView>,
+}
+
+/// One discovery stage's outcome — the audit trail the UI may render.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StageAttemptView {
+    pub source: String,
+    /// "hit" | "miss" | "unreachable" | "malformed" | "unsupported".
+    pub outcome: String,
+    pub detail: String,
+}
+
+/// `kiwi_discover_account` result (ipc.md §5 shape + `oauth2` spec).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveryOutcomeView {
+    pub email: String,
+    pub domain: String,
+    /// Winning stage's source token (same vocabulary as attempts).
+    pub source: String,
+    /// True ⇒ UI must ask before persisting (pattern guess / manual).
+    pub needs_manual_review: bool,
+    pub suggestion: SuggestionView,
+    pub attempts: Vec<StageAttemptView>,
 }
 
 pub fn account_view(a: &MailAccount, trust: &str, unread: u64, color: &str) -> AccountView {

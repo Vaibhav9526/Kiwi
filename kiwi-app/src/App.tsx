@@ -37,6 +37,8 @@ import type {
 import {
   eventToRow,
   findingToInfo,
+  normalizeCategory,
+  parseUnsubscribe,
   toTrustState,
   trustTokenToSeverity,
   unixToIso,
@@ -86,6 +88,8 @@ function toEnvelope(
     hasAttachments: m.hasAttachments === true,
     trust,
     snippet: m.snippet || "",
+    category: normalizeCategory(m.category),
+    unsub: parseUnsubscribe(m),
   };
 }
 

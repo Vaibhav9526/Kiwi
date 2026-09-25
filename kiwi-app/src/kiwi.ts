@@ -48,6 +48,61 @@ export interface MessageEnvelope {
   hasAttachments: boolean;
   trust: Severity;
   snippet: string;
+  /** F2 inbox tab (backend `MessageView.category` slug; unknown → primary). */
+  category: MessageCategory;
+  /** T-202 unsubscribe endpoints (dormant until the backend classifies). */
+  unsub: UnsubscribeInfo;
+}
+
+/** F2 inbox tabs — slugs match kiwi-mail `Category::as_str` (stable API). */
+export type MessageCategory = "primary" | "newsletters" | "social" | "notifications" | "other";
+
+export const CATEGORY_TABS: { slug: MessageCategory; label: string }[] = [
+  { slug: "primary", label: "Primary" },
+  { slug: "newsletters", label: "Newsletters" },
+  { slug: "social", label: "Social" },
+  { slug: "notifications", label: "Notifications" },
+  { slug: "other", label: "Other" },
+];
+
+/** Unknown/empty slugs fall back to Primary (mirrors `from_slug` callers). */
+export function normalizeCategory(v: unknown): MessageCategory {
+  const s = typeof v === "string" ? v.trim().toLowerCase() : "";
+  return s === "newsletters" || s === "social" || s === "notifications" || s === "other" ? s : "primary";
+}
+
+/** T-202 unsubscribe endpoints (tolerant; absent until the backend exposes them). */
+export interface UnsubscribeInfo {
+  url: string | null;
+  mailto: string | null;
+  oneClick: boolean;
+}
+
+function cleanStr(v: unknown): string | null {
+  return typeof v === "string" && v.trim() ? v.trim() : null;
+}
+
+/** HTTPS-only: list-unsubscribe URLs must never be http/javascript/data. */
+export function parseUnsubscribe(raw: unknown): UnsubscribeInfo {
+  const out: UnsubscribeInfo = { url: null, mailto: null, oneClick: false };
+  if (typeof raw !== "object" || raw === null) return out;
+  const r = raw as Record<string, unknown>;
+  const url = cleanStr(r["unsubscribe_url"]);
+  if (url) {
+    try {
+      const u = new URL(url);
+      if (u.protocol === "https:") out.url = u.toString();
+    } catch {
+      // Unusable — stays null, chip stays hidden.
+    }
+  }
+  const mailto = cleanStr(r["unsubscribe_mailto"]);
+  if (mailto) {
+    const addr = mailto.toLowerCase().startsWith("mailto:") ? mailto.slice("mailto:".length) : mailto;
+    if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(addr.split("?")[0] ?? "")) out.mailto = addr;
+  }
+  out.oneClick = r["unsubscribe_one_click"] === true;
+  return out;
 }
 
 export interface FindingInfo {
@@ -135,6 +190,36 @@ export interface MessageView {
   flags: string[];
   hasAttachments: boolean;
   snippet: string;
+  /** F2 tab slug (primary/…); absent on old rows → normalizeCategory. */
+  category?: unknown;
+  /** T-202 endpoints; absent until the backend exposes them. */
+  unsubscribe_url?: unknown;
+  unsubscribe_mailto?: unknown;
+  unsubscribe_one_click?: unknown;
+  /**
+   * T-232 Authentication-Results. Absent until the body has been fetched and
+   * evaluated — "not evaluated" is deliberately distinct from a `none`
+   * verdict, so the security pill must render unknown rather than safe.
+   */
+  auth?: AuthResultsView | null;
+}
+
+/**
+ * SPF/DKIM/DMARC verdicts (T-232). Vocabulary is `kiwi.mailauth/1`:
+ * `pass` | `fail` | `softfail` | `neutral` | `none` | `temperror` | `permerror`.
+ *
+ * SECURITY.md rules 1–2: `none` means no record was published and `temperror`
+ * means the check could not complete. Both are *absence of evidence* — never
+ * render them as a pass, and never as a finding.
+ */
+export interface AuthResultsView {
+  spf: string;
+  dkim: string;
+  dmarc: string;
+  dmarcPolicy: string;
+  dkimDomain?: string | null;
+  headerValue?: string | null;
+  evidence?: unknown;
 }
 
 export interface MessageAttachmentView {
@@ -172,6 +257,22 @@ export interface RenderedBodyView {
 export interface RemoteContentView {
   accountId: string;
   remoteContentAllowed: boolean;
+}
+
+/** `kiwi_message_unsubscribe` action selector (T-234). */
+export type UnsubscribeAction = "http" | "mailto";
+
+/**
+ * `kiwi_message_unsubscribe` result. `executed` means the request left
+ * the process (http: a response was received; mailto: queued). For http,
+ * `httpStatus` <400 means the endpoint accepted the unsubscribe.
+ */
+export interface UnsubscribeResultView {
+  action: UnsubscribeAction;
+  executed: boolean;
+  httpStatus: number | null;
+  queueId: string | null;
+  undoWindowUntilUnix: number | null;
 }
 
 /** `kiwi_delete_messages` result (T-163) — counts tell which path ran. */
@@ -370,7 +471,7 @@ function secToken(v: unknown): string {
   return "tls";
 }
 
-/** Tolerant parse of a future `kiwi_lookup_autoconfig` response; null when unusable. */
+/** Tolerant parse of a future `kiwi_discover_account` response (ipc.md §5); null when unusable. */
 export function parseAutoconfigSuggestion(raw: unknown): AutoconfigSuggestion | null {
   if (typeof raw !== "object" || raw === null) return null;
   const r = raw as Record<string, unknown>;
@@ -482,6 +583,121 @@ export interface VerifyResult {
   session: Record<string, unknown> | null;
   findings: BackendFinding[];
   trust: SecurityStatusView;
+}
+
+/* ---------------- integrations (T-227, ipc.md §9e) ---------------- */
+
+/** Every temp-mail response carries the mandated public-inbox disclosure. */
+export interface PublicInboxNotice {
+  publicInboxNotice: string;
+}
+
+export interface TempMailboxView extends PublicInboxNotice {
+  address: string;
+  addressCreatedUnix?: number;
+}
+
+export interface TempMessageSummaryView {
+  mailId: string;
+  from: string;
+  subject: string;
+  excerpt: string;
+  timestampUnix?: number;
+  date: string;
+  read: boolean;
+}
+
+export interface TempPollView extends PublicInboxNotice {
+  messages: TempMessageSummaryView[];
+  totalNew: number;
+  address?: string;
+}
+
+/** Fetched temp message — html is pre-sanitized backend-side, remote
+ * resources always stripped; raw MIME never crosses IPC. */
+export interface TempMessageView extends PublicInboxNotice {
+  mailId: string;
+  from: string;
+  subject: string;
+  date: string;
+  contentType?: string;
+  html?: string;
+  text?: string;
+  remoteImagesStripped: number;
+}
+
+export interface TempDiscardView extends PublicInboxNotice {
+  discarded: boolean;
+  remoteForgotten: boolean;
+}
+
+export interface TempExtendView extends PublicInboxNotice {
+  extended: boolean;
+  expired: boolean;
+  addressCreatedUnix?: number;
+}
+
+export interface DeliverabilityBeginView {
+  testId: string;
+  address: string;
+  expiresAtUnix?: number;
+  expiresAtRaw?: string;
+  /** Single-use consent capability — hand back verbatim to send. */
+  consentToken: string;
+  consentNotice: string;
+}
+
+export interface DeliverabilitySendView {
+  testId: string;
+  queueId: string;
+  notBeforeUnix: number;
+}
+
+export interface DeliverabilityStatusView {
+  testId: string;
+  /** "pending" | "received" | "analyzing" | "checks_ready" | "failed" | unknown string */
+  analysisStatus: string;
+  checksDone: number;
+  checksTotal: number;
+  ready: boolean;
+  sent: boolean;
+}
+
+export interface DeliverabilityCitationView {
+  kind: string;
+  title: string;
+  url: string;
+}
+
+export interface DeliverabilityCheckView {
+  id: string;
+  category: string;
+  categoryRaw: string;
+  status: string;
+  title: string;
+  summary: string;
+  citations: DeliverabilityCitationView[];
+}
+
+export interface DeliverabilityCategoryTally {
+  pass: number;
+  warn: number;
+  fail: number;
+  skip: number;
+  other: number;
+}
+
+export interface DeliverabilityReportView {
+  testId: string;
+  scoreOursMilli?: number;
+  scoreCompatMilli?: number;
+  complete: boolean;
+  reportUrl?: string;
+  subscores: Record<string, number>;
+  tallies: Record<string, DeliverabilityCategoryTally>;
+  checks: DeliverabilityCheckView[];
+  /** ids of failed `auth` checks — the gate set. */
+  authFailureIds: string[];
 }
 
 /* ---------------- mappers (backend → UI, never throw) ---------------- */

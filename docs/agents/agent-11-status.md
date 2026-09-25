@@ -205,3 +205,74 @@ this file.
 - Sessions die with the process (by design — nothing persists).
 - Deliverability `report` before `ready` defers to the provider.
 - Live smoke remains env-gated follow-up (T-226 status entry).
+
+## 2026-09-25 — T-234: unsubscribe execution command (completes F3)
+
+**Status:** implemented + verified.
+`cargo test -p kiwi-app` → **86/86 pass** (7 new unsubscribe tests),
+`cargo clippy -p kiwi-app --all-targets -- -D warnings` clean,
+`cargo fmt --check` clean (kiwi-app + kiwi-mail + kiwi-integrations +
+kiwi-autoconfig), `tsc --noEmit` clean. ipc.md §6b entry written; typed
+wrapper + views in `src/ipc.ts` + `src/kiwi.ts`. **No commit** — Lead
+integrates.
+
+### Surface
+
+- `kiwi_message_unsubscribe(accountId, folderId, uid, action, consent?)`
+  → `UnsubscribeResultView{action, executed, httpStatus?, queueId?,
+  undoWindowUntilUnix?}`. Lock-gated; folder ownership checked like
+  every message action (`owned_folder`).
+- `action="http"` — POSTs the STORED `unsub_http` URL through the shared
+  `integrations_http` seam (HTTPS-only, no redirects, capped body).
+  RFC 8058 offers send `List-Unsubscribe=One-Click` with
+  `application/x-www-form-urlencoded`; plain offers send a bare POST.
+  Consent: one-click runs on the click alone; non-one-click requires
+  `consent:true`. Stored non-https URL → `invalid-input` before any
+  socket. Response status surfaces as `httpStatus` (<400 = accepted;
+  higher still counts as `executed` so the UI can tell "sent" from
+  "probably ignored").
+- `action="mailto"` — minimal `unsubscribe`/`unsubscribe` message to
+  the stored `unsub_mailto` via `send_impl` (normal outbox: undo grace,
+  `send-queued` audit). **Always** `consent:true` — the send exposes
+  the user's own address.
+- Consent failure → `consent-required`, touches nothing (no HTTP, no
+  outbox, no audit). Executed actions audit `unsubscribe-http` /
+  `unsubscribe-mailto` (message ref + status/queueId; no URLs).
+- kiwi-mail gained `MailStore::unsubscribe_offer(folder_id, uid)` —
+  single-row read of the T-202 columns.
+
+### Files changed
+
+`kiwi-mail/src/store/queries.rs` (+`unsubscribe_offer`),
+`kiwi-mail/src/search.rs` (+`auth: None` in its `map_message_row` —
+T-232 added `MessageMeta.auth` mid-task and missed this initializer),
+`kiwi-autoconfig/src/net.rs` (`DiscoveryNet: Send + Sync` — required by
+`AppState.autoconfig_net`; the missing bound took `Arc<AppState>`'s
+Send/Sync and broke all ~90 commands), `kiwi-app/src-tauri/src/types/
+message.rs` (+`UnsubscribeResultView`), `src/commands/message/
+unsubscribe.rs` (new), `src/commands/message/mod.rs`, `src/commands/
+mod.rs` (+`pub mod oauth2;` — file landed undeclared), `src/lib.rs`
+(+`mod discovery_net;`, +`kiwi_message_unsubscribe` registration),
+`docs/contracts/ipc.md` (§6b entry + `consent-required` row), `src/
+kiwi.ts`, `src/ipc.ts`.
+
+### Cross-agent repairs during this session (flag for owners)
+
+- T-230 landed mid-task with undeclared modules + missing trait bound —
+  applied the four minimal glue fixes above (two `mod` declarations,
+  `Send + Sync`, `auth: None`) to unblock `-p kiwi-app` gates; owner
+  then re-landed their own clippy fixes. Suite went red transiently on
+  oauth2/autoconfig/rules tests while churning; green at 86/86 now.
+- oauth2.rs test scripts assert `grant_type` as a URL fragment via
+  ScriptedHttp `expect_query` — fixed by owner (device+loopback tests
+  pass now).
+
+### Assumptions / gaps
+
+- Non-one-click http POST sends an empty body (RFC 2369 gives no
+  defined body; the endpoint's own page/confirm flow owns semantics).
+- Stored `unsub_mailto` is re-validated with `valid_addr` at execution
+  (check-on-use; ingest already strips mailto params).
+- `executed` means "request left the process", not "provider honored
+  it" — `httpStatus` carries the endpoint's answer.
+- No live smoke; ScriptedHttp asserts the RFC 8058 body + content-type.

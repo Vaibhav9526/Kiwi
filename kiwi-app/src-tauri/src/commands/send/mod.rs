@@ -36,7 +36,7 @@ pub(crate) async fn drop_outbox(state: &AppState, queue_id: &str) {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::super::gate;
     use super::*;
     use crate::error::IpcError;
@@ -87,10 +87,12 @@ mod tests {
             incoming_auth: Some(AuthInput {
                 kind: "password".into(),
                 secret: Some("s".into()),
+                oauth2_ticket: None,
             }),
             outgoing_auth: Some(AuthInput {
                 kind: "password".into(),
                 secret: Some("s".into()),
+                oauth2_ticket: None,
             }),
             accept_invalid_certs: false,
         }

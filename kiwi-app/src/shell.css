@@ -953,6 +953,25 @@
   padding: 4px 8px;
 }
 
+/* Category tabs align left over the thread list (prefs tabs stay centered). */
+.ms-cat-tabs {
+  justify-content: flex-start;
+  margin-bottom: 8px;
+}
+
+/* Unsubscribe panel under the reader header. */
+.ms-unsub {
+  margin: 0 0 10px;
+}
+
+.ms-unsub-panel {
+  border: 1px solid var(--kiwi-ms-border);
+  border-radius: var(--kiwi-ms-radius-base);
+  background: var(--kiwi-ms-surface-2);
+  padding: 8px 10px;
+  font-size: var(--kiwi-ms-text-small);
+}
+
 /* ---------- narrow: stacked rows under ~540px list width ---------- */
 
 .ms-narrow .ms-row {

@@ -13,6 +13,7 @@ mod audit;
 mod bridge;
 mod commands;
 mod credstore;
+mod discovery_net;
 mod error;
 mod observe;
 mod signals;
@@ -24,12 +25,16 @@ mod verifier;
 use tauri::Manager;
 
 use commands::accounts::*;
+use commands::autoconfig::*;
 use commands::contacts::*;
 use commands::devices::*;
 use commands::endpoint::*;
+use commands::integrations::*;
 use commands::mail::*;
 use commands::message::*;
+use commands::oauth2::*;
 use commands::prefs::*;
+use commands::rules::*;
 use commands::security::*;
 use commands::send::*;
 use commands::system::*;
@@ -72,6 +77,12 @@ pub fn run() {
             kiwi_remove_account,
             kiwi_test_account,
             kiwi_verify_server,
+            kiwi_discover_account,
+            // oauth2 acquisition (gated)
+            kiwi_oauth2_begin,
+            kiwi_oauth2_poll,
+            kiwi_oauth2_cancel,
+            kiwi_oauth2_status,
             // mail read (gated)
             kiwi_list_folders,
             kiwi_list_messages,
@@ -85,6 +96,7 @@ pub fn run() {
             kiwi_download_attachment,
             kiwi_render_body,
             kiwi_set_remote_content,
+            kiwi_message_unsubscribe,
             // send (gated)
             kiwi_send_message,
             kiwi_cancel_send,
@@ -118,6 +130,22 @@ pub fn run() {
             kiwi_prefs_get,
             kiwi_prefs_set,
             kiwi_prefs_list,
+            // external integrations (gated — opt-in per action)
+            kiwi_integrations_tempmail_create,
+            kiwi_integrations_tempmail_poll,
+            kiwi_integrations_tempmail_fetch,
+            kiwi_integrations_tempmail_discard,
+            kiwi_integrations_tempmail_extend,
+            kiwi_integrations_deliverability_begin,
+            kiwi_integrations_deliverability_send,
+            kiwi_integrations_deliverability_status,
+            kiwi_integrations_deliverability_report,
+            // inbox rules (gated — F1/T-233)
+            kiwi_rules_list,
+            kiwi_rules_upsert,
+            kiwi_rules_delete,
+            kiwi_rules_apply_now,
+            kiwi_rules_hits,
             // endpoint signals (exempt — feeds trust)
             kiwi_collect_endpoint_signals,
         ])

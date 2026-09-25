@@ -193,9 +193,12 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-233 | Apply rules on sync ingest + rules CRUD IPC + apply-now + matched-id audit surface | Agent 15 | open | `kiwi-mail/`, `kiwi-app/src-tauri/` | T-228 |
 
 
+<!-- FSV-1 ratified: snake_case + externally-tagged data variants; EvidenceValue internal-tag exception; lossy-legacy reader. -->
 <!-- ROSTER SWEEP: A16/A17 terminals exited; A12/A13/A18 not in terminal list. Orphans: T-194 mobile screens, T-229 oauth2.md review, T-231 live-data wiring (if A12 gone), T-193 verify-in-tree. 3 unidentified OpenCode/SpaceBunny terminals pinged for identification. A21 reassigned to T-232. -->
 | T-235 | kiwi-pair contract-vs-impl gap audit (read-only, file:line evidence) | Agent 18 | open | `kiwi-pair/`, `kiwi-app/src-tauri/` | T-188 |
 | T-236 | rules.md contract (kiwi.rules/1, 445L) | Agent 22 | done | `docs/contracts/` | T-228 |
 | T-237 | Drift fixes batch: prefs IPC renames + contracts index + admin-api post-T-193 + challenge-expired ruling | Agent 20 | open | `kiwi-app/src/ipc.ts`, `docs/contracts/` | T-196 |
-| T-238 | Forensics serde vocab unification proposal (per-enum table + canonical rule ruling-request) | Agent 22 | open | `docs/audits/` | T-196 FOR-1/2 |
+| T-238 | Forensics serde vocab proposal — FSV-1 RATIFIED | Agent 22 | done | `docs/audits/` | T-196 FOR-1/2 |
 | T-239 | IPC-1/2 wire-shape reconciliation (AccountView/SecurityStatusView) + SS-1 required_action + serde(other) note | Agent 20 | open | `types/`, `ipc.md` | T-196 |
+| T-240 | Upstream Authentication-Results parse + our-verdict discrepancy flag on AuthView | Agent 21 | open | `kiwi-mail/` | T-232 |
+| T-241 | ipc.md completeness: registered-commands reconciliation + missing entries (post T-230/233/234) | Agent 22 | open | `docs/`, `kiwi-app/src-tauri/` (read) | T-196 |

@@ -19,6 +19,8 @@ pub enum MailError {
     ServerReject { command: String, reply: String },
     #[error("store error: {0}")]
     Store(#[from] rusqlite::Error),
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
     #[error("policy rejected: {0}")]
     PolicyRejected(String),
     #[error("endpoint locked: unlock required before {0}")]

@@ -1,7 +1,7 @@
 /**
  * Account setup wizard (T-143, T-156): email → autoconfig discovery chain
- * (`kiwi_lookup_autoconfig` via the ipc wrapper; backend IPC pending so a
- * labeled local stub fills in), server presets, credential entry, live
+ * (`kiwi_discover_account` via the ipc wrapper; backend IPC pending T-230 so
+ * a labeled local stub fills in), server presets, credential entry, live
  * server verification (kiwi_verify_server, incoming + outgoing with step
  * detail) and creation (kiwi_add_account). Secrets are sent once over local
  * IPC, land in the OS credential store, and are cleared from component state
@@ -25,8 +25,8 @@ function toPort(v: string, fallback: number): number {
 }
 
 /**
- * Local discovery stub (T-156): used until `kiwi_lookup_autoconfig` lands in
- * the backend. Provider presets for the two big hosts plus a generic
+ * Local discovery stub (T-156): used until `kiwi_discover_account` lands in
+ * the backend (T-230). Provider presets for the two big hosts plus a generic
  * `mail.<domain>` guess — always TLS, always password, always labeled
  * `local-guess` so the verify step (not the guess) is the source of truth.
  */

@@ -56,6 +56,7 @@ impl From<kiwi_mail::error::MailError> for IpcError {
             ServerReject { .. } => ("server-reject", e.to_string()),
             Store(_) => ("store-error", e.to_string()),
             PolicyRejected(_) => ("policy-blocked", e.to_string()),
+            InvalidInput(_) => ("invalid-input", e.to_string()),
             Locked(_) => ("locked", e.to_string()),
         };
         Self::new(code, msg)
@@ -91,6 +92,60 @@ impl From<kiwi_core::challenge::ChallengeError> for IpcError {
             ),
             InvalidSignature => Self::new("invalid-signature", "response signature invalid"),
         }
+    }
+}
+
+impl From<kiwi_integrations::IntegrationError> for IpcError {
+    /// Integration errors are pre-sanitized at the crate boundary — no URLs,
+    /// no capability secrets, no provider internals (integrations contract
+    /// §1). We forward only the coarse message + a stable code.
+    fn from(e: kiwi_integrations::IntegrationError) -> Self {
+        use kiwi_integrations::IntegrationError::*;
+        use kiwi_integrations::TransportKind;
+        let (code, msg) = match &e {
+            Transport {
+                kind: TransportKind::Connect | TransportKind::Timeout,
+            } => ("connect-failed", e.to_string()),
+            Transport { .. } => ("integration-error", e.to_string()),
+            Http { status } => (
+                "integration-error",
+                format!("provider returned unexpected HTTP {status}"),
+            ),
+            RateLimited { retry_after_ms } => (
+                "rate-limited",
+                match retry_after_ms {
+                    Some(ms) => format!("provider rate-limited; retry after {ms} ms"),
+                    None => "provider rate-limited".to_string(),
+                },
+            ),
+            Expired => (
+                "expired",
+                "provider reports the address or test expired".to_string(),
+            ),
+            NotFound => ("not-found", "not found on provider".to_string()),
+            AnalysisFailed => (
+                "integration-error",
+                "provider-side analysis failed".to_string(),
+            ),
+            Malformed(field) => (
+                "integration-error",
+                format!("provider response malformed ({field})"),
+            ),
+            BodyTooLarge => (
+                "integration-error",
+                "provider response too large".to_string(),
+            ),
+            InsecureUrl => (
+                "integration-error",
+                "refused non-HTTPS provider URL".to_string(),
+            ),
+            NoSession => ("not-found", "no active temp-mail session".to_string()),
+            ProviderRejected(why) => (
+                "server-reject",
+                format!("provider rejected the request: {why}"),
+            ),
+        };
+        Self::new(code, msg)
     }
 }
 

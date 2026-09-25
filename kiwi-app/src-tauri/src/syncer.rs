@@ -543,10 +543,12 @@ mod tests {
             incoming_auth: Some(AuthInput {
                 kind: "password".into(),
                 secret: Some("s".into()),
+                oauth2_ticket: None,
             }),
             outgoing_auth: Some(AuthInput {
                 kind: "password".into(),
                 secret: Some("s".into()),
+                oauth2_ticket: None,
             }),
             accept_invalid_certs: false,
         }

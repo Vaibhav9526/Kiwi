@@ -18,6 +18,11 @@ kiwi-mail = { path = "../../kiwi-mail" }
 kiwi-core = { path = "../../kiwi-core" }
 kiwi-forensics = { path = "../../kiwi-forensics" }
 kiwi-contacts = { path = "../../kiwi-contacts" }
+kiwi-integrations = { path = "../../kiwi-integrations" }
+kiwi-autoconfig = { path = "../../kiwi-autoconfig" }
+# DNS MX lookups for autoconfig discovery (same pin kiwi-mailauth uses).
+hickory-resolver = { version = "0.26", features = ["tokio"] }
+async-trait.workspace = true
 tauri = { version = "2", features = [] }
 serde.workspace = true
 serde_json.workspace = true

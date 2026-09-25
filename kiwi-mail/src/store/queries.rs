@@ -40,6 +40,8 @@ fn map_message_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<MessageMeta> {
         unsub_http: r.get(14)?,
         unsub_mailto: r.get(15)?,
         unsub_oneclick: r.get::<_, i64>(16)? != 0,
+        // Filled by the list callers from `message_auth` (see `attach_auth`).
+        auth: None,
     })
 }
 
@@ -294,6 +296,39 @@ impl MailStore {
         Ok(n > 0)
     }
 
+    /// The stored unsubscribe offer for one message, or `None` when the
+    /// `(folder_id, uid)` row does not exist. A row with no advertised
+    /// endpoints returns `UnsubscribeInfo` with all fields empty — the
+    /// caller distinguishes "no message" from "no offer" on `Option`.
+    pub fn unsubscribe_offer(
+        &self,
+        folder_id: i64,
+        uid: u64,
+    ) -> Result<Option<crate::unsub::UnsubscribeInfo>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT unsub_http, unsub_mailto, unsub_oneclick
+                 FROM messages WHERE folder_id = ?1 AND uid = ?2",
+                params![folder_id, uid as i64],
+                |r| {
+                    Ok((
+                        r.get::<_, Option<String>>(0)?,
+                        r.get::<_, Option<String>>(1)?,
+                        r.get::<_, i64>(2)?,
+                    ))
+                },
+            )
+            .optional()?;
+        Ok(
+            row.map(|(http_url, mailto, oc)| crate::unsub::UnsubscribeInfo {
+                http_url,
+                mailto,
+                one_click: oc != 0,
+            }),
+        )
+    }
+
     /// Messages of one tab in a folder, uid order, bounded (powers the F2 UI tabs).
     pub fn list_messages_by_category(
         &self,
@@ -317,6 +352,7 @@ impl MailStore {
         for r in rows {
             out.push(r?);
         }
+        self.attach_auth(folder_id, &mut out)?;
         Ok(out)
     }
 
@@ -346,6 +382,17 @@ impl MailStore {
     }
 
     fn set_junk(&self, folder_id: i64, uids: &[u64], junk: bool) -> Result<u64> {
+        self.set_flag(folder_id, uids, JUNK_FLAG, junk)
+    }
+
+    /// Merge-set one flag on stored messages — unlike `update_flags`
+    /// (which replaces the flag set from server state), this adds or
+    /// removes a single flag and reports how many rows actually changed.
+    /// Bulk-ready: absent UIDs are skipped, already-correct rows are not
+    /// counted. Local-only — the caller performs the live `UID STORE
+    /// ±FLAGS` for IMAP. Used by the rules engine (`\Seen`/`\Flagged`,
+    /// T-233) and the junk toggle (T-212 delegates above).
+    pub fn set_flag(&self, folder_id: i64, uids: &[u64], flag: &str, on: bool) -> Result<u64> {
         let mut changed = 0u64;
         for uid in uids {
             let current: Option<String> = self
@@ -360,11 +407,11 @@ impl MailStore {
                 continue; // uid absent — skip, not an error
             };
             let mut flags: Vec<String> = current.split_whitespace().map(str::to_string).collect();
-            let has = flags.iter().any(|f| f.eq_ignore_ascii_case(JUNK_FLAG));
-            if junk && !has {
-                flags.push(JUNK_FLAG.to_string());
-            } else if !junk && has {
-                flags.retain(|f| !f.eq_ignore_ascii_case(JUNK_FLAG));
+            let has = flags.iter().any(|f| f.eq_ignore_ascii_case(flag));
+            if on && !has {
+                flags.push(flag.to_string());
+            } else if !on && has {
+                flags.retain(|f| !f.eq_ignore_ascii_case(flag));
             } else {
                 continue; // already in the desired state — not counted
             }
@@ -569,6 +616,131 @@ impl MailStore {
         Ok(moved)
     }
 
+    /// Persist (or refresh) a message's Authentication-Results verdicts
+    /// (T-232). Called from the ingest paths once the raw body — and thus the
+    /// DKIM body hash and full header set — is available. Idempotent via
+    /// `INSERT OR REPLACE`, so a re-fetch refreshes rather than duplicates.
+    pub fn set_auth(
+        &self,
+        folder_id: i64,
+        uid: u64,
+        stamp: &crate::authstamp::AuthStamp,
+    ) -> Result<bool> {
+        let evidence = serde_json::json!({
+            "spf": stamp.spf_explanation,
+            "dkim": stamp.dkim_explanation,
+            "dmarc": stamp.dmarc_explanation,
+        });
+        let n = self.conn.execute(
+            "INSERT OR REPLACE INTO message_auth
+                (folder_id, uid, spf, dkim, dmarc, dmarc_policy, dkim_domain,
+                 key_query, dmarc_record, header_value, evidence_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                folder_id,
+                uid as i64,
+                stamp.spf,
+                stamp.dkim,
+                stamp.dmarc,
+                stamp.dmarc_policy,
+                stamp.dkim_domain,
+                stamp.dkim_key_query,
+                stamp.dmarc_record,
+                stamp.header_value,
+                evidence.to_string(),
+            ],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Read one message's persisted verdicts, if any.
+    pub fn get_auth(&self, folder_id: i64, uid: u64) -> Result<Option<AuthMeta>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT spf, dkim, dmarc, dmarc_policy, dkim_domain, key_query,
+                    dmarc_record, header_value, evidence_json
+             FROM message_auth WHERE folder_id = ?1 AND uid = ?2",
+        )?;
+        let mut rows = stmt.query(params![folder_id, uid as i64])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        let evidence: Option<String> = row.get(8)?;
+        Ok(Some(AuthMeta {
+            spf: row.get(0)?,
+            dkim: row.get(1)?,
+            dmarc: row.get(2)?,
+            dmarc_policy: row.get(3)?,
+            dkim_domain: row.get(4)?,
+            key_query: row.get(5)?,
+            dmarc_record: row.get(6)?,
+            header_value: row.get(7)?,
+            evidence: evidence.and_then(|e| serde_json::from_str(&e).ok()),
+        }))
+    }
+
+    /// Bulk-read verdicts for a folder and attach them to the message rows.
+    ///
+    /// Kept out of the `messages` SELECTs on purpose: that query text is
+    /// shared with the unsub/junk and rules owners, and a single extra
+    /// `SELECT … FROM message_auth` per list keeps their columns untouched.
+    /// A message with no row keeps `auth: None` ("not evaluated yet").
+    fn attach_auth(&self, folder_id: i64, msgs: &mut [MessageMeta]) -> Result<()> {
+        if msgs.is_empty() {
+            return Ok(());
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT uid, spf, dkim, dmarc, dmarc_policy, dkim_domain, key_query,
+                    dmarc_record, header_value, evidence_json
+             FROM message_auth WHERE folder_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![folder_id], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                AuthMeta {
+                    spf: r.get(1)?,
+                    dkim: r.get(2)?,
+                    dmarc: r.get(3)?,
+                    dmarc_policy: r.get(4)?,
+                    dkim_domain: r.get(5)?,
+                    key_query: r.get(6)?,
+                    dmarc_record: r.get(7)?,
+                    header_value: r.get(8)?,
+                    evidence: r
+                        .get::<_, Option<String>>(9)?
+                        .and_then(|e| serde_json::from_str(&e).ok()),
+                },
+            ))
+        })?;
+        for r in rows {
+            let (uid, meta) = r?;
+            let uid = uid as u64;
+            if let Some(m) = msgs.iter_mut().find(|m| m.uid == uid) {
+                m.auth = Some(meta);
+            }
+        }
+        Ok(())
+    }
+
+    /// Messages eligible for Authentication-Results evaluation: those with a
+    /// stored body but no stamp yet. Kept so a later re-evaluation pass can
+    /// backfill without a full re-sync.
+    pub fn uids_without_auth(&self, folder_id: i64) -> Result<Vec<u64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT m.uid FROM messages m
+             WHERE m.folder_id = ?1 AND m.body_path IS NOT NULL
+               AND NOT EXISTS (SELECT 1 FROM message_auth a
+                               WHERE a.folder_id = m.folder_id AND a.uid = m.uid)
+             ORDER BY m.uid",
+        )?;
+        let rows = stmt.query_map(params![folder_id], |r| r.get::<_, i64>(0))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r? as u64);
+        }
+        Ok(out)
+    }
+
+    /// List messages with their Authentication-Results verdicts attached.
     pub fn list_messages(&self, folder_id: i64, limit: u32) -> Result<Vec<MessageMeta>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, folder_id, uid, message_id, subject, from_addr,
@@ -582,6 +754,7 @@ impl MailStore {
         for r in rows {
             out.push(r?);
         }
+        self.attach_auth(folder_id, &mut out)?;
         Ok(out)
     }
 
@@ -761,6 +934,57 @@ impl MailStore {
             .conn
             .execute("DELETE FROM rules WHERE rule_id = ?1", params![rule_id])?
             > 0)
+    }
+
+    /// Record which rules fired on a stored message — the F1 audit trail
+    /// (T-233). `INSERT OR REPLACE`: re-evaluating the same rule on the
+    /// same row refreshes `applied_unix` instead of duplicating. Caller
+    /// passes the eval coordinates (pre-move) and the RFC822 message-id.
+    pub fn record_rule_hits(
+        &self,
+        folder_id: i64,
+        uid: u64,
+        rule_ids: &[String],
+        message_id: Option<&str>,
+        now: i64,
+    ) -> Result<()> {
+        let mut stmt = self.conn.prepare(
+            "INSERT OR REPLACE INTO rule_hits
+               (folder_id, uid, rule_id, message_id, applied_unix)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )?;
+        for rule_id in rule_ids {
+            stmt.execute(params![folder_id, uid as i64, rule_id, message_id, now])?;
+        }
+        Ok(())
+    }
+
+    /// Newest-first rule-hit audit for an account (joined through
+    /// folders), bounded. Powers the transparency surface — the user can
+    /// always ask "which rules touched this mailbox".
+    pub fn list_rule_hits(&self, account_id: &str, limit: u32) -> Result<Vec<RuleHit>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT h.folder_id, h.uid, h.rule_id, h.message_id, h.applied_unix
+             FROM rule_hits h
+             JOIN folders f ON f.id = h.folder_id
+             WHERE f.account_id = ?1
+             ORDER BY h.applied_unix DESC, h.rule_id, h.folder_id, h.uid
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![account_id, limit as i64], |r| {
+            Ok(RuleHit {
+                folder_id: r.get(0)?,
+                uid: r.get::<_, i64>(1)? as u64,
+                rule_id: r.get(2)?,
+                message_id: r.get(3)?,
+                applied_unix: r.get(4)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
     }
 }
 

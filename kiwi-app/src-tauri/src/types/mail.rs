@@ -41,6 +41,46 @@ pub struct MessageView {
     pub in_reply_to: Option<String>,
     /// `References` msg-id chain, root-first.
     pub references: Vec<String>,
+    /// Deterministic inbox tab slug (T-201: "primary" | "newsletters" |
+    /// "social" | "notifications" | "other").
+    pub category: String,
+    /// Unsubscribe https URL, when the sender advertised one (T-202).
+    /// Safe default action: open it (POST when `unsubscribe_one_click`).
+    pub unsubscribe_url: Option<String>,
+    /// Unsubscribe mailto address (parameters stripped), when advertised.
+    /// Consent-gated fallback — never auto-send.
+    pub unsubscribe_mailto: Option<String>,
+    /// RFC 8058 one-click marker on the unsubscribe URL.
+    pub unsubscribe_one_click: bool,
+    /// True when a `mailto:` option exists: composing to it requires
+    /// explicit user consent and must never be auto-sent.
+    pub unsubscribe_requires_consent: bool,
+    /// SPF / DKIM / DMARC verdicts stamped at ingest (T-232). `None` until
+    /// the body has been fetched and evaluated — "not evaluated" is distinct
+    /// from a `none` verdict, so the pill must render unknown, not safe.
+    pub auth: Option<AuthView>,
+}
+
+/// Authentication-Results verdicts for the UI security pill (T-232).
+///
+/// Verdict strings are the `kiwi.mailauth/1` vocabulary: `pass`, `fail`,
+/// `softfail`, `neutral`, `none`, `temperror`, `permerror`. Per SECURITY.md
+/// rule 1/2 the pill must treat `none` (no record) and `temperror` (could not
+/// check) as *absence of evidence*, never as a pass or a finding.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthView {
+    pub spf: String,
+    pub dkim: String,
+    pub dmarc: String,
+    /// Policy that would apply on DMARC failure (`none` when aligned).
+    pub dmarc_policy: String,
+    /// DKIM signing domain (`d=`) when a signature parsed.
+    pub dkim_domain: Option<String>,
+    /// The stamped RFC 8601 header value, for the evidence popover.
+    pub header_value: Option<String>,
+    /// Bounded evidence (explanations + evidence refs), never a finding.
+    pub evidence: Option<serde_json::Value>,
 }
 
 impl From<&MessageMeta> for MessageView {
@@ -68,6 +108,22 @@ impl From<&MessageMeta> for MessageView {
             // these headers yet (store schema gap, tracked).
             in_reply_to: None,
             references: Vec::new(),
+            category: m.category.as_str().to_string(),
+            unsubscribe_url: m.unsub_http.clone(),
+            unsubscribe_mailto: m.unsub_mailto.clone(),
+            unsubscribe_one_click: m.unsub_oneclick,
+            unsubscribe_requires_consent: m.unsub_mailto.is_some(),
+            // T-232: real verdicts, or None when the body has not been
+            // evaluated yet (which the pill must show as unknown).
+            auth: m.auth.as_ref().map(|a| AuthView {
+                spf: a.spf.clone(),
+                dkim: a.dkim.clone(),
+                dmarc: a.dmarc.clone(),
+                dmarc_policy: a.dmarc_policy.clone(),
+                dkim_domain: a.dkim_domain.clone(),
+                header_value: a.header_value.clone(),
+                evidence: a.evidence.clone(),
+            }),
         }
     }
 }

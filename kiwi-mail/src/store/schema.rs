@@ -1,7 +1,7 @@
 //! SQLite schema — DDL + version. Migrations are explicit and
 //! append-only; `user_version` is the source of truth.
 
-pub(crate) const SCHEMA_VERSION: u32 = 6;
+pub(crate) const SCHEMA_VERSION: u32 = 7;
 
 pub(crate) const DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS accounts (
@@ -81,4 +81,40 @@ CREATE TABLE IF NOT EXISTS rules (
     spec_json  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_rules_scope ON rules(account_id, position);
+-- Rule-hit audit trail (T-233): which rules fired on which message.
+-- (folder_id, uid) locate the message at eval time — a moved message's
+-- trail stays on its ingest coordinates; message_id is the stable RFC822
+-- identity for cross-move tracing. rule_id is deliberately NOT an FK:
+-- the evidence must survive rule deletion. Re-evaluating the same rule
+-- on the same stored row refreshes applied_unix (INSERT OR REPLACE), so
+-- repeated "run rules now" passes never duplicate evidence.
+CREATE TABLE IF NOT EXISTS rule_hits (
+    folder_id    INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+    uid          INTEGER NOT NULL,
+    rule_id      TEXT NOT NULL,
+    message_id   TEXT,
+    applied_unix INTEGER NOT NULL,
+    PRIMARY KEY (folder_id, uid, rule_id)
+);
+-- Authentication-Results verdicts (T-232). Deliberately a SEPARATE table
+-- rather than more `messages` columns: the auth stamp is written once at body
+-- ingest and read alongside the list, and keeping it out of `messages` leaves
+-- the many existing SELECTs over that table (list, search, FTS, move, rules)
+-- untouched — that table is shared with the unsub/junk and rules owners.
+-- `evidence_json` is one bounded JSON blob: the three explanations plus the
+-- evidence refs (key query, DMARC record). Never a body, never a finding.
+CREATE TABLE IF NOT EXISTS message_auth (
+    folder_id      INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+    uid            INTEGER NOT NULL,
+    spf            TEXT NOT NULL DEFAULT 'none',
+    dkim           TEXT NOT NULL DEFAULT 'none',
+    dmarc          TEXT NOT NULL DEFAULT 'none',
+    dmarc_policy   TEXT NOT NULL DEFAULT 'none',
+    dkim_domain    TEXT,
+    key_query      TEXT,
+    dmarc_record   TEXT,
+    header_value   TEXT,
+    evidence_json  TEXT,
+    PRIMARY KEY (folder_id, uid)
+);
 "#;

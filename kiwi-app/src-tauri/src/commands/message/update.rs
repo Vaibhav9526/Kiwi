@@ -237,6 +237,10 @@ async fn move_local(
             snippet: m.snippet.clone(),
             // Row copy (archive move): the tab travels with the message.
             category: m.category,
+            // …as does the unsubscribe offer (F3).
+            unsub_http: m.unsub_http.clone(),
+            unsub_mailto: m.unsub_mailto.clone(),
+            unsub_oneclick: m.unsub_oneclick,
         },
         now_unix(),
     )?;

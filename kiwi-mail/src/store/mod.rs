@@ -1,10 +1,10 @@
 //! Local mail storage: SQLite metadata + on-disk bodies/attachments.
 //!
 //! Layout (`root` = per-profile data dir):
-//!   `mail.db`              — accounts, folders, message metadata, sync state,
+//!   `mail.db`              â€” accounts, folders, message metadata, sync state,
 //!                            outbox (persistent send queue, T-142)
-//!   `bodies/<folder_id>/<uid>.eml` — raw RFC 5322 message bytes
-//!   `attachments/<folder_id>/<uid>/<n>` — decoded attachment payloads
+//!   `bodies/<folder_id>/<uid>.eml` â€” raw RFC 5322 message bytes
+//!   `attachments/<folder_id>/<uid>/<n>` â€” decoded attachment payloads
 //!
 //! All queries are parameterized (SECURITY.md rule 9). Schema version lives
 //! in `PRAGMA user_version`; migrations are explicit and append-only.
@@ -30,7 +30,7 @@ pub use outbox::OutboxRow;
 /// normalization question owned by T-212's caller, not this constant.
 pub const JUNK_FLAG: &str = "\\Junk";
 
-/// Message metadata row — the query shape the UI/mail-flow emitter consumes.
+/// Message metadata row â€” the query shape the UI/mail-flow emitter consumes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MessageMeta {
     pub id: i64,
@@ -46,15 +46,42 @@ pub struct MessageMeta {
     pub has_attachments: bool,
     pub snippet: Option<String>,
     pub body_path: Option<String>,
-    /// Deterministic inbox tab (T-201) — set at ingest, refined on body fetch.
+    /// Deterministic inbox tab (T-201) â€” set at ingest, refined on body fetch.
     pub category: Category,
     /// Unsubscribe offer (T-202): https URL, if advertised.
     pub unsub_http: Option<String>,
     /// Unsubscribe offer: mailto address (params stripped), if advertised.
-    /// Consent-gated — never auto-send.
+    /// Consent-gated â€” never auto-send.
     pub unsub_mailto: Option<String>,
     /// RFC 8058 one-click marker present on the offer.
     pub unsub_oneclick: bool,
+    /// SPF/DKIM/DMARC verdicts stamped at ingest (T-232). `None` until the
+    /// body has been fetched and evaluated â€” an absent stamp is "not yet
+    /// evaluated", which is NOT the same as a `none` verdict. Populated by
+    /// `list_messages` / `list_messages_by_category` from `message_auth`.
+    pub auth: Option<AuthMeta>,
+}
+
+/// Persisted Authentication-Results verdicts for one message (T-232).
+///
+/// Verdict strings use the `kiwi.mailauth/1` vocabulary so the UI maps them
+/// without a second lookup. `evidence` carries the bounded explanations and
+/// the evidence refs (key query, DMARC record) as one JSON blob â€” evidence,
+/// never a finding, never a body.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthMeta {
+    pub spf: String,
+    pub dkim: String,
+    pub dmarc: String,
+    pub dmarc_policy: String,
+    pub dkim_domain: Option<String>,
+    pub key_query: Option<String>,
+    pub dmarc_record: Option<String>,
+    /// The RFC 8601 header value that was stamped.
+    pub header_value: Option<String>,
+    /// Bounded evidence: explanations + evidence refs, as JSON.
+    pub evidence: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,6 +117,20 @@ pub struct NewMessageMeta {
     pub unsub_oneclick: bool,
 }
 
+/// One rule-hit audit row (T-233): which rule fired on which stored
+/// message, when. `rule_id` is verbatim (not an FK) so evidence survives
+/// rule deletion; `message_id` is the stable RFC822 identity â€” the
+/// folder/uid pair records where the verdict was made and goes stale if
+/// the message was moved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleHit {
+    pub folder_id: i64,
+    pub uid: u64,
+    pub rule_id: String,
+    pub message_id: Option<String>,
+    pub applied_unix: i64,
+}
+
 pub struct MailStore {
     conn: Connection,
     root: PathBuf,
@@ -102,7 +143,7 @@ impl MailStore {
         &self.conn
     }
 
-    /// Crate-internal access to the connection — `search` runs FTS5
+    /// Crate-internal access to the connection â€” `search` runs FTS5
     /// queries that don't fit the row-level API. Not public: callers
     /// outside the crate must go through typed methods.
     pub(crate) fn conn(&self) -> &Connection {
@@ -121,7 +162,7 @@ impl MailStore {
         Ok(store)
     }
 
-    /// In-memory store for tests. The payload dir is unique per call —
+    /// In-memory store for tests. The payload dir is unique per call â€”
     /// parallel tests in one process must not share `bodies/` trees.
     pub fn open_memory() -> Result<Self> {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -175,7 +216,7 @@ pub(crate) fn migrate_conn(conn: &Connection, root: &Path) -> Result<()> {
     Ok(())
 }
 
-/// `ALTER TABLE … ADD COLUMN` guarded by `PRAGMA table_info` so the step is
+/// `ALTER TABLE â€¦ ADD COLUMN` guarded by `PRAGMA table_info` so the step is
 /// idempotent (a partially-migrated DB never errors here).
 fn ensure_category_column(conn: &Connection) -> Result<()> {
     let mut stmt = conn.prepare("PRAGMA table_info(messages)")?;
@@ -190,7 +231,7 @@ fn ensure_category_column(conn: &Connection) -> Result<()> {
 }
 
 /// Same guard for the T-202 unsubscribe columns (one sentinel check covers
-/// all three — they are always added together).
+/// all three â€” they are always added together).
 fn ensure_unsub_columns(conn: &Connection) -> Result<()> {
     let mut stmt = conn.prepare("PRAGMA table_info(messages)")?;
     let cols = stmt.query_map([], |r| r.get::<_, String>(1))?;
@@ -209,7 +250,7 @@ fn ensure_unsub_columns(conn: &Connection) -> Result<()> {
 
 /// Best-effort classification of pre-v4 rows: parse each stored body and
 /// write its tab. Rows without bodies, oversized bodies, or unparseable
-/// bodies keep the `'primary'` default — absent fact, no guess. Individual
+/// bodies keep the `'primary'` default â€” absent fact, no guess. Individual
 /// failures never abort the migration.
 fn backfill_categories(conn: &Connection, root: &Path) -> Result<()> {
     for (folder_id, uid, bytes) in bodies_to_backfill(conn, root)? {
@@ -227,7 +268,7 @@ fn backfill_categories(conn: &Connection, root: &Path) -> Result<()> {
 
 /// Best-effort unsubscribe backfill for pre-v5 rows: same body walk, fills
 /// the T-202 columns. Rows whose bodies lack an actionable offer keep
-/// `NULL/NULL/0` — absent fact, no guess.
+/// `NULL/NULL/0` â€” absent fact, no guess.
 fn backfill_unsub(conn: &Connection, root: &Path) -> Result<()> {
     for (folder_id, uid, bytes) in bodies_to_backfill(conn, root)? {
         let Ok(parsed) = crate::mime::parse_message(&bytes) else {
@@ -253,10 +294,10 @@ fn backfill_unsub(conn: &Connection, root: &Path) -> Result<()> {
 
 /// Stored bodies eligible for migration backfills: `(folder_id, uid,
 /// bytes)`. Missing files, oversized bodies, and read failures are skipped
-/// silently — the caller's per-row failure policy applies after this.
+/// silently â€” the caller's per-row failure policy applies after this.
 fn bodies_to_backfill(conn: &Connection, root: &Path) -> Result<Vec<(i64, u64, Vec<u8>)>> {
     /// Bodies above this are skipped (headers live at the top, but
-    /// `parse_message` walks the whole body — bound the one-time cost).
+    /// `parse_message` walks the whole body â€” bound the one-time cost).
     const MAX_BACKFILL_BYTES: u64 = 8 << 20;
     let pending: Vec<(i64, u64, String)> = {
         let mut stmt = conn.prepare(
@@ -537,7 +578,7 @@ mod tests {
         store.store_attachment(src, 102, 0, b"payload").unwrap();
         assert!(body.exists());
 
-        // Fresh UIDs in dst (max was 9): 101→10, 102→11. Absent uid skipped.
+        // Fresh UIDs in dst (max was 9): 101â†’10, 102â†’11. Absent uid skipped.
         let moved = store.move_messages(src, dst, &[101, 102, 999]).unwrap();
         assert_eq!(moved, vec![(101, 10), (102, 11)]);
         assert_eq!(store.folder_uids(src).unwrap(), vec![103]);
@@ -610,7 +651,7 @@ mod tests {
         seed_account(&store, "a1");
         let fid = store.ensure_folder("a1", "INBOX").unwrap();
 
-        // Ingest stores the tab…
+        // Ingest stores the tabâ€¦
         let mut m1 = meta(1001);
         m1.category = Category::Newsletters;
         store.upsert_message(fid, &m1, 100).unwrap();
@@ -619,7 +660,7 @@ mod tests {
         assert_eq!(rows[0].category, Category::Newsletters);
         assert_eq!(rows[1].category, Category::Primary);
 
-        // …refinement updates it…
+        // â€¦refinement updates itâ€¦
         assert!(store.set_category(fid, 1002, Category::Social).unwrap());
         assert!(!store.set_category(fid, 9999, Category::Other).unwrap());
         assert_eq!(
@@ -627,14 +668,14 @@ mod tests {
             Category::Social
         );
 
-        // …re-upserts never clobber a refined tab with an ingest default…
+        // â€¦re-upserts never clobber a refined tab with an ingest defaultâ€¦
         store.upsert_message(fid, &meta(1002), 200).unwrap();
         assert_eq!(
             store.list_messages(fid, 10).unwrap()[1].category,
             Category::Social
         );
 
-        // …and the tab filter powers the F2 UI tabs.
+        // â€¦and the tab filter powers the F2 UI tabs.
         let social = store
             .list_messages_by_category(fid, Category::Social, 10)
             .unwrap();
@@ -736,7 +777,7 @@ mod tests {
         assert_eq!(http.as_deref(), Some("https://shop.example/u"));
         assert_eq!(mailto.as_deref(), Some("leave@shop.example"));
         assert_eq!(oneclick, 1);
-        // No body → defaults stay.
+        // No body â†’ defaults stay.
         let cat: String = conn
             .query_row("SELECT category FROM messages WHERE uid = 43", [], |r| {
                 r.get(0)
@@ -838,7 +879,7 @@ mod tests {
         seed_account(&store, "a1");
         let fid = store.ensure_folder("a1", "INBOX").unwrap();
 
-        // Ingest stores the offer…
+        // Ingest stores the offerâ€¦
         let mut m = meta(1001);
         m.unsub_http = Some("https://x.example/u".into());
         m.unsub_mailto = Some("u@x.example".into());
@@ -849,7 +890,7 @@ mod tests {
         assert_eq!(row.unsub_mailto.as_deref(), Some("u@x.example"));
         assert!(row.unsub_oneclick);
 
-        // …refinement replaces it…
+        // â€¦refinement replaces itâ€¦
         let info = UnsubscribeInfo {
             http_url: Some("https://y.example/n".into()),
             mailto: None,
@@ -862,12 +903,12 @@ mod tests {
         assert_eq!(row.unsub_mailto, None);
         assert!(!row.unsub_oneclick);
 
-        // …re-upserts never clobber a refined offer with ingest defaults…
+        // â€¦re-upserts never clobber a refined offer with ingest defaultsâ€¦
         store.upsert_message(fid, &meta(1001), 200).unwrap();
         let row = store.list_messages(fid, 10).unwrap().remove(0);
         assert_eq!(row.unsub_http.as_deref(), Some("https://y.example/n"));
 
-        // …and moves carry it.
+        // â€¦and moves carry it.
         let dst = store.ensure_folder("a1", "Archive").unwrap();
         store.move_messages(fid, dst, &[1001]).unwrap();
         let row = store.list_messages(dst, 10).unwrap().remove(0);
@@ -975,6 +1016,163 @@ mod tests {
         let rest = store.list_rules(None).unwrap();
         assert_eq!(rest.len(), 1);
         assert_eq!(rest[0].id, "g");
+    }
+
+    /// T-232: Authentication-Results stamping.
+    ///
+    /// Fully offline â€” persistence only; the verdict evaluation itself is
+    /// covered by `authstamp`'s own `MockResolver` suite. These tests prove
+    /// the stamp is written at ingest, survives a re-fetch, and reaches list
+    /// rows so the UI pill has real values.
+    mod auth {
+        use super::*;
+        use crate::authstamp::AuthStamp;
+
+        fn meta(uid: u64) -> NewMessageMeta {
+            NewMessageMeta {
+                uid,
+                message_id: None,
+                subject: None,
+                from_addr: None,
+                to_addrs: None,
+                date_unix: None,
+                size: None,
+                flags: vec![],
+                has_attachments: false,
+                snippet: None,
+                category: Category::Primary,
+                unsub_http: None,
+                unsub_mailto: None,
+                unsub_oneclick: false,
+            }
+        }
+
+        fn stamp(dkim: &str, dmarc: &str) -> AuthStamp {
+            AuthStamp {
+                spf: "none".into(),
+                dkim: dkim.into(),
+                dmarc: dmarc.into(),
+                dmarc_policy: "reject".into(),
+                dkim_domain: Some("example.com".into()),
+                dkim_key_query: Some("sel._domainkey.example.com".into()),
+                dmarc_record: Some("v=DMARC1; p=reject".into()),
+                spf_explanation: "no SMTP receipt context".into(),
+                dkim_explanation: "body hash mismatch".into(),
+                dmarc_explanation: "no aligned identifier".into(),
+                header_value: "kiwi; spf=none; dkim=pass; dmarc=pass".into(),
+            }
+        }
+
+        fn store_with_message(uid: u64) -> (MailStore, i64) {
+            let s = MailStore::open_memory().unwrap();
+            // Minimal account row: these tests are about the auth stamp, not
+            // the account model, so insert the FK parent directly.
+            s.conn()
+                .execute(
+                    "INSERT INTO accounts (account_id, display_name, email, config_json)
+                     VALUES ('a1', 'T', 'me@example.com', '{}')",
+                    [],
+                )
+                .unwrap();
+            let folder = s.ensure_folder("a1", "INBOX").unwrap();
+            s.upsert_message(folder, &meta(uid), 0).unwrap();
+            (s, folder)
+        }
+
+        #[test]
+        fn set_and_get_auth_roundtrip() {
+            let (s, folder) = store_with_message(7);
+            assert!(s.set_auth(folder, 7, &stamp("pass", "pass")).unwrap());
+            let got = s.get_auth(folder, 7).unwrap().expect("stamp persisted");
+            assert_eq!(got.spf, "none");
+            assert_eq!(got.dkim, "pass");
+            assert_eq!(got.dmarc, "pass");
+            assert_eq!(got.dmarc_policy, "reject");
+            assert_eq!(got.key_query.as_deref(), Some("sel._domainkey.example.com"));
+            assert_eq!(
+                got.header_value.as_deref(),
+                Some("kiwi; spf=none; dkim=pass; dmarc=pass")
+            );
+            let ev = got.evidence.expect("evidence json");
+            assert_eq!(ev["dkim"], "body hash mismatch");
+        }
+
+        #[test]
+        fn re_ingest_refreshes_instead_of_duplicating() {
+            let (s, folder) = store_with_message(7);
+            s.set_auth(folder, 7, &stamp("fail", "fail")).unwrap();
+            s.set_auth(folder, 7, &stamp("pass", "pass")).unwrap();
+            let got = s.get_auth(folder, 7).unwrap().unwrap();
+            assert_eq!(got.dkim, "pass", "second write wins");
+            let rows: i64 = s
+                .conn()
+                .query_row(
+                    "SELECT COUNT(*) FROM message_auth WHERE folder_id = ?1 AND uid = 7",
+                    rusqlite::params![folder],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(rows, 1, "exactly one row per (folder, uid)");
+        }
+
+        #[test]
+        fn list_attaches_auth_and_leaves_unstamped_none() {
+            let (s, folder) = store_with_message(1);
+            s.upsert_message(folder, &meta(2), 0).unwrap();
+            s.set_auth(folder, 1, &stamp("pass", "pass")).unwrap();
+            let msgs = s.list_messages(folder, 50).unwrap();
+            let m1 = msgs.iter().find(|m| m.uid == 1).unwrap();
+            let m2 = msgs.iter().find(|m| m.uid == 2).unwrap();
+            assert_eq!(m1.auth.as_ref().unwrap().dkim, "pass");
+            assert!(
+                m2.auth.is_none(),
+                "no stamp means not evaluated â€” distinct from a `none` verdict"
+            );
+        }
+
+        #[test]
+        fn category_list_also_carries_auth() {
+            let (s, folder) = store_with_message(3);
+            s.set_auth(folder, 3, &stamp("fail", "pass")).unwrap();
+            let msgs = s
+                .list_messages_by_category(folder, Category::Primary, 10)
+                .unwrap();
+            assert_eq!(msgs.len(), 1);
+            assert_eq!(msgs[0].auth.as_ref().unwrap().dkim, "fail");
+        }
+
+        #[test]
+        fn uids_without_auth_lists_only_unstamped_bodies() {
+            let (s, folder) = store_with_message(1);
+            s.upsert_message(folder, &meta(2), 0).unwrap();
+            s.set_auth(folder, 1, &stamp("pass", "pass")).unwrap();
+            let pending = s.uids_without_auth(folder).unwrap();
+            assert!(!pending.contains(&1), "stamped rows drop out");
+        }
+
+        #[test]
+        fn v6_to_v7_migration_creates_auth_table() {
+            let conn = Connection::open_in_memory().unwrap();
+            conn.execute_batch(DDL).unwrap();
+            // Simulate a v6 database: the auth table is not yet present.
+            conn.execute_batch("DROP TABLE message_auth; PRAGMA user_version = 6")
+                .unwrap();
+            let root = std::env::temp_dir().join(format!("kiwi-mig-auth-{}", std::process::id()));
+            migrate_conn(&conn, &root).unwrap();
+            let v: u32 = conn
+                .query_row("PRAGMA user_version", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(v, SCHEMA_VERSION, "v6 database migrates forward");
+            let n: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master
+                     WHERE type = 'table' AND name = 'message_auth'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(n, 1, "message_auth exists after migration");
+        }
     }
 
     #[test]

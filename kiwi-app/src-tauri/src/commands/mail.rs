@@ -863,6 +863,9 @@ mod tests {
                         has_attachments: false,
                         snippet: None,
                         category: Default::default(),
+                        unsub_http: None,
+                        unsub_mailto: None,
+                        unsub_oneclick: false,
                     },
                     now_unix(),
                 )

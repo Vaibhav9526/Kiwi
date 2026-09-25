@@ -3,8 +3,8 @@
  * display and behavior settings. Never stores credentials, tokens, or
  * message content (signatures/drafts are user-authored UI text).
  *
- * Backend prefs (`kiwi_get_prefs` / `kiwi_set_prefs`) do not exist yet —
- * `api.getPrefs/setPrefs` throw until they land. The sync policy then is:
+ * Backend prefs sync rides the ipc.md §9c key/value store (`kiwi_prefs_*`,
+ * wired T-175/T-237 via `api.getPrefs/setPrefs`). The sync policy is:
  * localStorage is the source of truth offline; on load the backend bag (if
  * any) overwrites local keys; every local change is pushed best-effort.
  * All keys are namespaced `kiwi.*`.

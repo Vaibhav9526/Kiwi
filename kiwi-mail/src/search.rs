@@ -261,7 +261,8 @@ pub fn search_messages(
     // outside a quoted phrase (SECURITY.md rule 9).
     let sql = "SELECT m.id, m.folder_id, m.uid, m.message_id, m.subject, m.from_addr,
                 m.to_addrs, m.date_unix, m.size, m.flags, m.has_attachments,
-                m.snippet, m.body_path, m.category
+                m.snippet, m.body_path, m.category,
+                m.unsub_http, m.unsub_mailto, m.unsub_oneclick
          FROM messages m
          JOIN messages_fts f ON f.rowid = m.id
          WHERE messages_fts MATCH ?1
@@ -303,6 +304,12 @@ fn map_message_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<MessageMeta> {
         snippet: r.get(11)?,
         body_path: r.get(12)?,
         category: Category::from_slug(&slug).unwrap_or_default(),
+        unsub_http: r.get(14)?,
+        unsub_mailto: r.get(15)?,
+        unsub_oneclick: r.get::<_, i64>(16)? != 0,
+        // `None` = "not yet evaluated" — only the list paths call
+        // `attach_auth`; search rows carry no verdicts.
+        auth: None,
     })
 }
 
@@ -324,6 +331,9 @@ mod tests {
             has_attachments: false,
             snippet: Some(snippet.into()),
             category: Default::default(),
+            unsub_http: None,
+            unsub_mailto: None,
+            unsub_oneclick: false,
         }
     }
 

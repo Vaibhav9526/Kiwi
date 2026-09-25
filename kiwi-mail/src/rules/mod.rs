@@ -15,11 +15,16 @@
 //! dedupe and the first folder disposition wins.
 //!
 //! Layout: `model.rs` — wire/durable types + bounds; `eval.rs` — the
-//! evaluator + matching helpers.
+//! evaluator + matching helpers; `apply.rs` — executing outcomes against
+//! the store (ingest hook + "run now"), the only side-effecting part.
 
+mod apply;
 mod eval;
 mod model;
 
+pub use apply::{
+    ARCHIVE_FOLDER, AppliedRules, ApplyNowReport, TRASH_FOLDER, apply_now, apply_on_ingest,
+};
 pub use eval::evaluate;
 pub(crate) use model::RuleSpec;
 pub use model::{MatchOp, Predicate, Rule, RuleAction, RuleOutcome};

@@ -3,8 +3,8 @@
  * test/remove/reconfigure/set-default, re-probe, sync frequency, signature),
  * devices, org binding, endpoint signals, Appearance (theme/accent/density),
  * Notifications (toasts/sound/mute), Privacy (remote-content + receipts),
- * Advanced. Live prefs sync through kiwi_get/set_prefs where present with
- * localStorage fallback (T-167). Secrets never appear here.
+ * Advanced. Live prefs sync through the kiwi_prefs_* key/value store
+ * (T-175/T-237) with localStorage fallback (T-167). Secrets never appear here.
  */
 import { useEffect, useRef, useState } from "react";
 import type { ComponentProps } from "react";
@@ -97,8 +97,8 @@ export function SettingsView({
   useEffect(() => savePref("kiwi.sound", sound), [sound]);
   useEffect(() => savePref("kiwi.muted", mutedIds), [mutedIds]);
 
-  // Backend prefs push (T-167): best-effort, debounced; the commands don't
-  // exist yet so this stays "local"/"unavailable" until they land.
+  // Backend prefs push (T-167/T-237): best-effort, debounced; any failure
+  // leaves the badge at "unavailable" while localStorage stays the truth.
   const schedulePush = () => {
     if (mode !== "live") {
       setPrefsSync("local");

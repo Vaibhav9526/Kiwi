@@ -42,11 +42,14 @@ pub struct ParsedMessage {
     pub snippet: String,
     /// Raw top-level headers as `(lowercased-name, value)` pairs, bounded
     /// (see `MAX_CAPTURED_HEADERS`): the deterministic classifier
-    /// (`crate::category`) reads bulk/automation signals from these.
-    /// Text, text-list, and address/URL values are kept (`List-Unsubscribe`
-    /// parses as an address); structured values (dates, content-types,
-    /// Received) are already surfaced typed above and skipped here.
+    /// (`crate::category`) and unsubscribe parser (`crate::unsub`) read
+    /// bulk/automation signals from these. Values are raw (unparsed) text
+    /// so `<…>`-bracketed forms survive; structured values (dates,
+    /// content-types, Received) are already surfaced typed above.
     pub headers: Vec<(String, String)>,
+    /// One-click unsubscribe offer (RFC 2369/8058, `crate::unsub`).
+    /// `None` when the sender advertised nothing actionable.
+    pub unsubscribe: Option<crate::unsub::UnsubscribeInfo>,
 }
 
 /// Outbound message to serialize. `data` on attachments is already-decoded
@@ -119,6 +122,7 @@ pub fn parse_message(raw: &[u8]) -> Result<ParsedMessage> {
     out.cc = map_addrs(msg.cc());
     out.date_unix = msg.date().map(|d| d.to_timestamp());
     out.headers = capture_headers(&msg);
+    out.unsubscribe = crate::unsub::parse_unsubscribe(&out.headers);
 
     // First text/plain part becomes text_body; first text/html → html_body.
     for part in msg.text_bodies() {
@@ -158,13 +162,18 @@ pub fn parse_message(raw: &[u8]) -> Result<ParsedMessage> {
 // Raw header capture (classification input)
 // ---------------------------------------------------------------------------
 
-/// Copy the root part's text-extractable headers into bounded
-/// `(lowercased-name, value)` pairs. Unknown `X-` headers surface as
-/// `HeaderName::Other`. Never fails — hostile input just yields fewer rows.
+/// Copy the root part's headers into bounded `(lowercased-name, value)`
+/// pairs. Values are the RAW (unparsed) header text sliced from the message
+/// via the parser's offsets — this preserves `<…>`-bracketed forms like
+/// `List-Unsubscribe: <mailto:…>, <https://…>`, which the typed accessors
+/// normalize into address lists (brackets lost). Unknown `X-` headers
+/// surface as `HeaderName::Other`. Never fails — hostile input just yields
+/// fewer rows.
 fn capture_headers(msg: &mail_parser::Message<'_>) -> Vec<(String, String)> {
     let Some(root) = msg.parts.first() else {
         return Vec::new();
     };
+    let raw = &msg.raw_message;
     let mut out = Vec::new();
     for h in &root.headers {
         if out.len() >= MAX_CAPTURED_HEADERS {
@@ -177,13 +186,17 @@ fn capture_headers(msg: &mail_parser::Message<'_>) -> Vec<(String, String)> {
         if name.is_empty() || name.len() > 128 {
             continue;
         }
-        let value = match &h.value {
-            mail_parser::HeaderValue::Text(t) => t.to_string(),
-            mail_parser::HeaderValue::TextList(l) => l.join(", "),
-            // RFC 2369 list headers (`List-Unsubscribe: <https://…>`) and
-            // address headers parse as addresses — flatten to text.
-            mail_parser::HeaderValue::Address(a) => address_text(a),
-            _ => continue,
+        // `received` is pure transport noise (and the highest-volume
+        // header — long chains would crowd signal headers out of the
+        // bounded list). No consumer reads it; forensics parses its own.
+        if name == "received" {
+            continue;
+        }
+        // Raw slice first (brackets intact); typed extraction as fallback
+        // if the offsets ever fail to slice (never observed — defensive).
+        let value = raw_header_value(raw, h).or_else(|| typed_header_value(h));
+        let Some(value) = value else {
+            continue;
         };
         let mut value = value;
         if value.len() > MAX_HEADER_VALUE {
@@ -196,6 +209,32 @@ fn capture_headers(msg: &mail_parser::Message<'_>) -> Vec<(String, String)> {
         out.push((name, value));
     }
     out
+}
+
+/// Raw header value via parser offsets, unfolded (CRLF before WSP removed
+/// per RFC 5322 section 2.2.3) and right-trimmed. `None` when out of bounds.
+fn raw_header_value(raw: &[u8], h: &mail_parser::Header<'_>) -> Option<String> {
+    let (s, e) = (h.offset_start as usize, h.offset_end as usize);
+    if s > e || e > raw.len() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&raw[s..e]);
+    let unfolded = text.replace("\r\n", "");
+    Some(unfolded.trim_end().to_string())
+}
+
+/// Typed fallback: text, text-list, and address/URL values flattened.
+/// (Addresses lose their `<>` brackets here — the raw path above is what
+/// `List-Unsubscribe` parsing relies on.)
+fn typed_header_value(h: &mail_parser::Header<'_>) -> Option<String> {
+    match &h.value {
+        mail_parser::HeaderValue::Text(t) => Some(t.to_string()),
+        mail_parser::HeaderValue::TextList(l) => Some(l.join(", ")),
+        // RFC 2369 list headers (`List-Unsubscribe: <https://…>`) and
+        // address headers parse as addresses — flatten to text.
+        mail_parser::HeaderValue::Address(a) => Some(address_text(a)),
+        _ => None,
+    }
 }
 
 /// Flatten an address-list/group value to display text (addresses and URLs;
@@ -576,5 +615,19 @@ mod tests {
         assert!(p.headers.iter().any(|(n, _)| n == "x-mailer"));
         // Received stays typed-only (structured value, skipped here).
         assert!(!p.headers.iter().any(|(n, _)| n == "received"));
+    }
+
+    #[test]
+    fn unsubscribe_parsed_on_ingest() {
+        let raw = b"From: news@x.example\r\nTo: b@y.test\r\nSubject: digest\r\nList-Unsubscribe: <mailto:leave@x.example?subject=bye>, <https://x.example/u>\r\nList-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n\r\nbody\r\n";
+        let p = parse_message(raw).unwrap();
+        let u = p.unsubscribe.unwrap();
+        assert_eq!(u.http_url.as_deref(), Some("https://x.example/u"));
+        assert_eq!(u.mailto.as_deref(), Some("leave@x.example"));
+        assert!(u.one_click);
+
+        // No offer headers → None.
+        let p = parse_message(b"From: a@x.test\r\nSubject: s\r\n\r\nbody\r\n").unwrap();
+        assert_eq!(p.unsubscribe, None);
     }
 }

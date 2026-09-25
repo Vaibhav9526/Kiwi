@@ -128,6 +128,12 @@ pub(crate) async fn add_account_impl(
         }
     };
 
+    // OAuth2 wizard seam (T-230): when an `oauth2Ticket` is referenced the
+    // completed grant's `oauth2/<provider>/<email>` key replaces the
+    // generated per-account key on BOTH directions — token material was
+    // already persisted at poll-complete, so `store_secret` skips it.
+    let oauth2_key = super::oauth2::oauth2_ticket_key(state, &input).await?;
+
     let account_id = new_id("acct");
     let username = input
         .username
@@ -143,8 +149,15 @@ pub(crate) async fn add_account_impl(
         "in",
         input.incoming_auth.as_ref(),
         protocol == IncomingProtocol::Pop3,
+        oauth2_key.as_deref(),
     )?;
-    let out_auth = auth_ref(&account_id, "out", input.outgoing_auth.as_ref(), false)?;
+    let out_auth = auth_ref(
+        &account_id,
+        "out",
+        input.outgoing_auth.as_ref(),
+        false,
+        oauth2_key.as_deref(),
+    )?;
 
     // Secrets into the OS store BEFORE the account row exists.
     store_secret(state, &in_auth, input.incoming_auth.as_ref())?;
@@ -175,6 +188,16 @@ pub(crate) async fn add_account_impl(
         },
     };
     state.store.lock().await.upsert_account(&acct)?;
+    // Grant consumed only once the account row exists — a failed add leaves
+    // the ticket usable for a retry.
+    if let Some(ticket) = input
+        .incoming_auth
+        .as_ref()
+        .or(input.outgoing_auth.as_ref())
+        .and_then(|a| a.oauth2_ticket.as_deref())
+    {
+        super::oauth2::consume_oauth2_ticket(state, ticket).await;
+    }
     {
         let mut index = state.index.lock().await;
         if !index.account_ids.contains(&account_id) {
@@ -202,12 +225,15 @@ pub(crate) async fn add_account_impl(
 }
 
 /// Build the `AuthRef` (key names are generated here — the renderer never
-/// picks credential-store keys).
+/// picks credential-store keys). `oauth2_key` is the completed grant's
+/// `oauth2/<provider>/<email>` key when the wizard bound a ticket — one
+/// grant covers both directions, so both AuthRefs carry it.
 fn auth_ref(
     account_id: &str,
     direction: &str,
     input: Option<&AuthInput>,
     allow_apop: bool,
+    oauth2_key: Option<&str>,
 ) -> CmdResult<AuthRef> {
     let key = format!("kiwi/{account_id}/{direction}");
     match input.map(|a| a.kind.as_str()).unwrap_or("none") {
@@ -216,7 +242,7 @@ fn auth_ref(
             credential_key: key,
         }),
         "xoauth2" => Ok(AuthRef::XOAuth2 {
-            credential_key: key,
+            credential_key: oauth2_key.map(str::to_string).unwrap_or(key),
         }),
         "apop" if allow_apop => Ok(AuthRef::Apop {
             credential_key: key,
@@ -233,6 +259,12 @@ fn store_secret(state: &AppState, auth: &AuthRef, input: Option<&AuthInput>) -> 
         | AuthRef::XOAuth2 { credential_key }
         | AuthRef::Apop { credential_key } => credential_key,
     };
+    // Ticket-bound grants already live under `oauth2/<provider>/<email>` —
+    // nothing to store; an inline secret, if sent, is ignored rather than
+    // written under a key nobody will read.
+    if key.starts_with("oauth2/") {
+        return Ok(());
+    }
     let secret = input
         .and_then(|a| a.secret.as_deref())
         .ok_or_else(|| IpcError::invalid("auth kind requires a secret"))?;
@@ -437,6 +469,7 @@ fn auth_input_from(auth: &AuthRef) -> Option<AuthInput> {
     Some(AuthInput {
         kind: kind.to_string(),
         secret: Option::None,
+        oauth2_ticket: None,
     })
 }
 
@@ -781,10 +814,12 @@ mod tests {
             incoming_auth: Some(AuthInput {
                 kind: "password".into(),
                 secret: Some("s".into()),
+                oauth2_ticket: None,
             }),
             outgoing_auth: Some(AuthInput {
                 kind: "password".into(),
                 secret: Some("s".into()),
+                oauth2_ticket: None,
             }),
             accept_invalid_certs: false,
         }

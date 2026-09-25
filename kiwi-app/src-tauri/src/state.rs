@@ -21,12 +21,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
+use kiwi_autoconfig::net::DiscoveryNet;
+use kiwi_autoconfig::oauth2::{OAuthError, PendingGrant, ProviderConfig, TokenSet};
 use kiwi_core::challenge::ChallengeBook;
 use kiwi_core::device::DeviceRegistry;
 use kiwi_core::policy::TrustPolicy;
 use kiwi_core::session::SecuritySession;
 use kiwi_core::trust::{TrustMachine, TrustSignal};
 use kiwi_forensics::findings::Finding;
+use kiwi_integrations::deliverability::TestReservation;
+use kiwi_integrations::http::HttpClient;
+use kiwi_integrations::tempmail::GuerrillaMail;
 use kiwi_mail::account::CredentialStore;
 use kiwi_mail::smtp::SendQueue;
 use kiwi_mail::store::MailStore;
@@ -101,6 +106,104 @@ pub struct OutboxMeta {
 pub struct OrgBinding {
     pub org_id: String,
     pub base_url: String,
+}
+
+/// Bound on concurrent deliverability reservations (single-use addresses,
+/// ~1h TTL server-side — 32 is headroom, not a promise).
+pub const MAX_DELIVERABILITY_SESSIONS: usize = 32;
+
+/// Bound on concurrent OAuth2 grants (wizard sessions die with the
+/// process). Each loopback grant additionally holds a bound OS socket
+/// until its deadline — the bound keeps a flood of abandoned wizard
+/// openings from leaking listeners.
+pub const MAX_OAUTH2_SESSIONS: usize = 32;
+
+/// Loopback auth-code grant lifetime: the redirect listener stays bound
+/// this long waiting for the browser return (Google auth codes live
+/// ~10 min). Device grants carry their own server-side `expires_in`.
+pub const OAUTH2_LOOPBACK_TIMEOUT_SECS: u64 = 600;
+
+/// One in-flight OAuth2 grant (T-230). Holds transient grant secrets —
+/// the PKCE verifier rides inside the loopback grant (moved to the waiter
+/// thread), the device code inside the device grant — plus, for deferred
+/// binds, a completed `TokenSet`. In-memory only: never serialized, never
+/// persisted, never logged, never audited (audit sees provider + email
+/// only).
+pub struct OAuth2Session {
+    /// Provider config the grant was begun with (deployment client_id
+    /// included — a public id, not a secret).
+    pub provider: ProviderConfig,
+    /// Account email the grant is for — `None` when the wizard started
+    /// before the address was known; bound at `kiwi_add_account` consume.
+    pub email: Option<String>,
+    /// Creation time (unix seconds) — drives bounded-map eviction.
+    pub created_unix: i64,
+    /// Grant-state machine.
+    pub state: OAuth2SessionState,
+}
+
+/// Grant lifecycle behind a `ticket_id`.
+pub enum OAuth2SessionState {
+    /// Device-code grant awaiting user approval; `oauth2_poll` drives it.
+    /// `grant` is always `PendingGrant::Device`.
+    Device {
+        /// The pending grant (holds the device code — a poll credential).
+        grant: PendingGrant,
+        /// Current cadence hint for the UI poll loop; `slow_down` bumps it.
+        interval_secs: u64,
+        /// Provider-grant deadline (from the device-code response).
+        expires_at_unix: Option<i64>,
+    },
+    /// Loopback grant — the listener + verifier moved to the waiter
+    /// thread at `begin`; `result` gains the exchange outcome exactly
+    /// once (`Err` becomes `Failed` on the next poll).
+    Loopback {
+        /// Waiter-thread output slot: `Some` once redirect-wait + code
+        /// exchange have settled.
+        result: std::sync::Arc<std::sync::Mutex<Option<Result<TokenSet, OAuthError>>>>,
+    },
+    /// Grant completed and tokens persisted under `credential_key`
+    /// (`oauth2/<provider>/<email>`) — the email was known at completion.
+    Completed {
+        /// Credential-store key the `TokenSet` blob lives under.
+        credential_key: String,
+    },
+    /// Grant completed but not yet persisted — `begin` had no email, so
+    /// `kiwi_add_account` supplies it and persists on consume.
+    CompletedDeferred {
+        /// The acquired token set (held in memory only).
+        tokens: TokenSet,
+    },
+    /// Terminal failure — next `oauth2_poll` reports `status:"error"`.
+    /// `code` is the sanitized IPC error code; `message` carries no
+    /// secret material (OAuthError is secret-free by construction).
+    Failed { code: &'static str, message: String },
+}
+
+/// One in-flight deliverability test (T-227). `reservation.slug` is a
+/// capability secret; `consent_token` is the single-use capability
+/// `kiwi_integrations_deliverability_send` must present — minted by
+/// `..._begin`, consumed on first valid send. Never serialized, never
+/// persisted, never audited.
+pub struct DeliverabilitySession {
+    pub reservation: TestReservation,
+    /// `Some` until `deliverability_send` consumes it.
+    pub consent_token: Option<String>,
+    /// Consent consumed and a send enqueued for this test.
+    pub sent: bool,
+}
+
+impl std::fmt::Debug for DeliverabilitySession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeliverabilitySession")
+            .field("address", &self.reservation.address)
+            .field(
+                "consent_token",
+                &self.consent_token.as_ref().map(|_| "[redacted]"),
+            )
+            .field("sent", &self.sent)
+            .finish()
+    }
 }
 
 /// Live-sync worker status (T-157) — one entry per account the supervisor
@@ -412,6 +515,24 @@ pub struct AppState {
     /// Local address book (T-175) — `contacts.db` under `data_dir`,
     /// owned by `kiwi-contacts` (never shares mail.db's tables).
     pub contacts: Mutex<kiwi_contacts::ContactStore>,
+    /// Shared transport for every kiwi-integrations provider (T-227) —
+    /// `ReqwestClient` in production, `ScriptedHttp` in tests. Providers
+    /// are constructed per command against this; the seam is what makes
+    /// integration flows testable offline.
+    pub integrations_http: Arc<dyn HttpClient>,
+    /// The one live disposable-inbox session (GuerrillaMail sessions are
+    /// single-mailbox). Session state (PHPSESSID, sid_token, address)
+    /// lives inside the provider, in memory only — nothing persists.
+    pub tempmail: Mutex<Option<GuerrillaMail>>,
+    /// In-flight deliverability tests keyed by opaque `test_id`. Bounded
+    /// at [`MAX_DELIVERABILITY_SESSIONS`]; sessions die with the process.
+    pub deliverability: Mutex<BTreeMap<String, DeliverabilitySession>>,
+    /// In-flight OAuth2 grants keyed by opaque `ticket_id` (T-230).
+    /// Bounded at [`MAX_OAUTH2_SESSIONS`]; sessions die with the process.
+    pub oauth2_sessions: Mutex<BTreeMap<String, OAuth2Session>>,
+    /// Discovery seam for `kiwi_discover_account`: live HTTPS fetch +
+    /// MX lookup in production, `MockNet` in tests.
+    pub autoconfig_net: Arc<dyn DiscoveryNet>,
     pub index: Mutex<AppIndex>,
     pub audit: Mutex<AuditLog>,
     /// Per-boot session id — challenges bind to it, so issued challenges die
@@ -428,12 +549,15 @@ impl AppState {
         let store = MailStore::open(&data_dir)?;
         let index = AppIndex::load(&data_dir)?;
         let audit = AuditLog::open(&data_dir)?;
+        let http = integrations_transport()?;
         let mut s = Self::assemble(
             data_dir,
             store,
             index,
             audit,
             Arc::new(OsCredentialStore::new()),
+            http.clone(),
+            Arc::new(crate::discovery_net::LiveDiscoveryNet::new(http)),
         )?;
         s.reload_outbox();
         Ok(s)
@@ -443,6 +567,31 @@ impl AppState {
     /// exercised) + in-memory credentials; index + audit real files.
     #[cfg(test)]
     pub fn open_test(data_dir: PathBuf) -> CmdResult<Self> {
+        Self::open_test_with_http(data_dir, integrations_transport()?)
+    }
+
+    /// Test open with an injected integration transport — `ScriptedHttp`
+    /// replays recorded exchanges, so integration commands run offline.
+    /// Discovery gets an empty `MockNet` (ISPDB fixtures still resolve).
+    #[cfg(test)]
+    pub fn open_test_with_http(
+        data_dir: PathBuf,
+        integrations_http: Arc<dyn HttpClient>,
+    ) -> CmdResult<Self> {
+        Self::open_test_with_net(
+            data_dir,
+            integrations_http,
+            Arc::new(kiwi_autoconfig::net::MockNet::new()),
+        )
+    }
+
+    /// Test open with injected integration transport AND discovery net.
+    #[cfg(test)]
+    pub fn open_test_with_net(
+        data_dir: PathBuf,
+        integrations_http: Arc<dyn HttpClient>,
+        autoconfig_net: Arc<dyn DiscoveryNet>,
+    ) -> CmdResult<Self> {
         std::fs::create_dir_all(&data_dir)?;
         let store = MailStore::open(&data_dir)?;
         let index = AppIndex::load(&data_dir)?;
@@ -453,6 +602,8 @@ impl AppState {
             index,
             audit,
             Arc::new(kiwi_mail::account::MemoryCredentialStore::new()),
+            integrations_http,
+            autoconfig_net,
         )?;
         s.reload_outbox();
         Ok(s)
@@ -508,12 +659,15 @@ impl AppState {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn assemble(
         data_dir: PathBuf,
         store: MailStore,
         index: AppIndex,
         audit: AuditLog,
         credentials: Arc<dyn CredentialStore>,
+        integrations_http: Arc<dyn HttpClient>,
+        autoconfig_net: Arc<dyn DiscoveryNet>,
     ) -> CmdResult<Self> {
         Ok(Self {
             contacts: Mutex::new(
@@ -537,6 +691,11 @@ impl AppState {
             sync_wakeup: tokio::sync::Notify::new(),
             policy_warned: std::sync::atomic::AtomicBool::new(false),
             no_org_warned: std::sync::atomic::AtomicBool::new(false),
+            integrations_http,
+            tempmail: Mutex::new(None),
+            deliverability: Mutex::new(BTreeMap::new()),
+            oauth2_sessions: Mutex::new(BTreeMap::new()),
+            autoconfig_net,
             index: Mutex::new(index),
             audit: Mutex::new(audit),
             boot_session_id: new_id("boot"),
@@ -574,6 +733,17 @@ impl AppState {
         }
         self.trust.lock().await.evaluate(&self.policy, signals)
     }
+}
+
+/// Build the production integration transport: reqwest+rustls, HTTPS-only,
+/// redirects never followed. Body cap covers a fetched temp-mail body
+/// embedded in provider JSON (`MAX_MAIL_BODY` + envelope slack).
+fn integrations_transport() -> CmdResult<Arc<dyn HttpClient>> {
+    let client =
+        kiwi_integrations::http::ReqwestClient::new(kiwi_integrations::http::DEFAULT_TIMEOUT_MS)
+            .map_err(IpcError::from)?
+            .with_body_cap(kiwi_integrations::tempmail::MAX_MAIL_BODY + 2 * 1024 * 1024);
+    Ok(Arc::new(client))
 }
 
 #[cfg(test)]

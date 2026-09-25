@@ -10,11 +10,13 @@
 pub mod attachment;
 pub mod delete;
 pub mod render;
+pub mod unsubscribe;
 pub mod update;
 
 pub use attachment::*;
 pub use delete::*;
 pub use render::*;
+pub use unsubscribe::*;
 pub use update::*;
 
 use kiwi_mail::imap::ImapClient;
@@ -222,6 +224,9 @@ mod tests {
                     has_attachments: false,
                     snippet: None,
                     category: Default::default(),
+                    unsub_http: None,
+                    unsub_mailto: None,
+                    unsub_oneclick: false,
                 },
                 now_unix(),
             )
@@ -314,6 +319,9 @@ mod tests {
                         has_attachments: false,
                         snippet: None,
                         category: Default::default(),
+                        unsub_http: None,
+                        unsub_mailto: None,
+                        unsub_oneclick: false,
                     },
                     now_unix(),
                 )

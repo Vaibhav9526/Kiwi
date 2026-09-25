@@ -216,7 +216,7 @@ function localMatches(m: MessageEnvelope, serverQuery: string): boolean {
   return true;
 }
 
-const SYNTAX_CHIPS = ["from:", "to:", "subject:", "body:", "-", '"phrase"'];
+const SYNTAX_CHIPS = ["from:", "to:", "subject:", "body:", "-", '"phrase"', "has:attachment", "folder:"];
 
 export function SearchView({
   query,
@@ -338,7 +338,17 @@ export function SearchView({
             key={chip}
             type="button"
             onClick={() => insertChip(chip)}
-            title={chip === "-" ? "Negation prefix (e.g. invoice -unpaid)" : chip === '"phrase"' ? "Exact phrase" : `Scope: ${chip}value`}
+            title={
+              chip === "-"
+                ? "Negation prefix (e.g. invoice -unpaid)"
+                : chip === '"phrase"'
+                  ? "Exact phrase"
+                  : chip === "has:attachment"
+                    ? "Post-filter: only messages with attachments"
+                    : chip === "folder:"
+                      ? "Post-filter: folder/account substring"
+                      : `Scope: ${chip}value`
+            }
             style={{ fontSize: "0.8rem" }}
           >
             <code>{chip}</code>

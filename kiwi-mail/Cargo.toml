@@ -12,6 +12,10 @@ publish = false
 #   * no unsafe code
 [dependencies]
 kiwi-core = { path = "../kiwi-core" }
+# T-232: deterministic SPF/DKIM/DMARC evaluation at ingest. The DNS seam
+# (`kiwi_mailauth::dns::DnsResolver`) is injected by the caller, so kiwi-mail
+# itself never performs a live lookup — the live adapter stays in the app.
+kiwi-mailauth = { path = "../kiwi-mailauth" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
