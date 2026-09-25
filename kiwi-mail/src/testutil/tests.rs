@@ -44,6 +44,17 @@ async fn fixture_smtp_send_ok() {
     server.await.unwrap().unwrap();
 }
 
+#[test]
+fn empty_smtp_expectation_does_not_consume_data_terminator() {
+    assert!(script::client_matches(Proto::Smtp, "", ""));
+    assert!(!script::client_matches(Proto::Smtp, "", "."));
+    assert!(script::client_matches(
+        Proto::Smtp,
+        "MAIL FROM:<a@x>",
+        "MAIL FROM:<a@x> SIZE=42"
+    ));
+}
+
 #[tokio::test]
 async fn fixture_smtp_auth_fail() {
     let (c, s) = duplex(1 << 16);

@@ -11,7 +11,7 @@ mod script;
 mod server;
 
 pub use script::{Proto, Step, load, parse};
-pub use server::{serve, spawn_script, tls_acceptor};
+pub use server::{TRANSCRIPT_STEP_TIMEOUT, serve, spawn_script, tls_acceptor};
 // Re-exported so cross-crate E2E tests can name the acceptor without
 // taking a direct tokio-rustls dep.
 pub use tokio_rustls::TlsAcceptor;

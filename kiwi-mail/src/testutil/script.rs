@@ -81,8 +81,10 @@ pub(crate) fn client_matches(proto: Proto, expected: &str, actual: &str) -> bool
             norm(expected) == norm(actual)
         }
         _ => {
-            // tolerate extra params our client adds (e.g. MAIL FROM SIZE=)
-            actual.starts_with(expected)
+            // Tolerate extra params our client adds (e.g. MAIL FROM SIZE=).
+            // An empty fixture line is an exact empty wire line, never a
+            // wildcard that can consume the next SMTP DATA terminator.
+            !expected.is_empty() && actual.starts_with(expected)
         }
     }
 }

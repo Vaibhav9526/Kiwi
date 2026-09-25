@@ -168,6 +168,15 @@ pub struct FolderMeta {
     pub uid_next: Option<u64>,
     pub highest_uid: u64,
 }
+
+/// Per-folder message counts (T-264, IPC-6). `exists` = total stored rows;
+/// `unseen` = rows lacking the `\Seen` flag token. Literal store counts —
+/// parked (snoozed) rows still count: snooze defers, it does not suppress.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FolderStats {
+    pub exists: u64,
+    pub unseen: u64,
+}
 /// Metadata needed to upsert a synced message (bodies handled separately).
 #[derive(Debug, Clone)]
 pub struct NewMessageMeta {
@@ -1430,6 +1439,64 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM snoozed", [], |r| r.get(0))
             .unwrap();
         assert_eq!(rows, 0);
+    }
+
+    // -- T-264 folder counts ------------------------------------------------
+
+    #[test]
+    fn folder_stats_counts_seen_unseen_and_moves() {
+        let s = MailStore::open_memory().unwrap();
+        seed_account(&s, "a1");
+        let src = s.ensure_folder("a1", "INBOX").unwrap();
+        let dst = s.ensure_folder("a1", "Junk").unwrap();
+        let empty = s.ensure_folder("a1", "Empty").unwrap();
+
+        // meta() defaults \Seen: 2 seen + 1 unseen at source.
+        s.upsert_message(src, &meta(1), 0).unwrap();
+        s.upsert_message(src, &meta(2), 0).unwrap();
+        let mut unseen_meta = meta(3);
+        unseen_meta.flags = vec![];
+        s.upsert_message(src, &unseen_meta, 0).unwrap();
+
+        let st = s.folder_stats(src).unwrap();
+        assert_eq!((st.exists, st.unseen), (3, 1));
+        let st = s.folder_stats(empty).unwrap();
+        assert_eq!((st.exists, st.unseen), (0, 0), "empty folder");
+
+        // Mark seen: unseen drops; un-marking restores (case-insensitive).
+        s.set_flag(src, &[3], "\\Seen", true).unwrap();
+        let st = s.folder_stats(src).unwrap();
+        assert_eq!((st.exists, st.unseen), (3, 0));
+        s.set_flag(src, &[1], "\\seen", false).unwrap();
+        let st = s.folder_stats(src).unwrap();
+        assert_eq!((st.exists, st.unseen), (3, 1));
+
+        // Junk is orthogonal to \Seen: flagging junk moves neither count.
+        s.set_flag(src, &[2], JUNK_FLAG, true).unwrap();
+        let st = s.folder_stats(src).unwrap();
+        assert_eq!((st.exists, st.unseen), (3, 1));
+
+        // Move unseen uid 1 + seen uid 2: counts travel with the rows.
+        let moved = s.move_messages(src, dst, &[1, 2]).unwrap();
+        assert_eq!(moved.len(), 2);
+        assert_eq!(
+            (
+                s.folder_stats(src).unwrap().exists,
+                s.folder_stats(src).unwrap().unseen
+            ),
+            (1, 0)
+        );
+        let st = s.folder_stats(dst).unwrap();
+        assert_eq!((st.exists, st.unseen), (2, 1), "flags ride the move");
+
+        // Delete + snooze: delete drops exists; parked rows still count
+        // (literal store truth — defer, not suppress).
+        s.delete_messages(dst, &[moved[0].1]).unwrap();
+        let st = s.folder_stats(dst).unwrap();
+        assert_eq!((st.exists, st.unseen), (1, 0));
+        s.set_snooze(src, &[3], 1_758_000_000 + 9999, src).unwrap();
+        let st = s.folder_stats(src).unwrap();
+        assert_eq!((st.exists, st.unseen), (1, 0), "parked still counts");
     }
 
     /// T-232: Authentication-Results stamping.

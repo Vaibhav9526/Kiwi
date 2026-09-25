@@ -4,6 +4,7 @@
 //! TLS-boundary fixtures.
 
 use std::io;
+use std::time::Duration;
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio_rustls::TlsAcceptor;
@@ -11,6 +12,18 @@ use tokio_rustls::TlsAcceptor;
 use crate::lines::read_line;
 
 use super::script::*;
+
+/// A transcript step must make progress. This is deliberately generous for
+/// loaded Windows builders, but finite so a missing client command fails the
+/// fixture instead of hanging the entire test process forever.
+pub const TRANSCRIPT_STEP_TIMEOUT: Duration = Duration::from_secs(10);
+
+fn timeout_error(what: &str) -> String {
+    format!(
+        "transcript {what} timed out after {:?}",
+        TRANSCRIPT_STEP_TIMEOUT
+    )
+}
 
 enum Wire<S> {
     Plain(S),
@@ -54,7 +67,10 @@ pub async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
                 } else {
                     bytes.clone()
                 };
-                wire.wl(&bytes).await.map_err(|e| e.to_string())?;
+                tokio::time::timeout(TRANSCRIPT_STEP_TIMEOUT, wire.wl(&bytes))
+                    .await
+                    .map_err(|_| timeout_error("server write"))?
+                    .map_err(|e| e.to_string())?;
             }
             Step::TlsBoundary => {
                 let acc = tls
@@ -64,14 +80,17 @@ pub async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
                     Wire::Plain(s) => s,
                     Wire::Tls(_) => return Err("second TLS boundary".into()),
                 };
-                let t = acc
-                    .accept(plain)
+                let t = tokio::time::timeout(TRANSCRIPT_STEP_TIMEOUT, acc.accept(plain))
                     .await
+                    .map_err(|_| timeout_error("TLS handshake"))?
                     .map_err(|e| format!("tls accept: {e}"))?;
                 wire = Wire::Tls(Box::new(t));
             }
             Step::Client(expected) => loop {
-                let line = wire.rl(&mut scratch).await.map_err(|e| e.to_string())?;
+                let line = tokio::time::timeout(TRANSCRIPT_STEP_TIMEOUT, wire.rl(&mut scratch))
+                    .await
+                    .map_err(|_| timeout_error("client read"))?
+                    .map_err(|e| e.to_string())?;
                 let actual = String::from_utf8_lossy(&line).into_owned();
                 if proto == Proto::Imap {
                     // Track the client's tag — but only real tag-shaped
@@ -89,7 +108,10 @@ pub async fn serve<S: AsyncRead + AsyncWrite + Unpin>(
                     break;
                 }
                 match offscript_reply(proto, &actual) {
-                    Some(reply) => wire.wl(&reply).await.map_err(|e| e.to_string())?,
+                    Some(reply) => tokio::time::timeout(TRANSCRIPT_STEP_TIMEOUT, wire.wl(&reply))
+                        .await
+                        .map_err(|_| timeout_error("off-script server write"))?
+                        .map_err(|e| e.to_string())?,
                     None => {
                         return Err(format!(
                             "transcript divergence: expected {expected:?}, client sent {actual:?}"

@@ -198,7 +198,11 @@ fn anchor_display(html: &str, open_end: usize) -> String {
     strip_tags(html.get(open_end..close).unwrap_or_default())
 }
 
-fn inspect_url(raw: &str, display: Option<&str>) -> LinkRiskEvidence {
+/// Evaluate exactly one bounded HTTP(S) URL without resolving or opening it.
+/// `display` is used only when the URL came from an HTML anchor whose visible
+/// domain can establish an explicit display/href mismatch.
+#[must_use]
+pub fn inspect_url(raw: &str, display: Option<&str>) -> LinkRiskEvidence {
     let mut out = LinkRiskEvidence::default();
     let raw = raw.trim().chars().take(MAX_URL_CHARS).collect::<String>();
     let Ok(url) = Url::parse(&raw) else {

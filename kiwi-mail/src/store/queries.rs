@@ -447,6 +447,30 @@ impl MailStore {
         Ok(changed)
     }
 
+    /// Per-folder message counts (T-264): `exists` = total rows, `unseen` =
+    /// rows without a `\Seen` token. One indexed `COUNT` per call; the flags
+    /// column is space-separated, so the padded-token `LIKE` is exact
+    /// (SQLite LIKE is ASCII case-insensitive — matching IMAP flag
+    /// semantics — and `\Seen` contains no wildcards). Snoozed rows count:
+    /// parking hides from the list view, not from the store's truth.
+    pub fn folder_stats(&self, folder_id: i64) -> Result<FolderStats> {
+        self.conn
+            .query_row(
+                "SELECT COUNT(*),
+                        COALESCE(SUM(CASE WHEN ' ' || flags || ' ' NOT LIKE '% \\Seen %'
+                                          THEN 1 ELSE 0 END), 0)
+                 FROM messages WHERE folder_id = ?1",
+                params![folder_id],
+                |r| {
+                    Ok(FolderStats {
+                        exists: r.get::<_, i64>(0)? as u64,
+                        unseen: r.get::<_, i64>(1)? as u64,
+                    })
+                },
+            )
+            .map_err(Into::into)
+    }
+
     /// All locally-known UIDs for a folder (expunge detection).
     pub fn folder_uids(&self, folder_id: i64) -> Result<Vec<u64>> {
         let mut stmt = self
@@ -840,6 +864,18 @@ impl MailStore {
         Ok(n > 0)
     }
 
+    /// True when the exact folder-scoped message row exists.
+    pub fn message_exists(&self, folder_id: i64, uid: u64) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM messages WHERE folder_id = ?1 AND uid = ?2)",
+                params![folder_id, uid as i64],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|exists| exists != 0)?)
+    }
+
     /// Read persisted attachment evidence for one message.
     pub fn get_attachment_risk(
         &self,
@@ -1076,10 +1112,9 @@ impl MailStore {
                 detail: "stored body failed MIME parse".into(),
             }
         })?;
-        let mut matches = message.attachments().filter(|a| {
-            a.attachment_name()
-                .is_some_and(|stored| stored == filename)
-        });
+        let mut matches = message
+            .attachments()
+            .filter(|a| a.attachment_name().is_some_and(|stored| stored == filename));
         let attachment = matches.next().ok_or_else(|| {
             crate::error::MailError::InvalidInput("stored attachment not found".into())
         })?;

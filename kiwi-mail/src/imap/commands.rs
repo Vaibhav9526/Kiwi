@@ -340,7 +340,11 @@ impl ImapClient {
         let mut boxes = Vec::new();
         for line in &out.untagged {
             let text = String::from_utf8_lossy(line);
-            if let Some(rest) = text.to_ascii_uppercase().strip_prefix("LIST ") {
+            // Match the LIST verb case-insensitively but parse the rest
+            // verbatim — mailbox names are case-sensitive (RFC 3501 §5.1:
+            // only INBOX is case-invariant).
+            if text.len() >= 5 && text[..5].eq_ignore_ascii_case("LIST ") {
+                let rest = &text[5..];
                 // LIST (flags) "delim" name
                 if let Ok(SExp::List(flags)) = parse_sexp(rest.trim_start().as_bytes()) {
                     let flags: Vec<String> = flags.iter().filter_map(|f| f.as_str()).collect();
