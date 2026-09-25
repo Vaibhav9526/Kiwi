@@ -798,6 +798,161 @@
   opacity: 1;
 }
 
+/* ---------- T-192: KIWI security surfaces in Mailspring idiom ---------- */
+
+/* Header auth/encryption badge: verdict dot + label, tighter than pills. */
+.ms-secbadge {
+  border-radius: var(--kiwi-ms-radius-base);
+  font-size: var(--kiwi-ms-text-smaller);
+  padding: 2px 8px;
+}
+
+/* Slim composer policy strip above the subject (refusal still blocks send). */
+.ms-policy-strip {
+  border: 1px solid;
+  border-left-width: 3px;
+  border-radius: var(--kiwi-ms-radius-base);
+  padding: 6px 10px;
+  margin-bottom: 10px;
+  font-size: var(--kiwi-ms-text-small);
+  background: var(--kiwi-ms-surface);
+}
+
+.ms-policy-strip.block {
+  color: var(--kiwi-ms-toast-error);
+  border-color: var(--kiwi-ms-danger);
+  background: color-mix(in srgb, var(--kiwi-ms-danger) 8%, var(--kiwi-ms-surface));
+}
+
+.ms-policy-strip.warn {
+  color: var(--kiwi-ms-warning);
+  border-color: var(--kiwi-ms-warning);
+  background: color-mix(in srgb, var(--kiwi-ms-warning) 8%, var(--kiwi-ms-surface));
+}
+
+.ms-policy-strip ul {
+  margin: 4px 0 0;
+  padding-left: 1.1rem;
+}
+
+.ms-policy-strip .ms-btn {
+  padding: 0 8px;
+  font-size: var(--kiwi-ms-text-smaller);
+}
+
+/* Finding detail popover (light-dismiss; full record + prev/next kept). */
+.ms-popover-veil {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: transparent;
+}
+
+.ms-finding-popover {
+  position: fixed;
+  top: 64px;
+  right: 16px;
+  width: min(480px, calc(100vw - 32px));
+  max-height: calc(100vh - 96px);
+  overflow: auto;
+  background: var(--kiwi-ms-surface);
+  border: 1px solid var(--kiwi-ms-border);
+  border-radius: var(--kiwi-ms-radius-large);
+  box-shadow: var(--kiwi-ms-shadow-popover);
+  padding: 14px 16px;
+}
+
+.ms-finding-popover h2 {
+  font-size: var(--kiwi-ms-text-large);
+  margin: 0.4rem 0;
+}
+
+/* Lock overlay approve-device panel (full-app veil kept from flagship). */
+.ms-approve-box {
+  border: 1px dashed var(--kiwi-ms-border-strong);
+  border-radius: var(--kiwi-ms-radius-large);
+  padding: 0.7rem;
+  margin-bottom: 0.8rem;
+}
+
+.ms-fp-badge {
+  font-family: var(--kiwi-ms-font-mono);
+  font-size: var(--kiwi-ms-text-smaller);
+}
+
+/* Findings list + events table (Security Center window surface). */
+.ms-findings-list {
+  list-style: none;
+  margin: 0 0 12px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ms-finding-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--kiwi-ms-divider);
+  border-radius: var(--kiwi-ms-radius-base);
+  background: var(--kiwi-ms-surface);
+}
+
+.ms-finding-row:hover {
+  border-color: var(--kiwi-ms-border-strong);
+}
+
+.ms-finding-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ms-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: var(--kiwi-ms-text-small);
+}
+
+.ms-table th {
+  text-align: left;
+  font-size: var(--kiwi-ms-text-smaller);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--kiwi-ms-text-secondary);
+  border-bottom: 1px solid var(--kiwi-ms-border);
+  padding: 6px 8px;
+}
+
+.ms-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--kiwi-ms-divider);
+  vertical-align: top;
+}
+
+.ms-filterbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.ms-filterbar input,
+.ms-filterbar select {
+  font: inherit;
+  font-size: var(--kiwi-ms-text-small);
+  color: var(--kiwi-ms-text);
+  background: var(--kiwi-ms-surface);
+  border: 1px solid var(--kiwi-ms-border);
+  border-radius: var(--kiwi-ms-radius-base);
+  padding: 4px 8px;
+}
+
 /* ---------- narrow: stacked rows under ~540px list width ---------- */
 
 .ms-narrow .ms-row {

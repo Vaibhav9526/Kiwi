@@ -21,7 +21,7 @@ export function SecurityPill({
   return (
     <button
       type="button"
-      className={`kiwi-pill ${level}`}
+      className={`kiwi-pill ${level} ms-secbadge`}
       onClick={onOpen}
       aria-label={`Connection security: ${severityLabel(level)}. ${summary} Activate for details.`}
       title={summary}
@@ -43,7 +43,7 @@ export function PolicyBanner({
   if (verdict === "none") return null;
   const blocking = verdict === "block";
   return (
-    <div className={`kiwi-banner ${blocking ? "block" : "warn"}`} role={blocking ? "alert" : "status"}>
+    <div className={`ms-policy-strip ${blocking ? "block" : "warn"}`} role={blocking ? "alert" : "status"}>
       <strong>{blocking ? "Blocked" : "Warning"}:</strong>{" "}
       {blocking
         ? "sending is disabled until the flagged recipients are removed."
@@ -55,7 +55,7 @@ export function PolicyBanner({
         {offenders.map((o) => (
           <li key={o}>
             <code>{o}</code>{" "}
-            <button type="button" onClick={() => onRemove(o)} aria-label={`Remove recipient ${o}`}>
+            <button type="button" className="ms-btn" onClick={() => onRemove(o)} aria-label={`Remove recipient ${o}`}>
               Remove
             </button>
           </li>
@@ -109,11 +109,11 @@ export function FindingDialog({
     return parts.length > 0 ? parts.join(" · ") : str(s["sessionId"]) || null;
   })();
   return (
-    <div className="kiwi-dialog-backdrop" onClick={onClose}>
+    <div className="ms-popover-veil" onClick={onClose}>
       <div
-        className="kiwi-dialog"
+        className="ms-finding-popover ms-pop"
         role="dialog"
-        aria-modal="true"
+        aria-modal="false"
         aria-labelledby="finding-title"
         onClick={(e) => e.stopPropagation()}
       >
@@ -182,13 +182,13 @@ export function FindingDialog({
           </>
         )}
         <div style={{ display: "flex", gap: "0.4rem", marginTop: "0.8rem" }}>
-          <button type="button" onClick={onPrev} disabled={position <= 1}>
+          <button type="button" className="ms-btn" onClick={onPrev} disabled={position <= 1}>
             ← Prev
           </button>
-          <button type="button" onClick={onNext} disabled={position >= total}>
+          <button type="button" className="ms-btn" onClick={onNext} disabled={position >= total}>
             Next →
           </button>
-          <button type="button" onClick={onClose} ref={closeRef}>
+          <button type="button" className="ms-btn" onClick={onClose} ref={closeRef}>
             Close (Esc)
           </button>
         </div>
@@ -202,6 +202,7 @@ export function LockOverlay({
   busy,
   trustLines,
   deviceLabel,
+  fpTail,
   challengeId,
   onVerify,
   onRetry,
@@ -212,6 +213,8 @@ export function LockOverlay({
   trustLines: string[];
   /** Paired device label for the mobile-approve hint (null when none). */
   deviceLabel: string | null;
+  /** Device key fingerprint tail for the badge (null when unknown). */
+  fpTail: string | null;
   /** Active challenge id, shown once Verify issues one. */
   challengeId: string | null;
   onVerify: () => void;
@@ -239,23 +242,20 @@ export function LockOverlay({
         <p>
           <small>Message bodies, attachments, and sending are unavailable while locked.</small>
         </p>
-        <div
-          style={{
-            border: "1px dashed var(--kiwi-border)",
-            borderRadius: "10px",
-            padding: "0.7rem",
-            marginBottom: "0.8rem",
-          }}
-          aria-label="Mobile approval"
-        >
+        <div className="ms-approve-box" aria-label="Mobile approval">
           <p style={{ margin: "0 0 0.3rem" }}>
-            <strong>Approve on mobile</strong>
+            <strong>Approve on device</strong>{" "}
+            {fpTail && (
+              <span className="ms-badge ms-badge-alt ms-fp-badge" title="Paired device key fingerprint (last 4)">
+                ····{fpTail}
+              </span>
+            )}
           </p>
-          <p style={{ margin: 0, color: "var(--kiwi-text-secondary)" }}>
+          <p style={{ margin: 0, color: "var(--kiwi-ms-text-secondary)" }}>
             <small>
               {deviceLabel
-                ? `Open the KIWI authenticator on ${deviceLabel} and approve the unlock request.`
-                : "No authenticator device registered — pair one in Settings → KIWI Security once unlocked."}
+                ? `Open the KIWI authenticator on ${deviceLabel} and approve the unlock request — this screen cannot approve on your behalf.`
+                : "No authenticator device registered — pair one in Settings → Identity once unlocked."}
             </small>
           </p>
           <div
@@ -289,10 +289,10 @@ export function LockOverlay({
           )}
         </div>
         <div style={{ display: "flex", gap: "0.5rem", justifyContent: "center" }}>
-          <button type="button" onClick={onVerify} disabled={busy} ref={verifyRef}>
+          <button type="button" className="ms-btn ms-btn-primary" onClick={onVerify} disabled={busy} ref={verifyRef}>
             {busy ? "Working…" : "Verify with authenticator"}
           </button>
-          <button type="button" onClick={onRetry} disabled={busy}>
+          <button type="button" className="ms-btn" onClick={onRetry} disabled={busy}>
             Retry trust check
           </button>
         </div>

@@ -90,6 +90,16 @@
   animation: ms-ready-fade var(--kiwi-ms-motion-fade) linear;
 }
 
+/* A6 policy strip drops like the selection bar */
+.ms-policy-strip {
+  animation: ms-actionbar-drop var(--kiwi-ms-motion-panel) var(--kiwi-ms-ease-in-out);
+}
+
+/* A2 popover veil fades */
+.ms-popover-veil {
+  animation: ms-fade-in var(--kiwi-ms-motion-nav) var(--kiwi-ms-ease-out);
+}
+
 /* A8 thread expand — collapsed children reveal (fade + rise, same
  * 100ms envelope as the height tween; measured-height tweens need a
  * single-wrapper child, which multi-row threads don't have). */
@@ -267,6 +277,8 @@
   .kiwi-palette-row,
   .ms-ready,
   .ms-thread-expand,
+  .ms-policy-strip,
+  .ms-popover-veil,
   .ms-spinner i {
     animation: none !important;
   }

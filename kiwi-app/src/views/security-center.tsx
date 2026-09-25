@@ -80,34 +80,36 @@ export function SecurityCenterView({
   };
 
   return (
-    <section aria-label="KIWI Security event center">
+    <section aria-label="KIWI Security event center" className="ms-prefs ms-view-enter">
       <h1>Security</h1>
       {demo && (
         <p>
-          <span className="kiwi-pill unknown">? demo events</span>
+          <span className="ms-badge">? demo events</span>
         </p>
       )}
       <h2>Findings ({findings.length})</h2>
       {findings.length === 0 && (
-        <p style={{ color: "var(--kiwi-text-secondary)" }}>
+        <p style={{ color: "var(--kiwi-ms-text-secondary)" }}>
           <small>No retained findings.</small>
         </p>
       )}
-      <ul>
+      <ul className="ms-findings-list">
         {findings.map((f, i) => (
-          <li key={f.id}>
+          <li key={f.id} className="ms-finding-row">
             <span className={`kiwi-pill ${f.severity}`}>
               {severityGlyph(f.severity)} {severityLabel(f.severity)}
             </span>{" "}
-            {f.title}{" "}
-            <button type="button" onClick={() => onOpenFinding(i)}>
+            <span className="ms-finding-title" title={f.title}>
+              {f.title}
+            </span>{" "}
+            <button type="button" className="ms-btn" onClick={() => onOpenFinding(i)}>
               Details
             </button>
           </li>
         ))}
       </ul>
       <h2>Events</h2>
-      <div style={{ display: "flex", gap: "0.5rem", marginBottom: "0.6rem", flexWrap: "wrap" }}>
+      <div className="ms-filterbar">
         <label>
           Account filter:{" "}
           <input type="text" value={accountFilter} onChange={(e) => setAccountFilter(e.target.value)} placeholder="account substring" />
@@ -123,19 +125,23 @@ export function SecurityCenterView({
           </select>
         </label>
         {!demo && (
-          <button type="button" onClick={() => void exportReport()}>
+          <button type="button" className="ms-btn" onClick={() => void exportReport()}>
             Security report (JSON)
           </button>
         )}
         {demo && (
           <button
             type="button"
+            className="ms-btn"
             onClick={() => download("kiwi-security-events.json", { exported_at: new Date().toISOString(), events: filtered })}
           >
             Export JSON
           </button>
         )}
       </div>
+      <p style={{ color: "var(--kiwi-ms-text-secondary)" }}>
+        <small>Endpoint posture — devices, signals, org binding — lives in Settings → Identity.</small>
+      </p>
       {reportError && (
         <p role="alert">
           <small>{reportError}</small>
@@ -149,12 +155,12 @@ export function SecurityCenterView({
       <p role="status">
         <small>{filtered.length} events shown.</small>
       </p>
-      <table style={{ borderCollapse: "collapse", width: "100%" }}>
+      <table className="ms-table">
         <caption className="kiwi-sr-only">Security events</caption>
         <thead>
           <tr>
             {["Time", "Account", "Category", "Severity", "Summary", "Detail"].map((h) => (
-              <th key={h} scope="col" style={{ textAlign: "left", borderBottom: "1px solid var(--kiwi-border)", padding: "0.3rem" }}>
+              <th key={h} scope="col">
                 {h}
               </th>
             ))}
@@ -163,18 +169,18 @@ export function SecurityCenterView({
         <tbody>
           {filtered.map((e) => (
             <tr key={e.id}>
-              <td style={{ padding: "0.3rem" }}>{e.ts}</td>
-              <td style={{ padding: "0.3rem" }}>{e.accountEmail}</td>
-              <td style={{ padding: "0.3rem" }}>{e.category}</td>
-              <td style={{ padding: "0.3rem" }}>
+              <td>{e.ts}</td>
+              <td>{e.accountEmail}</td>
+              <td>{e.category}</td>
+              <td>
                 <span className={`kiwi-pill ${e.severity}`}>
                   {severityGlyph(e.severity)} {severityLabel(e.severity)}
                 </span>
               </td>
-              <td style={{ padding: "0.3rem" }}>{e.summary}</td>
-              <td style={{ padding: "0.3rem" }}>
+              <td>{e.summary}</td>
+              <td>
                 {e.detailRef ? (
-                  <button type="button" onClick={() => void openSession(e.detailRef)}>
+                  <button type="button" className="ms-btn" onClick={() => void openSession(e.detailRef)}>
                     Session
                   </button>
                 ) : (

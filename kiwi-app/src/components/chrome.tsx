@@ -236,6 +236,8 @@ interface SidebarProps {
   accounts: AccountInfo[];
   activeFolder: string;
   unreadByFolder: Record<string, number>;
+  /** Pending authenticator challenges (unlock approvals waiting on device). */
+  pendingApprovals?: number;
 }
 
 /** Inbox-class folders get the filled alt badge; everything else is outline. */
@@ -243,7 +245,7 @@ function isAltBadge(id: string, label: string): boolean {
   return /inbox|unread|starred|important/i.test(`${id} ${label}`);
 }
 
-export function Sidebar({ folders, accounts, activeFolder, unreadByFolder }: SidebarProps) {
+export function Sidebar({ folders, accounts, activeFolder, unreadByFolder, pendingApprovals }: SidebarProps) {
   const [accountsOpen, setAccountsOpen] = useState(true);
   return (
     <nav className="ms-sidebar" aria-label="Accounts and folders">
@@ -317,8 +319,18 @@ export function Sidebar({ folders, accounts, activeFolder, unreadByFolder }: Sid
         <button type="button" className="ms-btn ms-nav-btn" onClick={() => navigate({ name: "filters" })}>
           🔀 Filters
         </button>
-        <button type="button" className="ms-btn ms-nav-btn" onClick={() => navigate({ name: "security" })}>
-          🛡 Security
+        <button
+          type="button"
+          className="ms-btn ms-nav-btn"
+          onClick={() => navigate({ name: "security" })}
+          aria-label={`Security Center${pendingApprovals ? `, ${pendingApprovals} approval${pendingApprovals === 1 ? "" : "s"} pending on device` : ""}`}
+        >
+          🛡 Security{" "}
+          {(pendingApprovals ?? 0) > 0 && (
+            <span className="ms-badge ms-badge-alt" aria-hidden="true" title="Authenticator approvals waiting on device">
+              {pendingApprovals}
+            </span>
+          )}
         </button>
         <button type="button" className="ms-btn ms-nav-btn" onClick={() => navigate({ name: "settings" })}>
           ⚙ Settings

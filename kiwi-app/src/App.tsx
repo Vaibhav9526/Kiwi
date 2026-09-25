@@ -961,6 +961,7 @@ export default function App() {
             accounts={accounts}
             activeFolder={route.name === "mail" ? (route.folder ?? "all-inboxes") : "all-inboxes"}
             unreadByFolder={unreadByFolder}
+            pendingApprovals={authOpen && authStatus === "waiting" ? 1 : 0}
           />
         }
         status={
@@ -1165,6 +1166,7 @@ export default function App() {
             `Required action: ${trust.requiredAction}`,
           ]}
           deviceLabel={demo ? "Demo authenticator" : (activeDevice?.label ?? null)}
+          fpTail={demo ? "9F3A" : ((activeDevice?.deviceId ?? "").slice(-4) || null)}
           challengeId={demo ? null : (challenge?.challengeId ?? null)}
           onVerify={() => void startVerify()}
           onRetry={() => {
