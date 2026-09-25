@@ -287,6 +287,6 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-307 | plugin install UX live-proven (picker→install→worker→lifecycle); FileList-clear bug fixed | Agent 25 | done |
 | T-308 | device surface verified vs canonical §9d: full DeviceView fields, revoke live, this-device badge | Agent 24 | done |
 | T-309 | mbox import: parser (From_ boundaries, flags map) + kiwi_import_mbox IPC + audit | Agent 19 | open | `kiwi-mail`, `commands/` | onboarding/migration |
-| T-310 | reader polish: quoted-text collapse, in-reply-to jump links, sig de-emphasis (presentation-only) | Agent 24 | open | `kiwi-app/src` reader | eM/Thunderbird parity |
+| T-310 | reader polish: quoted-text collapse, in-reply-to jump links, sig de-emphasis (presentation-only) | Agent 24 | done | `kiwi-app/src` reader | eM/Thunderbird parity |
 | T-311 | draft rulings for 8 authenticator contract contradictions (T-270 table) → DECISIONS.md proposals for owner ratification | Agent 20 | open | `docs/` | T-270,T-194 |
 | T-312 | contacts depth (detail/edit or honest gap) + rail sandbox-pending row once T-300 lands | Agent 25 | open | `kiwi-app/src` | T-231,T-300 |

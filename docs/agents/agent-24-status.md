@@ -579,3 +579,44 @@ modules). Nothing fabricated: every rendered field is on the wire view.
 Mid-session the settings.tsx edits were swept into commit 43b528a
 ("A24 → T-308") — final content verified in HEAD; this commit carries
 the smoke-suite addition + this log.
+
+## T-310 — reader quoted-text collapse + thread polish (presentation-only)
+
+**Quote collapse (BodyPane, mailbox.tsx):**
+- HTML path: post-mount DOM pass tags `data-kiwi-quote` on top-level quote
+  containers (`blockquote`, `.gmail_quote`, `.moz-cite-prefix`,
+  `[type="cite"]`) plus a preceding "On … wrote:" preamble element —
+  `.em-quotes-collapsed` on the body hides them. The sanitize pipeline is
+  untouched: this is an effect over `rendered.html` AFTER it mounts, with
+  zero re-parsing authority. Conservative guards: nested quotes ride their
+  ancestor; nothing collapses when the quote IS the whole body (no real
+  content would remain).
+- Text path: `splitQuotedText` collapses only when the marker is
+  unambiguous — "On … wrote:" preamble followed by quote lines, or a `>`
+  run (≥2 lines) that extends to EOM tolerating blanks + a trailing sig
+  block. Interleaved quoting, quote-only bodies, single stray `>` lines,
+  and bare preambles all stay fully visible.
+- Toggle: "Show quoted text (N)" / "Hide" — per-message-open state
+  (`useState` + reset on uid change), collapsed by default, no pref.
+
+**In-reply-to jump:** `MessageEnvelope` now carries `messageId` /
+`inReplyTo` / `references` (real `MessageView` fields mapped in
+`toEnvelope`). Each card resolves `inReplyTo` (or last `references`) —
+normalized, case-folded, `<>`-stripped — against loaded thread members and
+renders "← In reply to {sender}" navigating to the parent's real route.
+Nothing renders when unresolved — honest dormancy in demo (fixtures carry
+no chain ids).
+
+**Signature de-emphasis:** RFC 3676 `-- ` delimiter in the HEAD region only
+renders inside a muted `.em-sig` span (text bodies). HTML sig heuristics
+skipped — not cheap/reliable; noted, not faked.
+
+**Fix-forward:** `ipc.ts` imported `SandboxSessionView` unused (A21's
+T-300 seam) — removed the name from the import list only; the type still
+backs `parseSandboxSessions` in kiwi.ts.
+
+**Verification:** `tsc && vite build` green (91 modules); smoke suite
+11/11 PASS on real Edge headless. `splitQuotedText` logic verified
+directly on 8 cases (collapse: preamble+quotes, run-to-EOM, sig+quote;
+refuse: interleaved, quote-only, stray `>`, bare preamble, plain).
+Swept into `6ee4daf` mid-session — final content verified in HEAD.
