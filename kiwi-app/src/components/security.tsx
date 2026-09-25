@@ -9,6 +9,7 @@ import { useEffect, useRef } from "react";
 import type { FindingDetailView, FindingInfo, PolicyBannerVerdict, Severity } from "../kiwi";
 import { severityLabel } from "../kiwi";
 import { Icon, SEVERITY_ICON } from "./icons/index";
+import { PairQrFlow } from "./pair";
 
 export function SecurityPill({
   level,
@@ -205,6 +206,7 @@ export function LockOverlay({
   deviceLabel,
   fpTail,
   challengeId,
+  live,
   onVerify,
   onRetry,
 }: {
@@ -218,6 +220,8 @@ export function LockOverlay({
   fpTail: string | null;
   /** Active challenge id, shown once Verify issues one. */
   challengeId: string | null;
+  /** Live backend — the pair QR only renders when IPC is reachable. */
+  live: boolean;
   onVerify: () => void;
   onRetry: () => void;
 }) {
@@ -259,28 +263,13 @@ export function LockOverlay({
                 : "No authenticator device registered — pair one in Settings → Identity once unlocked."}
             </small>
           </p>
-          <div
-            role="img"
-            aria-label="QR code placeholder for mobile approval"
-            title="QR placeholder — real codes arrive with the device-pairing flow"
-            style={{
-              width: "96px",
-              height: "96px",
-              margin: "0.5rem auto 0",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              border: "1px solid var(--kiwi-border)",
-              borderRadius: "8px",
-              color: "var(--kiwi-text-secondary)",
-              fontSize: "0.7rem",
-              textAlign: "center",
-            }}
-          >
-            QR
-            <br />
-            placeholder
-          </div>
+          {/* T-303: with no paired device the only QR that can exist is a
+              real pairing ticket (§9d) — PairQrFlow begins one and renders
+              the backend's qrPayload. It reports honestly when the lock
+              gate denies begin (no backend-owned flow live) or when the
+              renderer is in demo mode; a paired device approves over the
+              channel, so no QR is needed then. */}
+          {live && !deviceLabel && <PairQrFlow />}
           {challengeId && (
             <p style={{ margin: "0.4rem 0 0", color: "var(--kiwi-text-secondary)" }}>
               <small>

@@ -458,3 +458,46 @@ select replaced —
 All five §6i commands registered in lib.rs:177-181; wrappers used verbatim.
 No UI driver — static trace per convention. `kiwi.templates` localStorage
 key no longer read/written (stub removed).
+
+## T-303 — real pairing QR (§9d) over the T-269 canonical backend
+
+**Discovery:** `pair_begin`/`pair_status` had zero callers — no pairing UI
+existed; the only QR was a dead "QR placeholder" box in the LockOverlay.
+Backend contract (`commands/pair.rs`): `pair_begin(deviceLabel)` returns
+`{ticket, expiresUnix, qrPayload}` where `qrPayload` is the complete
+`{"type":"kiwi-pairing",endpoint,desktopKey,ticket,…}` JSON the phone scans —
+the renderer renders it verbatim, never constructs it. Lock matrix §9d.7:
+unlocked ⇒ ordinary gate; locked ⇒ only while a backend-owned `pair_flow`
+is live, else `IpcError("locked")`. `pair_status` never echoes the payload
+(§9d.2 bearer-secret rule — nothing here logs/persists it).
+
+**New `components/pair.tsx`:**
+- `QrCanvas` — renders the payload via `encodeQrMatrix` imported from
+  `mobile/src/qr/qrcode.ts` (the segno-verified T-194 encoder — single
+  source of truth, not a copy; vite bundles it cross-package cleanly).
+  Byte-mode EC-M, integer module scale, 4-module quiet zone, white canvas
+  bg (theme-independent contrast), `role="img"` + honest aria-label;
+  QrEncodeError surfaces verbatim.
+- `PairQrFlow` — `pairBegin` on mount → QR + live expiry countdown +
+  `pairStatus` poll (2.5s, read-only) → `claimed` (device label shown,
+  onClaimed fires) / `expired` (real "New code" re-begin) / `unavailable`
+  (`locked`→"can't pair while locked…", `pair-unavailable`→`code: msg`).
+  Poll treats locked/unknown-ticket replies as expiry (flow died).
+
+**Surfaces:**
+- Settings → Identity → Devices: "Pair new device…" (disabled+demo title)
+  → inline PairQrFlow; `claimed` → real `listDevices` refresh. Empty-state
+  copy no longer claims "Phase 4 flow" vaporware.
+- LockOverlay: placeholder box replaced — when `live && !deviceLabel`
+  (paired devices approve over the channel; a QR adds nothing) PairQrFlow
+  attempts begin and degrades honestly on the §9d.7 gate. New `live` prop
+  wired in App.tsx (`!demo`).
+
+**Verification:** `tsc && vite build` green (90 modules). Encoder evidence:
+mobile's segno-vector suite — 11/14 pass incl. module-for-module JSON
+vectors at EC-M (the pairing payload's exact shape); the 3 failures are
+documented scope limits (payloads needing v>25 rejected by design per the
+file header; one fixture where the encoder picks a tighter valid version
+than the reference). Plus a byte-assert I ran against a §9d-shaped payload
+(realistic ticket/key/endpoint JSON): deterministic matrix, correct
+geometry/finder patterns, ~30% dark density. Throwaway test not retained.

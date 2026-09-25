@@ -1611,6 +1611,7 @@ export default function App() {
           deviceLabel={demo ? "Demo authenticator" : (activeDevice?.label ?? null)}
           fpTail={demo ? "9F3A" : ((activeDevice?.deviceId ?? "").slice(-4) || null)}
           challengeId={demo ? null : (challenge?.challengeId ?? null)}
+          live={!demo}
           onVerify={() => void startVerify()}
           onRetry={() => {
               if (demo) {

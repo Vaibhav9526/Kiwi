@@ -20,6 +20,7 @@ import { RulesView } from "./rules";
 import { TemplatesManager } from "./templates";
 import { SHORTCUT_ROWS } from "../components/shortcuts";
 import { Icon, isIconName } from "../components/icons/index";
+import { PairQrFlow } from "../components/pair";
 import { ThemePicker, useTheme } from "../themes";
 import { emitToPlugin, removePlugin, setPluginEnabled, useInstalledPlugins, usePluginPanes } from "../plugins";
 
@@ -71,6 +72,7 @@ export function SettingsView({
   const [minTls, setMinTls] = useState(() => loadPref("kiwi.minTls", "tls1.2"));
   const [devices, setDevices] = useState<DeviceView[]>([]);
   const [devicesError, setDevicesError] = useState<string | null>(null);
+  const [pairOpen, setPairOpen] = useState(false);
   const [testResults, setTestResults] = useState<Record<string, VerifyResult[]>>({});
   const [actionError, setActionError] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
@@ -738,13 +740,42 @@ export function SettingsView({
                 <small>{devicesError}</small>
               </p>
             )}
-            {devices.length === 0 && (
+            {devices.length === 0 && !pairOpen && (
               <p style={{ color: "var(--kiwi-text-secondary)" }}>
                 <small>
                   {mode === "live"
-                    ? "No devices registered. Pairing completes on the authenticator (Phase 4 flow)."
+                    ? "No devices registered."
                     : "Device management needs the backend."}
                 </small>
+              </p>
+            )}
+            {/* T-303: real pairing — begin issues a backend-owned ticket and
+                renders its qrPayload as a scannable QR; pair_status polls to
+                claimed/expired (§9d). Demo keeps an honest disabled state. */}
+            {pairOpen ? (
+              <div className="em-card" style={{ padding: "0.8rem", marginBottom: "0.6rem" }}>
+                <PairQrFlow
+                  onClaimed={() => {
+                    void loadDevices();
+                  }}
+                />
+                <p style={{ textAlign: "center", margin: "0.5rem 0 0" }}>
+                  <button type="button" className="ms-btn" onClick={() => setPairOpen(false)}>
+                    Close
+                  </button>
+                </p>
+              </div>
+            ) : (
+              <p>
+                <button
+                  type="button"
+                  className="ms-btn"
+                  onClick={() => setPairOpen(true)}
+                  disabled={mode !== "live"}
+                  title={mode !== "live" ? "Device pairing needs the Tauri backend" : undefined}
+                >
+                  Pair new device…
+                </button>
               </p>
             )}
             <ul>
