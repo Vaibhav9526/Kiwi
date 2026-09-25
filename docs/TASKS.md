@@ -137,7 +137,7 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-209 | F10 WYSIWYG composer (fonts/tables/emoji/links/inline-image/Excel-paste; ammonia allowlist review) | unassigned | backlog | `kiwi-app/` | — |
 | T-210 | F11 native notifications via Tauri API on mail-changed; per-account toggle; lock-gated content | unassigned | backlog | `kiwi-app/` | T-157 |
 | T-211 | F12 sent items inside conversation threads | unassigned | backlog | `kiwi-mail/` + UI | T-165 |
-| T-212 | F13 junk marking (\Junk flag + move; context/toolbar/bulk) | Agent 14 | open | `kiwi-mail/` + UI | — |
+| T-212 | Junk marking — PARTIAL: store set_junk/clear_junk landed; MISSING: IMAP Junk flag, move-to-Junk, IPC, UI | orphaned (A14 term dead), reassign after A15 T-255 | open |
 | T-213 | F14 email priority headers (compose + display) | unassigned | backlog | `kiwi-mail/` + composer | — |
 | T-214 | F15 extra theme schemes (custom CSS field deferred) | unassigned | backlog | `kiwi-app/` | — |
 | T-215 | kiwi-admin org plane (user mgmt/invites/admin panel) — Phase 6, needs owner sign-off | unassigned | deferred-P6 | `kiwi-admin/` | — |
