@@ -24,6 +24,12 @@ mod schema;
 
 pub use outbox::OutboxRow;
 
+/// Canonical junk flag (F13/T-212): the keyword stored in a message's
+/// `flags` column and applied server-side as `+FLAGS (\Junk)`. Comparisons
+/// are case-insensitive; legacy spellings (`$Junk`, bare `Junk`) are a
+/// normalization question owned by T-212's caller, not this constant.
+pub const JUNK_FLAG: &str = "\\Junk";
+
 /// Message metadata row — the query shape the UI/mail-flow emitter consumes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MessageMeta {
@@ -42,6 +48,13 @@ pub struct MessageMeta {
     pub body_path: Option<String>,
     /// Deterministic inbox tab (T-201) — set at ingest, refined on body fetch.
     pub category: Category,
+    /// Unsubscribe offer (T-202): https URL, if advertised.
+    pub unsub_http: Option<String>,
+    /// Unsubscribe offer: mailto address (params stripped), if advertised.
+    /// Consent-gated — never auto-send.
+    pub unsub_mailto: Option<String>,
+    /// RFC 8058 one-click marker present on the offer.
+    pub unsub_oneclick: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +83,11 @@ pub struct NewMessageMeta {
     /// (domain rules still apply); the body-fetch path refines it via
     /// `set_category` once headers arrive. Defaults to Primary.
     pub category: Category,
+    /// Unsubscribe offer at ingest (`None`/`None`/`false` when the sender
+    /// advertised nothing actionable; refined on body fetch like `category`).
+    pub unsub_http: Option<String>,
+    pub unsub_mailto: Option<String>,
+    pub unsub_oneclick: bool,
 }
 
 pub struct MailStore {
@@ -127,22 +145,30 @@ impl MailStore {
     }
 }
 
-/// One-time schema step + backfill, factored for tests (which build a
-/// pre-v4 database by hand and drive this directly).
+/// One-time schema step + backfill, factored for tests (which build
+/// pre-vN databases by hand and drive this directly). Migration steps are
+/// version-gated and append-only: a v3 database runs the v4 step then the
+/// v5 step; a v4 database runs only the v5 step; fresh databases (v0) get
+/// everything from `DDL` and skip both.
 pub(crate) fn migrate_conn(conn: &Connection, root: &Path) -> Result<()> {
     let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if v < SCHEMA_VERSION {
         conn.execute_batch(DDL)?;
-        // FTS5 search index (T-159): created/backfilled idempotently on
-        // every schema bump — an old DB reaches here with rows in
-        // `messages` and no `messages_fts`, the backfill fills it once.
+        // FTS5 index (T-159): created/backfilled idempotently on every bump.
         crate::search::ensure_schema(conn)?;
         if v > 0 {
             // Pre-v4 database: fresh DDL above is a no-op for existing
             // tables, so add the column explicitly, then classify rows
             // whose bodies are on disk.
-            ensure_category_column(conn)?;
-            backfill_categories(conn, root)?;
+            if v < 4 {
+                ensure_category_column(conn)?;
+                backfill_categories(conn, root)?;
+            }
+            // Pre-v5 database: same treatment for the unsubscribe columns.
+            if v < 5 {
+                ensure_unsub_columns(conn)?;
+                backfill_unsub(conn, root)?;
+            }
         }
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     }
@@ -163,11 +189,72 @@ fn ensure_category_column(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// Same guard for the T-202 unsubscribe columns (one sentinel check covers
+/// all three — they are always added together).
+fn ensure_unsub_columns(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare("PRAGMA table_info(messages)")?;
+    let cols = stmt.query_map([], |r| r.get::<_, String>(1))?;
+    for col in cols {
+        if col? == "unsub_http" {
+            return Ok(());
+        }
+    }
+    conn.execute_batch(
+        "ALTER TABLE messages ADD COLUMN unsub_http TEXT;
+         ALTER TABLE messages ADD COLUMN unsub_mailto TEXT;
+         ALTER TABLE messages ADD COLUMN unsub_oneclick INTEGER NOT NULL DEFAULT 0",
+    )?;
+    Ok(())
+}
+
 /// Best-effort classification of pre-v4 rows: parse each stored body and
 /// write its tab. Rows without bodies, oversized bodies, or unparseable
 /// bodies keep the `'primary'` default — absent fact, no guess. Individual
 /// failures never abort the migration.
 fn backfill_categories(conn: &Connection, root: &Path) -> Result<()> {
+    for (folder_id, uid, bytes) in bodies_to_backfill(conn, root)? {
+        let Ok(parsed) = crate::mime::parse_message(&bytes) else {
+            continue;
+        };
+        let category = crate::category::categorize(&parsed).category;
+        let _ = conn.execute(
+            "UPDATE messages SET category = ?3 WHERE folder_id = ?1 AND uid = ?2",
+            rusqlite::params![folder_id, uid as i64, category.as_str()],
+        );
+    }
+    Ok(())
+}
+
+/// Best-effort unsubscribe backfill for pre-v5 rows: same body walk, fills
+/// the T-202 columns. Rows whose bodies lack an actionable offer keep
+/// `NULL/NULL/0` — absent fact, no guess.
+fn backfill_unsub(conn: &Connection, root: &Path) -> Result<()> {
+    for (folder_id, uid, bytes) in bodies_to_backfill(conn, root)? {
+        let Ok(parsed) = crate::mime::parse_message(&bytes) else {
+            continue;
+        };
+        let Some(info) = parsed.unsubscribe else {
+            continue;
+        };
+        let _ = conn.execute(
+            "UPDATE messages SET unsub_http = ?3, unsub_mailto = ?4,
+             unsub_oneclick = ?5 WHERE folder_id = ?1 AND uid = ?2",
+            rusqlite::params![
+                folder_id,
+                uid as i64,
+                info.http_url,
+                info.mailto,
+                info.one_click as i64,
+            ],
+        );
+    }
+    Ok(())
+}
+
+/// Stored bodies eligible for migration backfills: `(folder_id, uid,
+/// bytes)`. Missing files, oversized bodies, and read failures are skipped
+/// silently — the caller's per-row failure policy applies after this.
+fn bodies_to_backfill(conn: &Connection, root: &Path) -> Result<Vec<(i64, u64, Vec<u8>)>> {
     /// Bodies above this are skipped (headers live at the top, but
     /// `parse_message` walks the whole body — bound the one-time cost).
     const MAX_BACKFILL_BYTES: u64 = 8 << 20;
@@ -189,6 +276,7 @@ fn backfill_categories(conn: &Connection, root: &Path) -> Result<()> {
         }
         out
     };
+    let mut out = Vec::new();
     for (folder_id, uid, rel) in pending {
         let path = root.join(&rel);
         let Ok(meta) = std::fs::metadata(&path) else {
@@ -200,16 +288,9 @@ fn backfill_categories(conn: &Connection, root: &Path) -> Result<()> {
         let Ok(bytes) = std::fs::read(&path) else {
             continue;
         };
-        let Ok(parsed) = crate::mime::parse_message(&bytes) else {
-            continue;
-        };
-        let category = crate::category::categorize(&parsed).category;
-        let _ = conn.execute(
-            "UPDATE messages SET category = ?3 WHERE folder_id = ?1 AND uid = ?2",
-            rusqlite::params![folder_id, uid as i64, category.as_str()],
-        );
+        out.push((folder_id, uid, bytes));
     }
-    Ok(())
+    Ok(out)
 }
 #[cfg(test)]
 mod tests {
@@ -230,6 +311,9 @@ mod tests {
             has_attachments: false,
             snippet: Some("hi".into()),
             category: Category::default(),
+            unsub_http: None,
+            unsub_mailto: None,
+            unsub_oneclick: false,
         }
     }
 
@@ -581,8 +665,8 @@ mod tests {
     }
 
     /// Pre-v4 database (messages table without `category`, `user_version = 3`)
-    /// migrates to v4: column appears, stored bodies are classified, rows
-    /// without bodies keep the `'primary'` default.
+    /// migrates to current: columns appear, stored bodies are classified and
+    /// their unsubscribe offers extracted, rows without bodies keep defaults.
     #[test]
     fn v3_to_v4_migration_backfills_category() {
         use rusqlite::Connection;
@@ -596,7 +680,7 @@ mod tests {
         ));
         std::fs::create_dir_all(dir.join("bodies").join("1")).unwrap();
         let conn = Connection::open(dir.join("mail.db")).unwrap();
-        // v3 shape: messages WITHOUT the category column.
+        // v3 shape: messages WITHOUT the category/unsubscribe columns.
         conn.execute_batch(
             "CREATE TABLE messages (
                 id              INTEGER PRIMARY KEY,
@@ -625,7 +709,7 @@ mod tests {
         .unwrap();
         std::fs::write(
             dir.join("bodies").join("1").join("42.eml"),
-            b"From: deals@shop.example\r\nSubject: sale\r\nList-Unsubscribe: <https://shop.example/u>\r\n\r\nbuy now\r\n",
+            b"From: deals@shop.example\r\nSubject: sale\r\nList-Unsubscribe: <mailto:leave@shop.example?subject=bye>, <https://shop.example/u>\r\nList-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n\r\nbuy now\r\n",
         )
         .unwrap();
 
@@ -641,17 +725,278 @@ mod tests {
             })
             .unwrap();
         assert_eq!(cat, "newsletters");
-        // No body → default stays.
+        // Unsubscribe offer backfilled from the same body (params stripped).
+        let (http, mailto, oneclick): (Option<String>, Option<String>, i64) = conn
+            .query_row(
+                "SELECT unsub_http, unsub_mailto, unsub_oneclick FROM messages WHERE uid = 42",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(http.as_deref(), Some("https://shop.example/u"));
+        assert_eq!(mailto.as_deref(), Some("leave@shop.example"));
+        assert_eq!(oneclick, 1);
+        // No body → defaults stay.
         let cat: String = conn
             .query_row("SELECT category FROM messages WHERE uid = 43", [], |r| {
                 r.get(0)
             })
             .unwrap();
         assert_eq!(cat, "primary");
+        let (http, mailto, oneclick): (Option<String>, Option<String>, i64) = conn
+            .query_row(
+                "SELECT unsub_http, unsub_mailto, unsub_oneclick FROM messages WHERE uid = 43",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(http, None);
+        assert_eq!(mailto, None);
+        assert_eq!(oneclick, 0);
 
         // Idempotent: a second run is a no-op.
         super::migrate_conn(&conn, &dir).unwrap();
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Pre-v5 database (has `category`, lacks unsubscribe columns,
+    /// `user_version = 4`) gains the columns with backfilled offers; the
+    /// existing category values are untouched.
+    #[test]
+    fn v4_to_v5_migration_backfills_unsub() {
+        use rusqlite::Connection;
+        let dir = std::env::temp_dir().join(format!(
+            "kiwi-mig5-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(dir.join("bodies").join("1")).unwrap();
+        let conn = Connection::open(dir.join("mail.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE messages (
+                id              INTEGER PRIMARY KEY,
+                folder_id       INTEGER NOT NULL,
+                uid             INTEGER NOT NULL,
+                message_id      TEXT,
+                subject         TEXT,
+                from_addr       TEXT,
+                to_addrs        TEXT,
+                date_unix       INTEGER,
+                size            INTEGER,
+                flags           TEXT NOT NULL DEFAULT '',
+                has_attachments INTEGER NOT NULL DEFAULT 0,
+                snippet         TEXT,
+                body_path       TEXT,
+                fetched_at      INTEGER NOT NULL,
+                category        TEXT NOT NULL DEFAULT 'primary',
+                UNIQUE (folder_id, uid)
+            );
+            INSERT INTO messages
+                (folder_id, uid, subject, from_addr, flags, fetched_at,
+                 body_path, category)
+            VALUES
+                (1, 7, 'digest', 'news@x.example', '', 100,
+                 'bodies/1/7.eml', 'newsletters');
+            PRAGMA user_version = 4;",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("bodies").join("1").join("7.eml"),
+            b"From: news@x.example\r\nSubject: digest\r\nList-Unsubscribe: <https://x.example/leave>\r\n\r\nnews\r\n",
+        )
+        .unwrap();
+
+        super::migrate_conn(&conn, &dir).unwrap();
+
+        let v: u32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, super::schema::SCHEMA_VERSION);
+        // Category untouched; unsubscribe filled.
+        let (cat, http, oneclick): (String, Option<String>, i64) = conn
+            .query_row(
+                "SELECT category, unsub_http, unsub_oneclick FROM messages WHERE uid = 7",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(cat, "newsletters");
+        assert_eq!(http.as_deref(), Some("https://x.example/leave"));
+        assert_eq!(oneclick, 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unsubscribe_persist_refine_no_clobber() {
+        use crate::unsub::UnsubscribeInfo;
+        let store = MailStore::open_memory().unwrap();
+        seed_account(&store, "a1");
+        let fid = store.ensure_folder("a1", "INBOX").unwrap();
+
+        // Ingest stores the offer…
+        let mut m = meta(1001);
+        m.unsub_http = Some("https://x.example/u".into());
+        m.unsub_mailto = Some("u@x.example".into());
+        m.unsub_oneclick = true;
+        store.upsert_message(fid, &m, 100).unwrap();
+        let row = store.list_messages(fid, 10).unwrap().remove(0);
+        assert_eq!(row.unsub_http.as_deref(), Some("https://x.example/u"));
+        assert_eq!(row.unsub_mailto.as_deref(), Some("u@x.example"));
+        assert!(row.unsub_oneclick);
+
+        // …refinement replaces it…
+        let info = UnsubscribeInfo {
+            http_url: Some("https://y.example/n".into()),
+            mailto: None,
+            one_click: false,
+        };
+        assert!(store.set_unsubscribe(fid, 1001, &info).unwrap());
+        assert!(!store.set_unsubscribe(fid, 9999, &info).unwrap());
+        let row = store.list_messages(fid, 10).unwrap().remove(0);
+        assert_eq!(row.unsub_http.as_deref(), Some("https://y.example/n"));
+        assert_eq!(row.unsub_mailto, None);
+        assert!(!row.unsub_oneclick);
+
+        // …re-upserts never clobber a refined offer with ingest defaults…
+        store.upsert_message(fid, &meta(1001), 200).unwrap();
+        let row = store.list_messages(fid, 10).unwrap().remove(0);
+        assert_eq!(row.unsub_http.as_deref(), Some("https://y.example/n"));
+
+        // …and moves carry it.
+        let dst = store.ensure_folder("a1", "Archive").unwrap();
+        store.move_messages(fid, dst, &[1001]).unwrap();
+        let row = store.list_messages(dst, 10).unwrap().remove(0);
+        assert_eq!(row.unsub_http.as_deref(), Some("https://y.example/n"));
+    }
+
+    // -- rules CRUD (T-228) ---------------------------------------------------
+
+    fn rule(id: &str, account: Option<&str>, position: i64) -> crate::rules::Rule {
+        use crate::rules::{MatchOp, Predicate, Rule, RuleAction};
+        Rule {
+            id: id.into(),
+            account_id: account.map(str::to_string),
+            name: format!("rule {id}"),
+            enabled: true,
+            position,
+            is_block: false,
+            when: Predicate::Sender {
+                op: MatchOp::Domain,
+                value: "x.example".into(),
+            },
+            then: vec![RuleAction::MarkRead],
+        }
+    }
+
+    #[test]
+    fn rules_scope_order_update_delete() {
+        let store = MailStore::open_memory().unwrap();
+        seed_account(&store, "a1");
+
+        store.upsert_rule(&rule("z-last", None, 30)).unwrap();
+        store.upsert_rule(&rule("a-first", None, 10)).unwrap();
+        store.upsert_rule(&rule("b-acct", Some("a1"), 20)).unwrap();
+
+        // Global scope sees only the global rules.
+        let globals = store.list_rules(None).unwrap();
+        assert_eq!(
+            globals.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            vec!["a-first", "z-last"]
+        );
+        // Account scope = global + own, position order.
+        let scoped = store.list_rules(Some("a1")).unwrap();
+        assert_eq!(
+            scoped.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            vec!["a-first", "b-acct", "z-last"]
+        );
+        assert_eq!(
+            scoped[1].when,
+            rule("b-acct", Some("a1"), 20).when // spec round-trips through JSON
+        );
+
+        // Upsert updates in place (reorder + edit).
+        let mut moved = rule("b-acct", Some("a1"), 1);
+        moved.is_block = true;
+        store.upsert_rule(&moved).unwrap();
+        let scoped = store.list_rules(Some("a1")).unwrap();
+        assert_eq!(scoped[0].id, "b-acct");
+        assert!(scoped[0].is_block);
+        assert_eq!(store.get_rule("b-acct").unwrap().unwrap().position, 1);
+
+        // Delete is idempotent.
+        assert!(store.delete_rule("b-acct").unwrap());
+        assert!(!store.delete_rule("b-acct").unwrap());
+        assert_eq!(store.list_rules(Some("a1")).unwrap().len(), 2);
+        assert!(store.get_rule("b-acct").unwrap().is_none());
+    }
+
+    #[test]
+    fn rules_validate_gate_and_corrupt_row_handling() {
+        let store = MailStore::open_memory().unwrap();
+        // Invalid rules never reach the table.
+        let mut bad = rule("bad", None, 1);
+        bad.then = vec![];
+        assert!(store.upsert_rule(&bad).is_err());
+        assert!(store.get_rule("bad").unwrap().is_none());
+
+        // A corrupt spec row is skipped by list_rules but reported by get.
+        store
+            .conn
+            .execute(
+                "INSERT INTO rules
+                   (rule_id, account_id, name, enabled, position, is_block, spec_json)
+                 VALUES ('corrupt', NULL, 'c', 1, 5, 0, '{not json')",
+                [],
+            )
+            .unwrap();
+        store.upsert_rule(&rule("ok", None, 1)).unwrap();
+        let ids: Vec<_> = store
+            .list_rules(None)
+            .unwrap()
+            .iter()
+            .map(|r| r.id.clone())
+            .collect();
+        assert_eq!(ids, vec!["ok"]);
+        assert!(store.get_rule("corrupt").is_err());
+    }
+
+    #[test]
+    fn rules_cascade_on_account_delete() {
+        let store = MailStore::open_memory().unwrap();
+        seed_account(&store, "a1");
+        store.upsert_rule(&rule("g", None, 1)).unwrap();
+        store.upsert_rule(&rule("mine", Some("a1"), 1)).unwrap();
+        assert!(store.delete_account("a1").unwrap());
+        let rest = store.list_rules(None).unwrap();
+        assert_eq!(rest.len(), 1);
+        assert_eq!(rest[0].id, "g");
+    }
+
+    #[test]
+    fn migrate_v5_to_v6_adds_rules_table() {
+        // Simulate a v5 database: current schema minus the rules table.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(DDL).unwrap();
+        conn.execute_batch("DROP TABLE rules; PRAGMA user_version = 5")
+            .unwrap();
+        let root = std::env::temp_dir().join(format!("kiwi-mig-rules-{}", std::process::id()));
+        migrate_conn(&conn, &root).unwrap();
+        let v: u32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'rules'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
     }
 }

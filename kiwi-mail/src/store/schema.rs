@@ -1,7 +1,7 @@
 //! SQLite schema — DDL + version. Migrations are explicit and
 //! append-only; `user_version` is the source of truth.
 
-pub(crate) const SCHEMA_VERSION: u32 = 4;
+pub(crate) const SCHEMA_VERSION: u32 = 6;
 
 pub(crate) const DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS accounts (
@@ -36,6 +36,10 @@ CREATE TABLE IF NOT EXISTS messages (
     fetched_at      INTEGER NOT NULL,
     -- T-201: deterministic inbox-tab slug (category::Category::as_str).
     category        TEXT NOT NULL DEFAULT 'primary',
+    -- T-202: RFC 2369/8058 unsubscribe offer (unsub::UnsubscribeInfo).
+    unsub_http      TEXT,
+    unsub_mailto    TEXT,
+    unsub_oneclick  INTEGER NOT NULL DEFAULT 0,
     UNIQUE (folder_id, uid)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_folder ON messages(folder_id, uid);
@@ -61,4 +65,20 @@ CREATE TABLE IF NOT EXISTS outbox (
     attempts        INTEGER NOT NULL DEFAULT 0,
     created_unix    INTEGER NOT NULL
 );
+-- Inbox rules (F1 groundwork, T-228): durable storage only — the engine
+-- is crate::rules. account_id NULL = applies to every account; position
+-- orders evaluation (ascending, rule_id breaks ties); is_block marks the
+-- block-list class, evaluated before regular rules and terminal on
+-- match. spec_json carries {when, then} (rules::RuleSpec) — logic stays
+-- out of columns so the predicate grammar can grow without migrations.
+CREATE TABLE IF NOT EXISTS rules (
+    rule_id    TEXT PRIMARY KEY,
+    account_id TEXT REFERENCES accounts(account_id) ON DELETE CASCADE,
+    name       TEXT NOT NULL,
+    enabled    INTEGER NOT NULL DEFAULT 1,
+    position   INTEGER NOT NULL,
+    is_block   INTEGER NOT NULL DEFAULT 0,
+    spec_json  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rules_scope ON rules(account_id, position);
 "#;

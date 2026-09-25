@@ -125,7 +125,7 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 
 ## Backlog — MailFlow feature mine (specs in docs/BACKLOG-MAILFLOW.md; start after current queues + T-190-192)
 
-| T-200 | F1 inbox rules engine (sync-ingest, ordered, block-list-first, deterministic) | unassigned | backlog | `kiwi-mail/` | — |
+| T-200 | F1 rules engine — core done (T-228); ingest application + IPC = T-233 | Agent 15 | in-progress | `kiwi-mail/` | — |
 | T-201 | F2 categorization: deterministic classifier + schema v4 + ingest wiring | Agent 14 | done (101/101) | `kiwi-mail/` | — |
 | T-202 | F3 unsubscribe landed (schema v5, consent-gated mailto, 5 MessageView fields) | Agent 14 | done (116/116) | `kiwi-mail/` + UI | — |
 | T-203 | F4 sender block list (trash-before-rules, per-account) | unassigned | backlog | `kiwi-mail/` | — |
@@ -185,8 +185,9 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-198 | copy_overlap.py gate tool (45-char verbatim scan, CI static-checks) | Agent 21 | open | `tests/tools/` | T-197 |
 | T-199 | Dependency vulnerability audit → dep-vuln-1.md (vitest crit + mobile lockfile + workspace-red catches) | Agent 21 | done | — | — |
 | T-227 | IPC for kiwi-integrations: tempmail commands (public-inbox flag on every response) + deliverability consent-token flow (non-bypassable server-side) | Agent 11 | open | `kiwi-app/src-tauri/`, `ipc.md` | T-226 |
-| T-228 | F1 rules engine core: predicate AST + ordered eval + block-list-first + store table/CRUD (pure, deterministic) | Agent 15 | open | `kiwi-mail/src/rules/` | T-181 |
+| T-228 | F1 rules engine core (AST/eval/persistence v6, 25 tests) | Agent 15 | done | `kiwi-mail/src/rules/` | T-181 |
 | T-229 | Review oauth2.md contract for drift vs Agent 19 impl when it lands | Agent 18 | queued | `docs/contracts/` | T-195 |
 | T-230 | OAuth2 IPC commands (begin/poll/status) + account-wizard seam (autoconfig oauth2 → flow → CredentialStore) | Agent 19 | open | `kiwi-app/src-tauri/`, `ipc.md` | T-195 |
 | T-231 | Live-data wiring: category tabs UI (F2), search→real IPC, contacts view→IPC, unsubscribe chip | Agent 12 | open | `kiwi-app/src/` | T-192,T-201,T-202 |
 | T-232 | Authentication-Results stamping on ingest (RFC 8601) + verdict field on MessageView | Agent 16 | open | `kiwi-mail/` | T-183 |
+| T-233 | Apply rules on sync ingest + rules CRUD IPC + apply-now + matched-id audit surface | Agent 15 | open | `kiwi-mail/`, `kiwi-app/src-tauri/` | T-228 |

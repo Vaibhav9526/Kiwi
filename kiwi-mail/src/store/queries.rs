@@ -9,6 +9,7 @@ use rusqlite::{OptionalExtension, params};
 use crate::account::MailAccount;
 use crate::category::Category;
 use crate::error::{MailError, Result};
+use crate::rules::{Rule, RuleSpec};
 
 use super::*;
 
@@ -36,6 +37,9 @@ fn map_message_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<MessageMeta> {
         snippet: r.get(11)?,
         body_path: r.get(12)?,
         category: Category::from_slug(&slug).unwrap_or_default(),
+        unsub_http: r.get(14)?,
+        unsub_mailto: r.get(15)?,
+        unsub_oneclick: r.get::<_, i64>(16)? != 0,
     })
 }
 
@@ -222,8 +226,8 @@ impl MailStore {
             "INSERT INTO messages
                (folder_id, uid, message_id, subject, from_addr, to_addrs,
                 date_unix, size, flags, has_attachments, snippet, fetched_at,
-                category)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
+                category, unsub_http, unsub_mailto, unsub_oneclick)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
              ON CONFLICT(folder_id, uid) DO UPDATE SET
                flags = excluded.flags,
                has_attachments = excluded.has_attachments",
@@ -241,6 +245,9 @@ impl MailStore {
                 meta.snippet,
                 now,
                 meta.category.as_str(),
+                meta.unsub_http,
+                meta.unsub_mailto,
+                meta.unsub_oneclick as i64,
             ],
         )?;
         let id: i64 = self.conn.query_row(
@@ -254,11 +261,35 @@ impl MailStore {
     /// Refine a row's tab once full headers arrive (IMAP body fetch) or a
     /// re-classification runs. Deliberately separate from `upsert_message`:
     /// re-upserts must not clobber a refined category with an envelope-only
-    /// default, so the conflict clause above leaves `category` untouched.
+    /// default, so the conflict clause above leaves `category` (and the
+    /// unsubscribe columns below) untouched.
     pub fn set_category(&self, folder_id: i64, uid: u64, category: Category) -> Result<bool> {
         let n = self.conn.execute(
             "UPDATE messages SET category = ?3 WHERE folder_id = ?1 AND uid = ?2",
             params![folder_id, uid as i64, category.as_str()],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Refine a row's unsubscribe offer once full headers arrive. Same
+    /// split reason as `set_category`: the offer is unknown at metadata
+    /// time and must survive later re-upserts.
+    pub fn set_unsubscribe(
+        &self,
+        folder_id: i64,
+        uid: u64,
+        info: &crate::unsub::UnsubscribeInfo,
+    ) -> Result<bool> {
+        let n = self.conn.execute(
+            "UPDATE messages SET unsub_http = ?3, unsub_mailto = ?4,
+             unsub_oneclick = ?5 WHERE folder_id = ?1 AND uid = ?2",
+            params![
+                folder_id,
+                uid as i64,
+                info.http_url,
+                info.mailto,
+                info.one_click as i64,
+            ],
         )?;
         Ok(n > 0)
     }
@@ -273,7 +304,8 @@ impl MailStore {
         let mut stmt = self.conn.prepare(
             "SELECT id, folder_id, uid, message_id, subject, from_addr,
                     to_addrs, date_unix, size, flags, has_attachments,
-                    snippet, body_path, category
+                    snippet, body_path, category,
+                    unsub_http, unsub_mailto, unsub_oneclick
              FROM messages WHERE folder_id = ?1 AND category = ?2
              ORDER BY uid LIMIT ?3",
         )?;
@@ -295,6 +327,54 @@ impl MailStore {
             params![folder_id, uid as i64, flags.join(" ")],
         )?;
         Ok(n > 0)
+    }
+
+    /// Mark messages as junk: adds the canonical [`JUNK_FLAG`] to each row's
+    /// flag set (F13). Bulk-ready: pass any number of UIDs; absent UIDs are
+    /// skipped and already-junk rows are left untouched. Returns the number
+    /// of rows actually changed. Local-only — the caller performs the live
+    /// `UID STORE +FLAGS (\Junk)` for IMAP (same split as `update_flags`).
+    pub fn mark_junk(&self, folder_id: i64, uids: &[u64]) -> Result<u64> {
+        self.set_junk(folder_id, uids, true)
+    }
+
+    /// Clear the junk mark: removes [`JUNK_FLAG`] (any case) from each row.
+    /// Same bulk/absent/idempotent semantics as [`mark_junk`]; the caller
+    /// performs the live `UID STORE -FLAGS (\Junk)` for IMAP.
+    pub fn unmark_junk(&self, folder_id: i64, uids: &[u64]) -> Result<u64> {
+        self.set_junk(folder_id, uids, false)
+    }
+
+    fn set_junk(&self, folder_id: i64, uids: &[u64], junk: bool) -> Result<u64> {
+        let mut changed = 0u64;
+        for uid in uids {
+            let current: Option<String> = self
+                .conn
+                .query_row(
+                    "SELECT flags FROM messages WHERE folder_id = ?1 AND uid = ?2",
+                    params![folder_id, *uid as i64],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(current) = current else {
+                continue; // uid absent — skip, not an error
+            };
+            let mut flags: Vec<String> = current.split_whitespace().map(str::to_string).collect();
+            let has = flags.iter().any(|f| f.eq_ignore_ascii_case(JUNK_FLAG));
+            if junk && !has {
+                flags.push(JUNK_FLAG.to_string());
+            } else if !junk && has {
+                flags.retain(|f| !f.eq_ignore_ascii_case(JUNK_FLAG));
+            } else {
+                continue; // already in the desired state — not counted
+            }
+            let n = self.conn.execute(
+                "UPDATE messages SET flags = ?3 WHERE folder_id = ?1 AND uid = ?2",
+                params![folder_id, *uid as i64, flags.join(" ")],
+            )?;
+            changed += u64::from(n > 0);
+        }
+        Ok(changed)
     }
 
     /// All locally-known UIDs for a folder (expunge detection).
@@ -367,7 +447,8 @@ impl MailStore {
                 .query_row(
                     "SELECT message_id, subject, from_addr, to_addrs, date_unix,
                             size, flags, has_attachments, snippet, body_path,
-                            fetched_at, category
+                            fetched_at, category,
+                            unsub_http, unsub_mailto, unsub_oneclick
                      FROM messages WHERE folder_id = ?1 AND uid = ?2",
                     params![src_folder_id, *uid as i64],
                     |r| {
@@ -384,6 +465,9 @@ impl MailStore {
                             r.get::<_, Option<String>>(9)?,
                             r.get::<_, i64>(10)?,
                             r.get::<_, String>(11)?,
+                            r.get::<_, Option<String>>(12)?,
+                            r.get::<_, Option<String>>(13)?,
+                            r.get::<_, i64>(14)?,
                         ))
                     },
                 )
@@ -401,6 +485,9 @@ impl MailStore {
                 body_path,
                 fetched_at,
                 category,
+                unsub_http,
+                unsub_mailto,
+                unsub_oneclick,
             )) = row
             else {
                 continue; // uid absent in src — skip, not an error
@@ -411,8 +498,9 @@ impl MailStore {
                 "INSERT INTO messages
                    (folder_id, uid, message_id, subject, from_addr, to_addrs,
                     date_unix, size, flags, has_attachments, snippet,
-                    body_path, fetched_at, category)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,NULL,?12,?13)",
+                    body_path, fetched_at, category,
+                    unsub_http, unsub_mailto, unsub_oneclick)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,NULL,?12,?13,?14,?15,?16)",
                 params![
                     dst_folder_id,
                     dst_uid,
@@ -427,6 +515,9 @@ impl MailStore {
                     snippet,
                     fetched_at,
                     category,
+                    unsub_http,
+                    unsub_mailto,
+                    unsub_oneclick,
                 ],
             )?;
             // Relocate the body payload, then repoint body_path at it.
@@ -482,7 +573,8 @@ impl MailStore {
         let mut stmt = self.conn.prepare(
             "SELECT id, folder_id, uid, message_id, subject, from_addr,
                     to_addrs, date_unix, size, flags, has_attachments,
-                    snippet, body_path, category
+                    snippet, body_path, category,
+                    unsub_http, unsub_mailto, unsub_oneclick
              FROM messages WHERE folder_id = ?1 ORDER BY uid LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![folder_id, limit as i64], map_message_row)?;
@@ -585,4 +677,108 @@ impl MailStore {
         )?;
         Ok(())
     }
+
+    // -- inbox rules (F1 deterministic engine, T-228) -------------------------
+
+    /// Insert or replace a rule. `Rule::validate` gates the write —
+    /// the renderer is untrusted, so bounds are enforced at the store
+    /// boundary too, not only by well-behaved callers.
+    pub fn upsert_rule(&self, rule: &Rule) -> Result<()> {
+        rule.validate()?;
+        let spec = serde_json::to_string(&RuleSpec {
+            when: rule.when.clone(),
+            then: rule.then.clone(),
+        })
+        .map_err(|_| MailError::Store(rusqlite::Error::InvalidQuery))?;
+        self.conn.execute(
+            "INSERT INTO rules
+               (rule_id, account_id, name, enabled, position, is_block, spec_json)
+             VALUES (?1,?2,?3,?4,?5,?6,?7)
+             ON CONFLICT(rule_id) DO UPDATE SET
+               account_id = excluded.account_id,
+               name       = excluded.name,
+               enabled    = excluded.enabled,
+               position   = excluded.position,
+               is_block   = excluded.is_block,
+               spec_json  = excluded.spec_json",
+            params![
+                rule.id,
+                rule.account_id,
+                rule.name,
+                rule.enabled as i64,
+                rule.position,
+                rule.is_block as i64,
+                spec
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Rules in scope for `account_id`: global rows (NULL account_id) plus
+    /// the account's own, in deterministic storage order (`position`, then
+    /// `rule_id` — the evaluator applies block precedence on top).
+    /// `None` lists global rules only — binding NULL makes
+    /// `account_id = ?1` never true, so one statement serves both shapes.
+    /// Rows with undecodable specs are skipped: one corrupt row must not
+    /// disable the whole rule set.
+    pub fn list_rules(&self, account_id: Option<&str>) -> Result<Vec<Rule>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT rule_id, account_id, name, enabled, position, is_block, spec_json
+             FROM rules
+             WHERE account_id IS NULL OR account_id = ?1
+             ORDER BY position, rule_id",
+        )?;
+        let rows = stmt.query_map(params![account_id], map_rule_row)?;
+        let mut out = Vec::new();
+        for r in rows {
+            if let Some(rule) = r? {
+                out.push(rule);
+            }
+        }
+        Ok(out)
+    }
+
+    /// One rule by id. A corrupt spec surfaces as an error here — an
+    /// explicit fetch should never silently drop the row.
+    pub fn get_rule(&self, rule_id: &str) -> Result<Option<Rule>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT rule_id, account_id, name, enabled, position, is_block, spec_json
+             FROM rules WHERE rule_id = ?1",
+        )?;
+        let mut rows = stmt.query(params![rule_id])?;
+        match rows.next()? {
+            None => Ok(None),
+            Some(r) => Ok(Some(
+                map_rule_row(r)?.ok_or(MailError::Store(rusqlite::Error::InvalidQuery))?,
+            )),
+        }
+    }
+
+    /// Remove a rule; returns whether a row existed (idempotent for the
+    /// UI's delete-and-forget flow).
+    pub fn delete_rule(&self, rule_id: &str) -> Result<bool> {
+        Ok(self
+            .conn
+            .execute("DELETE FROM rules WHERE rule_id = ?1", params![rule_id])?
+            > 0)
+    }
+}
+
+/// `rules` row → [`Rule`]. `Ok(None)` = the spec JSON is undecodable;
+/// `list_rules` skips such rows, `get_rule` turns them into an error.
+fn map_rule_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Option<Rule>> {
+    let spec_json: String = r.get(6)?;
+    let Some(spec) = serde_json::from_str::<RuleSpec>(&spec_json).ok() else {
+        return Ok(None);
+    };
+    Ok(Some(Rule {
+        id: r.get(0)?,
+        account_id: r.get(1)?,
+        name: r.get(2)?,
+        enabled: r.get::<_, i64>(3)? != 0,
+        position: r.get(4)?,
+        is_block: r.get::<_, i64>(5)? != 0,
+        when: spec.when,
+        then: spec.then,
+    }))
 }
