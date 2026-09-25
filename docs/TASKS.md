@@ -235,7 +235,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 
 <!-- PLANNER PLAN accepted: ITEM A eM-client layout (light default supersedes flagship-dark default), ITEM B themes+plugins alpha=trusted-code (isolation deferred — accepted risk recorded in THREAT-MODEL by A25 + post-alpha hardening task). -->
 | T-269 | CRITICAL: wire kiwi-pair canonical — persistent revocation + 9d commands + atomic txn | Agent 11 | in-progress | `kiwi-pair/`, `src-tauri/` | T-235 |
-| T-270 | authenticator.md vs mobile/ + kiwi-pair primitives enumeration | Agent 23 | open | `docs/audits/`, `mobile/` (read) | T-235 |
+| T-270 | authenticator↔mobile/pair audit — fail-closed scaffold verdict + 8 contract decisions needed | Agent 23 | done |
 | T-271 | mail-changed event wired (debounce+toast) + IPC-5 docs + 25 rows closed | Agent 20 | done |
 
 <!-- CURRENT-OWNERSHIP (watcher keys on this; updated at each sweep)
@@ -253,3 +253,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-273 | Link-click policy gate: kiwi_link_click verdict + open_external risk-gating | Agent 21 | open | `src-tauri/` | T-266 |
 | T-274 | Reference plugin + capability-gate proof (bridge e2e in plugins/) | Agent 25 | done | `kiwi-app/src/plugins/` | T-268 |
 | T-275 | T-268 seam land: ThemePicker mount + useTheme swap + emoji sweep + visual pass | Agent 25 (A24 terminal expired — files transferred) | open | `kiwi-app/src` | T-267,T-268 |
+| T-276 | ACFG-4: verify GoDaddy autoconfig fixture or remove contract claim (no fabrication) | Agent 23 | open | `kiwi-autoconfig`, `docs/contracts/autoconfig.md` | T-270 |
