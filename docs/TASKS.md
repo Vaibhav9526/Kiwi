@@ -225,7 +225,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-260 | security-session enum cleanup — REASSIGNED from A22 (never picked up); verify scope post-T-269 first | Agent 21 | open | `kiwi-core`, `types/security.rs`, contracts | T-196 program |
 | T-261 | LinkRisk hints (linkrisk.rs 459L, 203/203, wired to TS) | Agent 21 | done |
 | T-262 | send-path e2e proven: scripted loopback SMTP+IMAP matrix (green/5xx/undo/STARTTLS-refusal) + sent-copy, audit, LIST bugfix | Agent 19 | done |
-| T-264 | folder exists/unseen real COUNTs — folder_stats + non-optional FolderView (zeros unrepresentable); store half committed fd042d3, app half in-tree pending T-269 landing | Agent 15 | done |
+| T-264 | folder exists/unseen counts (padded token match, no fabricated defaults) | Agent 15 | done |
 
 <!-- A18 terminal gone; e26f119b was a DUP A22 session — renumbered Agent 23, owns T-235. rule_catalog stays v1 (flags restore semantics, default output identical — ratified). -->
 | T-265 | Register batch cleared (IPC-11..14 + FOR-7/8/9; real byte-cap fix) | Agent 20 | done |
@@ -296,3 +296,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-316 | mbox export IPC (symmetric to T-309; temp+rename, partial-honest result, audited) | Agent 20 | open | `kiwi-app/commands`, `kiwi-mail/mbox.rs` | T-309 |
 | T-317 | drag messages→folder tree (multi-select aware, same kiwi_move_message path, ctx-menu is kbd fallback) | Agent 24 | open | `mailbox.tsx`, `chrome.tsx` folder tree | |
 | T-318 | import/export UI seam: file pickers, entry points, honest result counts for T-309/T-316 | Agent 25 | open | `settings.tsx`, folder ctx-menu | T-309,T-316 |
+| T-319 | folder management: local folder create/rename/delete IPC, audited, system folders protected | Agent 15 | open | `kiwi-mail/store`, `kiwi-app/commands` | |
