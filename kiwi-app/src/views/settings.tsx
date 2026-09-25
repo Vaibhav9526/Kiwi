@@ -7,13 +7,20 @@
  * localStorage fallback (T-167). Secrets never appear here.
  */
 import { useEffect, useRef, useState } from "react";
+import type { ComponentProps } from "react";
 import { accountPref, applyPrefsBag, applyUiPrefs, collectPrefs, loadMuted, loadPref, savePref } from "../prefs";
 import { api, BackendUnavailableError, IpcError } from "../ipc";
 import type { AccountView, DeviceView, VerifyResult } from "../kiwi";
 import { navigate } from "../router";
 import { EDIT_HANDOFF_KEY, localAutoconfigGuess } from "./setup";
+import { FiltersView } from "./filters";
+import { SHORTCUT_ROWS } from "../components/shortcuts";
 
-const SECTIONS = ["General", "Accounts", "Appearance", "KIWI Security", "Templates", "Notifications", "Privacy", "Advanced"] as const;
+// T-191 tabbed preferences (Mailspring idiom): the eight legacy sections
+// fold into six tabs — General (general + notifications + privacy +
+// advanced), Accounts, Identity (KIWI Security), Appearance (appearance +
+// templates), Shortcuts, Mail Rules (embedded filters).
+const SECTIONS = ["General", "Accounts", "Identity", "Appearance", "Shortcuts", "Mail Rules"] as const;
 type Section = (typeof SECTIONS)[number];
 
 function errText(e: unknown): string {
@@ -28,6 +35,7 @@ export function SettingsView({
   onStatusChanged,
   onOrgChanged,
   onLock,
+  filters,
 }: {
   mode: "live" | "demo";
   accounts: AccountView[];
@@ -36,6 +44,8 @@ export function SettingsView({
   onStatusChanged: () => void;
   onOrgChanged: () => void;
   onLock: () => void;
+  /** Mail Rules tab embeds the filters surface (same props as the route). */
+  filters?: ComponentProps<typeof FiltersView>;
 }) {
   const [section, setSection] = useState<Section>("General");
   const [themeDefault, setThemeDefault] = useState(() => loadPref("kiwi.theme", "dark"));
@@ -219,7 +229,7 @@ export function SettingsView({
   };
 
   useEffect(() => {
-    if (section === "KIWI Security") void loadDevices();
+    if (section === "Identity") void loadDevices();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [section, mode]);
 
@@ -342,7 +352,7 @@ export function SettingsView({
   };
 
   useEffect(() => {
-    if (section === "Advanced") countDrafts();
+    if (section === "General") countDrafts();
   }, [section]);
 
   const clearDrafts = () => {
@@ -360,21 +370,44 @@ export function SettingsView({
   };
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "200px 1fr", gap: "0.8rem" }}>
-      <nav aria-label="Settings sections">
+    <div className="ms-prefs ms-view-enter">
+      <div
+        className="ms-tabs"
+        role="tablist"
+        aria-label="Preferences"
+        onKeyDown={(e) => {
+          const tabs = Array.from(
+            (e.currentTarget as HTMLElement).querySelectorAll<HTMLElement>('[role="tab"]'),
+          );
+          const i = tabs.indexOf(e.target as HTMLElement);
+          if (i < 0) return;
+          let n: number | null = null;
+          if (e.key === "ArrowRight" || e.key === "ArrowDown") n = (i + 1) % tabs.length;
+          else if (e.key === "ArrowLeft" || e.key === "ArrowUp") n = (i - 1 + tabs.length) % tabs.length;
+          else if (e.key === "Home") n = 0;
+          else if (e.key === "End") n = tabs.length - 1;
+          if (n !== null) {
+            e.preventDefault();
+            setSection(SECTIONS[n]);
+            tabs[n]?.focus();
+          }
+        }}
+      >
         {SECTIONS.map((s) => (
           <button
             key={s}
             type="button"
-            aria-current={s === section ? "page" : undefined}
+            role="tab"
+            aria-selected={s === section}
+            className="ms-tab"
+            tabIndex={s === section ? 0 : -1}
             onClick={() => setSection(s)}
-            style={{ display: "block", width: "100%", textAlign: "left", marginBottom: "0.25rem", fontWeight: s === section ? 700 : 400 }}
           >
             {s}
           </button>
         ))}
-      </nav>
-      <section aria-label={`${section} settings`}>
+      </div>
+      <section aria-label={`${section} settings`} role="tabpanel">
         <h1>{section}</h1>
         {actionError && (
           <div className="kiwi-banner error" role="alert">
@@ -591,7 +624,7 @@ export function SettingsView({
           </>
         )}
 
-        {section === "KIWI Security" && (
+        {section === "Identity" && (
           <>
             <p>
               <label>
@@ -686,8 +719,9 @@ export function SettingsView({
           </>
         )}
 
-        {section === "Templates" && (
+        {section === "Appearance" && (
           <>
+            <h2>Templates</h2>
             <ul>
               {templates.map((t) => (
                 <li key={t}>
@@ -716,8 +750,9 @@ export function SettingsView({
           </>
         )}
 
-        {section === "Privacy" && (
+        {section === "General" && (
           <>
+            <h2>Privacy</h2>
             <p>
               <small>
                 Default for every account: <strong>blocked</strong> (backend-enforced; tracking surface). Opt in
@@ -771,8 +806,9 @@ export function SettingsView({
           </>
         )}
 
-        {section === "Notifications" && (
+        {section === "General" && (
           <>
+            <h2>Notifications</h2>
             <p>
               <label>
                 Toast popups:{" "}
@@ -833,8 +869,9 @@ export function SettingsView({
           </>
         )}
 
-        {section === "Advanced" && (
+        {section === "General" && (
           <>
+            <h2>Advanced</h2>
             <p>
               <small>
                 Contract: <code>kiwi.ipc/1</code> · local prefs under <code>kiwi.*</code> keys in this device's
@@ -852,6 +889,47 @@ export function SettingsView({
             <p style={{ color: "var(--kiwi-text-secondary)" }}>
               <small>Backend data (accounts, mail store, outbox) lives in the app data dir — managed by the backend, not here.</small>
             </p>
+          </>
+        )}
+
+        {section === "Shortcuts" && (
+          <>
+            <p style={{ color: "var(--kiwi-text-secondary)" }}>
+              <small>
+                List shortcuts (j/k/s/e/r/u) are inactive while typing in a text field — press Esc first. The full
+                overlay opens with <code>?</code>, the palette with <code>Ctrl+K</code>.
+              </small>
+            </p>
+            <table style={{ borderCollapse: "collapse", width: "100%" }}>
+              <tbody>
+                {SHORTCUT_ROWS.map(([keys, what]) => (
+                  <tr key={keys}>
+                    <td style={{ padding: "0.3rem 0.6rem 0.3rem 0", whiteSpace: "nowrap" }}>
+                      <code>{keys}</code>
+                    </td>
+                    <td style={{ padding: "0.3rem 0" }}>{what}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
+        )}
+
+        {section === "Mail Rules" && (
+          <>
+            {filters ? (
+              <FiltersView {...filters} />
+            ) : (
+              <p>
+                <small>
+                  Mail rules need the mailbox context —{" "}
+                  <button type="button" onClick={() => navigate({ name: "filters" })}>
+                    open the Filters view
+                  </button>
+                  .
+                </small>
+              </p>
+            )}
           </>
         )}
       </section>

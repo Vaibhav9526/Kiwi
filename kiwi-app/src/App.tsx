@@ -168,34 +168,6 @@ export default function App() {
 
   /* ---------- live loaders ---------- */
 
-  // Ctrl+K opens the palette; `/` focuses search; `?` opens shortcuts.
-  // Single-letter keys never fire while typing in a text field.
-  useEffect(() => {
-    const isTyping = (t: EventTarget | null) => {
-      const el = t as HTMLElement | null;
-      return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
-        e.preventDefault();
-        setPaletteOpen((o) => !o);
-        return;
-      }
-      if (isTyping(e.target) || e.ctrlKey || e.metaKey || e.altKey) return;
-      if (e.key === "/") {
-        e.preventDefault();
-        document.getElementById("kiwi-search")?.focus();
-      } else if (e.key === "?") {
-        e.preventDefault();
-        setHelpOpen(true);
-      }
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
-
-  /* ---------- live loaders ---------- */
-
   const loadFolders = useCallback(async () => {
     if (demo) return;
     setFoldersError(null);
@@ -752,6 +724,47 @@ export default function App() {
     }
   }, [demo, accountsRaw, loadFolders, loadSecurity, refreshStatus, notify]);
 
+  // Global keys (T-153 + T-191 TB map): Ctrl+K palette; `/` search; `?`
+  // shortcuts; Ctrl+N compose; F5 sync. Single-letter keys never fire
+  // while typing in a text field.
+  useEffect(() => {
+    const isTyping = (t: EventTarget | null) => {
+      const el = t as HTMLElement | null;
+      return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setPaletteOpen((o) => !o);
+        return;
+      }
+      // TB map (T-191): Ctrl+N composes — never hijack a text field.
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "n") {
+        if (!isTyping(e.target)) {
+          e.preventDefault();
+          navigate({ name: "compose" });
+        }
+        return;
+      }
+      // TB map (T-191): F5 syncs now.
+      if (e.key === "F5") {
+        e.preventDefault();
+        void doSync();
+        return;
+      }
+      if (isTyping(e.target) || e.ctrlKey || e.metaKey || e.altKey) return;
+      if (e.key === "/") {
+        e.preventDefault();
+        document.getElementById("kiwi-search")?.focus();
+      } else if (e.key === "?") {
+        e.preventDefault();
+        setHelpOpen(true);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [doSync]);
+
   const doFlushOutbox = useCallback(async () => {
     if (demo) {
       notify("info", "Demo mode — the outbox needs the Tauri backend.");
@@ -937,6 +950,9 @@ export default function App() {
         onOpenPalette={() => setPaletteOpen(true)}
         onOpenShortcuts={() => setHelpOpen(true)}
         onSubmitSearch={() => navigate({ name: "search" })}
+        onSync={() => void doSync()}
+        onLock={() => void doLock()}
+        syncing={syncing}
       />
       <AppShell
         sidebar={
@@ -1007,15 +1023,53 @@ export default function App() {
           />
         )}
         {route.name === "compose" && (
-          <ComposeView
-            mode={mode}
-            accounts={accountsRaw.map((a) => ({ id: a.id, email: a.email, displayName: a.displayName || a.email }))}
-            onSent={() => {
-              void refreshOutbox();
-              void refreshStatus();
+          <div
+            className="ms-composer-backdrop"
+            onMouseDown={(e) => {
+              if (e.target === e.currentTarget) navigate({ name: "mail", folder: folderKey });
             }}
-            onNotify={notify}
-          />
+          >
+            <div
+              className="ms-composer-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-label="Compose message"
+              onKeyDown={(e) => {
+                // Esc closes — but never steal it from text fields
+                // (recipient autocomplete + textarea need it first).
+                if (e.key === "Escape") {
+                  const t = e.target as HTMLElement | null;
+                  const tag = t?.tagName;
+                  if (tag !== "INPUT" && tag !== "TEXTAREA" && tag !== "SELECT" && !t?.isContentEditable) {
+                    e.stopPropagation();
+                    navigate({ name: "mail", folder: folderKey });
+                  }
+                }
+              }}
+            >
+              <div className="ms-composer-head">
+                <span style={{ flex: 1 }} />
+                <button
+                  type="button"
+                  className="ms-btn"
+                  onClick={() => navigate({ name: "mail", folder: folderKey })}
+                  aria-label="Close composer (draft autosaves locally)"
+                  title="Close composer (draft autosaves locally)"
+                >
+                  ✕
+                </button>
+              </div>
+              <ComposeView
+                mode={mode}
+                accounts={accountsRaw.map((a) => ({ id: a.id, email: a.email, displayName: a.displayName || a.email }))}
+                onSent={() => {
+                  void refreshOutbox();
+                  void refreshStatus();
+                }}
+                onNotify={notify}
+              />
+            </div>
+          </div>
         )}
         {route.name === "setup" && (
           <SetupWizardView
@@ -1044,6 +1098,15 @@ export default function App() {
               })();
             }}
             onLock={() => void doLock()}
+            filters={{
+              demo,
+              accounts: accountsRaw.map((a) => ({ id: a.id, email: a.email, displayName: a.displayName || a.email })),
+              messages: baseMessages,
+              listLabel: filtersListLabel,
+              onBulkPatch: (ids, patch, label) => void bulkPatch(ids, patch, label),
+              onBulkDelete: (ids, permanent, label) => void bulkDelete(ids, permanent, label),
+              onNotify: notify,
+            }}
           />
         )}
         {route.name === "security" && (

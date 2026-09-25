@@ -28,13 +28,24 @@ import { SecurityPill } from "../components/security";
 import { buildThreads } from "../threading";
 import type { Thread } from "../threading";
 
-const grid: CSSProperties = { display: "grid", gridTemplateColumns: "minmax(280px, 380px) 1fr", gap: "0.8rem", height: "100%" };
 const listStyle: CSSProperties = { overflowY: "auto", display: "flex", flexDirection: "column", gap: "0.3rem" };
 
 function formatDate(iso: string): string {
   if (!iso) return "—";
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+}
+
+/** Short timestamp for single-line rows: time today, date otherwise. */
+function formatDateShort(iso: string): string {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const now = new Date();
+  const sameDay = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  if (sameDay) return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  if (d.getFullYear() === now.getFullYear()) return d.toLocaleDateString([], { month: "short", day: "numeric" });
+  return d.toLocaleDateString([], { year: "numeric", month: "short", day: "numeric" });
 }
 
 export interface MailboxProps {
@@ -189,16 +200,24 @@ export function MailboxView(props: MailboxProps) {
   };
 
   return (
-    <div style={grid}>
-      <section aria-label={`${folderLabel} message list`}>
-        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.5rem", flexWrap: "wrap" }}>
+    <div className="ms-mailbox ms-view-enter">
+      <section aria-label={`${folderLabel} message list`} className="ms-list-col">
+        <div className="ms-list-header">
           <h1 ref={headingRef} tabIndex={-1} style={{ fontSize: "1.1rem", margin: 0 }}>
-            {folderLabel} <small style={{ color: "var(--kiwi-text-secondary)" }}>({folder === "outbox" ? props.outbox.length : messages.length})</small>
+            {folderLabel} <small style={{ color: "var(--kiwi-ms-text-secondary)" }}>({folder === "outbox" ? props.outbox.length : messages.length})</small>
           </h1>
           {folder !== "outbox" ? (
             <>
-              <button type="button" onClick={props.onSync} disabled={props.syncing} aria-label="Sync now">
-                {props.syncing ? "Syncing…" : "⟳ Sync"}
+              <button type="button" className="ms-btn" onClick={props.onSync} disabled={props.syncing} aria-label="Sync now" title="Sync now (F5)">
+                {props.syncing ? (
+                  <span className="ms-spinner" aria-hidden="true">
+                    <i />
+                    <i />
+                    <i />
+                  </span>
+                ) : (
+                  "⟳ Sync"
+                )}
               </button>
               <label style={{ display: "inline-flex", alignItems: "center", gap: "0.25rem", fontSize: "0.85rem" }}>
                 <input
@@ -220,14 +239,20 @@ export function MailboxView(props: MailboxProps) {
               </label>
               <button
                 type="button"
+                role="switch"
+                aria-checked={threadMode === "threads"}
+                className="ms-switch"
                 onClick={() => setThreadMode(threadMode === "threads" ? "list" : "threads")}
-                aria-pressed={threadMode === "threads"}
                 title="Group messages into conversations by subject"
               >
-                {threadMode === "threads" ? "Threads ✓" : "Threads"}
+                <span className="ms-switch-track" aria-hidden="true">
+                  <span className="ms-switch-knob" />
+                </span>
+                Threads
               </button>
               <button
                 type="button"
+                className="ms-btn"
                 onClick={() => runBulk(unreadIds, { seen: true }, "Marked read", false)}
                 disabled={unreadIds.length === 0}
                 title={unreadIds.length === 0 ? "Nothing unread" : `Mark ${unreadIds.length} unread message(s) read`}
@@ -255,6 +280,7 @@ export function MailboxView(props: MailboxProps) {
                 ) : (
                   <button
                     type="button"
+                    className="ms-btn"
                     onClick={() => setConfirmEmpty(true)}
                     disabled={messages.length === 0}
                     title={
@@ -269,7 +295,7 @@ export function MailboxView(props: MailboxProps) {
               )}
             </>
           ) : (
-            <button type="button" onClick={props.onFlushOutbox} aria-label="Send all queued mail now">
+            <button type="button" className="ms-btn" onClick={props.onFlushOutbox} aria-label="Send all queued mail now">
               Send all now
             </button>
           )}
@@ -332,6 +358,7 @@ export function MailboxView(props: MailboxProps) {
             )}
             <div
               style={listStyle}
+              className="ms-rows"
               role="listbox"
               aria-label="Messages. j/k or arrows move, s stars, e archives, r replies, u toggles read. Ctrl-click toggles selection, Shift-click range-selects."
               aria-multiselectable="true"
@@ -362,6 +389,9 @@ export function MailboxView(props: MailboxProps) {
                         currentId={selected?.id}
                         isPicked={picked.includes(t.messages[0].id)}
                         onTogglePick={togglePick}
+                        onToggleStar={props.onToggleStar}
+                        onArchive={(id) => props.onArchive(id, true)}
+                        onDelete={(id) => props.onBulkDelete([id], false, "Deleted message")}
                       />
                     ) : (
                       <ThreadGroup
@@ -383,6 +413,9 @@ export function MailboxView(props: MailboxProps) {
                           }
                         }}
                         onTogglePick={togglePick}
+                        onToggleStar={props.onToggleStar}
+                        onArchive={(id) => props.onArchive(id, true)}
+                        onDelete={(id) => props.onBulkDelete([id], false, "Deleted message")}
                       />
                     ),
                   )
@@ -394,13 +427,21 @@ export function MailboxView(props: MailboxProps) {
                       currentId={selected?.id}
                       isPicked={picked.includes(m.id)}
                       onTogglePick={togglePick}
+                      onToggleStar={props.onToggleStar}
+                      onArchive={(id) => props.onArchive(id, true)}
+                      onDelete={(id) => props.onBulkDelete([id], false, "Deleted message")}
                     />
                   ))}
             </div>
           </>
         )}
       </section>
-      <section className="kiwi-reader" aria-label="Message reader" tabIndex={0}>
+      <section
+        key={selected?.id ?? "none"}
+        className="kiwi-reader ms-reader ms-ready"
+        aria-label="Message reader"
+        tabIndex={0}
+      >
         {!selected && folder !== "outbox" && <p>Select a message to read.</p>}
         {folder === "outbox" && (
           <p style={{ color: "var(--kiwi-text-secondary)" }}>
@@ -416,6 +457,26 @@ export function MailboxView(props: MailboxProps) {
               expanded={expanded[selectedThreadKey(threads, selected.id)] === true}
               onToggleExpand={() => toggleThread(selectedThreadKey(threads, selected.id))}
             />
+            <div className="ms-reader-bar" role="toolbar" aria-label="Message actions">
+              <button type="button" className="ms-btn" onClick={() => navigate({ name: "compose" })} title="Reply (r)">
+                Reply
+              </button>
+              <button
+                type="button"
+                className="ms-btn"
+                onClick={() => props.onToggleStar(selected.id)}
+                aria-pressed={selected.starred}
+                title="Star (s)"
+              >
+                {selected.starred ? "★ Unstar" : "☆ Star"}
+              </button>
+              <button type="button" className="ms-btn" onClick={() => props.onToggleRead(selected.id)} title="Toggle read (u)">
+                Mark {selected.unread ? "read" : "unread"}
+              </button>
+              <button type="button" className="ms-btn" onClick={() => props.onArchive(selected.id, true)} title="Archive (e)">
+                Archive
+              </button>
+            </div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "0.5rem" }}>
               <h2 style={{ margin: 0 }}>{selected.subject}</h2>
               <SecurityPill
@@ -471,19 +532,7 @@ export function MailboxView(props: MailboxProps) {
               <p>{selected.snippet}</p>
             )}
             <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap" }}>
-              <button type="button" onClick={() => navigate({ name: "compose" })}>
-                Reply
-              </button>
-              <button type="button" onClick={() => props.onToggleStar(selected.id)} aria-pressed={selected.starred}>
-                {selected.starred ? "Unstar" : "Star"}
-              </button>
-              <button type="button" onClick={() => props.onToggleRead(selected.id)}>
-                Mark {selected.unread ? "read" : "unread"} (u)
-              </button>
-              <button type="button" onClick={() => props.onArchive(selected.id, true)}>
-                Archive
-              </button>
-              <button type="button" disabled={findings.length === 0} onClick={() => props.onOpenFinding(0)}>
+              <button type="button" className="ms-btn" disabled={findings.length === 0} onClick={() => props.onOpenFinding(0)}>
                 Security details ({findings.length})
               </button>
             </div>
@@ -647,18 +696,27 @@ function MessageRow({
   currentId,
   isPicked,
   onTogglePick,
+  onToggleStar,
+  onArchive,
+  onDelete,
 }: {
   m: MessageEnvelope;
   folder: string;
   currentId?: string;
   isPicked: boolean;
   onTogglePick: (id: string, range: boolean) => void;
+  onToggleStar: (id: string) => void;
+  onArchive: (id: string) => void;
+  onDelete: (id: string) => void;
 }) {
+  // Row-level delete confirms inline (two-step, like BulkBar) — never fires blind.
+  const [confirmDel, setConfirmDel] = useState(false);
+  useEffect(() => setConfirmDel(false), [m.id]);
   return (
     <article
       id={m.id}
       role="option"
-      className={`kiwi-row${m.unread ? " is-unread" : ""}`}
+      className={`ms-row${m.unread ? " is-unread" : ""}`}
       aria-selected={m.id === currentId}
       aria-label={`${m.unread ? "Unread" : "Read"} from ${m.from}: ${m.subject}. Account trust ${severityLabel(m.trust)}.${isPicked ? " Selected for bulk actions." : ""}`}
       onClick={(e) => {
@@ -668,6 +726,8 @@ function MessageRow({
         } else if (e.shiftKey) {
           e.preventDefault();
           onTogglePick(m.id, true);
+        } else if ((e.target as HTMLElement).closest("button")) {
+          // Quick-action buttons handle themselves.
         } else {
           navigate({ name: "mail", folder, messageId: m.id });
         }
@@ -677,37 +737,101 @@ function MessageRow({
       }}
       tabIndex={0}
     >
-      <div style={{ display: "flex", justifyContent: "space-between", gap: "0.4rem" }}>
-        <span style={{ display: "flex", alignItems: "center", gap: "0.35rem", minWidth: 0 }}>
-          <input
-            type="checkbox"
-            className="kiwi-select-box"
-            data-checked={isPicked}
-            checked={isPicked}
-            onClick={(e) => e.stopPropagation()}
-            onChange={(e) => {
+      <input
+        type="checkbox"
+        className="ms-row-check"
+        data-checked={isPicked}
+        checked={isPicked}
+        onClick={(e) => e.stopPropagation()}
+        onChange={(e) => {
+          e.stopPropagation();
+          onTogglePick(m.id, e.nativeEvent instanceof MouseEvent && e.nativeEvent.shiftKey);
+        }}
+        aria-label={`Select message from ${m.from}: ${m.subject}`}
+      />
+      <button
+        type="button"
+        className="ms-star"
+        aria-pressed={m.starred}
+        aria-label={m.starred ? `Unstar message: ${m.subject}` : `Star message: ${m.subject}`}
+        title={m.starred ? "Unstar (s)" : "Star (s)"}
+        onClick={(e) => {
+          e.stopPropagation();
+          onToggleStar(m.id);
+        }}
+      >
+        {m.starred ? "★" : "☆"}
+      </button>
+      <span className="ms-row-participants" title={m.from}>
+        {m.from}
+      </span>
+      <span className="ms-row-main" title={`${m.subject} — ${m.snippet}`}>
+        <span className="ms-row-subject">
+          {m.unread && (
+            <span className="ms-unread-dot" aria-hidden="true">
+              ●
+            </span>
+          )}
+          {m.subject}
+        </span>
+        <span className="ms-row-snippet">
+          <span aria-hidden="true" title={`Account trust: ${severityLabel(m.trust)}`}>
+            [{severityGlyph(m.trust)}]
+          </span>{" "}
+          {m.snippet}
+        </span>
+      </span>
+      <span className="ms-row-date" title={m.date}>
+        {formatDateShort(m.date)}
+      </span>
+      <span className="ms-quick-actions" role="toolbar" aria-label={`Quick actions for: ${m.subject}`}>
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onArchive(m.id);
+          }}
+          title="Archive (e)"
+        >
+          📦
+        </button>
+        {confirmDel ? (
+          <>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setConfirmDel(false);
+                onDelete(m.id);
+              }}
+              title="Confirm delete"
+            >
+              ✓
+            </button>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setConfirmDel(false);
+              }}
+              title="Keep message"
+            >
+              ✕
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={(e) => {
               e.stopPropagation();
-              onTogglePick(m.id, e.nativeEvent instanceof MouseEvent && e.nativeEvent.shiftKey);
+              setConfirmDel(true);
             }}
-            aria-label={`Select message from ${m.from}: ${m.subject}`}
-          />
-          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {m.unread && <span aria-hidden="true">● </span>}
-            {m.starred && <span aria-label="starred">★ </span>}
-            {m.from}
-          </span>
-        </span>
-        <span title={m.date} style={{ color: "var(--kiwi-text-secondary)", fontSize: "0.8rem", flex: "none" }}>
-          {formatDate(m.date)}
-        </span>
-      </div>
-      <div>{m.subject}</div>
-      <div style={{ fontSize: "0.8rem", color: "var(--kiwi-text-secondary)" }}>
-        <span aria-hidden="true" title={`Account trust: ${severityLabel(m.trust)}`}>
-          [{severityGlyph(m.trust)}]
-        </span>{" "}
-        {m.snippet}
-      </div>
+            title="Delete…"
+          >
+            🗑
+          </button>
+        )}
+      </span>
     </article>
   );
 }
@@ -722,6 +846,9 @@ function ThreadGroup({
   allPicked,
   onToggleThread,
   onTogglePick,
+  onToggleStar,
+  onArchive,
+  onDelete,
 }: {
   thread: Thread;
   folder: string;
@@ -732,13 +859,16 @@ function ThreadGroup({
   allPicked: boolean;
   onToggleThread: () => void;
   onTogglePick: (id: string, range: boolean) => void;
+  onToggleStar: (id: string) => void;
+  onArchive: (id: string) => void;
+  onDelete: (id: string) => void;
 }) {
   const newest = thread.messages[thread.messages.length - 1];
   return (
     <div className="kiwi-thread" role="group" aria-label={`Conversation: ${thread.subject}, ${thread.messages.length} messages`}>
       <article
         role="option"
-        className="kiwi-row kiwi-thread-head"
+        className="ms-thread-head"
         aria-selected={thread.messages.some((m) => m.id === currentId)}
         aria-expanded={isExpanded}
         aria-label={`Conversation: ${thread.subject}. ${thread.messages.length} messages, ${thread.unreadCount} unread. ${isExpanded ? "Expanded." : "Collapsed."} Press Enter to ${isExpanded ? "collapse" : "expand"}.`}
@@ -755,7 +885,7 @@ function ThreadGroup({
           <span style={{ display: "flex", alignItems: "center", gap: "0.35rem", minWidth: 0 }}>
             <input
               type="checkbox"
-              className="kiwi-select-box"
+              className="ms-row-check"
               data-checked={allPicked}
               checked={allPicked}
               onClick={(e) => e.stopPropagation()}
@@ -765,7 +895,7 @@ function ThreadGroup({
               }}
               aria-label={`Select all ${thread.messages.length} messages in conversation ${thread.subject}`}
             />
-            <span aria-hidden="true" style={{ flex: "none" }}>{isExpanded ? "▾" : "▸"}</span>
+            <span aria-hidden="true" className="ms-disclosure" style={{ flex: "none" }}>{isExpanded ? "▾" : "▸"}</span>
             <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               <strong>{thread.subject}</strong>
             </span>
@@ -790,7 +920,7 @@ function ThreadGroup({
         </div>
       </article>
       {isExpanded && (
-        <div style={{ marginLeft: "1.2rem", display: "flex", flexDirection: "column", gap: "0.3rem", marginTop: "0.3rem" }}>
+        <div className="ms-thread-kids ms-thread-expand">
           {thread.messages.map((m) => (
             <MessageRow
               key={m.id}
@@ -799,6 +929,9 @@ function ThreadGroup({
               currentId={currentId}
               isPicked={isPicked(m.id)}
               onTogglePick={onTogglePick}
+              onToggleStar={onToggleStar}
+              onArchive={onArchive}
+              onDelete={onDelete}
             />
           ))}
         </div>

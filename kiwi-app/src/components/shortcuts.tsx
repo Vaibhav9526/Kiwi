@@ -4,8 +4,10 @@
  * content — no backend, works identically in demo and live modes.
  */
 
-const ROWS: [string, string][] = [
+export const SHORTCUT_ROWS: [string, string][] = [
   ["Ctrl+K", "Command palette (compose · search · go to · theme · sync · lock)"],
+  ["Ctrl+N", "Compose new message"],
+  ["F5", "Get new messages (sync now)"],
   ["/", "Focus message search"],
   ["Enter (in search)", "Open full search results"],
   ["j / ↓  ·  k / ↑", "Next / previous message"],
@@ -40,7 +42,7 @@ export function ShortcutsHelp({ open, onClose }: { open: boolean; onClose: () =>
         <h1 style={{ marginTop: 0 }}>Keyboard shortcuts</h1>
         <table style={{ borderCollapse: "collapse", width: "100%" }}>
           <tbody>
-            {ROWS.map(([keys, what]) => (
+            {SHORTCUT_ROWS.map(([keys, what]) => (
               <tr key={keys}>
                 <td style={{ padding: "0.3rem 0.6rem 0.3rem 0", whiteSpace: "nowrap" }}>
                   <code>{keys}</code>
