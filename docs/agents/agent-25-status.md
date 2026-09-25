@@ -556,3 +556,37 @@ plugin e2e not rerun (no plugin-surface changes).
   'Post-alpha hardening' — deliberately NOT relaxed (B2 CSP backstop);
   live exec arrives with the sandboxed-context task (RR-11).
 - tsc 0 errors repo-wide, vite green, e2e 47/47.
+## T-306 — CSP-safe worker plugin loader — done
+- NEW `src/plugins/worker.ts`: `buildPluginWorkerScript` = prelude + entry
+  source concatenated into one blob-Worker script (no eval anywhere — the
+  plugin source IS the worker script). Prelude = env-agnostic port shim
+  (browser `self` ↔ node `parentPort`) + a self-contained `kiwi` client for
+  the `plugin/1` envelope (req/res/evt, id match, 10s timeout, dispose).
+  `spawnBlobWorker` default factory (blob URL + revoke-on-alive + terminate).
+- `runtime.ts`: `startPluginSession` spawns the worker FIRST (spawn failure =
+  honest "plugin failed to load" toast, no zombie), host rides a dedicated
+  per-session port (`listenOn` = worker, `target` = worker postMessage
+  adapter — plugin traffic off the broadcast window bus). Worker `error` →
+  notify + dispose; `messageerror` → notify. `spawnWorker` sink seam lets
+  the harness inject node:worker_threads. `PluginSession.client` → `worker`.
+- `bridge.ts`: `PluginHostOptions.listenOn` (default window) + postMessage
+  calls dropped `"*"` → 1-arg (Window defaults targetOrigin "/" — tighter).
+- CSP delta (minimal, documented): `worker-src 'self' blob:` added to
+  index.html meta + src-tauri/tauri.conf.json. `script-src` still 'self'
+  only — NO unsafe-eval. Blob workers inherit document CSP → plugin fetch
+  is clamped by connect-src (free exfil mitigation).
+- e2e: harness runs sessions in real node worker_threads via spawnWorker —
+  same prelude+entry artifact. +1 assertion: plugin-side globalThis write
+  does not leak to host. 48/48 ×2 stable. Unregister test now routes the
+  request from inside the worker via a test evt (client lives in-worker).
+- LIVE PROOF (the point of the task): `vite build` → `vite preview` :4173 →
+  CDP: installed shipped examples/hello → reload → `[hello] Hello plugin
+  loaded.` toast rendered under production CSP; `__kiwiLiveLeak` undefined
+  on page globalThis; 0 exceptions. artifacts/t306/{live.mjs,live.png}.
+- Docs: GETTING-STARTED trust-boundary table rewritten (worker context +
+  dedicated channel now ENFORCED; ambient-authority list corrected — DOM/
+  localStorage/cookies/__TAURI__ genuinely gone, fetch CSP-clamped);
+  hardening items 1+3 marked done; THREAT-MODEL B10/RR-11 updated with the
+  CSP delta + residual risks (shared process, no origin pinning, unsigned).
+- tsc 0 errors repo-wide; vite build green; plugin e2e 48/48.
+

@@ -1594,13 +1594,16 @@ Implementation status (T-269):
 3. **Atomic challenge consumption — landed.** `verify_response` treats a
    false `consume_challenge` return as `AlreadyConsumed`; activation commits
    in the same transaction.
-4. **Pairing transport provisioning — partially landed.** The backend owns
-   the trusted channel: desktop endpoint from `KIWI_PAIR_ENDPOINT` or
-   `<profile>/pairing-channel.json`, desktop Ed25519 key via the credential
-   store (`kiwi.pair.desktop-key`), and `AppState.pair_flow` bounds the
-   renderer-visible flow to the live ticket. The LAN claim transport itself
-   (TLS/pin listener the phone POSTs to) remains a future task; the ticket
-   claim path is exercised through `claim_ticket_and_register` only.
+4. **Pairing transport provisioning — landed, TLS pending ruling.** The
+   backend owns the trusted channel: desktop endpoint from
+   `KIWI_PAIR_ENDPOINT` or `<profile>/pairing-channel.json`, desktop Ed25519
+   key via the credential store (`kiwi.pair.desktop-key`), and
+   `AppState.pair_flow` bounds the renderer-visible flow to the live
+   ticket. A bounded LAN claim listener exists (T-304, §9d.12) behind the
+   `KIWI_PAIR_LISTEN` dev flag — plaintext HTTP, explicitly **not** the
+   shipping transport; the authenticator.md §3.2 wss/TLS ruling remains a
+   Lead decision and production pairing stays TLS-forbidden-plaintext
+   until it lands.
 5. **Resource bounds — landed.** Ticket issuance is capped (live unclaimed
    rows) and device listing is `LIMIT`-bounded with the
    `registered_unix, device_id` total order.
@@ -1609,6 +1612,39 @@ Implementation status (T-269):
 7. **Fingerprint and `lastSeenUnix` — documented.** `fingerprint` is
    display-only on every projection; `lastSeenUnix`'s narrower meaning
    (status transitions only) is documented at §9d.5.
+
+### 9d.12 LAN claim listener (T-304 — dev-flagged dev seam)
+
+`kiwi-app/pairing_listen.rs` binds one `TcpListener` at app open **only**
+when `KIWI_PAIR_LISTEN` is `1`/`true` and no explicit endpoint is
+provisioned (explicit `KIWI_PAIR_ENDPOINT`/`pairing-channel.json` always
+wins). The bound `http://<lan-ip>:<port>/pair` becomes the
+`PairChannel.desktop_endpoint`, so `pair_begin`'s QR payload advertises the
+real socket the phone can reach. `lan-ip` is derived from a UDP
+routing-table lookup (no packets sent). `run()`'s setup takes the single
+pre-bound socket and runs one sequential accept loop — connections are
+served one at a time under a 5 s read timeout; whole request ≤ 16 KiB;
+`Content-Length` required; `POST /pair` is the only route.
+
+Request (the §3.2 `kiwi-pairing-hello`):
+
+```jsonc
+{ "type": "kiwi-pairing-hello", "pairing_ticket": "…",
+  "device_public_key_b64": "<std Base64, decodes to exactly 32 B>",
+  "keystore_ref": "…" }                          // optional
+```
+
+`device_id` is desktop-minted (`dev-<…>`); a claimant-supplied label is
+ignored — the ticket's bound label is authoritative. Success replies
+`200` `kiwi-pairing-registered` `{device_id, issued_unix}` and audits
+`pair-ticket-claimed` with the device id only. Failures reply a fixed-code
+`kiwi-pairing-error` envelope: `malformed-request` (400), `unexpected-type`
+(400), `key-invalid` (400), `ticket-invalid` (400 — unknown, consumed,
+expired, or malformed tickets all collapse here; the listener does not
+oracle ticket state), `device-conflict` (409), `invalid-request` (400),
+`claim-failed` (400), `method-not-allowed` (405), `unknown-path` (404),
+`request-too-large` (413). Ticket and key bytes never enter replies, logs,
+or audit detail.
 
 ## 9e. Commands — external integrations **[gated]** (T-227, implements kiwi.integrations/1)
 

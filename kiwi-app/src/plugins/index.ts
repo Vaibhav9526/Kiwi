@@ -6,11 +6,11 @@
  *                  plugin ends, capability-gated methods, lock-gated calls
  *   registry.ts  — install / list / enable / disable / remove (localStorage)
  *
- * ALPHA MODEL: plugins execute as trusted renderer code — origin checks and
- * context isolation are deferred per owner amendment (2026-09-25). Accepted
- * risk: docs/THREAT-MODEL.md RR-11 + boundary B10. Post-alpha hardening:
- * sandboxed iframe/worker host, origin pinning, capability enforcement at
- * the context boundary, plugin signing/review gate before IPC-adjacent caps.
+ * EXECUTION (T-306): plugins run in a dedicated `Worker` built from a
+ * blob: URL (worker.ts) — no DOM/localStorage/`__TAURI__`, CSP-inherited
+ * connect-src clamp — under the trusted-code alpha model (origin pinning,
+ * signing, resource limits still deferred: docs/THREAT-MODEL.md RR-11 +
+ * boundary B10). Requires `worker-src blob:` in the CSP — NO unsafe-eval.
  */
 export { PLUGIN_CAPABILITIES, PLUGIN_ID_RE, PLUGIN_VERSION_RE, isPluginCapability, validatePluginManifest } from "./manifest";
 export type { PluginCapability, PluginManifest, PluginValidation } from "./manifest";
@@ -50,5 +50,7 @@ export {
   subscribePluginPanes,
 } from "./runtime";
 export type { ComposerAction, PluginPane, PluginSession, PluginSinks } from "./runtime";
+export { buildPluginWorkerScript, spawnBlobWorker } from "./worker";
+export type { PluginWorkerFactory, PluginWorkerLike } from "./worker";
 export { useComposerActions, useInstalledPlugins, usePluginPanes, usePluginRuntime } from "./hooks";
 export type { NotifySink } from "./hooks";

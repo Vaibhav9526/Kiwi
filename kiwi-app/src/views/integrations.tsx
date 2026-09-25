@@ -435,11 +435,6 @@ export const DELIVERABILITY_POLL_MS = 15_000;
 const MAX_POLL_DELAY_MS = 60 * 60 * 1000;
 
 function retryAfterMs(error: unknown): number | undefined {
-  if (error instanceof IpcError) {
-    if (error.retryAfterMs !== undefined) return error.retryAfterMs;
-    const match = error.message.match(/retry after\s+(\d+)\s*ms/i);
-    return match?.[1] === undefined ? undefined : Math.min(Number(match[1]), MAX_POLL_DELAY_MS);
-  }
   if (typeof error === "object" && error !== null) {
     const value = (error as Record<string, unknown>)["retryAfterMs"] ?? (error as Record<string, unknown>)["retry_after_ms"];
     if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) {
@@ -584,7 +579,9 @@ export function DeliverabilityPanel({ accounts, live }: { accounts: AccountView[
   const doBegin = () =>
     run("begin", async () => {
       stopPolling();
+      const currentGeneration = generation.current;
       const v = await api.integrationsDeliverabilityBegin();
+      if (!mounted.current || currentGeneration !== generation.current) return;
       setBegin(v);
       setConsent(false);
       setSent(null);
@@ -596,11 +593,13 @@ export function DeliverabilityPanel({ accounts, live }: { accounts: AccountView[
   const doSend = () =>
     run("send", async () => {
       if (!begin || !accountId) return;
+      const currentGeneration = generation.current;
       const v = await api.integrationsDeliverabilitySend(begin.testId, begin.consentToken, accountId, {
         to: [],
         subject: "KIWI deliverability test",
         text: "This message exercises KIWI's outbound pipeline for deliverability analysis.",
       });
+      if (!mounted.current || currentGeneration !== generation.current) return;
       setSent(v);
     });
 
@@ -617,6 +616,7 @@ export function DeliverabilityPanel({ accounts, live }: { accounts: AccountView[
     reportRef.current = null;
     setReport(null);
     setConsent(false);
+    setBusy(null);
     setError(null);
   };
 

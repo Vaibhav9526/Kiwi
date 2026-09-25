@@ -1,6 +1,6 @@
 // KIWI reference plugin (T-280): Settings pane via the settings-page cap.
 // `kiwi` is a PluginClient injected by the host at load time.
-// Trusted-code alpha: this file runs in the app context — behave.
+// Trusted-code alpha (T-306): runs in a dedicated Worker — no DOM/localStorage.
 
 kiwi.onEvent("host.ready", async () => {
   try {

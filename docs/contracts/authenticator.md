@@ -126,6 +126,11 @@ One-shot channel addressed by `desktop_endpoint`:
   the pin. Platform TLS stacks own framing + certificate validation, no
   custom framing code to get wrong, no mDNS chatter. mDNS advertisement
   stays a future discovery enhancement (endpoint format unchanged).
+- **Interim claim listener (T-304).** While the wss/TLS ruling is pending,
+  a bounded plaintext HTTP claim listener exists behind the
+  `KIWI_PAIR_LISTEN` dev flag (ipc.md §9d.12) — a development seam that
+  makes the claim path real and testable, **not** the shipping transport.
+  The plaintext-forbidden rule above stands for production.
 
 ## 4. Challenge structure + signing
 

@@ -157,8 +157,10 @@ contract — IPC/audit layers map them per ipc.md §9d.9
 
 ## Out of scope (per authenticator.md)
 
-- The pairing *transport* (LAN ws/TCP) — Phase 4 open item §10.2. The
+- The pairing *transport* TLS/wss ruling — Phase 4 open item §10.2. The
   IPC layer provisions the trusted endpoint + desktop key and calls
-  `claim_ticket_and_register`; the listener itself is not in this crate.
+  `claim_ticket_and_register`; a bounded dev-flagged plaintext claim
+  listener now exists in `kiwi-app` (`pairing_listen.rs`, ipc.md §9d.12)
+  — still not in this crate, and not the ratified production transport.
 - Deny-response handling — denial is advisory UX, never consumes.
 - Keystore-wrapped-seed fallback — gated on Lead + Agent 6 sign-off.

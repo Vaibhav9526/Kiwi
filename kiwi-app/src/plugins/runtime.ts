@@ -2,11 +2,12 @@
  * Plugin runtime (T-280) — host-side sinks that make bridge capabilities
  * visible, plus the session supervisor that starts/stops enabled plugins.
  *
- * ALPHA TRUSTED-CODE MODEL (unchanged, THREAT-MODEL RR-11): plugin entry
- * files execute in the app context via `new Function` with an injected
- * PluginClient — these are host sinks, NOT isolation. Origin checks and
- * context isolation remain deferred (see GETTING-STARTED "Alpha trust
- * boundary").
+ * EXECUTION MODEL (T-306): plugin entry files run inside a dedicated
+ * `Worker` built from a `blob:` URL (worker.ts) — NOT `new Function`, so
+ * no `unsafe-eval` is needed. The worker has no DOM/`window`/`localStorage`/
+ * `__TAURI__` and inherits the document CSP (fetch clamped by connect-src).
+ * Still trusted-code alpha (RR-11): shared process/CPU, origin pinning and
+ * signing deferred — see GETTING-STARTED "Alpha trust boundary".
  *
  * Host sinks wired here:
  *   notify.show              → app toast system, text scoped "[plugin-id] …"
@@ -23,10 +24,12 @@
  * the node e2e harness (window access is stubbed there).
  */
 import type { PluginManifest } from "./manifest";
-import { createPluginClient, createPluginHost } from "./bridge";
-import type { PluginClient, PluginHost } from "./bridge";
+import { createPluginHost } from "./bridge";
+import type { PluginHost } from "./bridge";
 import { listPlugins } from "./registry";
 import type { InstalledPlugin } from "./registry";
+import { buildPluginWorkerScript, spawnBlobWorker } from "./worker";
+import type { PluginWorkerFactory, PluginWorkerLike } from "./worker";
 
 /* ---------- pane store (plugin-registered Settings panes) ---------- */
 
@@ -140,12 +143,19 @@ export interface PluginSinks {
    * and calls resolve `not-implemented`.
    */
   listSnapshot?: () => unknown[];
+  /**
+   * Worker factory (T-306) — defaults to the blob-URL `Worker` spawner in
+   * worker.ts. Hosts without a DOM Worker (the node e2e harness) inject
+   * `node:worker_threads` here; the same prelude+entry script runs either
+   * way, so the harness proves the real artifact.
+   */
+  spawnWorker?: PluginWorkerFactory;
 }
 
 export interface PluginSession {
   manifest: PluginManifest;
   host: PluginHost;
-  client: PluginClient;
+  worker: PluginWorkerLike;
   dispose: () => void;
 }
 
@@ -174,18 +184,33 @@ function toPluginEnvelope(m: unknown): Record<string, unknown> | null {
 }
 
 /**
- * Start one installed plugin: build the host (capability-gated sinks),
- * the in-context client, then run the entry source with `kiwi` injected.
- * Returns the session; throws are caught and reported via notify.
+ * Start one installed plugin: spawn its worker (prelude + entry source),
+ * build the capability-gated host on the worker's dedicated channel, emit
+ * `host.ready`, register the session. Spawn/eval failures surface via
+ * notify; a worker error tears the session down.
  */
 export function startPluginSession(installed: InstalledPlugin, sinks: PluginSinks): PluginSession | null {
   const { manifest } = installed;
-  const win = typeof window !== "undefined" ? window : undefined;
-  if (!win) return null;
+  const spawn = sinks.spawnWorker ?? spawnBlobWorker;
 
+  // Spawn first: CSP-blocked/unsupported workers surface as a load failure
+  // toast instead of a silently-dead session.
+  const entry = manifest.entry ?? "plugin.js";
+  const script = buildPluginWorkerScript(manifest.id, installed.files[entry] ?? "");
+  let worker: PluginWorkerLike;
+  try {
+    worker = spawn(script, manifest.id);
+  } catch (err) {
+    sinks.notify("error", `[${manifest.id}] plugin failed to load: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+
+  // Dedicated channel: host posts into the worker, listens on the worker —
+  // plugin traffic no longer rides the broadcast window bus.
   const host = createPluginHost({
     manifest,
-    target: win,
+    target: { postMessage: (m) => worker.postMessage(m) } as Pick<Window, "postMessage">,
+    listenOn: worker as unknown as Pick<Window, "addEventListener" | "removeEventListener">,
     isLocked: sinks.isLocked,
     handlers: {
       "notify.show": (params, plugin) => {
@@ -271,14 +296,13 @@ export function startPluginSession(installed: InstalledPlugin, sinks: PluginSink
     },
   });
 
-  const client = createPluginClient({ pluginId: manifest.id, host: win, listenOn: win });
   const session: PluginSession = {
     manifest,
     host,
-    client,
+    worker,
     dispose: () => {
       host.detach();
-      client.dispose();
+      void worker.terminate();
       // Only remove ourselves — a newer session may already hold the slot.
       if (sessions.get(manifest.id) === session) sessions.delete(manifest.id);
       let touched = false;
@@ -300,14 +324,23 @@ export function startPluginSession(installed: InstalledPlugin, sinks: PluginSink
     },
   };
 
-  const entry = manifest.entry ?? "plugin.js";
-  const src = installed.files[entry];
-  try {
-    // Trusted-code alpha loader (documented): in-context execution.
-    new Function("kiwi", src ?? "")(client);
-  } catch (err) {
-    sinks.notify("error", `[${manifest.id}] plugin failed to load: ${err instanceof Error ? err.message : String(err)}`);
-  }
+  // A thrown parse/runtime error inside the worker means the plugin context
+  // is dead — surface it and tear the session down rather than leaving a
+  // zombie session whose events go nowhere.
+  let failed = false;
+  worker.addEventListener("error", (e) => {
+    if (failed) return;
+    failed = true;
+    sinks.notify("error", `[${manifest.id}] plugin failed to load: ${e.message ?? "worker error"}`);
+    session.dispose();
+  });
+  worker.addEventListener("messageerror", () => {
+    sinks.notify("error", `[${manifest.id}] plugin posted an unserializable message`);
+  });
+
+  // Safe to emit before the worker finishes evaluating: port messages queue
+  // until the worker's event loop starts, so the plugin's host.ready
+  // listener (registered during eval) always sees this.
   host.emit("host.ready", { plugin: manifest.id, version: manifest.version });
   sessions.set(manifest.id, session);
   return session;
