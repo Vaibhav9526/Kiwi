@@ -175,3 +175,19 @@ Risks/conflicts: <contract conflicts, shared-file contention, unknowns>
   Leader handle had gone stale; re-listed terminals, resent to new
   leader term_c20c6737. Context: project pushed to GitHub now
   (Vaibhav9526/Kiwi); T-183/194/195 exist — OAuth2 gap (T-195) queued.
+- 2026-09-25 — DRAFT SPEC (awaiting owner send-word): T-fidelity — pixel-faithful UI rebuild against docs/ui/reference-layout.png (owner-supplied eM Client 4-pane shot — NOTE: image is eM Client, not Mailspring; same clean-room rules, closed-source = design imitation only):
+  * Light theme DEFAULT: white content, gray-blue pane bg, blue selection, orange primary-action accent (+New)
+  * 4-pane: folder tree | msg list | reader | collapsible right sidebar (Agenda/tasks)
+  * Folder pane: "Mail" header, Favorites, smart folders w/ right-aligned unread counts (All Inboxes, Outbox, Sent, Trash, Drafts, Junk, Unread, Flagged, Unreplied, Snoozed), per-account expandable sections (email header + subfolders)
+  * Toolbar: hamburger | +New (orange) | Refresh | Reply / Reply All / Forward / Mark / Archive / Snooze / Quick Actions / Delete — SVG icons + labels + chevron dropdowns; centered search pill "Search (type ? for help)"
+  * Msg list: category tabs (Primary/Other +N), date groups (Today/Older collapsible), rows = circular avatar + bold sender + subject + colored category pill (News/Personal/Logs etc — hooks F2) + gray snippet + date + unread dot + paperclip + count badge; selected = light blue
+  * Reader: thread title, stacked message cards (avatar, blue sender, timestamp, collapse-to-snippet)
+  * Right rail: Agenda panel — Add task, date-grouped items w/ checkbox + flags (No Date/Today/Tomorrow); hosts GTD rail (F-features) + can host security summary
+  * Status bar: bottom icon strip (mail/calendar/contacts/tasks)
+  * Replace ALL emoji icons with monochrome stroke SVG set (~16px, consistent grid)
+  * System sans ~13px, sender semibold, snippet muted; density = compact professional
+  * Keep: all IPC wiring, KIWI security pill/lock/policy surfaces re-dressed to match
+- 2026-09-25 — DRAFT SPEC (same batch): extensibility — Mailspring-style plugins + themes:
+  * Themes (ship first): CSS theme packages under themes/ w/ manifest {name,author,version,vars}; Appearance picker; stock light(default)+dark
+  * Plugins: sideload-only v1 (no store — deferred like Mailspring); manifest {id,version,permissions[]}; capability-scoped API — declared caps only (message-list-read, composer-action, settings-page, notify); NO raw DOM/net by default; message-passing bridge; per-plugin enable/disable + remove UI; locked/degraded-state behavior; Getting Started doc + starter template
+  * SECURITY: plugin = code exec in a security client → isolation model must be spec'd (iframe sandbox vs scoped bridge) + caps reviewed before any IPC access; unsigned/unreviewed plugins never get IPC-bridging caps; THREAT-MODEL.md update required

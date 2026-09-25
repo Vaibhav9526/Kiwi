@@ -17,6 +17,7 @@ use crate::attachrisk::AttachRiskEvidence;
 use crate::authrisk::AuthRisk;
 use crate::category::Category;
 use crate::error::Result;
+use crate::linkrisk::LinkRiskEvidence;
 
 use schema::{DDL, SCHEMA_VERSION};
 
@@ -65,6 +66,9 @@ pub struct MessageMeta {
     /// Attachment evidence derived at body parse time (T-254). `None` means
     /// the body has not been parsed yet, not "clean".
     pub attach_risk: Option<AttachRiskEvidence>,
+    /// Link evidence derived at body parse time (T-261). `None` means not yet
+    /// parsed, not clean. It never resolves, opens, or blocks a link.
+    pub link_risk: Option<LinkRiskEvidence>,
 }
 
 /// Persisted Authentication-Results verdicts for one message (T-232).
@@ -849,6 +853,140 @@ mod tests {
         assert_eq!(rows[0].category, Category::Notifications);
     }
 
+    // -- snooze (T-255) --------------------------------------------------
+
+    #[test]
+    fn snooze_hides_lists_then_unsnooze_restores() {
+        use crate::category::Category;
+        let store = MailStore::open_memory().unwrap();
+        seed_account(&store, "a1");
+        let fid = store.ensure_folder("a1", "INBOX").unwrap();
+        store.upsert_message(fid, &meta(101), 100).unwrap();
+        store.upsert_message(fid, &meta(102), 100).unwrap();
+
+        // Park 101 until t=500; absent uid is skipped, not an error.
+        assert_eq!(store.set_snooze(fid, &[101, 999], 500, 100).unwrap(), 1);
+        assert_eq!(
+            store
+                .list_messages(fid, 10)
+                .unwrap()
+                .iter()
+                .map(|m| m.uid)
+                .collect::<Vec<_>>(),
+            vec![102]
+        );
+        // Category tabs hide it too.
+        assert!(
+            store
+                .list_messages_by_category(fid, Category::Primary, 10)
+                .unwrap()
+                .iter()
+                .all(|m| m.uid != 101)
+        );
+        // …but it is still stored: folder_uids (sync truth) keeps it.
+        assert_eq!(store.folder_uids(fid).unwrap(), vec![101, 102]);
+
+        let parked = store.list_snoozed("a1", 10).unwrap();
+        assert_eq!(parked.len(), 1);
+        assert_eq!(parked[0].uid, 101);
+        assert_eq!(parked[0].until_unix, 500);
+        assert_eq!(parked[0].from_folder_id, fid);
+        assert_eq!(parked[0].folder_name, "INBOX");
+
+        // Explicit release → back in the list, out of the view.
+        assert_eq!(store.clear_snooze(fid, &[101, 777]).unwrap(), 1);
+        assert_eq!(store.list_messages(fid, 10).unwrap().len(), 2);
+        assert!(store.list_snoozed("a1", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn unsnooze_due_releases_due_rows_bounded() {
+        let store = MailStore::open_memory().unwrap();
+        seed_account(&store, "a1");
+        let fid = store.ensure_folder("a1", "INBOX").unwrap();
+        for uid in [1u64, 2, 3] {
+            store.upsert_message(fid, &meta(uid), 100).unwrap();
+        }
+        store.set_snooze(fid, &[1], 100, 50).unwrap(); // due
+        store.set_snooze(fid, &[2], 200, 50).unwrap(); // due at t=200
+        store.set_snooze(fid, &[3], 9_999, 50).unwrap(); // future — stays
+
+        let out = store.unsnooze_due("a1", 200, 200).unwrap();
+        assert_eq!(out, vec![(fid, 1), (fid, 2)]);
+        assert_eq!(
+            store.list_snoozed("a1", 10).unwrap()[0].uid,
+            3,
+            "only the future snooze remains parked"
+        );
+        // uid3 stays hidden until its own deadline passes.
+        assert_eq!(store.list_messages(fid, 10).unwrap().len(), 2);
+
+        // Bound: re-park two dues, cap the sweep at one.
+        store.set_snooze(fid, &[1, 2], 300, 250).unwrap();
+        let out = store.unsnooze_due("a1", 400, 1).unwrap();
+        assert_eq!(out, vec![(fid, 1)]);
+        assert_eq!(store.list_snoozed("a1", 10).unwrap().len(), 2);
+        // Second call releases the other due row — uid3's future deadline
+        // is untouched. Pass-to-pass convergence, deterministic order.
+        assert_eq!(store.unsnooze_due("a1", 400, 200).unwrap(), vec![(fid, 2)]);
+        let left = store.list_snoozed("a1", 10).unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].uid, 3);
+    }
+
+    #[test]
+    fn snooze_survives_move_and_dies_with_delete() {
+        let store = MailStore::open_memory().unwrap();
+        seed_account(&store, "a1");
+        let src = store.ensure_folder("a1", "INBOX").unwrap();
+        let dst = store.ensure_folder("a1", "Work").unwrap();
+        store.upsert_message(src, &meta(101), 100).unwrap();
+        store.upsert_message(src, &meta(102), 100).unwrap();
+        store.set_snooze(src, &[101, 102], 500, 100).unwrap();
+
+        // Move carries the park state to the new coordinates; from_folder
+        // still points at INBOX (where it was parked).
+        let moved = store.move_messages(src, dst, &[101]).unwrap();
+        let dst_uid = moved[0].1;
+        let parked = store.list_snoozed("a1", 10).unwrap();
+        assert_eq!(parked.len(), 2);
+        let m101 = parked.iter().find(|m| m.uid == dst_uid).unwrap();
+        assert_eq!(m101.folder_id, dst);
+        assert_eq!(m101.from_folder_id, src);
+        assert_eq!(m101.folder_name, "Work");
+
+        // Hard delete drops the parking row (FK cascade).
+        store.delete_messages(dst, &[dst_uid]).unwrap();
+        assert_eq!(store.list_snoozed("a1", 10).unwrap().len(), 1);
+
+        // UIDVALIDITY-style wipe cascades too.
+        store.clear_folder_messages(src).unwrap();
+        assert!(store.list_snoozed("a1", 10).unwrap().is_empty());
+
+        // Account deletion: folders→messages→snoozed cascade chain.
+        store.upsert_message(src, &meta(200), 100).unwrap();
+        store.set_snooze(src, &[200], 500, 100).unwrap();
+        assert_eq!(store.list_snoozed("a1", 10).unwrap().len(), 1);
+        store.delete_account("a1").unwrap();
+        assert!(store.list_snoozed("a1", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn resnooze_updates_deadline_keeps_origin() {
+        let store = MailStore::open_memory().unwrap();
+        seed_account(&store, "a1");
+        let fid = store.ensure_folder("a1", "INBOX").unwrap();
+        store.upsert_message(fid, &meta(101), 100).unwrap();
+        store.set_snooze(fid, &[101], 500, 100).unwrap();
+        // Re-park with a later deadline — from_folder_id stays original.
+        store.set_snooze(fid, &[101], 900, 200).unwrap();
+        let parked = store.list_snoozed("a1", 10).unwrap();
+        assert_eq!(parked.len(), 1, "re-snooze updates in place");
+        assert_eq!(parked[0].until_unix, 900);
+        assert_eq!(parked[0].set_at_unix, 200);
+        assert_eq!(parked[0].from_folder_id, fid);
+    }
+
     /// Pre-v4 database (messages table without `category`, `user_version = 3`)
     /// migrates to current: columns appear, stored bodies are classified and
     /// their unsubscribe offers extracted, rows without bodies keep defaults.
@@ -1218,6 +1356,27 @@ mod tests {
             })
             .unwrap();
         assert_eq!(rows, 0, "no historical risk is fabricated");
+    }
+
+    #[test]
+    fn v11_to_v12_creates_snoozed_for_existing_databases() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(DDL).unwrap();
+        // A pre-v12 database: no `snoozed` table, older user_version.
+        conn.execute_batch("DROP TABLE snoozed; PRAGMA user_version = 11")
+            .unwrap();
+        let root = std::env::temp_dir().join(format!("kiwi-mig-snooze-{}", std::process::id()));
+        migrate_conn(&conn, &root).unwrap();
+        assert_eq!(
+            conn.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
+        // Table exists with the full column set, empty — nothing was parked.
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM snoozed", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
     }
 
     /// T-232: Authentication-Results stamping.

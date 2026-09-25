@@ -43,6 +43,7 @@ fn map_message_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<MessageMeta> {
         // Filled by the list callers from evidence sibling tables.
         auth: None,
         attach_risk: None,
+        link_risk: None,
     })
 }
 
@@ -221,6 +222,10 @@ impl MailStore {
             "DELETE FROM message_attachment_risk WHERE folder_id = ?1",
             params![folder_id],
         )?;
+        self.conn.execute(
+            "DELETE FROM message_link_risk WHERE folder_id = ?1",
+            params![folder_id],
+        )?;
         self.remove_payload_dirs(folder_id);
         Ok(n as u64)
     }
@@ -369,6 +374,7 @@ impl MailStore {
         }
         self.attach_auth(folder_id, &mut out)?;
         self.attach_attachment_risks(folder_id, &mut out)?;
+        self.attach_link_risks(folder_id, &mut out)?;
         Ok(out)
     }
 
@@ -476,6 +482,10 @@ impl MailStore {
             )? as u64;
             self.conn.execute(
                 "DELETE FROM message_attachment_risk WHERE folder_id = ?1 AND uid = ?2",
+                params![folder_id, *uid as i64],
+            )?;
+            self.conn.execute(
+                "DELETE FROM message_link_risk WHERE folder_id = ?1 AND uid = ?2",
                 params![folder_id, *uid as i64],
             )?;
             let _ = std::fs::remove_file(self.body_path(folder_id, *uid));
@@ -908,6 +918,7 @@ impl MailStore {
         }
         self.attach_auth(folder_id, &mut out)?;
         self.attach_attachment_risks(folder_id, &mut out)?;
+        self.attach_link_risks(folder_id, &mut out)?;
         Ok(out)
     }
 

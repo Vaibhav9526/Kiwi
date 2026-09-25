@@ -28,6 +28,7 @@ import type {
   FolderView,
   MessageBodyView,
   MessagePatch,
+  MessageRef,
   MessageUpdateView,
   MessageView,
   MoveResultView,
@@ -39,11 +40,15 @@ import type {
   RenderedBodyView,
   SearchHit,
   SecurityStatusView,
+  SnoozePreset,
+  SnoozeResultView,
+  SnoozedMessageView,
   TempDiscardView,
   TempExtendView,
   TempMailboxView,
   TempMessageView,
   TempPollView,
+  UnsnoozeResultView,
   UnsubscribeAction,
   UnsubscribeResultView,
   VerifyResult,
@@ -386,6 +391,28 @@ export const api = {
     uids: number[],
   ): Promise<MoveResultView> {
     return call<MoveResultView>("kiwi_move_messages", { accountId, srcFolderId, dstFolderId, uids });
+  },
+
+  /* ---------------- snooze (gated, T-255) ---------------- */
+
+  /**
+   * Park messages locally until a deadline — never a server-side move;
+   * parked rows leave folder lists and return at the sync-pass sweep.
+   * Deadline is exactly one of `untilUnix` | `preset`.
+   */
+  snoozeMessages(
+    accountId: string,
+    refs: MessageRef[],
+    deadline: { untilUnix?: number; preset?: SnoozePreset },
+  ): Promise<SnoozeResultView> {
+    return call<SnoozeResultView>("kiwi_message_snooze", { accountId, refs, ...deadline });
+  },
+  unsnoozeMessages(accountId: string, refs: MessageRef[]): Promise<UnsnoozeResultView> {
+    return call<UnsnoozeResultView>("kiwi_message_unsnooze", { accountId, refs });
+  },
+  /** Account-wide parked mail, soonest-due first (the Snoozed view). */
+  async listSnoozed(accountId: string, limit?: number): Promise<SnoozedMessageView[]> {
+    return asArray<SnoozedMessageView>(await call<unknown>("kiwi_list_snoozed", { accountId, limit }));
   },
 
   /* ---------------- send / outbox (gated) ---------------- */

@@ -137,7 +137,7 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-209 | F10 WYSIWYG composer (fonts/tables/emoji/links/inline-image/Excel-paste; ammonia allowlist review) | unassigned | backlog | `kiwi-app/` | — |
 | T-210 | F11 native notifications via Tauri API on mail-changed; per-account toggle; lock-gated content | unassigned | backlog | `kiwi-app/` | T-157 |
 | T-211 | F12 sent items inside conversation threads | unassigned | backlog | `kiwi-mail/` + UI | T-165 |
-| T-212 | Junk marking — PARTIAL: store set_junk/clear_junk landed; MISSING: IMAP Junk flag, move-to-Junk, IPC, UI | orphaned (A14 term dead), reassign after A15 T-255 | open |
+| T-212 | Junk marking — store helpers landed; REMAINDER = T-263 (A15) | Agent 15 | in-progress |
 | T-213 | F14 email priority headers (compose + display) | unassigned | backlog | `kiwi-mail/` + composer | — |
 | T-214 | F15 extra theme schemes (custom CSS field deferred) | unassigned | backlog | `kiwi-app/` | — |
 | T-215 | kiwi-admin org plane (user mgmt/invites/admin panel) — Phase 6, needs owner sign-off | unassigned | deferred-P6 | `kiwi-admin/` | — |
@@ -217,7 +217,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-252 | FINDINGS.md master register (deduped, owner/status mapped) | Agent 22 | done |
 | T-253 | §14 device-inventory endpoint implemented (112 tests, spec-faithful) | Agent 11 | done |
 | T-254 | AttachRisk hints (dangerous/double-ext/macro tiers, 189/189) | Agent 21 | done |
-| T-255 | Snooze: store snoozeUntil + unsnooze sweep + IPC presets (schema v10) | Agent 15 | open | `kiwi-mail/`, `src-tauri/` | T-244 |
+| T-255 | Snooze (schema v12, parked rows, bounded sweep, presets; 200/98) | Agent 15 | done |
 | T-256 | sandbox.md enumeration (sandbox-drift-1.md, 138L, honest WSL2 scoping) | Agent 22 | done |
 | T-257 | Add-account->sync e2e PROVEN (scripted loopback TLS IMAP, 98/98 + fail branches) | Agent 19 | done |
 | T-258 | mailauth post-T-183 verification (14 groups + 3 deviations documented) | Agent 22 | done |

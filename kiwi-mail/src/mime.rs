@@ -53,6 +53,9 @@ pub struct ParsedMessage {
     /// Deterministic bounded attachment hint derived while parsing (T-254).
     /// This is evidence for the frontend, never a finding or blocking action.
     pub attach_risk: crate::attachrisk::AttachRiskEvidence,
+    /// Deterministic bounded URL hint derived from parsed bodies (T-261).
+    /// Evidence only; never resolves, opens, or blocks a link.
+    pub link_risk: crate::linkrisk::LinkRiskEvidence,
 }
 
 /// Outbound message to serialize. `data` on attachments is already-decoded
@@ -158,6 +161,8 @@ pub fn parse_message(raw: &[u8]) -> Result<ParsedMessage> {
         });
     }
     out.attach_risk = attachment_risk;
+    out.link_risk =
+        crate::linkrisk::inspect_bodies(out.text_body.as_deref(), out.html_body.as_deref());
     let body_src = out
         .text_body
         .clone()

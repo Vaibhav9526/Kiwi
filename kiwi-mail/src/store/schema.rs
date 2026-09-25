@@ -1,7 +1,7 @@
 //! SQLite schema — DDL + version. Migrations are explicit and
 //! append-only; `user_version` is the source of truth.
 
-pub(crate) const SCHEMA_VERSION: u32 = 12;
+pub(crate) const SCHEMA_VERSION: u32 = 13;
 
 pub(crate) const DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS accounts (
@@ -169,4 +169,14 @@ CREATE TABLE IF NOT EXISTS snoozed (
     FOREIGN KEY (folder_id, uid) REFERENCES messages(folder_id, uid) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_snoozed_due ON snoozed(until_unix);
+-- Link hints (T-261): sibling evidence because URL classification is local
+-- parsed-body work, independent of auth sealing. Only the bounded enum and a
+-- fixed reason-code JSON array are retained; URLs/display text are never kept.
+CREATE TABLE IF NOT EXISTS message_link_risk (
+    folder_id   INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+    uid         INTEGER NOT NULL,
+    risk        TEXT NOT NULL CHECK (risk IN ('clean', 'noted', 'failed')),
+    reasons_json TEXT NOT NULL,
+    PRIMARY KEY (folder_id, uid)
+);
 "#;

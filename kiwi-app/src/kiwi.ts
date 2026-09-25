@@ -87,7 +87,7 @@ export function parseUnsubscribe(raw: unknown): UnsubscribeInfo {
   const out: UnsubscribeInfo = { url: null, mailto: null, oneClick: false };
   if (typeof raw !== "object" || raw === null) return out;
   const r = raw as Record<string, unknown>;
-  const url = cleanStr(r["unsubscribe_url"]);
+  const url = cleanStr(r["unsubscribeUrl"]) ?? cleanStr(r["unsubscribe_url"]);
   if (url) {
     try {
       const u = new URL(url);
@@ -96,12 +96,12 @@ export function parseUnsubscribe(raw: unknown): UnsubscribeInfo {
       // Unusable — stays null, chip stays hidden.
     }
   }
-  const mailto = cleanStr(r["unsubscribe_mailto"]);
+  const mailto = cleanStr(r["unsubscribeMailto"]) ?? cleanStr(r["unsubscribe_mailto"]);
   if (mailto) {
     const addr = mailto.toLowerCase().startsWith("mailto:") ? mailto.slice("mailto:".length) : mailto;
     if (/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(addr.split("?")[0] ?? "")) out.mailto = addr;
   }
-  out.oneClick = r["unsubscribe_one_click"] === true;
+  out.oneClick = r["unsubscribeOneClick"] === true || r["unsubscribe_one_click"] === true;
   return out;
 }
 
@@ -172,10 +172,18 @@ export interface AccountView {
 
 export interface FolderView {
   id: number;
+  accountId: string;
   name: string;
-  exists: number;
-  unseen: number;
-  uidValidity: number;
+  /** null until a sync has selected the folder. */
+  uidValidity: number | null;
+  uidNext: number | null;
+  highestUid: number;
+  /**
+   * ipc.md §6 note: not emitted today (no store count query backs it —
+   * emitting zeros would fabricate data). Kept optional so badge code can
+   * adopt it when a folder-count query lands.
+   */
+  unseen?: number;
 }
 
 export interface MessageView {
@@ -183,20 +191,28 @@ export interface MessageView {
   folderId: number;
   uid: number;
   messageId: string | null;
-  subject: string;
-  fromAddr: string;
-  toAddrs: string;
-  dateUnix: number;
-  size: number;
+  subject: string | null;
+  fromAddr: string | null;
+  toAddrs: string | null;
+  dateUnix: number | null;
+  size: number | null;
   flags: string[];
+  unread: boolean;
+  starred: boolean;
   hasAttachments: boolean;
-  snippet: string;
+  snippet: string | null;
+  /** Whether the full body is already stored locally. */
+  bodyStored: boolean;
+  /** T-169 header-chain threading; null/[] means "unknown". */
+  inReplyTo: string | null;
+  references: string[];
   /** F2 tab slug (primary/…); absent on old rows → normalizeCategory. */
   category?: unknown;
-  /** T-202 endpoints; absent until the backend exposes them. */
-  unsubscribe_url?: unknown;
-  unsubscribe_mailto?: unknown;
-  unsubscribe_one_click?: unknown;
+  /** T-202 endpoints (camelCase wire keys; null until the sender advertises). */
+  unsubscribeUrl?: string | null;
+  unsubscribeMailto?: string | null;
+  unsubscribeOneClick?: boolean;
+  unsubscribeRequiresConsent?: boolean;
   /**
    * T-232 Authentication-Results. Absent until the body has been fetched and
    * evaluated — "not evaluated" is deliberately distinct from a `none`
@@ -339,6 +355,52 @@ export interface MoveResultView {
   srcFolderId: number;
   dstFolderId: number;
   moved: number;
+}
+
+/**
+ * One `{folderId, uid}` message coordinate — snooze/unsnooze refs (T-255).
+ * Unlike `folderId + uids[]` commands, snooze refs may span folders (the
+ * Snoozed view is account-wide).
+ */
+export interface MessageRef {
+  folderId: number;
+  uid: number;
+}
+
+/**
+ * `kiwi_message_snooze` deadline preset — resolved server-side to a fixed
+ * offset so every client agrees (see docs/contracts/ipc.md §6e). Pass
+ * `preset` XOR `untilUnix`.
+ */
+export type SnoozePreset = "later_today" | "tomorrow" | "next_week";
+
+/** `kiwi_message_snooze` result. */
+export interface SnoozeResultView {
+  snoozed: number;
+  untilUnix: number;
+}
+
+/** `kiwi_message_unsnooze` result. */
+export interface UnsnoozeResultView {
+  unsnoozed: number;
+}
+
+/**
+ * One parked message (`kiwi_list_snoozed`, T-255). The row still lives in
+ * `folder` — snooze hides it from folder lists, it is never moved.
+ * `snoozedFromFolderId` is where it was parked (survives moves).
+ */
+export interface SnoozedMessageView {
+  folderId: number;
+  uid: number;
+  folder: string;
+  snoozedFromFolderId: number;
+  snoozedUntil: number;
+  snoozedAt: number;
+  subject: string | null;
+  fromAddr: string | null;
+  messageId: string | null;
+  dateUnix: number | null;
 }
 
 /**

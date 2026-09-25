@@ -400,3 +400,77 @@ view path stays unhooked.
 - Preview evaluates the candidate alone — it answers "would this rule
   match these messages", not "what would the whole ruleset do" (ordering
   interactions are out of scope by design; documented in ipc.md).
+
+---
+
+## T-255 — message snooze (accepted scope)
+
+**Design: hide-in-place, sibling table.** A `snoozed` row parks a message;
+its `messages` row never moves — a local folder move would make the next
+UID-diff re-download the remote uid as new INBOX mail, so a real "Snoozed
+folder" is deliberately rejected. Parked rows are excluded from
+`list_messages` + `list_messages_by_category` via `NOT EXISTS`; the
+Snoozed view is `kiwi_list_snoozed`, account-wide.
+
+### kiwi-mail
+
+- `schema.rs` v11→v12: `snoozed(folder_id, uid PK, until_unix,
+  from_folder_id → folders ON DELETE CASCADE, set_at_unix)` with
+  composite FK `(folder_id, uid) → messages ON DELETE CASCADE` +
+  `idx_snoozed_due`. The composite FK gives free cleanup on delete /
+  expunge / account-delete / `clear_folder_messages` (UIDVALIDITY reset).
+  `move_messages` re-keys the row before its source DELETE — parked mail
+  stays parked, `from_folder_id` keeps the origin.
+- `queries.rs`: `set_snooze` (INSERT..SELECT WHERE EXISTS — absent uids
+  skipped, upsert refreshes `until`/`set_at` but keeps origin),
+  `clear_snooze` (idempotent), `unsnooze_due` (bounded, ordered
+  `until_unix, folder_id, uid` — deterministic, converges over passes),
+  `list_snoozed` (JOINs folders + messages for the view).
+- `sync.rs`: `UNSNOOZE_SWEEP_LIMIT = 200`; `let _ =` sweep at the head of
+  both `sync_folder` (IMAP) and `sync_pop3_inner` — snooze state can
+  never abort mail sync.
+
+### kiwi-app
+
+- `commands/message/snooze.rs`: `kiwi_message_snooze` /
+  `kiwi_message_unsnooze` / `kiwi_list_snoozed`, all `gate`d.
+  `refs: [{folderId, uid}]` — spans folders (Snoozed view is
+  account-wide); non-empty, ≤500, non-negative, deduped, EVERY folderId
+  proven to belong to `accountId` (cross-account ⇒ not-found).
+  Deadline = exactly one of `untilUnix` (future, ≤~2y out — far-future
+  smells like a ms bug, refused) XOR `preset` ∈ `later_today`(+3h) /
+  `tomorrow`(+24h) / `next_week`(+7d), fixed offsets resolved
+  server-side. Audit records `messages-snoozed`/`messages-unsnoozed`.
+  `list_snoozed` clamps 1–1000 (default 200) and hides trash-foldered
+  rows (trash is the stronger state; they still release on schedule).
+- `types/message.rs`: `MessageRefInput`, `SnoozeResultView`,
+  `UnsnoozeResultView`, `SnoozedMessageView` (camelCase).
+- `kiwi.ts` + `ipc.ts`: `MessageRef`, `SnoozePreset`,
+  `SnoozeResultView`/`UnsnoozeResultView`/`SnoozedMessageView`;
+  `snoozeMessages(accountId, refs, {untilUnix?|preset?})`,
+  `unsnoozeMessages`, `listSnoozed`.
+- `ipc.md` §6e: full contract — local-only semantics, preset offsets,
+  cascade/re-key behavior, sweep contract.
+
+### Gates at completion
+
+- `cargo test -p kiwi-mail` — 200/200 (5 new snooze tests + v11→v12
+  migration test).
+- `cargo test -p kiwi-app` — 98/98 (3 new command tests).
+- `cargo clippy --workspace --all-targets -- -D warnings` — clean.
+- `npx tsc --noEmit` (kiwi-app) — clean. `rustfmt --check` on touched
+  files — clean. Zero `unsafe`.
+
+### Assumptions / risks
+
+- Presets are fixed offsets, not wall-clock-aware ("tomorrow 9am local"
+  needs a TZ database — flagged rather than assumed; a client that wants
+  it computes `untilUnix`).
+- Search (`kiwi_search_messages`) does NOT exclude parked rows — snooze
+  defers, it doesn't suppress discovery; a parked message stays
+  searchable. Matches "hidden from lists, not hidden from finding".
+- Deleting a parked message's *origin* folder drops its parking row
+  (from_folder FK cascade) — silent unpark is the right fallback when
+  the origin can't exist.
+- Sweep is capped 200/pass — a pathological backlog releases over
+  several passes; deterministic order, documented in ipc.md §6e.
