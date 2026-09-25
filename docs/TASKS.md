@@ -188,7 +188,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-228 | F1 rules engine core (AST/eval/persistence v6, 25 tests) | Agent 15 | done | `kiwi-mail/src/rules/` | T-181 |
 | T-229 | Review oauth2.md contract for drift vs Agent 19 impl when it lands | Agent 18 | queued | `docs/contracts/` | T-195 |
 | T-230 | OAuth2 IPC + wizard seam (begin/poll/cancel/status/discover, CredentialStore, 86/86) | Agent 19 | done |
-| T-231 | live-data UI wiring: category tabs on real envelopes, real FTS search, contacts IPC | Agent 24 (reassigned from A11) | done | `kiwi-app/src` | T-267 |
+| T-231 | live-data wiring done: FTS search live, contacts real IPC, category tabs real — zero gaps | Agent 24 | done |
 | T-232 | Authentication-Results stamping on ingest (RFC 8601) + verdict field on MessageView | Agent 16 | open | `kiwi-mail/` | T-183 |
 | T-233 | Rules ingest application + IPC (5 cmds, rule_hits audit, schema v8) | Agent 15 | done |
 
@@ -258,3 +258,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-278 | integrations.md ↔ kiwi-integrations drift audit (last unaudited domain) — findings only | Agent 23 | open | `kiwi-integrations`, `docs/contracts/integrations.md` | T-196 program |
 | T-279 | HickoryResolver production DNS impl for mailauth (bounded timeouts, fail-closed temperror) | Agent 20 | open | `kiwi-mailauth`, app resolver wiring | T-196 |
 | T-280 | host-side plugin surfaces: notify.show→toast sink + settings-page→pane mount (alpha trusted-code) | Agent 25 | open | `kiwi-app/src/plugins/`, `components/toasts.tsx`, `views/settings.tsx` | T-274,T-268 |
+| T-281 | rules management UI: list/create/edit predicate+action forms, enable/disable, reorder, preview seam | Agent 24 | open | `kiwi-app/src` | T-200,T-263 |
