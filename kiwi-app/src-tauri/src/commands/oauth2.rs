@@ -745,16 +745,24 @@ pub(crate) async fn consume_oauth2_ticket(state: &AppState, ticket_id: &str) {
 /// scheme only, bounded length, no whitespace/quotes — the URL is passed
 /// as a single argv element to the OS opener (no shell parsing anywhere).
 #[tauri::command]
-pub async fn kiwi_open_external(state: State<'_, Arc<AppState>>, url: String) -> CmdResult<()> {
+pub async fn kiwi_open_external(
+    state: State<'_, Arc<AppState>>,
+    url: String,
+    source_url: Option<String>,
+) -> CmdResult<()> {
     gate(state.inner()).await?;
-    open_external_impl(&url)
+    open_external_impl(state.inner(), &url, source_url.as_deref()).await
 }
 
-pub(crate) fn open_external_impl(url: &str) -> CmdResult<()> {
+pub(crate) async fn open_external_impl(
+    _state: &AppState,
+    url: &str,
+    source_url: Option<&str>,
+) -> CmdResult<()> {
     bounded("url", url, 2048)?;
-    if !url.to_ascii_lowercase().starts_with("https://") {
+    if source_url.is_none() && !url.to_ascii_lowercase().starts_with("https://") {
         return Err(IpcError::invalid(
-            "only https:// URLs may be opened in the system browser",
+            "unsourced external opens require https://",
         ));
     }
     if url
@@ -762,6 +770,14 @@ pub(crate) fn open_external_impl(url: &str) -> CmdResult<()> {
         .any(|b| b.is_ascii_whitespace() || b == b'"' || b == b'\'')
     {
         return Err(IpcError::invalid("url contains whitespace or quotes"));
+    }
+    if let Some(source_url) = source_url {
+        let decision = super::link::evaluate_external_sources(url, Some(source_url))?;
+        match decision.action {
+            super::link::LinkPolicy::Deny => return Err(IpcError::link_denied()),
+            super::link::LinkPolicy::RequireSandbox => return Err(IpcError::sandbox_required()),
+            super::link::LinkPolicy::Allow | super::link::LinkPolicy::RequireConfirm => {}
+        }
     }
     let mut cmd = browser_command(url);
     cmd.stdin(std::process::Stdio::null())
@@ -1198,8 +1214,27 @@ mod tests {
     /// `kiwi_open_external` fails closed: non-https schemes, quotes,
     /// whitespace, and oversized URLs are rejected before any spawn.
     /// (The valid case would launch a real browser — not CI-testable.)
-    #[test]
-    fn open_external_rejects_unsafe_urls() {
+    #[tokio::test]
+    async fn open_external_enforces_message_source_before_spawn() {
+        let s = test_state("external-gate");
+        let risky = super::open_external_impl(
+            &s,
+            "https://safe.example/redirected",
+            Some("https://1.2.3.4/login"),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(risky.code, "sandbox-required");
+        let denied =
+            super::open_external_impl(&s, "https://safe.example/redirected", Some("file:///C:/x"))
+                .await
+                .unwrap_err();
+        assert_eq!(denied.code, "link-denied");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn open_external_rejects_unsafe_urls() {
+        let s = test_state("external-unsafe");
         let too_long = "https://a".repeat(500);
         for bad in [
             "http://example.test/",
@@ -1213,7 +1248,7 @@ mod tests {
             too_long.as_str(),
         ] {
             assert_eq!(
-                open_external_impl(bad).unwrap_err().code,
+                open_external_impl(&s, bad, None).await.unwrap_err().code,
                 "invalid-input",
                 "{bad:?} must be rejected"
             );

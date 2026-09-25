@@ -392,6 +392,28 @@ export interface RemoteContentView {
   remoteContentAllowed: boolean;
 }
 
+/**
+ * `kiwi_message_source` (T-295) — verbatim RFC822 for "view source".
+ * `source` is lossy-decoded UTF-8 capped at 8 MiB; `truncated` marks the
+ * cap fired and `bytes` is the stored total ("first 8 MiB of N").
+ */
+export interface MessageSourceView {
+  folderId: number;
+  uid: number;
+  source: string;
+  bytes: number;
+  truncated: boolean;
+}
+
+/**
+ * `kiwi_set_pop3_policy` (T-295) — per-account POP3 server-side deletion.
+ * Default `false` keeps drops on the server; `true` sends DELE per ingest.
+ */
+export interface Pop3PolicyView {
+  accountId: string;
+  deleteAfterDownload: boolean;
+}
+
 /** `kiwi_message_unsubscribe` action selector (T-234). */
 export type UnsubscribeAction = "http" | "mailto";
 

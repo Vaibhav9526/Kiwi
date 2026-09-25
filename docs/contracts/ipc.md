@@ -389,10 +389,26 @@ honest absence, never an empty string. `textBody: null` with
 `bodyPresent: true` means the message has no text/plain alternative;
 render the sanitized `htmlBody` path instead.
 
+### `kiwi_message_source(accountId, folderId, uid) → MessageSourceView` (T-295)
+Verbatim RFC822 source for the reader's "view source" surface (T-292
+flagged this as missing). Same fetch semantics as `kiwi_get_message`:
+stored body, IMAP `BODY[]` on-demand fetch (recorded + stored) when
+absent. A body that is absent locally AND unfetchable is **`not-found`**
+— never an empty string. `source` is UTF-8-lossy decoded and capped at
+**8 MiB of bytes** with char-boundary walk-back (same rule as
+`kiwi_render_body`); `bytes` reports the stored total and `truncated`
+marks the cap firing, so the UI can label "first 8 MiB of N".
+
+```jsonc
+{ "folderId": 1, "uid": 991, "source": "From: …\r\n…",
+  "bytes": 152300, "truncated": false }
+```
+
 ### `kiwi_sync_account(accountId, folders?) → SyncReportView[]`
 IMAP: LIST (when `folders` omitted) → register → incremental
-`sync_folder` per folder. POP3: UIDL-diff into `INBOX`
-(leave-on-server; `deleteAfter` is not exposed yet).
+`sync_folder` per folder. POP3: UIDL-diff into `INBOX`; per-account
+delete-after-download applies via `kiwi_set_pop3_policy` (below) —
+default is leave-on-server.
 
 ```jsonc
 { "protocol": "imap", "folder": "INBOX", "folderId": 1,
@@ -405,6 +421,16 @@ IMAP: LIST (when `folders` omitted) → register → incremental
   // those messages keep an unwritten eval watermark and retry next pass.
   "ruleFailures": 0 }
 ```
+
+### `kiwi_set_pop3_policy(accountId, deleteAfterDownload) → Pop3PolicyView` (T-295)
+Per-account POP3 server-side deletion. **Default `false`** — drops stay on
+the server and UIDL-dedup makes repeat syncs no-ops. `true` issues `DELE`
+per ingested message at every later sync: the mail then exists only
+locally, so treat the toggle as destructive-on-success and confirm in the
+UI. POP3 accounts only — `invalid-input` on IMAP. Persisted in the
+sidecar index (`AccountMeta.pop3_delete_after_download`), audited
+(`pop3-delete-policy`). The live-sync worker reads the same flag, so the
+policy applies identically to manual and scheduled passes.
 
 ## 6b. Commands — message actions **[gated]** (T-146)
 

@@ -39,6 +39,7 @@ pub mod search;
 pub mod smtp;
 pub mod store;
 pub mod sync;
+pub mod templates;
 #[cfg(any(test, feature = "e2e-fixtures"))]
 pub mod testutil;
 pub mod transport;

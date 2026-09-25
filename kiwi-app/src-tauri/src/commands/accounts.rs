@@ -209,6 +209,7 @@ pub(crate) async fn add_account_impl(
                 accept_invalid_certs: input.accept_invalid_certs,
                 remote_content_allowed: false,
                 org_id: None,
+                pop3_delete_after_download: false,
             },
         );
         index.save(&state.data_dir)?;

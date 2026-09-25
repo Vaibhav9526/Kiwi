@@ -265,7 +265,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-285 | POP3 e2e proven: scripted wire, ingest+dedup/keep, failures, DELE-witnessed delete; all 3 protocols now wire-proven | Agent 19 | done |
 | T-286 | implement T-278 findings by severity — H consent-bypass server-side first, then 11M, 7L; apply own rulings | Agent 23 | open | `kiwi-integrations`, `commands/`, contracts | T-278 |
 | T-287 | UI hardening sweep done: folder error/empty surfaces, focus rings, ?overlay verified real | Agent 25 | done |
-| T-288 | message templates: backend (Agent 20: store+IPC+contract) then composer UI (A25) | Agent 20 backend / A25 UI | open | `kiwi-mail`, `commands/`, `kiwi.ts`/`ipc.ts`, composer | Mailspring parity |
+| T-288 | templates backend done (v15, 5 gated IPC, {{var}} render); UI half → next free UI agent | Agent 20 done / A24or25 UI pending | partial |
 | T-289 | OAuth2/account-add verified live e2e (device code, retryAfterSecs, needsRefresh, error map, first-run) | Agent 24 | done |
 | T-290 | high-contrast theme: 22-pair scripted contrast verify + T-280 pane-snapshot crash fix | Agent 25 | done |
 | T-291 | keyboard nav real: list/reader bindings to real IPC, typing guards, ?-overlay reconciled | Agent 24 | done |
@@ -275,5 +275,5 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-295 | kiwi_message_source IPC (raw RFC822) + POP3 delete-after-download account toggle | Agent 19 | open | `kiwi-mail`, `commands/mail.rs`, ipc.md, ipc.ts | T-292,T-285 |
 | T-296 | outbox view: real state chips/undo/reschedule via IPC; OutboxItem state+lastError gap filed | Agent 25 | done |
 | T-297 | no-mock UI audit: every surface classified working|dead|mocked|gap → ui-honesty-1.md | Agent 25 | open | `kiwi-app/src` + CDP | final QA |
-| T-298 | OutboxItem + state/lastError fields (held-vs-failed distinguishable) — backend gap from T-296 | unassigned (Rust) | open | `kiwi-mail`, `commands/`, kiwi.ts | T-296 |
+| T-298 | OutboxItem state+lastError fields (held-vs-failed) — backend gap | Agent 20 | open | `kiwi-mail`, `commands/`, kiwi.ts | T-296 |
 | T-299 | right-click context menus: message list + folder tree, all items real IPC, state-aware | Agent 24 | open | `kiwi-app/src` | eM/Thunderbird parity |

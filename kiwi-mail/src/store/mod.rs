@@ -18,6 +18,7 @@ use crate::authrisk::AuthRisk;
 use crate::category::Category;
 use crate::error::Result;
 use crate::linkrisk::LinkRiskEvidence;
+use crate::rules::Rule;
 
 use schema::{DDL, SCHEMA_VERSION};
 
@@ -201,6 +202,16 @@ pub struct NewMessageMeta {
     pub unsub_oneclick: bool,
 }
 
+/// A stored rule plus its cumulative sync-time application health. The
+/// health fields are store-owned diagnostics and never enter `spec_json`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleRecord {
+    pub rule: Rule,
+    pub failure_count: u64,
+    pub last_error: Option<String>,
+    pub last_failure_unix: Option<i64>,
+}
+
 /// One rule-hit audit row (T-233): which rule fired on which stored
 /// message, when. `rule_id` is verbatim (not an FK) so evidence survives
 /// rule deletion; `message_id` is the stable RFC822 identity â€” the
@@ -335,6 +346,10 @@ pub(crate) fn migrate_conn(conn: &Connection, root: &Path) -> Result<()> {
             if v < 10 {
                 ensure_auth_risk_column(conn)?;
             }
+            // Pre-v14 database: preserve rules and add bounded health counters.
+            if v < 14 {
+                ensure_rule_failure_columns(conn)?;
+            }
         }
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     }
@@ -383,6 +398,25 @@ fn ensure_auth_risk_column(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "ALTER TABLE message_auth ADD COLUMN auth_risk TEXT
          CHECK (auth_risk IN ('clean', 'noted', 'failed'))",
+    )?;
+    Ok(())
+}
+
+/// Add the T-244 per-rule health columns without resetting existing rules.
+/// Historical counters cannot be reconstructed, so upgraded rows start at
+/// zero with no last error.
+fn ensure_rule_failure_columns(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare("PRAGMA table_info(rules)")?;
+    let cols = stmt.query_map([], |r| r.get::<_, String>(1))?;
+    for col in cols {
+        if col? == "failure_count" {
+            return Ok(());
+        }
+    }
+    conn.execute_batch(
+        "ALTER TABLE rules ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0;
+         ALTER TABLE rules ADD COLUMN last_error TEXT;
+         ALTER TABLE rules ADD COLUMN last_failure_unix INTEGER",
     )?;
     Ok(())
 }
@@ -1265,6 +1299,167 @@ mod tests {
         assert!(!store.delete_rule("b-acct").unwrap());
         assert_eq!(store.list_rules(Some("a1")).unwrap().len(), 2);
         assert!(store.get_rule("b-acct").unwrap().is_none());
+    }
+
+    #[test]
+    fn rule_health_persists_count_and_bounded_last_error() {
+        let store = MailStore::open_memory().unwrap();
+        seed_account(&store, "a1");
+        store.upsert_rule(&rule("healthy", Some("a1"), 1)).unwrap();
+        let error = "line one\n".to_string() + &"x".repeat(600);
+        store
+            .record_rule_failures(&["healthy".into(), "healthy".into()], &error, 42)
+            .unwrap();
+        store
+            .record_rule_failures(&["healthy".into()], "second failure", 43)
+            .unwrap();
+        let record = store.get_rule_record("healthy").unwrap().unwrap();
+        assert_eq!(
+            record.failure_count, 2,
+            "duplicate id counts once per event"
+        );
+        assert_eq!(record.last_error.as_deref(), Some("second failure"));
+        assert_eq!(record.last_failure_unix, Some(43));
+
+        // Editing a rule does not erase historical health.
+        let mut edited = rule("healthy", Some("a1"), 2);
+        edited.name = "renamed".into();
+        store.upsert_rule(&edited).unwrap();
+        let record = store.get_rule_record("healthy").unwrap().unwrap();
+        assert_eq!(record.failure_count, 2);
+        assert_eq!(record.last_error.as_deref(), Some("second failure"));
+    }
+
+    #[test]
+    fn v13_to_v14_adds_rule_health_without_losing_rules() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(DDL).unwrap();
+        // Model a pre-v14 rules table: current DDL has the new columns, so
+        // rebuild just that table with the old shape and an existing row.
+        conn.execute_batch(
+            "ALTER TABLE rules RENAME TO rules_new;
+             CREATE TABLE rules (
+                rule_id TEXT PRIMARY KEY, account_id TEXT, name TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1, position INTEGER NOT NULL,
+                is_block INTEGER NOT NULL DEFAULT 0, spec_json TEXT NOT NULL);
+             INSERT INTO rules
+                SELECT rule_id, account_id, name, enabled, position, is_block, spec_json
+                FROM rules_new;
+             INSERT INTO rules
+                (rule_id, account_id, name, enabled, position, is_block, spec_json)
+                VALUES ('kept', 'a1', 'Keep me', 1, 0, 0, '{}');
+             DROP TABLE rules_new;
+             PRAGMA user_version = 13",
+        )
+        .unwrap();
+        let root = std::env::temp_dir().join(format!("kiwi-mig-rules-{}", std::process::id()));
+        migrate_conn(&conn, &root).unwrap();
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(rules)")
+            .unwrap()
+            .query_map([], |r| r.get(1))
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        assert!(columns.iter().any(|c| c == "failure_count"));
+        assert!(columns.iter().any(|c| c == "last_error"));
+        assert!(columns.iter().any(|c| c == "last_failure_unix"));
+        let (count, last): (i64, Option<String>) = conn
+            .query_row("SELECT failure_count, last_error FROM rules", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!((count, last), (0, None), "health history is not fabricated");
+    }
+
+    #[test]
+    fn v14_to_v15_creates_templates_and_preserves_data() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(DDL).unwrap();
+        // Model a pre-v15 database: drop the new table, pin v14, and put
+        // a row in a neighboring table to prove migration is additive.
+        conn.execute_batch(
+            "DROP TABLE templates;
+             INSERT INTO accounts (account_id, display_name, email, config_json)
+                VALUES ('a1', 'A', 'a@x.test', '{}');
+             PRAGMA user_version = 14",
+        )
+        .unwrap();
+        let root = std::env::temp_dir().join(format!("kiwi-mig-tpl-{}", std::process::id()));
+        migrate_conn(&conn, &root).unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'templates'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+        let kept: String = conn
+            .query_row(
+                "SELECT email FROM accounts WHERE account_id = 'a1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept, "a@x.test");
+        let v: u32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn templates_crud_roundtrip_and_id_sequence() {
+        let store = MailStore::open_memory().unwrap();
+        let t = crate::templates::Template {
+            id: String::new(),
+            name: "Intro".into(),
+            subject: "Hi {{name}}".into(),
+            body_text: "Hello {{name}},\n\n— us".into(),
+            body_html: None,
+            created_unix: 0,
+            updated_unix: 0,
+        };
+        let first = store.insert_template(&t, 10).unwrap();
+        assert_eq!(first.id, "tpl-1");
+        assert_eq!((first.created_unix, first.updated_unix), (10, 10));
+        let second = store.insert_template(&t, 11).unwrap();
+        assert_eq!(second.id, "tpl-2");
+
+        // Reserved prefix cannot be caller-supplied.
+        let mut forged = t.clone();
+        forged.id = "tpl-99".into();
+        assert!(store.insert_template(&forged, 12).is_err());
+        // Explicit caller id is fine when it avoids the prefix.
+        forged.id = "imported-1".into();
+        assert!(store.insert_template(&forged, 12).is_ok());
+
+        // Update is full-replace: created preserved, updated bumped.
+        let mut edited = second.clone();
+        edited.name = "Renamed".into();
+        edited.body_html = Some("<p>hi</p>".into());
+        assert!(store.update_template(&edited, 20).unwrap());
+        let got = store.get_template("tpl-2").unwrap().unwrap();
+        assert_eq!(got.name, "Renamed");
+        assert_eq!((got.created_unix, got.updated_unix), (11, 20));
+        let mut absent = edited.clone();
+        absent.id = "tpl-404".into();
+        assert!(!store.update_template(&absent, 21).unwrap());
+        assert!(store.get_template("tpl-404").unwrap().is_none());
+
+        // Order is name-then-id; delete is idempotent.
+        let names: Vec<_> = store
+            .list_templates()
+            .unwrap()
+            .iter()
+            .map(|t| t.name.clone())
+            .collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        assert_eq!(names, sorted);
+        assert!(store.delete_template("tpl-1").unwrap());
+        assert!(!store.delete_template("tpl-1").unwrap());
     }
 
     #[test]

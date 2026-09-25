@@ -31,6 +31,16 @@ pub struct RuleView {
     /// Actions in application order (`{"do": "move"|"archive"|"delete"|
     /// "mark_read"|"star", …}`).
     pub then: Vec<RuleAction>,
+    /// Cumulative sync-time application failures. Store-owned: supplied
+    /// values on upsert/preview candidates are ignored.
+    #[serde(default, skip_deserializing)]
+    pub failure_count: u64,
+    /// Most recent bounded failure diagnostic, or `null` before any failure.
+    #[serde(default, skip_deserializing)]
+    pub last_error: Option<String>,
+    /// Unix seconds of the most recent failure, or `null`.
+    #[serde(default, skip_deserializing)]
+    pub last_failure_unix: Option<i64>,
 }
 
 impl From<Rule> for RuleView {
@@ -44,7 +54,20 @@ impl From<Rule> for RuleView {
             is_block: r.is_block,
             when: r.when,
             then: r.then,
+            failure_count: 0,
+            last_error: None,
+            last_failure_unix: None,
         }
+    }
+}
+
+impl From<kiwi_mail::store::RuleRecord> for RuleView {
+    fn from(record: kiwi_mail::store::RuleRecord) -> Self {
+        let mut view = Self::from(record.rule);
+        view.failure_count = record.failure_count;
+        view.last_error = record.last_error;
+        view.last_failure_unix = record.last_failure_unix;
+        view
     }
 }
 
@@ -127,6 +150,15 @@ pub struct PreviewHitView {
     pub folder: String,
     pub subject: Option<String>,
     pub message_id: Option<String>,
+    /// True leaf predicates that explain this match, using stable AST paths.
+    pub condition_hits: Vec<PreviewConditionHitView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewConditionHitView {
+    pub path: String,
+    pub kind: String,
 }
 
 /// `kiwi_rules_preview` receipt — a pure read: nothing was moved,
@@ -158,6 +190,14 @@ impl From<kiwi_mail::rules::RulePreview> for RulePreviewView {
                     folder: h.folder_name,
                     subject: h.subject,
                     message_id: h.message_id,
+                    condition_hits: h
+                        .condition_hits
+                        .into_iter()
+                        .map(|hit| PreviewConditionHitView {
+                            path: hit.path,
+                            kind: hit.kind.into(),
+                        })
+                        .collect(),
                 })
                 .collect(),
         }

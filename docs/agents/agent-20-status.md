@@ -753,3 +753,54 @@ passes under `--ignored`); kiwi-app 129/130 — sole failure is A19's
 T-285 `e2e_pop3_delete_after_download_sends_dele`, still actively
 in-flight (file was mid-keystroke this session; same hang class T-277
 fixed). fmt clean.
+
+## T-288-backend — message templates (store + IPC + contract + TS)
+
+**Done.** The last Mailspring-parity item: composer boilerplate, owned
+backend-side; the composer UI is A25's later task.
+
+- `kiwi-mail/src/templates.rs` (new): `Template` model — flat named
+  list (content, not policy; no account scoping), `validate()` with
+  byte bounds (name ≤128 B non-blank, subject ≤998 B RFC 5322 line cap,
+  bodyText ≤64 KiB, bodyHtml ≤128 KiB). `render()` is single-pass
+  `{{name}}` substitution: token name `[A-Za-z0-9_.-]+` ≤64 B, inner
+  whitespace trimmed; invalid/unterminated tokens stay literal (never
+  reported, never guessed); unknown names stay verbatim + collected in
+  sorted-deduped `missing_vars`; substitutions are non-recursive;
+  `vars` bounded (≤64 entries, ≤4 KiB values → `invalid-input`).
+  UTF-8-safe `find`-based scan, no byte indexing. 7 unit tests.
+- `kiwi-mail` store: schema v15 — `templates` table
+  (template_id/name/subject/body_text/body_html/created_unix/
+  updated_unix). CRUD on `MailStore`: `insert_template` (store assigns
+  `tpl-N`; `tpl-` prefix reserved for caller ids → invalid), `update_`
+  (full replace, preserves `created_unix`), `get_`, `list_`
+  (name-then-id order), `delete_` (idempotent bool). Migration test:
+  v14→v15 creates the table, preserves rows. CRUD test incl. id
+  sequence + ordering.
+- `kiwi-app`: `types/templates.rs` (`TemplateView`/`TemplateInput`/
+  `RenderedTemplateView` — serde camelCase, `bodyHtml` omitted not
+  null). `commands/templates.rs`: five `#[tauri::command]`s —
+  `kiwi_templates_list/create/update/delete/render`, all `gate()`d.
+  Writes audited (`template-created/updated/deleted`, **id only** —
+  bodies never enter the log); list/render unaudited reads. Audits
+  fire only after the write succeeds (not-found precedes audit).
+  Registered in `invoke_handler`. 3 tests: CRUD roundtrip + not-found,
+  render vars/missing/bounds, invalid-input create.
+- Contract: `docs/contracts/ipc.md` §6i — wire shapes, per-command
+  semantics, placeholder grammar, bounds, error codes (`locked`/
+  `invalid-input`/`not-found`), and the documented decision:
+  **server-side substitution** (composer gets ready fields; grammar
+  tested once in Rust) and **audited writes** (drafts-adjacent —
+  tamper-evident trail, id-only detail, matches contacts posture).
+- Frontend: `kiwi.ts` + `RenderedTemplateView`/`TemplateInput`/
+  `TemplateView`; `ipc.ts` wrappers `templatesList/Create/Update/
+  Delete/Render` — wired only to the five registered commands.
+
+**Gates:** `cargo test -p kiwi-mail` **218** green; `cargo test -p
+kiwi-app --lib` **133** green (A19 finished T-285 — the pop3-dele e2e
+now passes); `clippy -D warnings --all-targets` clean on mail+app;
+`fmt --check` clean; `tsc --noEmit` clean (fixed one A25 mid-flight
+gap: `MessageSourceView` import missing in mailbox.tsx — mechanical).
+
+**A25 hand-off:** consume `api.templates*`; `render.missingVars` is
+the UI flag for unresolved `{{name}}` tokens. `tpl-` ids reserved.

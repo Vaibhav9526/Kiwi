@@ -32,8 +32,8 @@ mod eval;
 mod model;
 
 pub use apply::{
-    ARCHIVE_FOLDER, AppliedRules, ApplyNowReport, EvalStage, PreviewHit, RulePreview, TRASH_FOLDER,
-    apply_now, apply_on_ingest, preview_rule,
+    ARCHIVE_FOLDER, AppliedRules, ApplyNowReport, EvalStage, PreviewConditionHit, PreviewHit,
+    RulePreview, TRASH_FOLDER, apply_now, apply_on_ingest, preview_rule,
 };
 pub use eval::evaluate;
 pub(crate) use model::RuleSpec;

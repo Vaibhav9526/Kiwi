@@ -32,6 +32,7 @@ pub mod sandbox;
 pub mod security;
 pub mod send;
 pub mod system;
+pub mod templates;
 
 use std::sync::Arc;
 

@@ -42,6 +42,7 @@ use commands::sandbox::*;
 use commands::security::*;
 use commands::send::*;
 use commands::system::*;
+use commands::templates::*;
 
 /// IPC contract version — bump on breaking changes (ipc.md §1).
 pub const IPC_CONTRACT_VERSION: &str = "kiwi.ipc/1";
@@ -100,8 +101,10 @@ pub fn run() {
             kiwi_list_messages,
             kiwi_search_messages,
             kiwi_get_message,
+            kiwi_message_source,
             kiwi_sync_account,
             kiwi_sync_status,
+            kiwi_set_pop3_policy,
             // message actions (gated)
             kiwi_update_message,
             kiwi_delete_messages,
@@ -170,6 +173,12 @@ pub fn run() {
             kiwi_rules_apply_now,
             kiwi_rules_hits,
             kiwi_rules_preview,
+            // message templates (gated — T-288)
+            kiwi_templates_list,
+            kiwi_templates_create,
+            kiwi_templates_update,
+            kiwi_templates_delete,
+            kiwi_templates_render,
             // endpoint signals (exempt — feeds trust)
             kiwi_collect_endpoint_signals,
         ])

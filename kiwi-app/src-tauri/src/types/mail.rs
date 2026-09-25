@@ -328,6 +328,31 @@ pub struct MessageBodyView {
     pub references: Vec<String>,
 }
 
+/// `kiwi_set_pop3_policy` — per-account POP3 deletion policy (T-295).
+/// `deleteAfterDownload: false` (default) keeps drops on the server;
+/// `true` sends DELE per ingested message. POP3-only — rejected with
+/// `invalid-input` on IMAP accounts.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Pop3PolicyView {
+    pub account_id: String,
+    pub delete_after_download: bool,
+}
+
+/// `kiwi_message_source` — verbatim RFC822 source for "view source"
+/// (T-295; T-292 flagged the gap). `source` is lossy-decoded UTF-8 capped
+/// at 8 MiB of bytes; `truncated` marks the cap fired, `bytes` is the
+/// stored total so the UI can label "first 8 MiB of N".
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MessageSourceView {
+    pub folder_id: i64,
+    pub uid: u64,
+    pub source: String,
+    pub bytes: u64,
+    pub truncated: bool,
+}
+
 /// `kiwi://mail-changed` event payload — emitted by the live-sync worker
 /// (T-157) after a sync pass changed stored mail. `folder`/`folderId` are
 /// set for folder-scoped passes (IDLE wake, poll); `null` marks the full

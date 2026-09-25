@@ -107,6 +107,11 @@ pub struct AccountMeta {
     /// Org binding for the send-path policy bridge (admin-api §10).
     #[serde(default)]
     pub org_id: Option<String>,
+    /// POP3 delete-after-download (T-295): `false` = keep-on-server, the
+    /// default and only safe-on-resume posture; `true` = `sync_pop3` issues
+    /// DELE per ingested drop. Recorded + audited, never implied.
+    #[serde(default)]
+    pub pop3_delete_after_download: bool,
 }
 
 /// Folder the account is known to have (id is the mail-store row id).

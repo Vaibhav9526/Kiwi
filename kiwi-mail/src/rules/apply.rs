@@ -18,7 +18,7 @@ use crate::error::Result;
 use crate::mime::ParsedMessage;
 use crate::store::MailStore;
 
-use super::eval::evaluate;
+use super::eval::{condition_hits, evaluate, evaluate_at_stage};
 use super::model::{Rule, RuleAction, RuleOutcome};
 
 /// `Archive` resolves here (created on demand).
@@ -70,8 +70,18 @@ pub fn apply_on_ingest(
     if rules.is_empty() {
         return Ok(AppliedRules::default());
     }
-    let outcome = evaluate(msg, &rules);
-    execute(store, account_id, folder_id, uid, msg, &outcome, stage, now)
+    let (outcome, _) = evaluate_at_stage(msg, &rules, stage == EvalStage::Full);
+    match execute(store, account_id, folder_id, uid, msg, &outcome, stage, now) {
+        Ok(applied) => Ok(applied),
+        Err(error) => {
+            // Evaluation is total, so sync-time failures are persistence or
+            // action errors. Attribute the failed combined application to
+            // every rule whose predicate matched; the rule view can then badge
+            // the broken rule(s) without failing the mail sync.
+            let _ = store.record_rule_failures(&outcome.matched, &error.to_string(), now);
+            Err(error)
+        }
+    }
 }
 
 /// Execute an already-computed outcome for the message at
@@ -237,6 +247,15 @@ pub fn apply_now(store: &MailStore, account_id: &str, now: i64) -> Result<ApplyN
     Ok(report)
 }
 
+/// One true leaf predicate from a preview match. This is condition evidence,
+/// not the message field itself — no subject/header/body/address value crosses
+/// the boundary beyond the separately bounded display subject.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviewConditionHit {
+    pub path: String,
+    pub kind: &'static str,
+}
+
 /// One candidate-rule match in a dry run — the message's eval-time
 /// coordinates plus the display fields the preview list renders.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -246,6 +265,7 @@ pub struct PreviewHit {
     pub folder_name: String,
     pub subject: Option<String>,
     pub message_id: Option<String>,
+    pub condition_hits: Vec<PreviewConditionHit>,
 }
 
 /// [`preview_rule`] receipt — a read-only report; nothing was executed.
@@ -299,6 +319,7 @@ pub fn preview_rule(
                 folder_name: m.folder_name,
                 subject: m.subject,
                 message_id: m.message_id,
+                condition_hits: condition_hits(&rule.when, &parsed),
             });
         }
     }
@@ -587,12 +608,62 @@ mod tests {
     }
 
     #[test]
+    fn failed_apply_is_nonfatal_and_records_rule_health() {
+        let (store, fid) = seed();
+        store.upsert_message(fid, &meta(1), 100).unwrap();
+        store
+            .upsert_rule(&sender_rule(
+                "broken",
+                "corp.example",
+                vec![RuleAction::Star],
+            ))
+            .unwrap();
+        store
+            .conn_for_test()
+            .execute_batch(
+                "CREATE TRIGGER fail_rule_hits BEFORE INSERT ON rule_hits
+                 BEGIN SELECT RAISE(ABORT, 'forced audit failure'); END",
+            )
+            .unwrap();
+
+        let error = apply_on_ingest(
+            &store,
+            "a1",
+            fid,
+            1,
+            &parsed("a@corp.example", "s"),
+            EvalStage::Full,
+            77,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("forced audit failure"));
+        let record = store.get_rule_record("broken").unwrap().unwrap();
+        assert_eq!(record.failure_count, 1);
+        assert!(
+            record
+                .last_error
+                .as_deref()
+                .unwrap()
+                .contains("forced audit failure")
+        );
+        assert_eq!(record.last_failure_unix, Some(77));
+        assert!(
+            flags_of(&store, fid, 1).is_empty(),
+            "audit failure precedes effects"
+        );
+    }
+
+    #[test]
     fn preview_reports_matches_and_executes_nothing() {
         let (store, fid) = seed();
         store.upsert_message(fid, &meta(1), 100).unwrap();
         store.upsert_message(fid, &meta(2), 100).unwrap();
         store
-            .store_body(fid, 1, b"From: a@corp.example\r\nSubject: payroll\r\n\r\nb")
+            .store_body(
+                fid,
+                1,
+                b"From: a@corp.example\r\nSubject: payroll\r\n\r\npayroll body",
+            )
             .unwrap();
         // uid 2 has no stored body — counted, never guessed.
         let trash = store.ensure_folder("a1", "Trash").unwrap();
@@ -601,13 +672,21 @@ mod tests {
             .store_body(trash, 3, b"From: a@corp.example\r\nSubject: x\r\n\r\nb")
             .unwrap();
 
-        let rule = sender_rule(
+        let mut rule = sender_rule(
             "cand",
             "corp.example",
             vec![RuleAction::Move {
                 folder: "Work".into(),
             }],
         );
+        rule.when = Predicate::All {
+            children: vec![
+                rule.when.clone(),
+                Predicate::BodyContains {
+                    value: "payroll".into(),
+                },
+            ],
+        };
         let p = preview_rule(&store, "a1", &rule, 50).unwrap();
         assert_eq!(p.scanned, 1, "trash excluded, no-body skipped");
         assert_eq!(p.skipped_no_body, 1);
@@ -615,6 +694,19 @@ mod tests {
         assert_eq!(p.hits[0].uid, 1);
         assert_eq!(p.hits[0].folder_name, "INBOX");
         assert_eq!(p.hits[0].subject.as_deref(), Some("s")); // meta, not body parse
+        assert_eq!(
+            p.hits[0].condition_hits,
+            vec![
+                PreviewConditionHit {
+                    path: "$.children[0]".into(),
+                    kind: "sender",
+                },
+                PreviewConditionHit {
+                    path: "$.children[1]".into(),
+                    kind: "body_contains",
+                }
+            ]
+        );
 
         // Pure of effect: nothing moved, flagged, hit-logged, or watermarked.
         assert_eq!(store.folder_uids(fid).unwrap(), vec![1, 2]);

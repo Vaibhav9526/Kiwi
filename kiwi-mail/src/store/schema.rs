@@ -1,7 +1,7 @@
 //! SQLite schema — DDL + version. Migrations are explicit and
 //! append-only; `user_version` is the source of truth.
 
-pub(crate) const SCHEMA_VERSION: u32 = 13;
+pub(crate) const SCHEMA_VERSION: u32 = 15;
 
 pub(crate) const DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS accounts (
@@ -78,7 +78,13 @@ CREATE TABLE IF NOT EXISTS rules (
     enabled    INTEGER NOT NULL DEFAULT 1,
     position   INTEGER NOT NULL,
     is_block   INTEGER NOT NULL DEFAULT 0,
-    spec_json  TEXT NOT NULL
+    spec_json  TEXT NOT NULL,
+    -- T-244: cumulative sync-time apply failures and bounded diagnostics.
+    -- Counters survive rule edits; the last error is overwritten on each
+    -- later failure and never contains a message body or filesystem path.
+    failure_count INTEGER NOT NULL DEFAULT 0,
+    last_error     TEXT,
+    last_failure_unix INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_rules_scope ON rules(account_id, position);
 -- Rule-hit audit trail (T-233): which rules fired on which message.
@@ -178,5 +184,19 @@ CREATE TABLE IF NOT EXISTS message_link_risk (
     risk        TEXT NOT NULL CHECK (risk IN ('clean', 'noted', 'failed')),
     reasons_json TEXT NOT NULL,
     PRIMARY KEY (folder_id, uid)
+);
+-- Message templates (T-288): composer boilerplate, a flat named list —
+-- content, not policy, so no account scoping or ordering columns.
+-- `body_html` is optional (plain-text templates are the common case);
+-- `{{name}}` placeholders in subject/bodies are render-time resolved
+-- (templates::Template::render), the stored row keeps them verbatim.
+CREATE TABLE IF NOT EXISTS templates (
+    template_id  TEXT PRIMARY KEY,
+    name         TEXT NOT NULL,
+    subject      TEXT NOT NULL DEFAULT '',
+    body_text    TEXT NOT NULL,
+    body_html    TEXT,
+    created_unix INTEGER NOT NULL,
+    updated_unix INTEGER NOT NULL
 );
 "#;

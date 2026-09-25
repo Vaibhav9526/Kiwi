@@ -261,6 +261,58 @@ pub(crate) async fn get_message_impl(
     }
 }
 
+/// `kiwi_message_source { accountId, folderId, uid }` → verbatim RFC822
+/// source (T-295 — the T-292 "view source" wire). Same fetch semantics as
+/// `kiwi_get_message` (stored body, IMAP on-demand fetch recorded). A body
+/// that is absent locally AND unfetchable is `not-found` — never an empty
+/// string. Source is lossy-decoded and capped at 8 MiB (char-boundary
+/// walk-back, same rule as `kiwi_render_body`).
+#[tauri::command]
+pub async fn kiwi_message_source(
+    state: State<'_, Arc<AppState>>,
+    account_id: String,
+    folder_id: i64,
+    uid: i64,
+) -> CmdResult<crate::types::MessageSourceView> {
+    gate(state.inner()).await?;
+    let st = state.inner().clone();
+    run_mail_io(st, move |s| {
+        message_source_impl(s, account_id, folder_id, uid)
+    })
+    .await
+}
+
+/// 8 MiB wire cap — same bound `kiwi_render_body` documents (ipc.md §6b).
+const MAX_SOURCE_BYTES: usize = 8 * 1024 * 1024;
+
+pub(crate) async fn message_source_impl(
+    state: Arc<AppState>,
+    account_id: String,
+    folder_id: i64,
+    uid: i64,
+) -> CmdResult<crate::types::MessageSourceView> {
+    bounded("accountId", &account_id, 128)?;
+    if uid < 0 {
+        return Err(IpcError::invalid("uid must be >= 0"));
+    }
+    match load_body_raw(&state, &account_id, folder_id, uid as u64).await? {
+        Some(raw) => {
+            let bytes = raw.len() as u64;
+            let text = String::from_utf8_lossy(&raw).into_owned();
+            let capped =
+                crate::commands::message::render::truncate_to_byte_cap(text, MAX_SOURCE_BYTES);
+            Ok(crate::types::MessageSourceView {
+                folder_id,
+                uid: uid as u64,
+                source: capped,
+                bytes,
+                truncated: bytes > MAX_SOURCE_BYTES as u64,
+            })
+        }
+        None => Err(IpcError::not_found("message source not available")),
+    }
+}
+
 /// Shared body loader for get/render/attachment commands: ownership check →
 /// stored body → on-demand IMAP fetch (recorded + stored). `Ok(None)` means
 /// "not present locally and not fetchable" — never an IPC error.
@@ -741,14 +793,14 @@ pub(crate) async fn pop3_sync(
     state: &AppState,
     acct: &MailAccount,
 ) -> CmdResult<Vec<SyncReportView>> {
-    let accept_invalid = state
+    let (accept_invalid, delete_after_download) = state
         .index
         .lock()
         .await
         .account_meta
         .get(&acct.account_id)
-        .map(|m| m.accept_invalid_certs)
-        .unwrap_or(false);
+        .map(|m| (m.accept_invalid_certs, m.pop3_delete_after_download))
+        .unwrap_or((false, false));
     let t = Transport::connect(
         &acct.incoming.server.host,
         acct.incoming.server.port,
@@ -786,12 +838,14 @@ pub(crate) async fn pop3_sync(
         // T-279: stamp Authentication-Results at ingest. POP3 carries no
         // SMTP receipt context, so `receipt` stays `None` (SPF records
         // `none` with an explicit comment — never a guessed verdict).
+        // T-295: `delete_after_download` is the per-account opt-in flag
+        // (AccountMeta, default keep-on-server).
         let r = sync_pop3_with_auth(
             &mut client,
             &store,
             &acct.account_id,
             "INBOX",
-            false,
+            delete_after_download,
             now_unix(),
             auth_sealer(),
             None,
@@ -851,6 +905,56 @@ pub(crate) async fn pop3_sync(
         rule_failures: report.rule_failures,
         ..Default::default()
     }])
+}
+
+/// `kiwi_set_pop3_policy { accountId, deleteAfterDownload }` — per-account
+/// POP3 server-side deletion (T-295). Default off (keep-on-server); setting
+/// `true` makes every later sync issue DELE per ingested drop — the email
+/// then exists only locally. POP3-only, recorded + audited; never implied.
+#[tauri::command]
+pub async fn kiwi_set_pop3_policy(
+    state: State<'_, Arc<AppState>>,
+    account_id: String,
+    delete_after_download: bool,
+) -> CmdResult<crate::types::Pop3PolicyView> {
+    gate(state.inner()).await?;
+    bounded("accountId", &account_id, 128)?;
+    let acct = state
+        .store
+        .lock()
+        .await
+        .get_account(&account_id)?
+        .ok_or_else(|| IpcError::not_found("unknown account"))?;
+    if acct.incoming.protocol != IncomingProtocol::Pop3 {
+        return Err(IpcError::invalid(
+            "pop3 policy applies to POP3 accounts only",
+        ));
+    }
+    {
+        let mut index = state.index.lock().await;
+        index
+            .account_meta
+            .entry(account_id.clone())
+            .or_default()
+            .pop3_delete_after_download = delete_after_download;
+        index.save(&state.data_dir)?;
+    }
+    state.audit.lock().await.record(
+        "pop3-delete-policy",
+        &format!(
+            "{account_id}: {}",
+            if delete_after_download {
+                "delete after download"
+            } else {
+                "keep on server"
+            }
+        ),
+        now_unix(),
+    )?;
+    Ok(crate::types::Pop3PolicyView {
+        account_id,
+        delete_after_download,
+    })
 }
 
 /// `kiwi_sync_status { accountId? }` → per-account live-sync worker status

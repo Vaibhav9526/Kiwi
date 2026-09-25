@@ -33,6 +33,7 @@ import type {
   MessageBodyView,
   MessagePatch,
   MessageRef,
+  MessageSourceView,
   MessageUpdateView,
   MessageView,
   MoveResultView,
@@ -42,6 +43,7 @@ import type {
   OutboxItem,
   PairBeginView,
   PairStatusView,
+  Pop3PolicyView,
   RemoteContentView,
   RenderedBodyView,
   RuleHitView,
@@ -58,6 +60,9 @@ import type {
   SnoozedMessageView,
   SyncStatusView,
   TagCountView,
+  RenderedTemplateView,
+  TemplateInput,
+  TemplateView,
   TempDiscardView,
   TempExtendView,
   TempMailboxView,
@@ -384,6 +389,11 @@ export const api = {
   getMessage(accountId: string, folderId: number, uid: number): Promise<MessageBodyView> {
     return call<MessageBodyView>("kiwi_get_message", { accountId, folderId, uid });
   },
+  /** T-295: verbatim RFC822 source (lossy UTF-8, 8 MiB cap). Absent → typed
+   * `not-found`, never an empty string. */
+  messageSource(accountId: string, folderId: number, uid: number): Promise<MessageSourceView> {
+    return call<MessageSourceView>("kiwi_message_source", { accountId, folderId, uid });
+  },
   syncAccount(accountId: string, folders?: string[]): Promise<Record<string, unknown>[]> {
     return call<Record<string, unknown>[]>("kiwi_sync_account", { accountId, folders });
   },
@@ -417,6 +427,11 @@ export const api = {
   },
   setRemoteContent(accountId: string, allowed: boolean): Promise<RemoteContentView> {
     return call<RemoteContentView>("kiwi_set_remote_content", { accountId, allowed });
+  },
+  /** T-295: per-account POP3 deletion policy — `true` DELEs after ingest
+   * (default keep-on-server). POP3 accounts only. */
+  setPop3Policy(accountId: string, deleteAfterDownload: boolean): Promise<Pop3PolicyView> {
+    return call<Pop3PolicyView>("kiwi_set_pop3_policy", { accountId, deleteAfterDownload });
   },
   linkClick(accountId: string, folderId: number, uid: number, url: string): Promise<LinkClickVerdict> {
     return call<LinkClickVerdict>("kiwi_link_click", { accountId, folderId, uid, url });
@@ -544,6 +559,42 @@ export const api = {
    */
   rulesPreview(accountId: string, rule: RuleView, limit?: number): Promise<RulePreviewView> {
     return call<RulePreviewView>("kiwi_rules_preview", { accountId, rule, limit });
+  },
+
+  /* ---------------- message templates (gated, T-288) ---------------- */
+
+  /** Stored templates, name-then-id order (ipc.md §6i). */
+  async templatesList(): Promise<TemplateView[]> {
+    return asArray<TemplateView>(await call<unknown>("kiwi_templates_list"));
+  },
+  /**
+   * Create a template — the store assigns `tpl-N` and timestamps;
+   * caller supplies content only. The `tpl-` prefix is reserved.
+   */
+  templatesCreate(template: TemplateInput): Promise<TemplateView> {
+    return call<TemplateView>("kiwi_templates_create", { template });
+  },
+  /**
+   * Full replace by `template.id`, not a merge — `createdUnix` is
+   * preserved. Absent id throws `not-found`.
+   */
+  templatesUpdate(template: TemplateView): Promise<TemplateView> {
+    return call<TemplateView>("kiwi_templates_update", { template });
+  },
+  /** Idempotent — `removed: false` is a normal answer, not an error. */
+  templatesDelete(templateId: string): Promise<{ removed: boolean }> {
+    return call<{ removed: boolean }>("kiwi_templates_delete", { templateId });
+  },
+  /**
+   * Server-side `{{var}}` substitution — returns ready-to-use fields
+   * plus `missingVars` (well-formed placeholders with no value, left
+   * verbatim in the text). Vars bounds: ≤64 entries, ≤4 KiB values.
+   */
+  templatesRender(
+    templateId: string,
+    vars?: Record<string, string>,
+  ): Promise<RenderedTemplateView> {
+    return call<RenderedTemplateView>("kiwi_templates_render", { templateId, vars });
   },
 
   /* ---------------- send / outbox (gated) ---------------- */

@@ -37,7 +37,7 @@ async fn rules_list_impl(state: &AppState, account_id: Option<&str>) -> CmdResul
     }
     let store = state.store.lock().await;
     Ok(store
-        .list_rules(account_id)?
+        .list_rule_records(account_id)?
         .into_iter()
         .map(RuleView::from)
         .collect())
@@ -64,7 +64,13 @@ async fn rules_upsert_impl(state: &AppState, view: RuleView) -> CmdResult<RuleVi
     }
     // `upsert_rule` runs Rule::validate — the store-side gate.
     state.store.lock().await.upsert_rule(&rule)?;
-    Ok(RuleView::from(rule))
+    let stored = state
+        .store
+        .lock()
+        .await
+        .get_rule_record(&rule.id)?
+        .ok_or_else(|| IpcError::not_found("rule disappeared"))?;
+    Ok(RuleView::from(stored))
 }
 
 /// `kiwi_rules_delete { ruleId }` → `{ removed }`.
@@ -229,6 +235,9 @@ mod tests {
                 value: "x.example".into(),
             },
             then: vec![RuleAction::MarkRead],
+            failure_count: 0,
+            last_error: None,
+            last_failure_unix: None,
         }
     }
 

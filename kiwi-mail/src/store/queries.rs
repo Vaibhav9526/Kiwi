@@ -11,6 +11,7 @@ use crate::account::MailAccount;
 use crate::category::Category;
 use crate::error::{MailError, Result};
 use crate::rules::{Rule, RuleSpec};
+use crate::templates::{TEMPLATE_ID_PREFIX, Template};
 
 use super::*;
 
@@ -1220,41 +1221,58 @@ impl MailStore {
     }
 
     /// Rules in scope for `account_id`: global rows (NULL account_id) plus
-    /// the account's own, in deterministic storage order (`position`, then
-    /// `rule_id` — the evaluator applies block precedence on top).
-    /// `None` lists global rules only — binding NULL makes
-    /// `account_id = ?1` never true, so one statement serves both shapes.
-    /// Rows with undecodable specs are skipped: one corrupt row must not
-    /// disable the whole rule set.
-    pub fn list_rules(&self, account_id: Option<&str>) -> Result<Vec<Rule>> {
+    /// the account's own, with persisted health diagnostics. Rows with
+    /// undecodable specs are skipped so one corrupt row cannot disable the
+    /// whole ruleset.
+    pub fn list_rule_records(&self, account_id: Option<&str>) -> Result<Vec<RuleRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT rule_id, account_id, name, enabled, position, is_block, spec_json
+            "SELECT rule_id, account_id, name, enabled, position, is_block, spec_json,
+                    failure_count, last_error, last_failure_unix
              FROM rules
              WHERE account_id IS NULL OR account_id = ?1
              ORDER BY position, rule_id",
         )?;
-        let rows = stmt.query_map(params![account_id], map_rule_row)?;
+        let rows = stmt.query_map(params![account_id], map_rule_record_row)?;
         let mut out = Vec::new();
         for r in rows {
-            if let Some(rule) = r? {
-                out.push(rule);
+            if let Some(record) = r? {
+                out.push(record);
             }
         }
         Ok(out)
     }
 
+    /// Rules in scope for `account_id`: global rows (NULL account_id) plus
+    /// the account's own, in deterministic storage order (`position`, then
+    /// `rule_id` — the evaluator applies block precedence on top).
+    /// `None` lists global rules only — binding NULL makes
+    /// `account_id = ?1` never true, so one statement serves both shapes.
+    pub fn list_rules(&self, account_id: Option<&str>) -> Result<Vec<Rule>> {
+        Ok(self
+            .list_rule_records(account_id)?
+            .into_iter()
+            .map(|record| record.rule)
+            .collect())
+    }
+
     /// One rule by id. A corrupt spec surfaces as an error here — an
     /// explicit fetch should never silently drop the row.
     pub fn get_rule(&self, rule_id: &str) -> Result<Option<Rule>> {
+        Ok(self.get_rule_record(rule_id)?.map(|record| record.rule))
+    }
+
+    /// One rule plus its store-owned application health.
+    pub fn get_rule_record(&self, rule_id: &str) -> Result<Option<RuleRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT rule_id, account_id, name, enabled, position, is_block, spec_json
+            "SELECT rule_id, account_id, name, enabled, position, is_block, spec_json,
+                    failure_count, last_error, last_failure_unix
              FROM rules WHERE rule_id = ?1",
         )?;
         let mut rows = stmt.query(params![rule_id])?;
         match rows.next()? {
             None => Ok(None),
             Some(r) => Ok(Some(
-                map_rule_row(r)?.ok_or(MailError::Store(rusqlite::Error::InvalidQuery))?,
+                map_rule_record_row(r)?.ok_or(MailError::Store(rusqlite::Error::InvalidQuery))?,
             )),
         }
     }
@@ -1266,6 +1284,32 @@ impl MailStore {
             .conn
             .execute("DELETE FROM rules WHERE rule_id = ?1", params![rule_id])?
             > 0)
+    }
+
+    /// Increment each matching rule's cumulative failure count and replace
+    /// its bounded last-error diagnostic. This is deliberately not cleared on
+    /// success: the count is historical health, while `last_error` identifies
+    /// the most recent incident. Duplicate ids in one call count once.
+    pub fn record_rule_failures(&self, rule_ids: &[String], error: &str, now: i64) -> Result<()> {
+        let mut bounded = error.trim().replace(['\r', '\n'], " ");
+        if bounded.len() > 512 {
+            bounded.truncate(512);
+            while !bounded.is_char_boundary(bounded.len()) {
+                bounded.pop();
+            }
+        }
+        let mut stmt = self.conn.prepare(
+            "UPDATE rules SET failure_count = failure_count + 1,
+                    last_error = ?2, last_failure_unix = ?3
+             WHERE rule_id = ?1",
+        )?;
+        let mut seen = std::collections::BTreeSet::new();
+        for id in rule_ids {
+            if seen.insert(id) {
+                stmt.execute(params![id, bounded, now])?;
+            }
+        }
+        Ok(())
     }
 
     /// Record which rules fired on a stored message — the F1 audit trail
@@ -1499,23 +1543,150 @@ impl MailStore {
         }
         Ok(out)
     }
+
+    // -- message templates (T-288) --------------------------------------------
+
+    /// Insert a template, assigning `tpl-N` when `id` is empty. The
+    /// `tpl-` prefix is reserved for store-assigned ids — a caller-
+    /// supplied one is rejected so the sequence cannot be collided with.
+    /// `validate()` runs at the boundary; timestamps are caller-passed.
+    pub fn insert_template(&self, template: &Template, now: i64) -> Result<Template> {
+        let mut t = template.clone();
+        if t.id.is_empty() {
+            t.id = self.next_template_id()?;
+        } else if t.id.starts_with(TEMPLATE_ID_PREFIX) {
+            return Err(MailError::InvalidInput(format!(
+                "template rejected: id `{}` uses the reserved `{TEMPLATE_ID_PREFIX}` prefix",
+                t.id
+            )));
+        }
+        t.created_unix = now;
+        t.updated_unix = now;
+        t.validate()?;
+        self.conn.execute(
+            "INSERT INTO templates
+               (template_id, name, subject, body_text, body_html, created_unix, updated_unix)
+             VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            params![
+                t.id,
+                t.name,
+                t.subject,
+                t.body_text,
+                t.body_html,
+                t.created_unix,
+                t.updated_unix
+            ],
+        )?;
+        Ok(t)
+    }
+
+    /// Full replace by id — not a merge. `created_unix` is preserved from
+    /// the stored row; `updated_unix` becomes `now`. `Err` when absent.
+    pub fn update_template(&self, template: &Template, now: i64) -> Result<bool> {
+        let mut t = template.clone();
+        t.validate()?;
+        let Some(existing) = self.get_template(&t.id)? else {
+            return Ok(false);
+        };
+        t.created_unix = existing.created_unix;
+        t.updated_unix = now;
+        Ok(self.conn.execute(
+            "UPDATE templates SET name = ?2, subject = ?3, body_text = ?4,
+                    body_html = ?5, updated_unix = ?6
+             WHERE template_id = ?1",
+            params![
+                t.id,
+                t.name,
+                t.subject,
+                t.body_text,
+                t.body_html,
+                t.updated_unix
+            ],
+        )? > 0)
+    }
+
+    /// One template by id.
+    pub fn get_template(&self, template_id: &str) -> Result<Option<Template>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT template_id, name, subject, body_text, body_html, created_unix, updated_unix
+             FROM templates WHERE template_id = ?1",
+        )?;
+        let mut rows = stmt.query(params![template_id])?;
+        match rows.next()? {
+            None => Ok(None),
+            Some(r) => Ok(Some(map_template_row(r)?)),
+        }
+    }
+
+    /// All templates in deterministic order (name, then id).
+    pub fn list_templates(&self) -> Result<Vec<Template>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT template_id, name, subject, body_text, body_html, created_unix, updated_unix
+             FROM templates ORDER BY name, template_id",
+        )?;
+        let rows = stmt.query_map([], map_template_row)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// Remove a template; returns whether a row existed.
+    pub fn delete_template(&self, template_id: &str) -> Result<bool> {
+        Ok(self.conn.execute(
+            "DELETE FROM templates WHERE template_id = ?1",
+            params![template_id],
+        )? > 0)
+    }
+
+    /// `tpl-N`, one past the current maximum — single-connection SQLite
+    /// serializes writers, so MAX+1 cannot race.
+    fn next_template_id(&self) -> Result<String> {
+        let n: i64 = self.conn.query_row(
+            "SELECT COALESCE(MAX(CAST(SUBSTR(template_id, ?1) AS INTEGER)), 0) + 1
+             FROM templates WHERE template_id GLOB 'tpl-*'",
+            params![TEMPLATE_ID_PREFIX.len() as i64 + 1],
+            |r| r.get(0),
+        )?;
+        Ok(format!("{TEMPLATE_ID_PREFIX}{n}"))
+    }
 }
 
-/// `rules` row → [`Rule`]. `Ok(None)` = the spec JSON is undecodable;
-/// `list_rules` skips such rows, `get_rule` turns them into an error.
-fn map_rule_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Option<Rule>> {
+/// `templates` row → [`Template`]. Columns are plain text — no decode
+/// failure mode, so unlike rules there is no skip path.
+fn map_template_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Template> {
+    Ok(Template {
+        id: r.get(0)?,
+        name: r.get(1)?,
+        subject: r.get(2)?,
+        body_text: r.get(3)?,
+        body_html: r.get(4)?,
+        created_unix: r.get(5)?,
+        updated_unix: r.get(6)?,
+    })
+}
+
+/// `rules` row → [`RuleRecord`]. `Ok(None)` = the spec JSON is undecodable;
+/// list calls skip such rows, explicit get turns them into an error.
+fn map_rule_record_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<Option<RuleRecord>> {
     let spec_json: String = r.get(6)?;
     let Some(spec) = serde_json::from_str::<RuleSpec>(&spec_json).ok() else {
         return Ok(None);
     };
-    Ok(Some(Rule {
-        id: r.get(0)?,
-        account_id: r.get(1)?,
-        name: r.get(2)?,
-        enabled: r.get::<_, i64>(3)? != 0,
-        position: r.get(4)?,
-        is_block: r.get::<_, i64>(5)? != 0,
-        when: spec.when,
-        then: spec.then,
+    Ok(Some(RuleRecord {
+        rule: Rule {
+            id: r.get(0)?,
+            account_id: r.get(1)?,
+            name: r.get(2)?,
+            enabled: r.get::<_, i64>(3)? != 0,
+            position: r.get(4)?,
+            is_block: r.get::<_, i64>(5)? != 0,
+            when: spec.when,
+            then: spec.then,
+        },
+        failure_count: r.get::<_, i64>(7)?.max(0) as u64,
+        last_error: r.get(8)?,
+        last_failure_unix: r.get(9)?,
     }))
 }

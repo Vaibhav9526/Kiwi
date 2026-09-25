@@ -23,44 +23,126 @@ use crate::mime::ParsedMessage;
 /// Evaluate `rules` against `msg`. Callers pass the rules already in scope
 /// for the message's account (`MailStore::list_rules` returns global +
 /// account rows); the evaluator applies precedence itself.
+/// Evaluate the full ruleset with all parsed-message facts available.
 pub fn evaluate(msg: &ParsedMessage, rules: &[Rule]) -> RuleOutcome {
+    evaluate_at_stage(msg, rules, true).0
+}
+
+/// Stable path/kind evidence for every leaf predicate that evaluates true.
+pub(crate) fn condition_hits(
+    p: &Predicate,
+    msg: &ParsedMessage,
+) -> Vec<super::apply::PreviewConditionHit> {
+    let mut out = Vec::new();
+    collect_condition_hits(p, msg, "$", &mut out);
+    out
+}
+
+fn collect_condition_hits(
+    p: &Predicate,
+    msg: &ParsedMessage,
+    path: &str,
+    out: &mut Vec<super::apply::PreviewConditionHit>,
+) {
+    let mut leaf = |kind| {
+        out.push(super::apply::PreviewConditionHit {
+            path: path.to_string(),
+            kind,
+        })
+    };
+    match p {
+        Predicate::Always => leaf("always"),
+        Predicate::Sender { .. } if matches(p, msg) => leaf("sender"),
+        Predicate::Recipient { .. } if matches(p, msg) => leaf("recipient"),
+        Predicate::Subject { .. } if matches(p, msg) => leaf("subject"),
+        Predicate::Header { .. } if matches(p, msg) => leaf("header"),
+        Predicate::BodyContains { .. } if matches(p, msg) => leaf("body_contains"),
+        Predicate::AttachmentName { .. } if matches(p, msg) => leaf("attachment_name"),
+        Predicate::All { children } => {
+            for (i, child) in children.iter().enumerate() {
+                collect_condition_hits(child, msg, &format!("{path}.children[{i}]"), out);
+            }
+        }
+        Predicate::Any { children } => {
+            for (i, child) in children.iter().enumerate() {
+                collect_condition_hits(child, msg, &format!("{path}.children[{i}]"), out);
+            }
+        }
+        Predicate::Not { child } => {
+            collect_condition_hits(child, msg, &format!("{path}.child"), out)
+        }
+        _ => {}
+    }
+}
+
+/// Evaluate rules at an ingest stage. The boolean is a stage-evaluable
+/// predicate-tree walk: at envelope stage, header/body/attachment facts are
+/// `Deferred` rather than being guessed as false. `deferred` means a full
+/// parse is required before a disposition can safely be applied.
+pub(crate) fn evaluate_at_stage(
+    msg: &ParsedMessage,
+    rules: &[Rule],
+    full_facts: bool,
+) -> (RuleOutcome, bool) {
     let order = |a: &&Rule, b: &&Rule| a.position.cmp(&b.position).then_with(|| a.id.cmp(&b.id));
     let (mut blocks, mut regulars): (Vec<&Rule>, Vec<&Rule>) =
         rules.iter().filter(|r| r.enabled).partition(|r| r.is_block);
     blocks.sort_by(order);
     regulars.sort_by(order);
 
-    // Block class: first match is terminal.
+    // Block class: first match is terminal. A deferred block may become the
+    // first match later, so it also suppresses regular application for now.
     for rule in blocks {
-        if matches(&rule.when, msg) {
-            return RuleOutcome {
-                actions: dedup(rule.then.iter().cloned()),
-                matched: vec![rule.id.clone()],
-                blocked_by: Some(rule.id.clone()),
-            };
+        match truth(&rule.when, msg, full_facts) {
+            Truth::True => {
+                return (
+                    RuleOutcome {
+                        actions: dedup(rule.then.iter().cloned()),
+                        matched: vec![rule.id.clone()],
+                        blocked_by: Some(rule.id.clone()),
+                    },
+                    false,
+                );
+            }
+            Truth::Deferred => return (RuleOutcome::default(), true),
+            Truth::False => {}
         }
     }
 
     let mut out = RuleOutcome::default();
     let mut disposition_taken = false;
+    let mut deferred = false;
+    let mut deferred_disposition = false;
     for rule in regulars {
-        if !matches(&rule.when, msg) {
-            continue;
-        }
-        out.matched.push(rule.id.clone());
-        for action in &rule.then {
-            if action.is_disposition() {
-                if disposition_taken {
-                    continue; // a later move/archive/delete loses
+        match truth(&rule.when, msg, full_facts) {
+            Truth::True => {
+                out.matched.push(rule.id.clone());
+                for action in &rule.then {
+                    if action.is_disposition() {
+                        if disposition_taken {
+                            continue; // a later move/archive/delete loses
+                        }
+                        disposition_taken = true;
+                    }
+                    if !out.actions.contains(action) {
+                        out.actions.push(action.clone());
+                    }
                 }
-                disposition_taken = true;
             }
-            if !out.actions.contains(action) {
-                out.actions.push(action.clone());
+            Truth::Deferred => {
+                deferred = true;
+                deferred_disposition |= rule.then.iter().any(RuleAction::is_disposition);
             }
+            Truth::False => {}
         }
     }
-    out
+    // A later deferred disposition could win first-wins ordering. Leave the
+    // whole message for the full sweep instead of applying an unstable result.
+    if deferred_disposition {
+        (RuleOutcome::default(), true)
+    } else {
+        (out, deferred)
+    }
 }
 
 fn dedup(actions: impl Iterator<Item = RuleAction>) -> Vec<RuleAction> {
@@ -73,42 +155,97 @@ fn dedup(actions: impl Iterator<Item = RuleAction>) -> Vec<RuleAction> {
     out
 }
 
-/// Predicate-tree walk — pure, bounded by `Rule::validate`'s node cap.
-fn matches(p: &Predicate, msg: &ParsedMessage) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Truth {
+    True,
+    False,
+    Deferred,
+}
+
+/// Three-valued predicate evaluation. At envelope stage, header/body/
+/// attachment leaves are unknown rather than false; boolean combinators keep
+/// enough information to apply safe facts now and defer only what is needed.
+fn truth(p: &Predicate, msg: &ParsedMessage, full_facts: bool) -> Truth {
     match p {
-        Predicate::Always => true,
-        Predicate::All { children } => children.iter().all(|c| matches(c, msg)),
-        Predicate::Any { children } => children.iter().any(|c| matches(c, msg)),
-        Predicate::Not { child } => !matches(child, msg),
-        Predicate::Sender { op, value } => {
-            msg.from.iter().any(|a| text_match(*op, &a.email, value))
+        Predicate::Always => Truth::True,
+        Predicate::All { children } => children.iter().fold(Truth::True, |acc, child| {
+            combine_all(acc, truth(child, msg, full_facts))
+        }),
+        Predicate::Any { children } => children.iter().fold(Truth::False, |acc, child| {
+            combine_any(acc, truth(child, msg, full_facts))
+        }),
+        Predicate::Not { child } => match truth(child, msg, full_facts) {
+            Truth::True => Truth::False,
+            Truth::False => Truth::True,
+            Truth::Deferred => Truth::Deferred,
+        },
+        Predicate::Header { .. }
+        | Predicate::BodyContains { .. }
+        | Predicate::AttachmentName { .. }
+            if !full_facts =>
+        {
+            Truth::Deferred
         }
-        Predicate::Recipient { op, value } => msg
-            .to
-            .iter()
-            .chain(msg.cc.iter())
-            .any(|a| text_match(*op, &a.email, value)),
-        Predicate::Subject { op, value } => msg
-            .subject
-            .as_deref()
-            .is_some_and(|s| text_match(*op, s, value)),
-        Predicate::Header { name, op, value } => msg
-            .headers
-            .iter()
-            .any(|(n, v)| n.eq_ignore_ascii_case(name) && text_match(*op, v, value)),
+        Predicate::Sender { op, value } => {
+            bool_truth(msg.from.iter().any(|a| text_match(*op, &a.email, value)))
+        }
+        Predicate::Recipient { op, value } => bool_truth(
+            msg.to
+                .iter()
+                .chain(msg.cc.iter())
+                .any(|a| text_match(*op, &a.email, value)),
+        ),
+        Predicate::Subject { op, value } => bool_truth(
+            msg.subject
+                .as_deref()
+                .is_some_and(|s| text_match(*op, s, value)),
+        ),
+        Predicate::Header { name, op, value } => bool_truth(
+            msg.headers
+                .iter()
+                .any(|(n, v)| n.eq_ignore_ascii_case(name) && text_match(*op, v, value)),
+        ),
         Predicate::BodyContains { value } => {
             let needle = value.to_lowercase();
-            [&msg.text_body, &msg.html_body].iter().any(|b| {
-                b.as_deref()
-                    .is_some_and(|s| s.to_lowercase().contains(&needle))
-            }) || msg.snippet.to_lowercase().contains(&needle)
+            bool_truth(
+                [&msg.text_body, &msg.html_body].iter().any(|b| {
+                    b.as_deref()
+                        .is_some_and(|s| s.to_lowercase().contains(&needle))
+                }) || msg.snippet.to_lowercase().contains(&needle),
+            )
         }
-        Predicate::AttachmentName { op, value } => msg
-            .attachments
-            .iter()
-            .filter_map(|a| a.filename.as_deref())
-            .any(|f| text_match(*op, f, value)),
+        Predicate::AttachmentName { op, value } => bool_truth(
+            msg.attachments
+                .iter()
+                .filter_map(|a| a.filename.as_deref())
+                .any(|f| text_match(*op, f, value)),
+        ),
     }
+}
+
+fn bool_truth(value: bool) -> Truth {
+    if value { Truth::True } else { Truth::False }
+}
+
+fn combine_all(a: Truth, b: Truth) -> Truth {
+    match (a, b) {
+        (Truth::False, _) | (_, Truth::False) => Truth::False,
+        (Truth::True, Truth::True) => Truth::True,
+        _ => Truth::Deferred,
+    }
+}
+
+fn combine_any(a: Truth, b: Truth) -> Truth {
+    match (a, b) {
+        (Truth::True, _) | (_, Truth::True) => Truth::True,
+        (Truth::False, Truth::False) => Truth::False,
+        _ => Truth::Deferred,
+    }
+}
+
+/// Predicate-tree walk — pure, bounded by `Rule::validate`'s node cap.
+fn matches(p: &Predicate, msg: &ParsedMessage) -> bool {
+    truth(p, msg, true) == Truth::True
 }
 
 /// Leaf comparison. `Contains`/`EndsWith` fold to lowercase (Unicode-aware);
@@ -170,6 +307,32 @@ mod tests {
             text_body: Some("hello team".into()),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn envelope_deferral_does_not_treat_body_or_attachment_as_false() {
+        let envelope = msg();
+        let body_rule = rule(
+            "body",
+            1,
+            Predicate::BodyContains {
+                value: "report".into(),
+            },
+            vec![RuleAction::Delete],
+        );
+        let (outcome, deferred) =
+            evaluate_at_stage(&envelope, std::slice::from_ref(&body_rule), false);
+        assert_eq!(outcome, RuleOutcome::default());
+        assert!(
+            deferred,
+            "a body disposition cannot be decided from envelope facts"
+        );
+
+        let mut full = envelope.clone();
+        full.text_body = Some("the report is attached".into());
+        let (outcome, deferred) = evaluate_at_stage(&full, &[body_rule], true);
+        assert_eq!(outcome.matched, vec!["body"]);
+        assert!(!deferred);
     }
 
     fn rule(id: &str, position: i64, when: Predicate, then: Vec<RuleAction>) -> Rule {
