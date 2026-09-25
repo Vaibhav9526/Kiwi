@@ -214,7 +214,8 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-251 | ACFG-7/8/9 autoconfig parser hardening | Agent 19 | open | `kiwi-autoconfig/` | T-246 |
 | T-248 | Repo hygiene sweep (junk cleanup + gitignore + gate verify) | Watcher | done | repo-wide | — |
 | T-249w | Standing gate-watch loop (fmt/tsc/overlap/secrets, report NEW failures only) | Watcher | standing | fast gates | T-248 |
-| T-252 | Master findings register FINDINGS.md (dedupe 3 audits -> owner-task/status) | Agent 22 | open | `docs/audits/` | T-196/246/250 |
+| T-252 | FINDINGS.md master register (deduped, owner/status mapped) | Agent 22 | done |
 | T-253 | Implement §14 device-inventory endpoint (ADM-T250-08) | Agent 11 | open | `kiwi-admin/` | T-250 |
 | T-254 | AttachRisk hints: dangerous exts + double-ext + macro-enabled (clean/noted/failed, evidence-not-finding) | Agent 21 | open | `kiwi-mail/` | T-249 |
 | T-255 | Snooze: store snoozeUntil + unsnooze sweep + IPC presets (schema v10) | Agent 15 | open | `kiwi-mail/`, `src-tauri/` | T-244 |
+| T-256 | sandbox.md contract-vs-impl enumeration (SBX-1/2 + all promises) | Agent 22 | open | `docs/audits/`, `kiwi-sandbox/` (read) | T-252 |
