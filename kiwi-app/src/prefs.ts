@@ -102,6 +102,8 @@ export function applyUiPrefs(): void {
     }
     root.setAttribute("data-accent", loadPref<string>("kiwi.accent", "standard"));
     root.setAttribute("data-density", loadPref<string>("kiwi.density", "comfortable"));
+    // T-191: the Mailspring-idiom shell is the active theme foundation.
+    root.setAttribute("data-shell", "mailspring");
   } catch {
     // DOM unavailable (tests) — nothing to apply.
   }
