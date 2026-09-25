@@ -324,3 +324,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-343 | Gmail floating compose dock — LIVE (post-T-335) | Agent 24 | in-progress | `compose.tsx`, `App.tsx` | owner-directed |
 | T-344 | local gates script ps1+sh (mirrors CI, honest SKIP, surfaced 3 in-flight breakages) | Agent 26 | done |
 | T-345 | system tray: icon+unread tooltip, show/compose/quit menu, close-to-tray pref, honest degrade | Agent 20 | open | `src-tauri` setup, `tauri.conf` | |
+| T-346 | regenerate docs/architecture.svg to match as-built ARCHITECTURE.md | Agent 26 | open | `docs/architecture.svg` | ARCHITECTURE rewrite |
