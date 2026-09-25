@@ -19,7 +19,7 @@
  * rows (avatar, unread dot, bold sender, category pill, snippet).
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import type { AttachRiskView, FindingInfo, MessageBodyView, MessageEnvelope, MessagePatch, OutboxItem, RenderedBodyView, SearchHit, Severity, UnsubscribeInfo } from "../kiwi";
 import { severityLabel } from "../kiwi";
 import type { MessageCategory } from "../kiwi";
@@ -29,6 +29,8 @@ import { loadPref, savePref } from "../prefs";
 import { loadLocalBook, saveLocalBook, upsertLocal } from "../contacts";
 import { navigate } from "../router";
 import { SecurityPill } from "../components/security";
+import { PaneSplitter } from "../components/chrome";
+import { usePaneWidth } from "../state/panes";
 import { buildThreads, displaySubject } from "../threading";
 import type { Thread } from "../threading";
 import {
@@ -41,6 +43,7 @@ import {
   IconFilter,
   IconMail,
   IconOutbox,
+  IconFile,
   IconPaperclip,
   IconPrint,
   IconReply,
@@ -168,6 +171,8 @@ export function MailboxView(props: MailboxProps) {
   // T-291: list⇄reader focus ping-pong — Enter opens the reader, Esc returns.
   const rowsRef = useRef<HTMLDivElement | null>(null);
   const readerRef = useRef<HTMLElement | null>(null);
+  // T-293: resizable list column (persisted, clamped 280–600px).
+  const listW = usePaneWidth("kiwi.pane.list", 320, 280, 600);
   useEffect(() => {
     setPicked([]);
     anchorRef.current = null;
@@ -199,7 +204,11 @@ export function MailboxView(props: MailboxProps) {
   // T-284: the reader pill expands into the message's own evidence panel —
   // auth/link/attachment hints carried on the envelope, never the findings feed.
   const [evidenceOpen, setEvidenceOpen] = useState(false);
-  useEffect(() => setEvidenceOpen(false), [selected?.id]);
+  const [sourceOpen, setSourceOpen] = useState(false);
+  useEffect(() => {
+    setEvidenceOpen(false);
+    setSourceOpen(false);
+  }, [selected?.id]);
   const [contactNote, setContactNote] = useState<string | null>(null);
   useEffect(() => {
     setContactNote(null);
@@ -301,7 +310,7 @@ export function MailboxView(props: MailboxProps) {
   );
 
   return (
-    <div className="em-mailbox ms-view-enter">
+    <div className="em-mailbox ms-view-enter" style={{ "--kiwi-pane-list": `${listW.px}px` } as CSSProperties}>
       <section aria-label={`${folderLabel} message list`} className="em-list-col">
         <div className="em-list-head">
           <h1 ref={headingRef} tabIndex={-1} className="em-pane-title">
@@ -611,6 +620,20 @@ export function MailboxView(props: MailboxProps) {
                 <button type="button" className="em-iconbtn" onClick={() => window.print()} title="Print conversation">
                   <IconPrint size={14} />
                 </button>
+                <button
+                  type="button"
+                  className="em-iconbtn"
+                  onClick={() => setSourceOpen(true)}
+                  disabled={!props.body}
+                  title={
+                    props.body
+                      ? "View source — parsed headers + stored body parts (full RFC822 source needs a backend IPC — not exposed yet)"
+                      : "View source — load the message body first (live mode only)"
+                  }
+                  aria-label="View message source"
+                >
+                  <IconFile size={14} />
+                </button>
               </span>
             </div>
             <div className="em-reader-meta">
@@ -632,6 +655,7 @@ export function MailboxView(props: MailboxProps) {
               </button>
             </div>
             {evidenceOpen && <MessageEvidence m={selected} />}
+            {sourceOpen && props.body && <SourceDialog body={props.body} onClose={() => setSourceOpen(false)} />}
             {contactNote && (
               <p role="status" className="em-note">
                 <small>{contactNote}</small>
@@ -1667,6 +1691,115 @@ function MessageEvidence({ m }: { m: MessageEnvelope }) {
           </small>
         </p>
       )}
+    </div>
+  );
+}
+
+/**
+ * T-292 "View source" — the honest version: every field shown comes from the
+ * real `kiwi_message_body` payload (parsed headers + stored body parts). Full
+ * RFC822 raw source (all MIME headers verbatim) is NOT exposed by any
+ * registered IPC — flagged as a contract gap rather than fabricated.
+ */
+function SourceDialog({ body, onClose }: { body: MessageBodyView; onClose: () => void }) {
+  const [part, setPart] = useState<"html" | "text">(body.htmlBody ? "html" : "text");
+  const headers: [string, string][] = [
+    ["Subject", body.subject ?? "(no subject)"],
+    ["From", body.from.join(", ") || "(unknown)"],
+    ["To", body.to.join(", ") || "—"],
+    ["Cc", body.cc.join(", ") || "—"],
+    ["Date", body.dateUnix ? new Date(body.dateUnix * 1000).toLocaleString() : "—"],
+    ["Message-ID", body.messageId ?? "—"],
+    ["In-Reply-To", body.inReplyTo ?? "—"],
+    ["References", body.references.join(" ") || "—"],
+    ["Store coords", `folder ${body.folderId} · uid ${body.uid}`],
+  ];
+  const source = part === "html" ? body.htmlBody : body.textBody;
+  return (
+    <div className="kiwi-dialog-backdrop" role="presentation" onClick={onClose}>
+      <div
+        className="kiwi-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Message source"
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            e.preventDefault();
+            onClose();
+          }
+        }}
+        style={{ maxWidth: "52rem", width: "92%" }}
+      >
+        <h1 style={{ marginTop: 0, fontSize: "1.1rem" }}>Message source</h1>
+        <table style={{ borderCollapse: "collapse", width: "100%", marginBottom: "0.6rem" }}>
+          <tbody>
+            {headers.map(([k, v]) => (
+              <tr key={k}>
+                <td style={{ padding: "0.15rem 0.8rem 0.15rem 0", whiteSpace: "nowrap", verticalAlign: "top" }}>
+                  <small>
+                    <strong>{k}</strong>
+                  </small>
+                </td>
+                <td style={{ padding: "0.15rem 0", wordBreak: "break-all" }}>
+                  <small>{v}</small>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <p style={{ margin: "0 0 0.4rem" }}>
+          <button
+            type="button"
+            disabled={!body.htmlBody}
+            aria-pressed={part === "html"}
+            onClick={() => setPart("html")}
+            title={body.htmlBody ? "Stored text/html part" : "No HTML part stored"}
+          >
+            HTML part
+          </button>{" "}
+          <button
+            type="button"
+            disabled={!body.textBody}
+            aria-pressed={part === "text"}
+            onClick={() => setPart("text")}
+            title={body.textBody ? "Stored text/plain part" : "No plaintext part stored"}
+          >
+            Plaintext part
+          </button>
+        </p>
+        {source ? (
+          <pre
+            style={{
+              maxHeight: "18rem",
+              overflow: "auto",
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-all",
+              fontFamily: "monospace",
+              fontSize: "0.78rem",
+              padding: "0.5rem",
+              border: "1px solid var(--kiwi-border)",
+              borderRadius: "6px",
+              userSelect: "all",
+            }}
+          >
+            {source}
+          </pre>
+        ) : (
+          <p role="status">
+            <small>No stored source for this part (body not yet fetched).</small>
+          </p>
+        )}
+        <p style={{ color: "var(--kiwi-text-secondary)" }}>
+          <small>
+            Parsed headers + stored body parts only — the full RFC822 wire source (verbatim MIME headers, all
+            alternative parts) is not exposed by an IPC command yet. Contract gap filed under T-292.
+          </small>
+        </p>
+        <button type="button" className="kiwi-btn-primary" onClick={onClose} autoFocus>
+          Close (Esc)
+        </button>
+      </div>
     </div>
   );
 }

@@ -298,3 +298,37 @@
 
 - `npm run build` (`tsc && vite build`) — green, 83 modules.
 - No UI test driver exists in-repo (no playwright/vitest) — bindings verified by static trace to real handlers/IPC; demo mode exercises the same map with local-only mutations.
+
+## T-292 — print + message-source views
+
+### Print stylesheet (shell.css, `@media print`)
+
+- Reader-only output: hides `.em-chrome` (titlebar+toolbar), `.em-folders`,
+  `.em-list-col`, `.em-rail`, `.em-statusbar`, plus every interactive
+  affordance inside the reader (`.em-reader-tools`, `.em-reader-meta`,
+  `.em-card-tools`, `.em-card-actions`, attachment inputs/buttons/banners,
+  banners' buttons, skeletons, dialogs, lock overlay).
+- `.em-main/.em-center/.em-mailbox` flatten to static block flow; `.em-reader`
+  un-scrolls (overflow:visible, height:auto) so multi-page bodies paginate.
+- Typography: 10.5pt/1.5 body, 14pt thread title, black-on-white regardless
+  of theme; card headers keep sender/recipients/date with a hairline rule;
+  attachment filenames retained (only the save inputs/buttons hide);
+  `page-break-inside: avoid` on cards. Selector-verified against real markup.
+- Print affordance already existed (reader-tools print icon → `window.print()`).
+
+### View source — real data, honest gap
+
+- `SourceDialog` (mailbox.tsx) on a new reader-tools icon button (disabled
+  while no body is loaded / demo — tooltip explains). Shows the real
+  `kiwi_message_body` payload: parsed header table (Subject/From/To/Cc/Date/
+  Message-ID/In-Reply-To/References/store coords) + a monospace scrollable
+  HTML-part / plaintext-part source toggle (whichever exist).
+- **CONTRACT GAP**: no IPC exposes raw RFC822 wire source (verbatim MIME
+  headers + all parts). `kiwi_message_body` returns the parsed view only.
+  The dialog states this explicitly; needs a backend `kiwi_message_source`
+  (or a `raw` field on `MessageBodyView`) to complete — recommended for the
+  backend queue, not stubbed UI-side.
+
+### Verification
+
+- `npm run build` (`tsc && vite build`) — green, 84 modules.

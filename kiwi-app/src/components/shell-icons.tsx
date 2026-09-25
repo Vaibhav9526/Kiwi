@@ -51,6 +51,7 @@ export const IconInbox = named("inbox");
 export const IconOutbox = named("outbox");
 export const IconSent = named("send");
 export const IconDrafts = named("file");
+export const IconFile = named("file");
 export const IconJunk = named("shield-x");
 export const IconUnread = named("mail-open");
 export const IconFolder = named("folder");

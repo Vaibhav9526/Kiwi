@@ -2374,3 +2374,93 @@ summary:focus-visible {
 [data-density="compact"] .em-row-sub {
   display: none;
 }
+
+/* ---------- T-292 print: reader-only output ---------- */
+/* Single-message print: hide all chrome (titlebar/toolbar/folders/list/
+   rail/status strip) and every interactive affordance inside the reader;
+   keep thread title, card headers (sender/recipients/time) and bodies. */
+@media print {
+  .em-chrome,
+  .em-folders,
+  .em-list-col,
+  .em-rail,
+  .em-statusbar,
+  .em-reader-tools,
+  .em-reader-meta,
+  .em-card-tools,
+  .em-card-actions,
+  .em-attach input,
+  .em-attach button,
+  .em-attach label,
+  .em-attach .kiwi-banner,
+  .em-security-card,
+  .kiwi-banner button,
+  .kiwi-skeleton,
+  .kiwi-dialog-backdrop,
+  .ms-approve-box,
+  .kiwi-lock-overlay {
+    display: none !important;
+  }
+
+  html, body {
+    background: #fff !important;
+    color: #000 !important;
+  }
+
+  .em-main, .em-center, .em-mailbox {
+    display: block !important;
+    height: auto !important;
+    min-height: 0 !important;
+    overflow: visible !important;
+  }
+
+  .em-reader {
+    position: static !important;
+    overflow: visible !important;
+    height: auto !important;
+    padding: 0 !important;
+    background: #fff !important;
+  }
+
+  .em-thread-title {
+    font-size: 14pt;
+    margin: 0 0 8pt;
+  }
+
+  .em-card {
+    border: none !important;
+    box-shadow: none !important;
+    padding: 6pt 0;
+    page-break-inside: avoid;
+  }
+
+  .em-card-head {
+    border-bottom: 1pt solid #bbb;
+    padding-bottom: 4pt;
+    margin-bottom: 6pt;
+  }
+
+  .em-avatar {
+    display: none;
+  }
+
+  .kiwi-rendered-body,
+  .em-card-body {
+    font-size: 10.5pt;
+    line-height: 1.5;
+    color: #000;
+  }
+
+  .kiwi-rendered-body img {
+    max-width: 100%;
+  }
+
+  .kiwi-rendered-body a {
+    color: #000;
+    text-decoration: underline;
+  }
+
+  .em-card-date, .em-card-to, .em-card-snippet {
+    color: #444 !important;
+  }
+}
