@@ -7,22 +7,35 @@ use kiwi_mail::account::MailAccount;
 
 use super::{SecurityStatusView, SessionView};
 
+/// ipc.md §5 row — nested server views carry `security` so the account
+/// list can show "this account talks plaintext" without a second round-trip.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountView {
     pub id: String,
-    pub email: String,
     pub display_name: String,
-    /// ui-surfaces §2 token.
-    pub trust: String,
-    pub unread: u64,
-    pub color: String,
+    pub email: String,
     /// "imap" | "pop3".
-    pub protocol: String,
-    pub incoming_host: String,
-    pub incoming_port: u16,
-    pub outgoing_host: String,
-    pub outgoing_port: u16,
+    pub incoming_protocol: String,
+    pub incoming: ServerView,
+    pub outgoing: ServerView,
+    /// Login name for the incoming server (usually the email address).
+    pub username: String,
+    pub unread_count: u64,
+    /// ipc.md §5 token — see `account_trust_token`.
+    pub trust_token: String,
+    pub color: String,
+}
+
+/// `{host, port, security}` — the wire half of `ServerInput` (§5).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerView {
+    pub host: String,
+    pub port: u16,
+    /// "plaintext" | "starttls" | "tls" (`SocketSecurity`, same spelling
+    /// `ServerInput` accepts).
+    pub security: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -185,26 +198,36 @@ pub struct DiscoveryOutcomeView {
     pub attempts: Vec<StageAttemptView>,
 }
 
-pub fn account_view(a: &MailAccount, trust: &str, unread: u64, color: &str) -> AccountView {
-    AccountView {
-        id: a.account_id.clone(),
-        email: a.email.clone(),
-        display_name: a.display_name.clone(),
-        trust: trust.to_string(),
-        unread,
-        color: color.to_string(),
-        protocol: match a.incoming.protocol {
-            kiwi_mail::account::IncomingProtocol::Imap => "imap".into(),
-            kiwi_mail::account::IncomingProtocol::Pop3 => "pop3".into(),
-        },
-        incoming_host: a.incoming.server.host.clone(),
-        incoming_port: a.incoming.server.port,
-        outgoing_host: a.outgoing.server.host.clone(),
-        outgoing_port: a.outgoing.server.port,
+fn server_view(s: &kiwi_mail::account::ServerConfig) -> ServerView {
+    ServerView {
+        host: s.host.clone(),
+        port: s.port,
+        security: super::socket_security(s.security).to_string(),
     }
 }
 
-/// Aggregate severity token for one account's observed sessions.
+pub fn account_view(a: &MailAccount, trust: &str, unread: u64, color: &str) -> AccountView {
+    AccountView {
+        id: a.account_id.clone(),
+        display_name: a.display_name.clone(),
+        email: a.email.clone(),
+        incoming_protocol: match a.incoming.protocol {
+            kiwi_mail::account::IncomingProtocol::Imap => "imap".into(),
+            kiwi_mail::account::IncomingProtocol::Pop3 => "pop3".into(),
+        },
+        incoming: server_view(&a.incoming.server),
+        outgoing: server_view(&a.outgoing.server),
+        username: a.incoming.username.clone(),
+        unread_count: unread,
+        trust_token: trust.to_string(),
+        color: color.to_string(),
+    }
+}
+
+/// Aggregate ipc.md §5 trust token for one account's observed sessions:
+/// `trusted` = clean history, `warning` = medium-severity signals,
+/// `locked` = high/critical (the contract vocab's top tier — the frontend
+/// maps it to the `danger` chip), `unknown` = nothing observed yet.
 pub fn account_trust_token(records: impl Iterator<Item = SignalSeverity>) -> &'static str {
     let mut worst = SignalSeverity::Info;
     let mut seen = false;
@@ -218,8 +241,8 @@ pub fn account_trust_token(records: impl Iterator<Item = SignalSeverity>) -> &'s
         return "unknown";
     }
     match worst {
-        SignalSeverity::Info | SignalSeverity::Low => "secure",
+        SignalSeverity::Info | SignalSeverity::Low => "trusted",
         SignalSeverity::Medium => "warning",
-        SignalSeverity::High | SignalSeverity::Critical => "danger",
+        SignalSeverity::High | SignalSeverity::Critical => "locked",
     }
 }

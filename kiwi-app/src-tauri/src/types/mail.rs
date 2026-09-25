@@ -81,6 +81,43 @@ pub struct AuthView {
     pub header_value: Option<String>,
     /// Bounded evidence (explanations + evidence refs), never a finding.
     pub evidence: Option<serde_json::Value>,
+    /// Upstream MTA verdicts and bounded local/upstream evidence rows (T-240).
+    pub upstream: UpstreamAuthView,
+    /// True only for an upstream pass/fail contradiction. This is an evidence
+    /// flag, not a security finding.
+    pub discrepancy: bool,
+}
+
+/// Wire view of upstream Authentication-Results evidence (T-240).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamAuthView {
+    pub present: bool,
+    /// No upstream A-R means relay provenance could not be established.
+    pub untrusted_relay: bool,
+    pub malformed_headers: u32,
+    pub authserv_ids: Vec<String>,
+    pub spf: Vec<UpstreamAuthVerdictView>,
+    pub dkim: Vec<UpstreamAuthVerdictView>,
+    pub dmarc: Vec<UpstreamAuthVerdictView>,
+    /// Evidence rows, each carrying both verdicts.
+    pub comparisons: Vec<AuthVerdictComparisonView>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpstreamAuthVerdictView {
+    pub authserv_id: String,
+    pub verdict: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthVerdictComparisonView {
+    pub method: String,
+    pub upstream_verdict: String,
+    pub local_verdict: String,
+    pub discrepancy: bool,
 }
 
 impl From<&MessageMeta> for MessageView {
@@ -115,14 +152,62 @@ impl From<&MessageMeta> for MessageView {
             unsubscribe_requires_consent: m.unsub_mailto.is_some(),
             // T-232: real verdicts, or None when the body has not been
             // evaluated yet (which the pill must show as unknown).
-            auth: m.auth.as_ref().map(|a| AuthView {
-                spf: a.spf.clone(),
-                dkim: a.dkim.clone(),
-                dmarc: a.dmarc.clone(),
-                dmarc_policy: a.dmarc_policy.clone(),
-                dkim_domain: a.dkim_domain.clone(),
-                header_value: a.header_value.clone(),
-                evidence: a.evidence.clone(),
+            auth: m.auth.as_ref().map(|a| {
+                let upstream = UpstreamAuthView {
+                    present: a.upstream.present,
+                    untrusted_relay: a.upstream.untrusted_relay,
+                    malformed_headers: a.upstream.malformed_headers,
+                    authserv_ids: a.upstream.authserv_ids.clone(),
+                    spf: a
+                        .upstream
+                        .spf
+                        .iter()
+                        .map(|v| UpstreamAuthVerdictView {
+                            authserv_id: v.authserv_id.clone(),
+                            verdict: v.verdict.clone(),
+                        })
+                        .collect(),
+                    dkim: a
+                        .upstream
+                        .dkim
+                        .iter()
+                        .map(|v| UpstreamAuthVerdictView {
+                            authserv_id: v.authserv_id.clone(),
+                            verdict: v.verdict.clone(),
+                        })
+                        .collect(),
+                    dmarc: a
+                        .upstream
+                        .dmarc
+                        .iter()
+                        .map(|v| UpstreamAuthVerdictView {
+                            authserv_id: v.authserv_id.clone(),
+                            verdict: v.verdict.clone(),
+                        })
+                        .collect(),
+                    comparisons: a
+                        .upstream
+                        .comparisons
+                        .iter()
+                        .map(|c| AuthVerdictComparisonView {
+                            method: c.method.clone(),
+                            upstream_verdict: c.upstream_verdict.clone(),
+                            local_verdict: c.local_verdict.clone(),
+                            discrepancy: c.discrepancy,
+                        })
+                        .collect(),
+                };
+                AuthView {
+                    spf: a.spf.clone(),
+                    dkim: a.dkim.clone(),
+                    dmarc: a.dmarc.clone(),
+                    dmarc_policy: a.dmarc_policy.clone(),
+                    dkim_domain: a.dkim_domain.clone(),
+                    header_value: a.header_value.clone(),
+                    evidence: a.evidence.clone(),
+                    discrepancy: a.upstream.has_discrepancy(),
+                    upstream,
+                }
             }),
         }
     }

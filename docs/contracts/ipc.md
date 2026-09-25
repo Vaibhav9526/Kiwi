@@ -25,6 +25,17 @@ secret handling). The backend never delegates security decisions to the UI.
 - **`kiwi_ping()`** returns `"kiwi backend ok"` and reports the contract
   version via `kiwi_app_info().contractVersion` (`"kiwi.ipc/1"`).
 - Errors serialize as `{ "code": string, "message": string }` — see §8.
+- **Wire evolution (serde posture):** view structs are serialize-only —
+  consumers must ignore unknown fields. Input structs *also* ignore
+  unknown fields (`deny_unknown_fields` is deliberately not set, and
+  `#[serde(other)]` is not used anywhere) so a newer renderer may send
+  newer optional fields to an older backend without breaking. Enum-typed
+  inputs travel as `string` and are validated by command-layer parse
+  functions — an unrecognized variant fails closed as `invalid-input`,
+  never silently coerced. Enum-typed *outputs* use the kebab-case
+  spellings in this contract and security-session.md; a consumer that
+  meets an unknown token must render `unknown`, never treat it as a pass
+  (SECURITY.md rule 1).
 - Times are Unix epoch **seconds** unless the field name says `_ms`.
 - No IPC response ever contains a password, token, private key, or
   credential-store secret. Compose bodies are accepted as *input* to
@@ -57,20 +68,27 @@ unlock requires an authenticator-verified challenge when
 
 ```jsonc
 {
+  "trust": "secure | warning | danger | unknown", // ui-surfaces §2 token
   "state": "trusted | degraded | locked",
   "score": 0,                       // u32, 100 − Σ penalties
   "locked": true,                   // convenience = state == "locked"
-  "requiredAction": "none | notify-user | require-authenticator | block-access",
+  "requiredAction": "none | warn-user | require-reauth | require-authenticator-unlock | block-access",
   "signals": [SignalView],
-  "endpointSignals": ["remote-session-indicator", "…"],
-  "knownDevices": 1
+  "sessionsObserved": 14,           // connection observations behind the verdict
+  "deviceId": "dev-…"
 }
 ```
+
+`requiredAction` spellings are the kiwi-core `RequiredAction` vocabulary
+(security-session.md §4). The endpoint-signal list and device registry are
+deliberately **not** embedded — this view is re-polled on every UI refresh;
+fetch detail via `kiwi_collect_endpoint_signals` (§10) and
+`kiwi_list_devices` (§9) instead.
 
 ### `SignalView` — one active trust signal
 
 ```jsonc
-{ "kind": "starttls-stripped", "severity": "info|low|medium|high|critical",
+{ "kind": "starttls-downgrade-suspected", "severity": "info|low|medium|high|critical",
   "penalty": 25, "evidenceRef": "endpoint:ep-…" }
 ```
 
@@ -138,6 +156,12 @@ ratified spelling; builds before the §9d.11 wire migration emit the legacy
   "trustToken": "trusted | degraded | warning | locked | unknown",
   "color": "#2563eb" }
 ```
+
+`trustToken` is the worst-session-severity roll-up for the account:
+`trusted` = clean history, `warning` = medium-severity signals, `locked` =
+high/critical signals observed (top tier of this vocab), `unknown` =
+nothing observed yet. `degraded` is in the vocabulary but not currently
+emitted.
 
 ### `kiwi_add_account(account: AddAccountInput) → AccountView`
 ```jsonc
@@ -254,6 +278,11 @@ an empty result set still yields a flagged suggestion, never an error.
 fail-closed for unsupported OAuth2 providers and for POP3). The wizard
 passes `oauth2.provider` to `kiwi_oauth2_begin` directly; `grant` tells
 it which UX to render without a second lookup.
+
+**Alias** (T-230, drift-audit UIS-6): `kiwi_lookup_autoconfig(email)`
+is registered with the identical signature and response — the name the
+pre-reconcile `ipc.ts` wrapper invoked. New code must call
+`kiwi_discover_account`; the alias exists so stale wrappers keep working.
 
 
 ## 6. Commands — mail read **[gated]**
@@ -468,6 +497,16 @@ Trash), then regular rules by `position` ascending with `id` as
 tie-breaker — a total order. Flag actions dedupe; at most one folder
 disposition applies. The evaluator is pure: no I/O, no clock, no guessed
 facts — a missing header/body/attachment fact simply doesn't match.
+
+**Body predicates are lazy.** IMAP metadata sync evaluates only the
+envelope-stage rules available for newly stored messages; it does **not**
+fetch a body solely to evaluate a body, header, or attachment predicate.
+`kiwi_rules_apply_now` evaluates parseable bodies already in the store, and
+normal ingest/body-refinement paths may evaluate a full predicate when the
+body is already available. POP3 has a full body at download and can evaluate
+immediately. A missing body is skipped rather than downloaded for rules;
+this bandwidth policy is binding. `kiwi_rules_apply_now` is the deliberate
+way to evaluate stored mailbox bodies on demand.
 
 ### `kiwi_rules_list(accountId?) → RuleView[]`
 With `accountId`: the rules in scope for that account (global `accountId:

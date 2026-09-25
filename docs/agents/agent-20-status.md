@@ -130,3 +130,99 @@ views/setup.tsx}`, `docs/API_CONTRACTS.md`,
 - `setPrefs` aborts on first per-key rejection (`saved` reports partial
   count); callers surface that as a failed sync — honest, not hidden.
 - Not committed — Lead integrates.
+
+## 2026-09-25 — T-239: wire-shape reconciliation (audit items 1+4)
+
+**Status:** done. Scope honored: `kiwi-core/src/trust.rs` (SS-1, mandated by
+item 2), `kiwi-app/src-tauri/src/types/{mod,accounts}.rs`,
+`kiwi-app/src/kiwi.ts`, `docs/contracts/ipc.md`. **Not touched:** commands/,
+rules/, oauth2 rust, integrations, mailauth.
+
+### (1) IPC-1 `AccountView` — contract right, struct fixed
+
+The frontend was authored to the contract (`a.trustToken`/`unreadCount`/
+`incomingProtocol`/`incoming.*`/`username` read at `state/accounts.ts:36-37`,
+`App.tsx:220`, `settings.tsx:203,269`); the Rust view emitted none of them,
+so live accounts rendered `unknown` trust / 0 unread / missing servers.
+Fixed `types/accounts.rs` to emit the §5 shape verbatim: nested
+`incoming`/`outgoing` `ServerView{host,port,security}` (new `socket_security`
+map in `types/mod.rs`, same `plaintext|starttls|tls` spelling `ServerInput`
+accepts), `username` (`MailAccount.incoming.username`), `unreadCount`,
+`trustToken`. `account_view` signature unchanged — zero `commands/` churn.
+
+`trustToken` vocab kept contract (`trusted|warning|locked|unknown`):
+severity roll-up is Info|Low→`trusted`, Medium→`warning`,
+High|Critical→`locked` — `locked` is the vocab's only danger-tier token and
+the frontend maps it to the `danger` chip; `degraded`/`warning` would
+*understate* Critical signals. `degraded` documented as reserved/not
+emitted (ipc.md §5 note).
+
+### (1) IPC-2 `SecurityStatusView` — code right, contract amended
+
+- `endpointSignals`/`knownDevices` **dropped from ipc.md §3** (code right):
+  populating them requires `commands/mod.rs::status_view` (out of this
+  task's boundary), zero frontend consumers read them (`toTrustState`
+  ignores them; only the kiwi.ts interface declared them — removed there),
+  and the data is already reachable via `kiwi_collect_endpoint_signals` (§10)
+  and `kiwi_list_devices` (§9). §3 now documents the emitted shape:
+  `trust`, `state`, `score`, `locked`, `requiredAction`, `signals`,
+  `sessionsObserved`, `deviceId` — plus a note saying detail lives behind
+  the dedicated commands. If Lead wants them embedded it's a commands/
+  follow-up, one line in `status_view`.
+- `requiredAction` vocab amended to the **kiwi-core `RequiredAction`**
+  spellings `none|warn-user|require-reauth|require-authenticator-unlock|
+  block-access` — security-session.md §4 ratifies those; the old
+  `notify-user`/`require-authenticator` were stale.
+- `trust`/`sessionsObserved`/`deviceId` extras documented (code right —
+  `trust` is the ui-surfaces §2 token, §9d.6's example already showed them).
+- `kiwi.ts SecurityStatusView` updated to the ratified wire shape.
+- Also fixed a stale `SignalView` example (`starttls-stripped` →
+  `starttls-downgrade-suspected`).
+
+### (2) SS-1 — locked `TrustMachine` emitted `required_action: None`
+
+`TrustMachine::evaluate` spliced `state: self.state` but kept the fresh
+eval's `required_action` — a still-locked machine on a clean/weak eval
+reported `None`. Now when `self.state == Locked` the returned
+`TrustEvaluation.required_action` is forced to
+`RequireAuthenticatorUnlock` (default) or `BlockAccess` when
+`policy.unlock_requires_authenticator` is false — same derivation as the
+free `evaluate`'s Locked arm and `commands/mod.rs::status_view`.
+Regression tests: `locked_does_not_self_recover` extended with the action
+assert; new `locked_keeps_block_action_without_authenticator_policy`
+(non-authenticator policy → `BlockAccess`). `kiwi-core` is the authority —
+`status_view` already compensated; consumers of `refresh_trust()`
+(`observe.rs:104`, `endpoint.rs:40`) now get the correct eval.
+
+### (3) Serde posture note — ipc.md §1
+
+Documented the actual strategy (verified by grep: zero `deny_unknown_fields`
+/`serde(other)` in types/, no Deserialize enums): consumers ignore unknown
+view fields; inputs ignore unknown fields; enum inputs are strings
+validated by parse fns → `invalid-input` (fail closed); unknown enum
+*outputs* must render `unknown`, never pass. This is the cross-cutting
+FOR-6/MAUTH-5 answer for the IPC layer specifically; the forensics-crate
+serde spellings (FOR-1/2) remain a separate decision.
+
+### Files changed
+
+`kiwi-core/src/trust.rs`, `kiwi-app/src-tauri/src/types/{mod.rs,
+accounts.rs}`, `kiwi-app/src/kiwi.ts`, `docs/contracts/ipc.md`, this file.
+
+### Verification
+
+- `cargo test -p kiwi-core -p kiwi-app` — **33 core + 87 app tests, all
+  green** (incl. both new lock-action tests).
+- `npx tsc --noEmit` — clean.
+- Caveat: first build hit a transient kiwi-mail mid-write error
+  (`UpstreamAuthEvidence` Default) — T-232 agent was mid-edit; resolved on
+  retry, unrelated to this change.
+
+### Assumptions / risks
+
+- `username` emitted = `MailAccount.incoming.username` (primary identity);
+  `outgoing.username` stays internal (contract has no `outgoingUsername`
+  field on the view).
+- `AccountView` now carries `security` per direction — no secret material;
+  consistent with the never-secrets rule.
+- Not committed — Lead integrates.

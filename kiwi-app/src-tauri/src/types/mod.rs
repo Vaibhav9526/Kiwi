@@ -41,6 +41,7 @@ pub use system::*;
 
 use kiwi_core::session::{AuthMechanism, Protocol, TlsVersion, TransportSecurity};
 use kiwi_core::trust::{RequiredAction, SignalKind, SignalSeverity, TrustState};
+use kiwi_mail::transport::SocketSecurity;
 
 // ---------------------------------------------------------------------------
 // Enum → wire-string maps (contract spellings — security-session.md §3/§4)
@@ -124,6 +125,15 @@ pub fn transport(t: TransportSecurity) -> &'static str {
         TransportSecurity::Plaintext => "plaintext",
         TransportSecurity::StartTls => "starttls",
         TransportSecurity::Tls => "tls",
+    }
+}
+
+/// `ServerView.security` / `ServerInput.security` spelling (ipc.md §5).
+pub fn socket_security(s: SocketSecurity) -> &'static str {
+    match s {
+        SocketSecurity::Plaintext => "plaintext",
+        SocketSecurity::StartTls => "starttls",
+        SocketSecurity::ImplicitTls => "tls",
     }
 }
 

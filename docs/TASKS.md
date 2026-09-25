@@ -199,9 +199,10 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-236 | rules.md contract (kiwi.rules/1, 445L) | Agent 22 | done | `docs/contracts/` | T-228 |
 | T-237 | Drift fixes batch: prefs IPC renames + contracts index + admin-api post-T-193 + challenge-expired ruling | Agent 20 | open | `kiwi-app/src/ipc.ts`, `docs/contracts/` | T-196 |
 | T-238 | Forensics serde vocab proposal — FSV-1 RATIFIED | Agent 22 | done | `docs/audits/` | T-196 FOR-1/2 |
-| T-239 | IPC-1/2 wire-shape reconciliation (AccountView/SecurityStatusView) + SS-1 required_action + serde(other) note | Agent 20 | open | `types/`, `ipc.md` | T-196 |
+| T-239 | Wire-shape reconciliation + SS-1 required_action fix + serde posture note | Agent 20 | done |
 | T-240 | Upstream Authentication-Results parse + our-verdict discrepancy flag on AuthView | Agent 21 | open | `kiwi-mail/` | T-232 |
 | T-241 | ipc.md completeness: registered-commands reconciliation + missing entries (post T-230/233/234) | Agent 22 | open | `docs/`, `kiwi-app/src-tauri/` (read) | T-196 |
 | T-242 | Integrations UI (TempMail panel, deliverability view, unsub chip) | Agent 11 | done |
 | T-243 | OAuth2 wizard UI branch: provider sign-in, device-code display, poll states, needsRefresh re-auth | Agent 19 | open | `kiwi-app/src/` | T-230 |
 | T-244 | kiwi_rules_preview dry-run cmd + rule_failures counter + deferred body-predicate eval | Agent 15 | open | `kiwi-mail/`, `src-tauri/` | T-233 |
+| T-245 | Implement ratified FSV-1 forensics serde vocab + legacy reader + contract updates | Agent 20 | open | `kiwi-forensics/` | T-238, T-196 |
