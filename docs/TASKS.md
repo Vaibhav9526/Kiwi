@@ -222,7 +222,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-257 | Add-account->sync e2e PROVEN (scripted loopback TLS IMAP, 98/98 + fail branches) | Agent 19 | done |
 | T-258 | mailauth post-T-183 verification (14 groups + 3 deviations documented) | Agent 22 | done |
 | T-259 | Admin code-side drift fixes ALL landed (ADM-01..15, 126 tests) | Agent 11 | done |
-| T-260 | security-session enum cleanup — REASSIGNED from A22 (never picked up); verify scope post-T-269 first | Agent 21 | open | `kiwi-core`, `types/security.rs`, contracts | T-196 program |
+| T-260 | enum cleanup re-verified; SS-2 contract amended to live-client; pinning tests; typed session view | Agent 21 | done |
 | T-261 | LinkRisk hints (linkrisk.rs 459L, 203/203, wired to TS) | Agent 21 | done |
 | T-262 | send-path e2e proven: scripted loopback SMTP+IMAP matrix (green/5xx/undo/STARTTLS-refusal) + sent-copy, audit, LIST bugfix | Agent 19 | done |
 | T-264 | folder exists/unseen counts (padded token match, no fabricated defaults) | Agent 15 | done |
@@ -297,3 +297,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-317 | drag messages→folder tree (multi-select aware, same kiwi_move_message path, ctx-menu is kbd fallback) | Agent 24 | open | `mailbox.tsx`, `chrome.tsx` folder tree | |
 | T-318 | import/export UI seam: file pickers, entry points, honest result counts for T-309/T-316 | Agent 25 | open | `settings.tsx`, folder ctx-menu | T-309,T-316 |
 | T-319 | folder management: local folder create/rename/delete IPC, audited, system folders protected | Agent 15 | open | `kiwi-mail/store`, `kiwi-app/commands` | |
+| T-320 | forensic report file export: canonical JSON + SHA-256 integrity envelope, audited, lock-gated | Agent 21 | open | `commands/security.rs`, `kiwi-forensics` | vision tamper-evident exports |

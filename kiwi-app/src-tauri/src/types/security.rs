@@ -4,9 +4,7 @@ use serde::Serialize;
 
 use kiwi_core::session::{ChainValidation, KeyExchangeGroup, SecuritySession};
 
-use super::{
-    SignalView, auth_mechanism, protocol, session_source, tls_version, transport,
-};
+use super::{SignalView, auth_mechanism, protocol, session_source, tls_version, transport};
 
 /// One observed connection (session detail / cert viewer, KIWI-UI-003/008).
 #[derive(Debug, Clone, Serialize)]
@@ -173,7 +171,9 @@ pub struct LinkClickVerdict {
     pub reasons: Vec<String>,
 }
 
-fn kex(k: &KeyExchangeGroup) -> String {
+/// Stable wire spelling for an observed key-exchange group (§2). Visible to
+/// the sibling test module that pins the security-session vocabulary.
+pub(crate) fn kex(k: &KeyExchangeGroup) -> String {
     match k {
         KeyExchangeGroup::X25519 => "x25519".into(),
         KeyExchangeGroup::SecP256r1 => "secp256r1".into(),
@@ -188,7 +188,9 @@ fn kex(k: &KeyExchangeGroup) -> String {
     }
 }
 
-fn chain_validation(v: ChainValidation) -> &'static str {
+/// Stable wire spelling for a reported chain-validation verdict (§2) — the
+/// NSS/observation result as-is, never a KIWI strength re-judgement.
+pub(crate) fn chain_validation(v: ChainValidation) -> &'static str {
     match v {
         ChainValidation::Valid => "valid",
         ChainValidation::Invalid => "invalid",
