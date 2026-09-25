@@ -738,3 +738,46 @@ ui-smoke.mjs concurrently (transient tsc errors + a `mbox-io` check
 appeared mid-run + one theme-check flake during their save). My staging
 was hunk-scoped: `git apply --cached` of ONLY the dragdrop hunk —
 mbox-io stays in the worktree for their own commit.
+
+## T-322 — folder-management UI over A15's T-319 IPC
+
+**Contract (ipc.md §kiwi_folder_*):** `create(accountId,parentId?,name)` /
+`rename(accountId,folderId,newName)` → `FolderView`; `delete` →
+`{folderId}`. **Local-only** — remote/system rows return `policy-blocked`;
+delete requires empty+leaf. No IMAP server CREATE — contract files that
+gap honestly, and the UI copy mirrors it ("Local folder — never created
+on the mail server").
+
+**Surface (chrome.tsx FolderPane):**
+- `FolderSection.items` gains `folderId/origin/parentId/exists`
+  (accounts.ts maps them from the real `FolderView`; demo items lack
+  them → ops disabled there anyway).
+- Folder ctx menu gains: **New subfolder…** (local parents only),
+  **Rename…** (local only — tooltips distinguish "system can't rename"
+  vs "remote is server-managed"), **Delete** (danger; gated on
+  `origin==="local" && exists===0 && no children`, each deny explains
+  itself). Entries DISABLED, never hidden — the reason lives in the
+  tooltip.
+- Account-head right-click → **New folder…** (root create, parentId null).
+- One small `.ms-composer-modal` dialog for all three ops (create/rename
+  share the name field — Enter submits, Esc/backdrop dismisses, busy
+  locks). IPC error strings render verbatim in `role=alert`.
+
+**Split:** FolderPane collects intent + name → `onFolderOp(FolderOp)`
+returns `Promise<string|null>`; App.tsx owns the api call →
+`loadFolders()` refresh + toast ("Created local folder X (not synced to
+the server)"). IPC stays in App; errors flow back into the dialog.
+
+**Smoke `folder-mgmt` flow:** right-click folder row → asserts all three
+items present (+ demo-disabled honestly) → Escape → right-click account
+head → "New folder…" present. Live create→rename→delete is covered by
+A15's backend tests; the demo surface proves presence+gating, stated
+honestly in the detail line. **21 pass / 1 fail** — the fail is A21's
+in-flight `audit-log` check (T-320 security-center work, CDP eval
+"object reference chain too long" — their uncommitted ipc.ts/
+security-center.tsx are mid-edit; not T-322).
+
+**Staging:** hunk-scoped again — `git apply --cached` of only the
+folder-mgmt hunk; A21's audit-log check + A25's nav line stay in the
+worktree. kiwi.ts/ipc.ts (A15's T-319 wrappers + A21's audit line) NOT
+committed by me.

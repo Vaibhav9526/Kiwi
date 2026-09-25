@@ -539,6 +539,32 @@ async function runChecks(cdp, sid) {
     if (!demoToast) throw new Error("drop produced no move-path outcome");
     return `drag→deny same-folder→drop→${await cdp.eval(sid, `document.body.textContent.includes('Demo mode') ? 'demo honest toast' : 'live move'`) }`;
   });
+
+  await flow("folder-mgmt", "folder ctx menu exposes real CRUD entries (demo-disabled)", async () => {
+    const demoMode = await cdp.eval(sid, `/demo data/i.test(document.body.innerText)`);
+    // Right-click a real account-folder row → New subfolder / Rename / Delete.
+    await cdp.eval(sid, `(()=>{const el=[...document.querySelectorAll('.em-accounts .em-tree-item')][0];
+      el.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:12,clientY:12}));})()`);
+    await waitFor(cdp, sid, `${qsa(".em-ctx-item")} >= 5`);
+    const items = await cdp.eval(sid, `[...document.querySelectorAll('.em-ctx-item')].map(b=>({t:b.textContent.trim(),d:b.disabled}))`);
+    for (const want of ["New subfolder", "Rename", "Delete"]) {
+      const it = items.find((i) => i.t.startsWith(want));
+      if (!it) throw new Error(`ctx menu missing "${want}"`);
+      if (demoMode && !it.d) throw new Error(`"${want}" enabled in demo`);
+    }
+    await cdp.eval(sid, keyOn(".em-ctx", "Escape"));
+    // Account head → root-level "New folder…".
+    await cdp.eval(sid, `(()=>{const el=document.querySelector('.em-account-head');
+      el.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:12,clientY:12}));})()`);
+    await waitFor(cdp, sid, `${qsa(".em-ctx-item")} >= 1`);
+    const root = await cdp.eval(sid, `[...document.querySelectorAll('.em-ctx-item')].map(b=>({t:b.textContent.trim(),d:b.disabled}))`);
+    if (!root.some((i) => i.t.startsWith("New folder"))) throw new Error("account ctx missing New folder");
+    if (demoMode && root.every((i) => !i.d)) throw new Error("account ctx items enabled in demo");
+    await cdp.eval(sid, keyOn(".em-ctx", "Escape"));
+    // Live create→rename→delete is exercised by the backend's own tests;
+    // the demo surface can only prove presence + honest gating.
+    return `${items.length} folder items + account-head New folder${demoMode ? " — demo-disabled honestly" : ""}`;
+  });
 }
 
 // ----------------------------------------------------------------- main --

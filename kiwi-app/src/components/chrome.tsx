@@ -439,8 +439,23 @@ export interface FolderSection {
   trust: Severity;
   muted: boolean;
   unread: number;
-  items: { id: string; label: string; unread: number }[];
+  items: {
+    id: string;
+    label: string;
+    unread: number;
+    /** T-322 folder-management gates (absent in demo → ops disabled). */
+    folderId?: number;
+    origin?: "remote" | "local" | "system";
+    parentId?: number | null;
+    exists?: number;
+  }[];
 }
+
+/** T-322: folder ops the pane can request — App owns the IPC + refresh. */
+export type FolderOp =
+  | { kind: "create"; accountId: string; parentId: number | null; name: string }
+  | { kind: "rename"; accountId: string; folderId: number; newName: string }
+  | { kind: "delete"; accountId: string; folderId: number };
 
 const SMART_ICONS: Record<string, (p: { size?: number }) => ReactNode> = {
   "all-inboxes": (p) => <IconInbox {...p} />,
@@ -561,6 +576,7 @@ export function FolderPane({
   onMarkAllRead,
   onDropMessages,
   onExportMbox,
+  onFolderOp,
 }: {
   smartFolders: { id: string; label: string }[];
   smartUnread: Record<string, number>;
@@ -579,10 +595,68 @@ export function FolderPane({
    *  is this row's composite "accountId:folderId". Account folders only;
    *  smart rows get no handler, so dropping on them is impossible. */
   onDropMessages?: (ids: string[], folderKey: string) => void;
+  /** T-322: folder CRUD — resolves to an error string shown in the dialog,
+   *  or null on success (App refreshes + toasts). */
+  onFolderOp?: (op: FolderOp) => Promise<string | null>;
 }) {
   const [favOpen, setFavOpen] = useState(true);
   const [open, setOpen] = useState<Record<string, boolean>>({});
-  const [ctx, setCtx] = useState<{ x: number; y: number; id: string; label: string; unread: number } | null>(null);
+  const [ctx, setCtx] = useState<{
+    x: number;
+    y: number;
+    id: string;
+    label: string;
+    unread: number;
+    folderId?: number;
+    origin?: "remote" | "local" | "system";
+    parentId?: number | null;
+    exists?: number;
+    hasChildren?: boolean;
+  } | null>(null);
+  /** Right-click on an account head → root-level "New folder…". */
+  const [acctCtx, setAcctCtx] = useState<{ x: number; y: number; accountId: string; email: string } | null>(null);
+  /** T-322 dialog — one small modal for create/rename/delete. */
+  const [dlg, setDlg] = useState<{
+    kind: "create" | "rename" | "delete";
+    accountId: string;
+    folderId?: number;
+    parentId?: number | null;
+    label: string;
+  } | null>(null);
+  const [dlgName, setDlgName] = useState("");
+  const [dlgErr, setDlgErr] = useState<string | null>(null);
+  const [dlgBusy, setDlgBusy] = useState(false);
+  const submitFolderOp = async () => {
+    if (!dlg || !onFolderOp) return;
+    setDlgErr(null);
+    if (dlg.kind !== "delete") {
+      const name = dlgName.trim();
+      if (!name) {
+        setDlgErr("Enter a folder name.");
+        return;
+      }
+      setDlgBusy(true);
+      const err = await onFolderOp(
+        dlg.kind === "create"
+          ? { kind: "create", accountId: dlg.accountId, parentId: dlg.parentId ?? null, name }
+          : { kind: "rename", accountId: dlg.accountId, folderId: dlg.folderId!, newName: name },
+      );
+      setDlgBusy(false);
+      if (err) {
+        setDlgErr(err);
+        return;
+      }
+    } else {
+      setDlgBusy(true);
+      const err = await onFolderOp({ kind: "delete", accountId: dlg.accountId, folderId: dlg.folderId! });
+      setDlgBusy(false);
+      if (err) {
+        setDlgErr(err);
+        return;
+      }
+    }
+    setDlg(null);
+  };
   return (
     <nav className="em-folders" aria-label="Accounts and folders">
       <h1 className="em-pane-title">Mail</h1>
@@ -631,6 +705,14 @@ export function FolderPane({
                 className="em-group-head em-account-head"
                 aria-expanded={expanded}
                 onClick={() => setOpen((m) => ({ ...m, [s.id]: !expanded }))}
+                onContextMenu={
+                  onFolderOp
+                    ? (e) => {
+                        e.preventDefault();
+                        setAcctCtx({ x: e.clientX, y: e.clientY, accountId: s.id, email: s.email });
+                      }
+                    : undefined
+                }
                 title={s.muted ? `${s.email} (muted — unread excluded from counts)` : s.email}
               >
                 <span className={`em-disclosure${expanded ? " is-open" : ""}`} aria-hidden="true">
@@ -660,10 +742,21 @@ export function FolderPane({
                       onDropMessages ? { folderKey: f.id, onDropIds: (ids) => onDropMessages(ids, f.id) } : undefined
                     }
                     onContextMenu={
-                      onMarkAllRead || onExportMbox
+                      onMarkAllRead || onExportMbox || onFolderOp
                         ? (e) => {
                             e.preventDefault();
-                            setCtx({ x: e.clientX, y: e.clientY, id: f.id, label: f.label, unread: f.unread });
+                            setCtx({
+                              x: e.clientX,
+                              y: e.clientY,
+                              id: f.id,
+                              label: f.label,
+                              unread: f.unread,
+                              folderId: f.folderId,
+                              origin: f.origin,
+                              parentId: f.parentId,
+                              exists: f.exists,
+                              hasChildren: s.items.some((i) => i.parentId != null && i.parentId === f.folderId),
+                            });
                           }
                         : undefined
                     }
@@ -695,8 +788,167 @@ export function FolderPane({
                 : `Write ${ctx.label} to a .mbox file (kiwi_mailbox_export_mbox)`,
               onSelect: () => onExportMbox?.(ctx.id, ctx.label),
             },
+            {
+              label: "New subfolder…",
+              icon: "folder",
+              disabled: demo || ctx.origin !== "local",
+              title: demo
+                ? "Needs the Tauri backend"
+                : ctx.origin !== "local"
+                  ? "Only local folders can hold subfolders — remote/system folders are server-owned"
+                  : `Create a local folder inside ${ctx.label} (kiwi_folder_create)`,
+              onSelect: () => {
+                const accountId = ctx.id.split(":")[0];
+                setDlgName("");
+                setDlgErr(null);
+                setDlg({ kind: "create", accountId, parentId: ctx.folderId, label: ctx.label });
+              },
+            },
+            {
+              label: "Rename…",
+              icon: "compose",
+              disabled: demo || ctx.origin !== "local",
+              title: demo
+                ? "Needs the Tauri backend"
+                : ctx.origin === "system"
+                  ? "System mailboxes can't be renamed"
+                  : ctx.origin === "remote"
+                    ? "Remote folders are managed on the mail server — local rename is not synced"
+                    : `Rename ${ctx.label} (kiwi_folder_rename)`,
+              onSelect: () => {
+                const accountId = ctx.id.split(":")[0];
+                setDlgName(ctx.label);
+                setDlgErr(null);
+                setDlg({ kind: "rename", accountId, folderId: ctx.folderId, label: ctx.label });
+              },
+            },
+            {
+              label: "Delete",
+              icon: "trash",
+              danger: true,
+              disabled: demo || ctx.origin !== "local" || (ctx.exists ?? 0) > 0 || !!ctx.hasChildren,
+              title: demo
+                ? "Needs the Tauri backend"
+                : ctx.origin !== "local"
+                  ? "Only local folders can be deleted — remote/system folders are server-owned"
+                  : ctx.hasChildren
+                    ? `${ctx.label} has subfolders — delete them first`
+                    : (ctx.exists ?? 0) > 0
+                      ? `${ctx.label} still holds ${ctx.exists} message${ctx.exists === 1 ? "" : "s"} — empty it first`
+                      : `Delete ${ctx.label} (kiwi_folder_delete)`,
+              onSelect: () => {
+                const accountId = ctx.id.split(":")[0];
+                setDlgErr(null);
+                setDlg({ kind: "delete", accountId, folderId: ctx.folderId, label: ctx.label });
+              },
+            },
           ]}
         />
+      )}
+      {acctCtx && (
+        <ContextMenu
+          x={acctCtx.x}
+          y={acctCtx.y}
+          onClose={() => setAcctCtx(null)}
+          entries={[
+            {
+              label: "New folder…",
+              icon: "folder",
+              disabled: demo,
+              title: demo
+                ? "Needs the Tauri backend"
+                : `Create a root local folder in ${acctCtx.email} (kiwi_folder_create)`,
+              onSelect: () => {
+                setDlgName("");
+                setDlgErr(null);
+                setDlg({ kind: "create", accountId: acctCtx.accountId, parentId: null, label: acctCtx.email });
+              },
+            },
+          ]}
+        />
+      )}
+      {dlg && (
+        <div
+          className="ms-composer-backdrop"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget && !dlgBusy) setDlg(null);
+          }}
+        >
+          <div
+            className="ms-composer-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={
+              dlg.kind === "delete"
+                ? `Delete folder ${dlg.label}`
+                : dlg.kind === "rename"
+                  ? `Rename folder ${dlg.label}`
+                  : `New folder in ${dlg.label}`
+            }
+            style={{ width: "min(400px, 100%)" }}
+            onKeyDown={(e) => {
+              if (e.key === "Escape" && !dlgBusy) setDlg(null);
+              if (e.key === "Enter" && (e.target as HTMLElement).tagName !== "BUTTON") void submitFolderOp();
+            }}
+          >
+            <div className="ms-composer-head">
+              <h1>
+                {dlg.kind === "delete"
+                  ? `Delete “${dlg.label}”?`
+                  : dlg.kind === "rename"
+                    ? `Rename “${dlg.label}”`
+                    : `New folder in ${dlg.label}`}
+              </h1>
+              <button
+                type="button"
+                className="ms-btn"
+                onClick={() => setDlg(null)}
+                disabled={dlgBusy}
+                aria-label="Close dialog"
+              >
+                <Icon name="close" size={12} />
+              </button>
+            </div>
+            {dlg.kind === "delete" ? (
+              <p>
+                Permanently remove the local folder <b>{dlg.label}</b>? This only removes the store row —
+                the folder must already be empty.
+              </p>
+            ) : (
+              <p>
+                <label htmlFor="folder-op-name">Folder name</label>
+                <br />
+                <input
+                  id="folder-op-name"
+                  type="text"
+                  value={dlgName}
+                  onChange={(e) => setDlgName(e.target.value)}
+                  maxLength={255}
+                  style={{ width: "100%" }}
+                  disabled={dlgBusy}
+                  autoFocus
+                />
+                <br />
+                <small style={{ color: "var(--kiwi-text-secondary)" }}>
+                  Local folder — never created on the mail server.
+                </small>
+              </p>
+            )}
+            {dlgErr && (
+              <div className="kiwi-banner error" role="alert">
+                <small>{dlgErr}</small>
+              </div>
+            )}
+            <p style={{ marginBottom: 0 }}>
+              <button type="button" onClick={() => void submitFolderOp()} disabled={dlgBusy}>
+                {dlgBusy ? "Working…" : dlg.kind === "delete" ? "Delete" : dlg.kind === "rename" ? "Rename" : "Create"}
+              </button>{" "}
+              <button type="button" onClick={() => setDlg(null)} disabled={dlgBusy}>
+                Cancel
+              </button>
+            </p>
+          </div>
+        </div>
       )}
     </nav>
   );

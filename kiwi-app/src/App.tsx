@@ -49,6 +49,7 @@ import {
   unixToIso,
 } from "./kiwi";
 import { AgendaRail, AppShell, FolderPane, StatusStrip, TopBar } from "./components/chrome";
+import type { FolderOp } from "./components/chrome";
 import { Icon } from "./components/icons/index";
 import { AuthenticatorDialog, FindingDialog, LockOverlay } from "./components/security";
 import type { AuthStatus } from "./components/security";
@@ -1048,6 +1049,33 @@ export default function App() {
     }
   }, [exportDlg, exportDlgPath, notify]);
 
+  // T-322: folder CRUD — create/rename/delete resolve to null (tree refresh
+  // + toast) or the backend's error string shown verbatim in the dialog.
+  // Contract limits ops to local folders; remote/system come back
+  // policy-blocked and land in the dialog as-is.
+  const folderOp = useCallback(
+    async (op: FolderOp): Promise<string | null> => {
+      if (demo) return "Folder management needs the Tauri backend — demo folders are fixtures.";
+      try {
+        if (op.kind === "create") {
+          const f = await api.createFolder(op.accountId, op.name, op.parentId);
+          notify("ok", `Created local folder “${f.name}” (not synced to the server).`);
+        } else if (op.kind === "rename") {
+          const f = await api.renameFolder(op.accountId, op.folderId, op.newName);
+          notify("ok", `Renamed to “${f.name}”.`);
+        } else {
+          await api.deleteFolder(op.accountId, op.folderId);
+          notify("ok", "Folder deleted.");
+        }
+        void loadFolders();
+        return null;
+      } catch (e) {
+        return e instanceof Error ? e.message : String(e);
+      }
+    },
+    [demo, loadFolders, notify],
+  );
+
   /** Flag/star overrides applied, query NOT applied — feeds mailbox + search. */
   const baseMessages = useMemo(() => {
     // T-267 smart-folder predicates. Demo slugs map onto DEMO_MESSAGES
@@ -1440,6 +1468,7 @@ export default function App() {
             demo={demo}
             onMarkAllRead={(key) => void markFolderRead(key)}
             onExportMbox={openFolderExport}
+            onFolderOp={folderOp}
           />
         }
         rail={

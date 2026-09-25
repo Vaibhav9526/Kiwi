@@ -97,6 +97,13 @@ export function useAccountModel(
             id: `${a.id}:${f.id}`,
             label: f.name,
             unread: a.muted ? 0 : (f.unseen ?? 0),
+            // T-322: folder-management gates — local-only CRUD, delete
+            // needs empty+leaf (contract §kiwi_folder_*). Demo items lack
+            // these fields → ops stay disabled there anyway.
+            folderId: f.id,
+            origin: f.origin,
+            parentId: f.parentId,
+            exists: f.exists,
           })),
     }));
   }, [demo, accounts, folderLists]);
