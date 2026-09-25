@@ -121,7 +121,7 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-192 | KIWI security surfaces in Mailspring idiom (pill, banner, lock, security center, approvals badge) | Agent 12 | in-progress | `kiwi-app/src/` | T-191 |
 | T-193 | kiwi-admin H1-H8 fixes per Lead rulings + M1-M7 + e2e regression guards | Agent 6 | open | `kiwi-admin/` | T-187 |
 | T-194 | Mobile authenticator screens: pairing QR, approvals, devices, history (mock transport) | Agent 4 (Nemotron 3.5 Lightning) | open | `mobile/` | T-136 |
-| T-195 | OAuth2 flows (Google loopback + Microsoft device-code) spec + impl | Agent 19 | open | `kiwi-autoconfig/`, `kiwi-mail/` | T-183 |
+| T-195 | OAuth2 acquisition: trait + Google loopback-PKCE + Microsoft device-code + CredentialStore lifecycle | Agent 19 | done (92/92) | `kiwi-autoconfig/`, `kiwi-mail/` | T-183 |
 
 ## Backlog — MailFlow feature mine (specs in docs/BACKLOG-MAILFLOW.md; start after current queues + T-190-192)
 
@@ -172,7 +172,7 @@ rebuild context. Lead handle is now term_c20c6737.
 | 16 | DeepSeek V4.1 Flash | 87c46343 | T-183 mailauth hardening |
 | 17 | DeepSeek V4.1 Flash | 71a0b324 | T-194 mobile authenticator screens |
 | 18 | Space Bunny Free | f7e88089 | T-188 done → T-229 oauth2 contract review |
-| 19 | Devin Pro | e84c9837 | T-195 OAuth2 spec + impl |
+| 19 | Devin Pro | e84c9837 | T-195 done → T-230 OAuth2 IPC + wizard seam |
 | 20 | Devin Pro | 593d9aea | T-196 contract-drift audit |
 | 21 | Space Bunny Alpha | 12f55a82 | T-198 done → T-199 done → audit rotation |
 | Watcher | Space Bunny Alpha | 30e63397 | tools/watcher/watcher.py loop |
@@ -187,3 +187,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-227 | IPC for kiwi-integrations: tempmail commands (public-inbox flag on every response) + deliverability consent-token flow (non-bypassable server-side) | Agent 11 | open | `kiwi-app/src-tauri/`, `ipc.md` | T-226 |
 | T-228 | F1 rules engine core: predicate AST + ordered eval + block-list-first + store table/CRUD (pure, deterministic) | Agent 15 | open | `kiwi-mail/src/rules/` | T-181 |
 | T-229 | Review oauth2.md contract for drift vs Agent 19 impl when it lands | Agent 18 | queued | `docs/contracts/` | T-195 |
+| T-230 | OAuth2 IPC commands (begin/poll/status) + account-wizard seam (autoconfig oauth2 → flow → CredentialStore) | Agent 19 | open | `kiwi-app/src-tauri/`, `ipc.md` | T-195 |
