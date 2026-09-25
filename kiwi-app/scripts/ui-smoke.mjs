@@ -271,11 +271,15 @@ async function runChecks(cdp, sid) {
     if (!(await cdp.eval(sid, ctxMenu(".em-row")))) throw new Error("no row to open menu on");
     if (!(await waitFor(cdp, sid, qs(".em-ctx[role=menu]"), 4000))) throw new Error("menu did not open");
     const items = await cdp.eval(sid, qsa(".em-ctx-item"));
+    // T-332: Move-to + Copy-to share the same real folder submenu.
+    const moveCopy = await cdp.eval(sid,
+      `[...document.querySelectorAll('.em-ctx-item')].filter(b=>/^(Move|Copy) to$/.test(b.textContent.trim())).map(b=>({t:b.textContent.trim(),d:b.disabled}))`);
+    if (moveCopy.length !== 2) throw new Error("Move to/Copy to pair missing");
     await cdp.eval(sid, keyOn(".em-ctx", "Escape")); // Escape handled via onKeyDown on the menu root
     const closed = await waitFor(cdp, sid, `!${qs(".em-ctx")}`, 3000);
     if (!closed) throw new Error("menu did not dismiss on Escape");
     if (items < 5) throw new Error(`only ${items} items`);
-    return `${items} items, Esc dismisses`;
+    return `${items} items, Esc dismisses${moveCopy.every((i) => i.d) ? " (move/copy demo-disabled)" : ""}`;
   });
 
   await check("compose", "compose route + fields", async () => {

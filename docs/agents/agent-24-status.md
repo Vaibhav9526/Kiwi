@@ -806,3 +806,24 @@ must not return DOM elements (object-graph serialization throws
 "Object reference chain is too long") — return primitives. Same failure
 currently breaks A21's `audit-log` check on their end (mid-flight T-320).
 **21 pass / 1 fail** (audit-log only, foreign).
+
+## T-332 — "Copy to" ctx-menu over A20's kiwi_copy_messages
+
+**mailbox.tsx:** `ctxMoveFolders` renamed → `ctxDstFolders` (shared by
+Move-to and Copy-to — one destination list, same construction: account
+matched, current folder excluded for single-select, empty ⇒ both
+disabled). New "Copy to" entry sits directly under "Move to"; its
+tooltip is the contract's honesty ("Duplicates into a local copy —
+never an IMAP server COPY"). `onCopyToFolder` prop added.
+
+**App.tsx:** `copyToFolder` mirrors `moveToFolder` shape — groupByFolder,
+400-uid chunks, src==dst groups counted without a call (a same-folder
+"copy" would mint a real duplicate; skipping keeps the count honest),
+`Copied N message(s) to X` toast, `reloadMail` refreshes dst counts.
+No undo — no undo IPC.
+
+**Keyboard:** ctx menu is the keyboard path (arrow/Enter/→ submenu nav)
+— same reachability Move-to has; no new binding invented.
+
+**Smoke:** `ctxmenu` now asserts exactly one "Move to" + one "Copy to"
+(both demo-disabled) — **22/22 PASS** (A21's audit-log green again too).

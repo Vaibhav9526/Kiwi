@@ -148,10 +148,12 @@ export interface MailboxProps {
   onCancelSend: (queueId: string) => void;
   onScheduleSend: (queueId: string, sendAtUnix: number) => void;
   onOutboxRefresh: () => void;
-  /** T-299: per-account folder lists — the real Move-to submenu source. */
+  /** T-299: per-account folder lists — the real Move-to/Copy-to submenu source. */
   folderLists: Record<string, FolderView[]>;
   onSnooze: (ids: string[], preset: SnoozePreset) => void;
   onMoveToFolder: (ids: string[], dstFolderId: number) => void;
+  /** T-332: kiwi_copy_messages — local duplicate into dst, picked-aware. */
+  onCopyToFolder: (ids: string[], dstFolderId: number) => void;
 }
 
 export function MailboxView(props: MailboxProps) {
@@ -260,7 +262,9 @@ export function MailboxView(props: MailboxProps) {
   const ctxEnvs = ctxIds.map((id) => allMessages.find((m) => m.id === id)).filter((m): m is MessageEnvelope => !!m);
   const ctxSingle = ctxEnvs.length === 1 ? ctxEnvs[0] : null;
   const ctxAccount = ctxEnvs.length > 0 && ctxEnvs.every((m) => m.accountId === ctxEnvs[0].accountId) ? ctxEnvs[0].accountId : null;
-  const ctxMoveFolders = ctxAccount
+  // T-332: shared destination list for Move-to AND Copy-to — same
+  // construction rules (account-matched, current folder excluded).
+  const ctxDstFolders = ctxAccount
     ? (props.folderLists[ctxAccount] ?? []).filter((f) => !(ctxSingle && ctxSingle.folderId === f.id))
     : [];
   const backendTip = "Needs the Tauri backend";
@@ -301,9 +305,20 @@ export function MailboxView(props: MailboxProps) {
         {
           label: "Move to",
           icon: "folder",
-          disabled: props.demo || ctxMoveFolders.length === 0,
-          title: props.demo ? backendTip : ctxMoveFolders.length === 0 ? "No other folders on this account" : undefined,
-          submenu: ctxMoveFolders.map((f) => ({ label: f.name, onSelect: () => props.onMoveToFolder(ctxIds, f.id) })),
+          disabled: props.demo || ctxDstFolders.length === 0,
+          title: props.demo ? backendTip : ctxDstFolders.length === 0 ? "No other folders on this account" : undefined,
+          submenu: ctxDstFolders.map((f) => ({ label: f.name, onSelect: () => props.onMoveToFolder(ctxIds, f.id) })),
+        },
+        {
+          label: "Copy to",
+          icon: "folder",
+          disabled: props.demo || ctxDstFolders.length === 0,
+          title: props.demo
+            ? backendTip
+            : ctxDstFolders.length === 0
+              ? "No other folders on this account"
+              : "Duplicates into a local copy — never an IMAP server COPY",
+          submenu: ctxDstFolders.map((f) => ({ label: f.name, onSelect: () => props.onCopyToFolder(ctxIds, f.id) })),
         },
         "divider",
         { label: "Mark as junk", icon: "flag", disabled: props.demo, title: props.demo ? backendTip : undefined, onSelect: () => props.onBulkSpam(ctxIds) },

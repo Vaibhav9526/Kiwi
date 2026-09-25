@@ -885,6 +885,48 @@ export default function App() {
   );
 
   /**
+   * T-332 copy-to: same grouping/chunk shape as moveToFolder but hits
+   * kiwi_copy_messages — a LOCAL duplicate (never server-side IMAP COPY;
+   * the contract files the reconcile gap). src==dst groups no-op like
+   * move (a same-folder duplicate would be a real copy — skipped so the
+   * count never claims it). Toast names the destination; no undo — no
+   * undo IPC exists.
+   */
+  const copyToFolder = useCallback(
+    async (ids: string[], dstFolderId: number) => {
+      if (demo || ids.length === 0) {
+        if (ids.length === 0) return;
+        notify("info", "Demo mode — copy needs the Tauri backend.");
+        return;
+      }
+      const { groups, missing } = groupByFolder(ids);
+      let copied = 0;
+      let fail = missing;
+      for (const g of groups) {
+        if (g.folderId === dstFolderId) {
+          copied += g.uids.length; // already in the destination
+          continue;
+        }
+        for (let i = 0; i < g.uids.length; i += 400) {
+          try {
+            const r = await api.copyMessages(g.accountId, g.folderId, dstFolderId, g.uids.slice(i, i + 400));
+            copied += r.copied;
+          } catch {
+            fail += g.uids.slice(i, i + 400).length;
+          }
+        }
+      }
+      await reloadMail();
+      const dstName = Object.values(folderLists).flat().find((f) => f.id === dstFolderId)?.name;
+      const where = dstName ? ` to ${dstName}` : "";
+      const summary = fail === 0 ? `Copied ${copied} message(s)${where}.` : `Copied ${copied}${where}, ${fail} failed.`;
+      setSyncNote(summary);
+      notify(fail === 0 ? "ok" : "warn", summary);
+    },
+    [demo, groupByFolder, reloadMail, notify, folderLists],
+  );
+
+  /**
    * T-299 folder context menu: "Mark all as read" for one real folder
    * (`accountId:folderId`). No folder-scope command exists — the loop hits
    * kiwi_update_message per unread row, bounded by the list cap.
@@ -1593,6 +1635,7 @@ export default function App() {
             folderLists={folderLists}
             onSnooze={(ids, preset) => void snoozeIds(ids, preset)}
             onMoveToFolder={(ids, dst) => void moveToFolder(ids, dst)}
+            onCopyToFolder={(ids, dst) => void copyToFolder(ids, dst)}
           />
         )}
         {route.name === "compose" && (
