@@ -67,7 +67,9 @@ fn reason_codes<T: Serialize>(reasons: &[T]) -> Vec<String> {
         .collect()
 }
 
-fn require_available(provider: &dyn SandboxProvider) -> CmdResult<kiwi_sandbox::SandboxCapabilities> {
+fn require_available(
+    provider: &dyn SandboxProvider,
+) -> CmdResult<kiwi_sandbox::SandboxCapabilities> {
     match provider.availability() {
         Availability::Available(capabilities) | Availability::Degraded(capabilities, _) => {
             Ok(capabilities)
@@ -254,10 +256,7 @@ mod tests {
             })
         }
 
-        async fn create(
-            &self,
-            spec: SandboxSpec,
-        ) -> kiwi_sandbox::Result<Box<dyn Sandbox>> {
+        async fn create(&self, spec: SandboxSpec) -> kiwi_sandbox::Result<Box<dyn Sandbox>> {
             self.seen.lock().unwrap().push(spec);
             Ok(Box::new(FakeSandbox))
         }
@@ -297,8 +296,7 @@ mod tests {
 
     #[test]
     fn audit_target_redacts_credentials_query_and_fragment() {
-        let url =
-            validate_link("https://user:pass@evil.example/login?token=x#frag").unwrap();
+        let url = validate_link("https://user:pass@evil.example/login?token=x#frag").unwrap();
         let target = sanitized_link_target(&url);
         assert_eq!(target, "https://evil.example/login");
         assert!(!target.contains("pass"));
@@ -332,7 +330,109 @@ mod tests {
         assert_eq!(view.evidence_reasons, ["unmatched-link"]);
         assert_eq!(view.report.evidence_reasons, ["unmatched-link"]);
         assert!(!view.target.contains("secret"));
+        {
+            let seen = provider.seen.lock().unwrap();
+            assert_eq!(
+                seen[0].link_url.as_deref(),
+                Some("http://evil.example/?secret=x")
+            );
+            assert_eq!(seen[0].evidence_reasons, ["unmatched-link"]);
+        }
         assert!(state.audit.lock().await.len() >= 1);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn attachment_resolves_stored_reference_and_forwards_risk_reasons() {
+        use kiwi_mail::account::{MailAccount, ServerConfig};
+        use kiwi_mail::attachrisk::{AttachRisk, AttachRiskEvidence, AttachRiskReason};
+        use kiwi_mail::store::NewMessageMeta;
+        use kiwi_mail::transport::SocketSecurity;
+
+        let dir = std::env::temp_dir().join(format!("kiwi-sbx-att-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let provider = Arc::new(FakeProvider {
+            seen: std::sync::Mutex::new(Vec::new()),
+        });
+        let state = AppState::open_test_with_sandbox(dir.clone(), provider.clone()).unwrap();
+        let account = MailAccount {
+            account_id: "a".into(),
+            display_name: "A".into(),
+            email: "a@x.test".into(),
+            incoming: kiwi_mail::account::IncomingAccount {
+                protocol: kiwi_mail::account::IncomingProtocol::Pop3,
+                server: ServerConfig {
+                    host: "x.test".into(),
+                    port: 995,
+                    security: SocketSecurity::ImplicitTls,
+                },
+                username: "a".into(),
+                auth: kiwi_mail::account::AuthRef::None,
+            },
+            outgoing: kiwi_mail::account::OutgoingAccount {
+                server: ServerConfig {
+                    host: "x.test".into(),
+                    port: 465,
+                    security: SocketSecurity::ImplicitTls,
+                },
+                username: "a".into(),
+                auth: kiwi_mail::account::AuthRef::None,
+            },
+        };
+        let store = state.store.lock().await;
+        store.upsert_account(&account).unwrap();
+        let folder_id = store.ensure_folder("a", "INBOX").unwrap();
+        store
+            .upsert_message(
+                folder_id,
+                &NewMessageMeta {
+                    uid: 7,
+                    message_id: None,
+                    subject: None,
+                    from_addr: None,
+                    to_addrs: None,
+                    date_unix: None,
+                    size: None,
+                    flags: vec![],
+                    has_attachments: true,
+                    snippet: None,
+                    category: Default::default(),
+                    unsub_http: None,
+                    unsub_mailto: None,
+                    unsub_oneclick: false,
+                },
+                0,
+            )
+            .unwrap();
+        store
+            .store_body(
+                folder_id,
+                7,
+                b"Content-Type: multipart/mixed; boundary=x\r\n\r\n--x\r\nContent-Type: text/plain\r\n\r\nbody\r\n--x\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=\"invoice.exe\"\r\n\r\nMZpayload\r\n--x--\r\n",
+            )
+            .unwrap();
+        store
+            .set_attachment_risk(
+                folder_id,
+                7,
+                &AttachRiskEvidence {
+                    risk: AttachRisk::Failed,
+                    reasons: vec![AttachRiskReason::DangerousExtension],
+                },
+            )
+            .unwrap();
+        drop(store);
+
+        let view = open_attachment_impl(&state, folder_id, 7, "invoice.exe".into())
+            .await
+            .unwrap();
+        assert_eq!(view.evidence_reasons, ["dangerousExtension"]);
+        assert_eq!(view.target, format!("attachment:f{folder_id}/u7"));
+        let seen = provider.seen.lock().unwrap();
+        assert_eq!(seen[0].link_url, None);
+        assert_eq!(seen[0].artifact_path.extension().unwrap(), "bin");
+        assert!(!seen[0].artifact_path.exists());
+        drop(seen);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -615,7 +615,9 @@ browser fallback.
 - `cargo check -p kiwi-app`, app + sandbox clippy `-D warnings`, touched-file
   rustfmt, and T-266 diff check are clean.
 - Full app lib passed all T-266 tests and existing tests through the unrelated
-  existing `e2e_send_delivers_files_sent_copy` hang. Full workspace gates are
-  independently blocked by concurrent kiwi-pair formatting and a kiwi-mail
-  snooze-test mismatch. `tsc` is independently blocked by in-flight T-267/268
-  chrome/icons/mailbox edits; no T-266 TS error was emitted.
+  existing `e2e_send_delivers_files_sent_copy` hang. A later full run was
+  compilation-blocked by concurrent in-flight T-269 edits removing legacy
+  device/challenge fields while their command consumers remain. Full workspace
+  fmt is independently blocked by concurrent kiwi-pair formatting. `tsc` is
+  independently blocked by in-flight T-267/268 chrome/mailbox edits; no T-266
+  TS error was emitted.

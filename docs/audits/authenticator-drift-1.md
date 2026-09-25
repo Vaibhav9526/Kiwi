@@ -1,255 +1,188 @@
 # Mobile Authenticator Drift Audit 1 (T-270)
 
 **Reviewer:** Agent 23 · **Date:** 2026-09-25 · **Snapshot:** `9f13f47` plus the current shared worktree  
-**Mode:** read-only implementation audit. No mobile, Rust, contract, task-ledger,
-or master-findings file was changed. This report and the Agent 23 status entry
-are the only T-270 writes.
+**Mode:** read-only implementation audit. `mobile/` and implementation files were inspected, not edited. This report and the Agent 23 status entry are the only T-270 writes.
 
 ## Scope and verdict
 
-This audit compares `docs/contracts/authenticator.md` §§1–11 with the current
-`mobile/` implementation, the `kiwi-core` challenge/device primitives, the
-current `kiwi-pair` primitives, and the current Tauri challenge/device receiver.
-The prior AUTH register and T-235 pair audit are used for disposition, not as a
-substitute for current source evidence.
+This audit enumerates `docs/contracts/authenticator.md` against the current React Native client, its deterministic protocol modules and tests, the `kiwi-core` challenge/device primitives, the current `kiwi-pair` worktree, and the relevant Tauri receiver. The concurrently edited QR-encoder files under `mobile/src/qr/` and `mobile/tests/qr/` are outside the protocol finding set; the clean `mobile/src/protocol/qr.ts` parser is in scope.
 
-**Verdict: the deterministic protocol core is substantially implemented, but
-the mobile authenticator is still a fail-closed scaffold rather than an
-end-to-end implementation.** The canonical byte layout, event tags, strict
-known-field parsing, 32-byte nonce decode, one-answer replay primitive, and
-bounded FIFO queue primitives are real. The production identity, key, transport,
-persistence, signing, delivery, and desktop audit paths are absent.
+**Verdict: the mobile client is an honestly labelled, fail-closed scaffold, not a production authenticator.** The deterministic QR/challenge primitives, canonical byte encoder, event tags, replay helper, and queue helper have substantial test-backed coverage. However, the required pairing channel, native keystore, durable identity/replay/queue state, desktop-compatible challenge handoff, explicit deny receiver, and complete approval transaction are absent or divergent.
 
-The current default wiring cannot authorize a challenge: `UnavailableKeystore`
-cannot sign and `OfflineTransport` cannot send. This prevents a demonstrated
-mobile unauthorized-approval exploit. It does not make the remaining work
-routine: the contract's Lead + Agent 6 sign-off gate remains open, and the
-existing Tauri receiver has independent trust and audit gaps, including accepting
-a signed response for an outstanding challenge from a device that has since
-been revoked.
-
-### In-flight snapshot caveats
-
-- T-269 is actively changing `kiwi-pair` and `kiwi-app`. Its current worktree
-  adds important ticket-status, atomic-claim, nonce-transaction, and atomic
-  challenge-consume primitives, but the canonical Tauri integration is still
-  absent and the new methods are not yet covered by the current 11-test suite.
-- Current QR-encoder changes under `mobile/src/qr/`, `mobile/tests/qr/`, and
-  `mobile/tools/` are unrelated to this audit. They are preserved and not used
-  to excuse or attribute authenticator findings.
-- Line references below describe this shared-worktree snapshot and may move
-  when T-269 lands.
+The current default cannot authorize or deliver anything: `UnavailableKeystore` rejects signing, and `OfflineTransport` always returns `offline`. This prevents the listed gaps from becoming a current unauthorized-approval path, but it does not satisfy the contract's production obligations. T-269 is also changing `kiwi-pair`; its current primitive improvements are recorded below, while claims requiring Tauri integration or new regression tests remain unverified.
 
 ## Status legend
 
-- **Implemented** — the requested behavior is present and test-backed.
+- **Implemented** — the behavior is present and backed by current tests.
 - **Partial** — a useful primitive exists, but part of the requirement is absent.
 - **Missing** — no callable implementation exists.
-- **Divergent** — a path exists, but it does not enforce the contract or is not
-  the intended authority.
-- **Release gate** — expected Phase-4 absence that must remain disabled until
-  completed; not counted as a current bypass while fail closed.
+- **Divergent** — code exists, but its wire, safety, ordering, or semantics differ from the contract.
+- **Deferred** — intentionally scaffold-only and fail-closed; valid for today, still a Phase-4 release gate.
 
-## Executive summary
+Severity is **H** for a trust, identity, replay, or authorization failure; **M** for a material security, interop, or state-integrity gap; **L** for bounded contract, diagnostics, or test drift.
 
-| Area | Current result |
-|---|---|
-| Deterministic canonical bytes and event tags | **Implemented**; exact parity with kiwi-core, with unit evidence |
-| QR/challenge parsers | **Partial**; core fields are strict, but several trust and resource gates are missing |
-| Pairing identity and ticket lifecycle | **Partial primitives / missing runtime**; PairEngine can issue/claim, mobile has no channel or real identity |
-| Platform keystore | **Missing by design**; the wired implementation fails closed |
-| Approval gates and signing | **Divergent**; review is incomplete and the approve handler signs neither canonical bytes nor a real key |
-| Replay ledger and delivery queue | **Partial primitives / missing runtime**; in-memory, not pruned in the app, no scheduler or durable storage |
-| Desktop decision/audit receiver | **Divergent**; no compatible deny path and incomplete outcome auditing |
-| Current Tauri ↔ PairEngine integration | **Missing**; Tauri still uses separate process-local kiwi-core state |
+## Pairing and QR matrix
 
-## Contract implementation matrix
-
-### Binding invariants and pairing
-
-| Contract requirement | Status | Current behavior and evidence | Required resolution |
+| Contract obligation | Status | Current behavior and evidence | Required resolution |
 |---|---|---|---|
-| Deterministic, no AI in pairing/approval | **Implemented** | Protocol modules are pure/injectable; no AI or network call is in the approval decision path (`mobile/src/protocol/canonical.ts:45-63`, `replay.ts:16-18`, `queue.ts:22-24`). | Preserve; keep the Phase-4 coordinator deterministic. |
-| Ed25519 only; unsupported algorithms fail closed | **Partial** | Mobile's type admits only `ed25519` (`mobile/src/keystore/keystore.ts:10,28-35`), and PairEngine rejects other algorithms (`kiwi-pair/src/engine.rs:234-243,299-308`). The legacy Tauri registration path still accepts reserved ECDSA/RSA names and defers rejection until submit (`kiwi-app/src-tauri/src/commands/devices.rs:27-44`; `system.rs:182-194`). | Reject unsupported algorithms at every registration boundary; keep only Ed25519 live. |
-| Keystore-only private key; public key and `keystore_ref` only | **Release gate** | The interface exposes no private-key export (`mobile/src/keystore/keystore.ts:28-45`). The wired `UnavailableKeystore` rejects generate/sign/delete (`:47-63`). SoftHsm is non-cryptographic and only imported by tests. | Implement reviewed Android/iOS native key lifecycle; never expose seed/private bytes to JS. |
-| Challenge binds device/session/event/nonce/expiry and is single-use | **Partial** | kiwi-core and PairEngine implement the binding/verification order; mobile canonical encoding matches. The approval screen does not require an identity and does not maintain a production replay ledger. | Preserve canonical primitives; require a registered identity and durable answer state before decisions. |
-| No secrets in QR/logs/fixtures; raw QR not echoed | **Partial** | No `console.*` call was found and QR errors do not include the raw text. The bearer ticket is retained in `QrPayload.raw` and an eight-character ticket prefix is used in the scaffold alias/device ID (`mobile/src/protocol/types.ts:11-21`; `PairingScreen.tsx:48,61-67`). | Do not retain/log the raw QR longer than needed; never derive persistent identity or telemetry from bearer-ticket text. |
-| Untrusted input is bounded, validated, and fail-closed | **Partial** | QR raw input and known fields are bounded. Challenges are parsed directly from an unbounded TextInput before validation; unknown and oversized JSON values can consume resources, and an untrusted version value is echoed (`PendingApprovalsScreen.tsx:41-43,61-64,106-116`; `canonical.ts:70-89`). | Cap raw challenge bytes before `JSON.parse`; use closed error codes/messages and reject unknown oversized fields without reflection. |
-| Approve is the only cryptographic act; deny is unsigned | **Implemented locally** | The response builder requires an exact decoded 64-byte signature for approve and emits `decision:'deny'` with an empty signature for deny (`mobile/src/protocol/canonical.ts:129-148`). | Keep deny outside signature verification on the desktop. |
-| Every registration, approval, denial, failure, and revocation is audited | **Divergent** | Tauri audits registration/revocation and successful verification, but failures propagate before an audit row; success is `challenge-verified`, and no `challenge-approved`, `challenge-denied`, `challenge-verification-failed`, or `device-paired` action exists (`kiwi-app/src-tauri/src/commands/system.rs:203-240`; `devices.rs:74-78,122-126`). | Add one mandatory structured outcome-audit layer around every decision and post-verification action. |
-| Version is integer 1; unknown fields are ignored | **Implemented** | QR and challenge parsers require version 1 and construct explicit allowlisted result objects (`mobile/src/protocol/qr.ts:36-75`; `canonical.ts:70-100`). | Preserve and test boundary/version-skew cases. |
-| QR v1 field shape, ticket bounds, and unknown-field handling | **Partial** | Version/type, ticket length/charset, and basic field bounds are enforced (`mobile/src/protocol/qr.ts:24-75`). Desktop-key encoding/size, endpoint security, and maximum lifetime are not. | Complete the trust-bearing QR validation below. |
-| Pairing ticket is single-use | **Missing on mobile / Partial primitive** | Mobile has no pairing transport. PairEngine has a persistent store and current T-269 atomic claim path, while its legacy `consume_pairing_ticket` still marks a row consumed before returning `TicketExpired` (`kiwi-pair/src/engine.rs:182-190`; `store.rs:309-326`). | Use only the atomic claim transaction in production; deprecate/remove the legacy consume path or make expiry precede mutation. |
-| TLS-protected pairing channel, desktop identity pin, and peer-key comparison | **Missing** | The only transport is permanently offline (`mobile/src/transport/transport.ts:14-23`). QR parsing accepts any 1–256-character endpoint and only checks an `ed25519:` prefix (`qr.ts:42-48`). No endpoint, TLS peer, or pin comparison exists. | Implement the ratified secure transport and compare the negotiated peer identity to the QR pin before sending ticket/key material. |
-| Pairing hello, registered reply, pending registration, activation | **Missing on mobile** | No hello/reply types or transport exist. PairingScreen fabricates a scaffold identity after expected key-generation failure and calls `onPaired` (`PairingScreen.tsx:35-74`). | Model explicit `validated → key-ready → registered-pending → active`; call paired only after desktop-assigned registration and successful pairing verification. |
-| Device lifecycle and local key destruction | **Release gate** | PairEngine has persistent registration, activation, and terminal revocation. Mobile has a `deleteKey` interface but no caller, revocation notification, identity removal, or queue cleanup. | Coordinate desktop revocation with native local destruction and durable cleanup. |
+| Deterministic pairing/approval; no AI | **Implemented** | QR/challenge parsing and canonical encoding are pure; replay/queue clocks are injectable. No AI or network path exists under the reviewed protocol modules (`protocol/qr.ts:24-87`, `protocol/canonical.ts:45-100`, `protocol/replay.ts:16-70`, `protocol/queue.ts:22-130`). | Preserve. |
+| QR version and type | **Implemented** | `v` must be safe integer `1`, and `type` must equal `kiwi-pairing`; wrong values reject (`protocol/qr.ts:36-39`; `tests/protocol/qr.test.ts:49-56`). | Preserve. |
+| QR size, wrong types, unknown fields | **Implemented** | Raw QR is capped at 1024 characters, known fields are bounded, JSON must be an object, and unknown fields are not copied (`protocol/qr.ts:24-75`; `tests/protocol/qr.test.ts:44-74`). | Preserve; use a byte cap when the live scanner adapter lands. |
+| Ticket shape `8..128` and `[A-Za-z0-9_-]` | **Implemented** | The mobile parser and current `PairEngine` use the same inclusive bounds and charset (`protocol/qr.ts:41,60-63`; `kiwi-pair/src/engine.rs:193-203`). | Preserve. |
+| Ticket single-use and successful-use semantics | **Divergent** | Mobile has no pairing transport. The current `consume_pairing_ticket` atomically marks the ticket consumed before checking expiry, so an expired attempt burns it (`kiwi-pair/src/engine.rs:182-190`; `kiwi-pair/src/store.rs:309-326`). The new atomic claim path is safer but has no test/caller yet. | Deprecate the split consume/register API; make the tested transaction the only production path. |
+| Compact desktop QR producer | **Implemented** | `qr_payload_json` emits the fixed field set with `v=1`, ticket, endpoint, label, key, and timestamps (`kiwi-pair/src/engine.rs:257-284`). | Preserve, with stricter key/endpoint validation. |
+| QR validity at most five minutes | **Partial** | Mobile checks ordering/current expiry but not `expires_unix - issued_unix <= 300`; it even permits equal timestamps (`protocol/qr.ts:50-58`). The current pair producer correctly mints `issued + 300` (`kiwi-pair/src/engine.rs:30-35,160-179`). Tests cover current expiry but not a longer window (`tests/protocol/qr.test.ts:58-61`). | Require `1 <= expires-issued <= 300`; add long-window and zero-window tests. This confirms AUTH-10. |
+| `desktop_endpoint` is a bounded LAN endpoint | **Partial** | Both sides enforce only 1..256 characters/bytes, not URL syntax, host scope, or the approved scheme (`protocol/qr.ts:42`; `kiwi-pair/src/engine.rs:266`). | Parse structurally; define allowed LAN host forms, required port/path, and forbidden credentials/fragments. |
+| TLS-only pairing channel | **Divergent** | The contract forbids plaintext at `authenticator.md:119-121` but its example uses `ws://` at `:77`; mobile accepts it and the pair producer accepts it (`protocol/qr.ts:42`; `kiwi-pair/src/engine.rs:266`; `tests/protocol/qr.test.ts:18`). | Ratify one `wss://` form, correct the contract example, then reject every other scheme on both boundaries. This confirms AUTH-5. |
+| Desktop Ed25519 key is canonical Base64 for exactly 32 bytes | **Divergent** | Mobile and `PairEngine` check only the `ed25519:` prefix and outer length. `ed25519:` and `ed25519:AAAA` pass (`protocol/qr.ts:44-48`; `kiwi-pair/src/engine.rs:268-272`; `pair_tests.rs:180-203`). | Strip the prefix, require canonical padded standard Base64, decode exactly 32 bytes, and re-encode for equality. This confirms AUTH-4. |
+| Desktop key and TLS peer identity are the same trust pin | **Deferred** | The field is parsed and retained but no transport compares it with a live peer. The contract does not define how a raw Ed25519 identity key maps to a TLS certificate/SPKI pin (`authenticator.md:92,119-123`; `protocol/types.ts:12-22`). | Make the contract define the pin representation and native comparison semantics before implementing the channel. |
+| Device label is bounded and safely displayed | **Partial** | Input is length-bounded, but `safeDeviceLabel` removes only CR/LF/tab; other controls and bidi controls remain (`protocol/qr.ts:43,83-87`; `tests/protocol/qr.test.ts:77-86`). | Strip C0/C1/DEL and bidi controls; truncate without splitting graphemes; keep a distinct display DTO. |
+| Raw QR is never logged | **Implemented for current code** | No logging call exists in the reviewed mobile source, and parser errors are fixed/bounded for QR input. The parser retains `raw` in its result but current callers do not log it (`protocol/qr.ts:24-32,65-75`). | Keep ticket-bearing raw text out of serializable state and future telemetry. |
+| Pairing hello/registered reply wire | **Missing** | No pairing message types or transport methods exist. The only transport interface is response `postResponse` (`protocol/types.ts:11-47`; `transport/transport.ts:10-23`). | Add strict bounded hello/reply/activation messages and the one-shot channel. |
+| Server-issued pending device identity and activation | **Missing / scaffold-UI divergent** | After the expected keystore failure, the screen fabricates `dev-scaffold-<ticket-prefix>`, calls `onPaired`, and navigates to approvals. No key, registration, or activation occurred (`screens/PairingScreen.tsx:45-74`; `App.tsx:25-28,55-60`). | Keep a distinct “QR validated / pairing unavailable” state. Create identity only after desktop registration and successful pairing verification. |
 
-### Challenge, response, replay, and queue
+## Challenge, response, and replay matrix
 
-| Contract requirement | Status | Current behavior and evidence | Required resolution |
+| Contract obligation | Status | Current behavior and evidence | Required resolution |
 |---|---|---|---|
-| Canonical bytes match kiwi-core byte-for-byte | **Implemented** | Domain, three length-prefixed fields, event tag, raw 32-byte nonce, and two i64be timestamps match (`mobile/src/protocol/canonical.ts:22-63`; `kiwi-core/src/challenge.rs:53-75`). Unit test covers layout and every bound field. | Add one shared Rust/TypeScript golden vector and fixed Ed25519 signature. |
-| Event tags are exactly 0x01–0x04 | **Implemented** | Mobile, kiwi-core, and PairEngine use the same four values (`mobile/src/protocol/event.ts:9-23`; `kiwi-core/src/challenge.rs:15-37`). | Preserve with a cross-language version gate. |
-| Challenge delivery uses `schema_version` and `nonce_b64` | **Divergent** | Mobile expects the documented snake_case fields (`mobile/src/protocol/canonical.ts:70-99`). Tauri emits camelCase without `schema_version` and with `nonceHex`; its TS interface says `nonceB64` (`kiwi-app/src-tauri/src/types/system.rs:48-76`; `kiwi-app/src/kiwi.ts:946-955`). | Land one canonical challenge view/transport adapter; remove runtime fallback among nonce encodings. |
-| Strict challenge parsing: bounded strings, exact nonce, known events, unknown fields ignored | **Partial** | Known fields and exact nonce decode are enforced. Raw JSON is not bounded, session-form rules are not enforced, and challenge TTL is accepted as any positive interval (`canonical.ts:70-100`; contract `:167-178`). | Add a pre-parse byte cap, exact field bounds, session/event validation, and an explicit TTL/profile rule. |
-| Nonce is desktop-issued CSPRNG and replay-detected at issue | **Partial** | Tauri and `kiwi_pair::os_nonce` use `getrandom`; PairEngine persists and caps nonces. No active Tauri PairEngine caller exists, and `replay-detected` is not written as an audit event (`kiwi-pair/src/crypto.rs:80-86`; `engine.rs:412-428`). | Wire PairEngine as the authority and audit collision incidents without recording the nonce. |
-| Desktop verifies in exists → expiry → unconsumed → binding → signature → consume order | **Implemented in primitives** | kiwi-core follows the order; current PairEngine adds bounds, revocation, and atomic consume+activation (`kiwi-core/src/challenge.rs:154-185`; `kiwi-pair/src/engine.rs:442-520`). Tauri still uses the in-memory core path. | Finish the single persistent PairEngine integration and preserve this order. |
-| Phone gate order and explicit intent on the displayed challenge | **Divergent** | Review runs parse → replay → conditional binding → expiry, not contract order; null identity skips binding; both Approve and Deny act without re-running gates (`PendingApprovalsScreen.tsx:41-96`). | Centralize review and tap-time decisions in one coordinator that revalidates the exact reviewed challenge. |
-| User sees event, desktop label, transaction ID, and issue/expiry times | **Partial** | The screen shows only a human event label and expiry. It does not show desktop label, session/transaction ID, issue time, or challenge ID (`PendingApprovalsScreen.tsx:56-60,100-105`). The challenge wire has no desktop-label field. | Define a trusted desktop-label source and include the required signed context before enabling approval. |
-| Response shape and 64-byte Ed25519 signature | **Partial** | The mobile builder includes schema, bound fields, and decision, and checks decoded signature length. The exported `decision` type is optional (`mobile/src/protocol/types.ts:36-47`), and desktop input has no decision/schema version. | Make decision mandatory; validate exact/canonical Base64; define one response adapter shared with Tauri. |
-| Deny is explicit, unsigned, audited, non-authorizing, and non-consuming | **Divergent end-to-end** | Mobile builds and locally records deny correctly. Tauri drops the `decision` field and routes the empty signature into signature verification, yielding `InvalidSignature`; no deny audit exists (`mobile/src/protocol/canonical.ts:146-147`; `kiwi-app/src-tauri/src/types/system.rs:80-90`; `system.rs:175-207`). | Branch explicit deny before signature verification, audit it, and do not consume. |
-| Replay ledger: one answer, 1-hour prune, 256 cap | **Partial** | Primitives/tests exist (`mobile/src/protocol/replay.ts:20-61`; `tests/protocol/replay.test.ts:9-54`), but the app never calls `prune`; state is component-local and disappears on tab unmount. Expired challenges are not recorded. | Persist ledger, prune before capacity checks, record expiry, and distinguish duplicate from capacity failure. |
-| Queue: sign-time approve, FIFO, bounded, dedupe, ≥10 s retry, durable offline approve | **Partial primitives / missing runtime** | Queue map, cap 64, dedupe, FIFO tick, and 10-second throttle exist (`mobile/src/protocol/queue.ts:48-124`). No production approve exists, no scheduler calls `tick`, state is in memory, and the app ignores enqueue failure. | Build an atomic sign/persist/enqueue coordinator and a lifecycle-owned durable scheduler. |
-| Deny never remains queued indefinitely | **Divergent** | Deny is accepted by the same queue and remains on every offline result; there is no deny TTL/drop terminal state (`queue.ts:67-77,93-124`; contract `authenticator.md:286-288`). | Give deny a bounded one-shot or age-bounded policy and surface dropped delivery accurately. |
-| No implicit local expiry of queued approve | **Implemented in queue primitive** | `ChallengeQueue` does not drop by `expires_unix`; late desktop verification remains authoritative (`queue.ts:93-109`). | Preserve; do not apply the deny policy to approvals. |
-| Mobile scaffold claims and tests are honest | **Partial** | Mobile README clearly labels the scaffold, but PairingScreen advances with a fake identity, Approve is enabled despite no signer, and screen/transport behavior has no tests. | Disable actions that are not actually available; add component and transport-contract tests. |
+| Canonical bytes match `kiwi-core` | **Implemented** | Mobile emits the same domain, three u32be-prefixed IDs, event byte, raw nonce, and i64be timestamps as kiwi-core (`protocol/canonical.ts:22-63`; `kiwi-core/src/challenge.rs:53-75`). Structural and mutation tests cover every bound field (`tests/protocol/canonical.test.ts:15-64`). | Add one kiwi-core-generated golden vector consumed by both languages. |
+| Event names and tags are identical | **Implemented** | Mobile and kiwi-core both map unlock/pairing/recovery/elevated to `0x01..0x04`; unknown events reject (`protocol/event.ts:9-30`; `protocol/canonical.ts:77-82`; `tests/protocol/canonical.test.ts:66-73`). | Preserve with the shared golden vector. |
+| Strict challenge parse; exact nonce; unknown fields ignored | **Implemented for decoded objects** | Required fields, types, bounds, event, Base64 syntax, exact 32-byte nonce, and time ordering are checked; unknown fields are omitted (`protocol/canonical.ts:70-100`; `tests/protocol/canonical.test.ts:91-118`). | Preserve. |
+| Entire challenge input is bounded before parsing | **Missing** | `JSON.parse(raw)` receives an unbounded TextInput value before `parseChallengeData` validates known fields (`PendingApprovalsScreen.tsx:41-43,106-116`). QR has a raw cap; challenge JSON does not. | Add a fixed total UTF-8 byte cap before JSON parsing and cap the input widget. |
+| Session form matches event (`boot-` vs `x-tx:`) | **Divergent** | The parser accepts any nonempty 1..128 string and never mints one, but it does not enforce the event-specific forms (`protocol/canonical.ts:74-89,111-121`). The “valid” fixture uses `x-tx` with `unlock`, contradicting `authenticator.md:169-174` (`tests/helpers/protocol.ts:16-26`). | Correct the examples/fixture and validate `boot-` for unlock/pairing and `x-tx:` for recovery/elevated. This confirms and broadens AUTH-16. |
+| Challenge TTL policy | **Partial** | Mobile accepts any positive lifetime. The contract calls 120 seconds the default; current `PairEngine` defaults to 120 and caps at 300 (`protocol/canonical.ts:87-89`; `kiwi-pair/src/engine.rs:32-35,379-393`). | Clarify policy override versus hard ceiling; enforce the agreed ceiling on mobile. |
+| Phone uses its own current clock | **Divergent** | Replay receives a `FixedClock(Date.now())` captured at component mount. Expiry and queue throttling therefore never advance while the screen stays mounted (`PendingApprovalsScreen.tsx:33-38`; `protocol/replay.ts:64-70`; `protocol/queue.ts:97-103`). | Use a live advancing clock and check expiry at review and again on every tap. This confirms AUTH-7. |
+| Gate order is parse → clock → binding → replay → intent | **Divergent** | Review runs parse → replay → conditional binding → expiry; neither action revalidates clock, binding, or replay (`PendingApprovalsScreen.tsx:41-65,67-96`). | Put the ordered gates in one service and bind its result to the exact immutable challenge shown. |
+| Device binding is mandatory | **Divergent** | Binding is skipped when identity is `null`, while the Approvals tab remains reachable and actions remain enabled (`App.tsx:42-60`; `PendingApprovalsScreen.tsx:48-51,118-136`). The current identity is only a scaffold value. | Fail closed without a real registered identity; recheck at tap. This confirms AUTH-6. |
+| Stale pending state cannot be actioned | **Divergent** | A rejected review returns without clearing the previous `pending`; after reviewing A, a rejected B can leave buttons bound to A (`PendingApprovalsScreen.tsx:41-65`). | Clear selection before review and bind buttons to the reviewed immutable snapshot. |
+| Replay ledger records one answer and caps at 256 | **Implemented as primitive** | First answer wins and capacity is 256 (`protocol/replay.ts:20-61`; `tests/protocol/replay.test.ts:9-24,46-54`). | Preserve. |
+| Replay ledger prunes at one hour | **Partial** | `prune(maxAgeSecs)` exists and its test passes, but there is no one-hour constant and no production caller. A full ledger stays permanently full (`protocol/replay.ts:30-54`; `tests/protocol/replay.test.ts:35-44`). | Define the retention constant and prune before capacity checks/review. This confirms AUTH-12. |
+| Expired challenge is recorded locally | **Missing** | The ledger type supports `expired`, but the screen only prints “expired on arrival” and does not record or clear pending (`PendingApprovalsScreen.tsx:52-55`; `protocol/replay.ts:10-14`). | Record `expired`, clear pending, and suppress re-prompt. This confirms AUTH-11. |
+| Replay/identity/queue state survives navigation/restart | **Missing** | All three objects are component-local. Switching tabs unmounts the approval screen and loses answers and queued outcomes (`App.tsx:55-60`; `PendingApprovalsScreen.tsx:33-38`). | Add an app-scoped, integrity-protected, bounded persistence layer before Phase 4. |
+| Response carries explicit decision | **Partial** | The builder always emits `approve` or `deny`, and deny has an empty signature. The exported type makes `decision` optional and documents absence as approve (`protocol/canonical.ts:129-148`; `protocol/types.ts:37-47`). | Make `decision` required and validate the runtime value before branching. |
+| Approve signature is exactly 64 bytes | **Implemented as a response builder rule** | The builder decodes and requires exactly 64 bytes; deny is empty (`protocol/canonical.ts:141-147`; `tests/protocol/canonical.test.ts:121-134`). | Preserve and add strict canonical-Base64 validation if exposed outside the trusted signer path. |
+| Signature exists only after all gates and signs canonical bytes | **Missing / divergent scaffold** | Approve calls `sign('no-key', new Uint8Array(0))`; it never builds canonical bytes or queues a response (`PendingApprovalsScreen.tsx:80-96`). The unavailable signer currently fails closed. | Gate first, decode nonce, canonicalize, sign with the persisted native handle, validate the signature, record the answer, and durably enqueue as one transaction. |
+| User sees event, desktop label, transaction ID, issue/expiry | **Missing** | UI shows only event phrase and raw expiry (`PendingApprovalsScreen.tsx:56-60`). `ChallengeData` has no desktop-label field, and the paired label is the phone label, not a trusted desktop identity. | Add a trusted pairing/display source and show challenge/session ID plus local issue/expiry times. This confirms AUTH-13 and exposes its contract-data gap. |
 
-## `kiwi-pair` primitive disposition
+## Queue and transport matrix
 
-The current T-269 worktree materially changes the T-235 result. The following are
-present in source now, but remain in-flight and are not yet a released Tauri
-integration:
+| Contract obligation | Status | Current behavior and evidence | Required resolution |
+|---|---|---|---|
+| Approve commits at signing and queues the exact signed response | **Missing integration** | Queue insertion exists, but no production signing path ever enqueues approve. A caller supplies challenge, response, and decision independently (`protocol/queue.ts:66-78`; `PendingApprovalsScreen.tsx:80-96`). | Admit only a branded response produced by the approval transaction and validate all echoed fields. |
+| FIFO | **Partial** | Map insertion order and `tick` preserve order, but the test enqueues only one item and public `deliver(id)` can bypass the head (`protocol/queue.ts:51-53,84-124`; `tests/protocol/queue.test.ts:20-37`). | Make retry head-only; test at least three distinct challenges. |
+| One outcome per challenge ID | **Divergent** | Dedupe applies only while an item is queued. Successful delivery removes it, allowing later re-admission; separate replay and queue maps do not share durable answer state (`protocol/queue.ts:66-78,104-109`). | Couple queue admission to the durable replay ledger and retain bounded terminal tombstones if needed. |
+| Backlog default 64 and truly bounded | **Partial** | Default item cap is 64, but options accept arbitrary values and `lastAttempt` entries remain after delivered items are removed (`protocol/queue.ts:34-37,48-69,102-107`). | Validate/clamp options, bound metadata, and delete throttle state on terminal delivery. |
+| Retry throttle is at least 10 seconds | **Partial** | Positive default and gate exist, but the mounted clock is frozen and option values are not validated (`protocol/queue.ts:48-63,97-103`; `tests/protocol/queue.test.ts:49-61`). | Use a live monotonic clock and fixed safe option bounds. |
+| Signed offline approve remains queued | **Implemented as an in-memory primitive** | Offline results retain the item and a test asserts it (`protocol/queue.ts:103-109`; `tests/protocol/queue.test.ts:39-47`). No durable storage or scheduler exists. | Persist before first send and recover atomically on startup. |
+| Deny is best-effort, never indefinite | **Divergent** | Deny is inserted into the same approval queue and offline items are retained; the screen never calls `deliver`/`tick`, and no TTL/drop rule exists (`protocol/queue.ts:66-78,103-130`; `PendingApprovalsScreen.tsx:67-78,139`). | Separate deny from approval retry or permit one bounded best-effort attempt, then drop it. This confirms and narrows AUTH-8. |
+| Transport is a replaceable `ChallengeTransport` | **Partial** | The interface exists but queue duplicates structurally identical transport/result types instead of importing the authority (`transport/transport.ts:10-17`; `protocol/queue.ts:14-20`). | Reuse the canonical interface and typed delivery outcome. |
+| Live transport and retry scheduler | **Deferred** | The only implementation is permanently offline, and production UI never calls delivery (`transport/transport.ts:19-23`; `PendingApprovalsScreen.tsx:35-38,139`). | Implement only after crypto, endpoint, pin, deny, audit, and durable-state gates are resolved. |
+| Transport rejection is normalized | **Partial** | Interface promises non-throwing implementations, but `deliver` has no catch around `postResponse` (`transport/transport.ts:14-16`; `protocol/queue.ts:102-109`). | Normalize timeout/rejection to bounded retryable and terminal-rejected outcomes. |
 
-| Primitive | Current result | Evidence / remaining gap |
-|---|---|---|
-| Persistent `pair.db` and schema v2 migration | **Implemented in current worktree** | Ticket-to-device link and migration are present (`kiwi-pair/src/store.rs:18-27,41-50,147-165`). No disk-reopen/migration regression test is present. |
-| Ticket issue and bounds | **Implemented** | 43-char base64url ticket, 300-second expiry, 32-live-ticket cap (`engine.rs:157-180`; `store.rs:248-283`). |
-| Read-only ticket status | **Implemented in current worktree** | `ticket_status` and `TicketRow` distinguish awaiting/claimed/expired (`engine.rs:105-125,206-217`; `store.rs:286-307`). Current 11 tests do not call it. |
-| Atomic ticket claim + pending registration + link | **Implemented in current worktree** | One SQLite transaction (`engine.rs:219-255`; `store.rs:329-420`). No race/crash/reopen tests are present. |
-| Ed25519-only 32-byte registration | **Implemented** | `claim_ticket_and_register` and legacy registration validate algorithm and key length (`engine.rs:234-243,299-308`). |
-| QR trust validation | **Divergent** | Endpoint/label bounds and key prefix only; no TLS/LAN, exact 32-byte desktop key, canonical Base64, or 300-second QR-lifetime check (`engine.rs:257-283`). |
-| Challenge issue and nonce transaction | **Implemented in current worktree** | Active devices cannot receive `device-pairing`; nonce plus challenge insertion is transactional (`engine.rs:377-434`; `store.rs:448-497`). Session-form semantics are still not validated. |
-| Verification and atomic consumption | **Implemented in current worktree** | Response fields are bounded; missing device and revoked device fail closed; consume plus pairing activation is one transaction and checks the update result (`engine.rs:442-520`; `store.rs:531-557`). |
-| Persistent terminal revocation | **Implemented** | Revocation is idempotent and blocks issue/verify (`engine.rs:329-355,394-410,461-467`). |
-| Bounded device listing/challenge/nonce storage | **Implemented in current worktree** | Ordered/limited device query and 4096 challenge/nonce caps exist. Current tests do not exercise limits. |
-| Tauri use of PairEngine | **Missing** | Tauri still owns process-local `DeviceRegistry`/`ChallengeBook`; no `kiwi-pair` dependency or PairEngine state is present. |
+## Keystore and private-key matrix
 
-## Current Tauri receiver gaps
+| Contract obligation | Status | Current behavior and evidence | Required resolution |
+|---|---|---|---|
+| Key lifecycle interface never exports private material | **Implemented** | `DeviceKeystore` exposes generate/sign/delete/has and a public-only handle (`keystore/keystore.ts:28-45`). | Preserve. |
+| Production keystore is native and fails closed | **Deferred** | The app wires `UnavailableKeystore`; generation, signing, and deletion all throw `not-implemented` (`keystore/keystore.ts:47-64`; both screens). | Keep disabled until Lead + Agent 6 sign-off and platform-native review. |
+| Native Ed25519 key and wrapped-seed fallback | **Missing** | No Android/iOS module exists; the fallback is an explicitly open contract item (`authenticator.md:32-40,191-205,352-365`). | Implement only the ratified path; never place an unwrapped seed at rest. |
+| `keystore_ref` and public key are validated | **Partial** | The interface documents 32 bytes and 256 characters but performs no runtime validation; the test HSM accepts any alias and prefixes it (`keystore/keystore.ts:29-35`; `keystore/soft-hsm.ts:33-52`). | Validate exact public-key bytes and the native reference before registration. |
+| Key deletion on user request or desktop revocation | **Missing** | Interface has `deleteKey`, default throws, and no production caller or revocation notification exists (`keystore/keystore.ts:42-43,58-60`). | Add authenticated local deletion and revocation reconciliation that destroys the key before accepting future work. |
+| Soft HSM is test-only and cannot authorize | **Divergent documentation** | No production source imports it, but the contract/test map calls it “UNIMPLEMENTED-style” and says signing requires explicit test key material. The class is constructible, deterministically generates fake bytes, and signs 64 filler bytes (`keystore/soft-hsm.ts:23-82`; `tests/keystore/soft-hsm.test.ts:19-49`). | Move it under test support or add a build-time production exclusion. Keep AUTH-9, but describe impact as accidental reachability: fake signatures cannot pass Ed25519 verification. |
+| Private material never crosses the intended boundary | **Implemented for current production graph** | Production imports only `UnavailableKeystore`; fake seed material is confined to a non-app-imported test helper. | Preserve and enforce with an import/architecture test. |
 
-These are relevant because the contract names Tauri and kiwi-core as the
-counterparties, and because a mobile-only implementation would otherwise be
-wired to a non-compatible receiver.
+## Desktop and `kiwi-pair` receiver matrix
 
-| ID | Severity | Finding | Evidence | Required resolution |
+| Contract obligation | Status | Current behavior and evidence | Required resolution |
+|---|---|---|---|
+| Desktop challenge handoff is mobile-compatible | **Divergent** | Rust `ChallengeView` serializes camelCase plus `nonceHex` and has no `schema_version`; the mobile parser requires snake_case `nonce_b64` and version 1 (`types/system.rs:48-76`; `protocol/canonical.ts:70-86`). The desktop TypeScript interface expects `nonceB64`, so Rust and TS also disagree (`kiwi-app/src/kiwi.ts:946-955`). | Emit one ratified shape and map it explicitly; never make mobile infer a nonce from canonical bytes. This is IPC-3/AUTH-3/T235-07. |
+| Desktop receiver preserves deny without verification | **Missing** | Tauri input has no decision and desktop always calls signature verification. A mobile deny becomes an empty signature/invalid-signature path (`types/system.rs:80-90`; `commands/system.rs:166-207`). | Add a separate explicit deny branch that audits and does not consume. AUTH-2 remains open. |
+| Every approval/failure/denial/pairing outcome is audited | **Divergent** | Tauri audits successful `challenge-verified` only. Verification failures propagate before audit; pairing has no `device-paired`; no `challenge-denied` or `challenge-verification-failed` writer exists (`commands/system.rs:203-240`). | Audit every required outcome, including each `ChallengeError`, with the ratified action names. AUTH-1 remains open. |
+| Registration rejects unsupported algorithms | **Divergent in Tauri** | Tauri accepts ECDSA/RSA names and key-size ranges at registration, then rejects unsupported algorithms only at submit (`commands/devices.rs:27-66`; `commands/system.rs:182-194`). `PairEngine::claim_ticket_and_register` correctly allows Ed25519 only (`kiwi-pair/src/engine.rs:225-254`). | Make the canonical receiver delegate to `PairEngine`; retain no parallel registration policy. |
+| Core failed verification does not consume | **Implemented** | kiwi-core checks existence, expiry, consumed state, binding, and signature before setting consumed (`kiwi-core/src/challenge.rs:154-185`). | Preserve and audit externally. |
+| Persistent pair store and atomic ticket claim | **Implemented in current T-269 worktree; untested** | Schema v2 links ticket to device; `claim_ticket_and_register` performs consume + insert + link in one transaction (`kiwi-pair/src/store.rs:18-166,329-420`). Current 11 tests do not exercise it. | Add transaction rollback, duplicate-claim, expiry, migration, and disk-reopen tests before calling T-235-01 fixed. |
+| Pair challenge nonce + insert is atomic | **Implemented in current T-269 worktree; untested** | `record_nonce_and_insert_challenge` commits both or neither (`kiwi-pair/src/engine.rs:412-434`; `store.rs:448-497`). | Add failed-insert/replay rollback tests before closing PAIR-8. |
+| Active-device re-pair is rejected | **Implemented in current T-269 worktree; untested** | Device-pairing is allowed only for `Pending` (`kiwi-pair/src/engine.rs:398-411`). | Add a status/event matrix test before closing PAIR-1. |
+| Challenge consume + pairing activation is atomic | **Implemented in current T-269 worktree; untested** | The store combines both writes and the engine treats a false consume result as `AlreadyConsumed` (`store.rs:531-557`; `engine.rs:507-520`). | Add a two-engine race test before closing PAIR-5/T235-03. |
+| Tauri uses `kiwi-pair` as the sole authority | **Missing in current snapshot** | Tauri has no `PairEngine` call and still owns process-local `DeviceRegistry`/`ChallengeBook`; device IDs alone are persisted in a sidecar (`commands/devices.rs:47-79,88-95`; `commands/system.rs:87-147,196-207`). | Complete T-269 integration and retire the parallel path. |
+| Local key destruction follows desktop revocation | **Missing** | `PairEngine::revoke_device` is terminal/idempotent, but no phone-facing revocation or deletion path is connected (`kiwi-pair/src/engine.rs:329-342`; mobile has no native key or identity store). | Add authenticated revocation reconciliation and destructive local cleanup. |
+
+## Security and drift findings
+
+| ID | Severity | Finding | Evidence | Required action |
 |---|---|---|---|---|
-| **T270-01** | **High** | A revoked device with an already-issued challenge can still submit a valid response: submit fetches the public key/algorithm but never checks device status. PairEngine correctly rejects revoked devices, but it is not wired. | `kiwi-app/src-tauri/src/commands/system.rs:182-207`; `commands/devices.rs:108-127`; `kiwi-pair/src/engine.rs:461-467`. | Make persistent PairEngine the authority and add revoke-after-issue regression tests for every challenge event. |
-| **T270-02** | **High** | The desktop and mobile challenge/response wires are incompatible: Tauri emits `nonceHex` and no `schema_version`; mobile requires `nonce_b64`; Tauri drops `decision`, so deny becomes invalid-signature verification. | `kiwi-app/src-tauri/src/types/system.rs:48-90`; `mobile/src/protocol/types.ts:24-47`; `canonical.ts:70-148`. | Add one canonical view/adapter; serialize only `nonceB64`; require explicit decision and branch deny before crypto. |
-| **T270-03** | **High** | Required verification/denial/pairing audit outcomes are absent, and failures return before the only audit call. | `kiwi-app/src-tauri/src/commands/system.rs:203-240`; contract `authenticator.md:327-332`. | Audit every `ChallengeError`, deny, successful approval, pairing activation, and post-verification action failure. |
-| **T270-04** | **Medium** | Unsupported recovery/elevated events are accepted and cryptographically consumed, then return `unsupported-event` before audit. | `kiwi-app/src-tauri/src/commands/system.rs:228-240`; core consume occurs at `:203-207`. | Reject unsupported events before issue/verify, or implement their action and mandatory audit in one transaction. |
-| **T270-05** | **Medium** | Legacy registration accepts reserved non-Ed25519 algorithms even though the verifier is Ed25519-only. | `kiwi-app/src-tauri/src/commands/devices.rs:27-44`; `system.rs:182-194`; contract `authenticator.md:26-31`. | Enforce Ed25519 at registration and retain a single pair authority. |
-| **T270-06** | **Medium** | Tauri device/challenge state is process-local and separate from the persistent PairEngine store. | `kiwi-app/src-tauri/src/commands/system.rs:124-147,203-207`; `state.rs` process-local registry/challenge book; T269 remains in progress. | Complete T-269's single persistent authority; remove the parallel truth source. |
-
-## Focused security findings
-
-| ID | Severity | Finding | Existing mapping |
-|---|---|---|---|
-| **T270-01** | **High** | Revoked-device outstanding responses are accepted by the current Tauri receiver. | New T-270 row; T235 integration context. |
-| **T270-02** | **High** | Mobile and Tauri challenge/response/deny wires cannot interoperate. | IPC-3/AUTH-3 and AUTH-2, with AUTH-2 wording corrected. |
-| **T270-03** | **High** | Success, failure, deny, and pairing outcomes are not all audited. | AUTH-1. |
-| **T270-04** | **Medium** | QR parsing and PairEngine QR generation do not validate TLS/LAN endpoint semantics, exact 32-byte canonical desktop key, or a maximum five-minute lifetime. | AUTH-4, AUTH-5, AUTH-10. |
-| **T270-05** | **Medium** | Approval review has reversed gate order, skips binding when identity is null, freezes time, and does not revalidate at the action tap. | AUTH-6, AUTH-7; extends the gate requirement. |
-| **T270-06** | **Medium** | Challenge input is not capped before JSON parsing, untrusted version text is reflected, and event/session form is not enforced. | AUTH-14; extends AUTH-16. |
-| **T270-07** | **Medium** | Replay and queue state is component-local, pruning is unwired, deny retention is indefinite, and no durable retry/terminal delivery path exists. | AUTH-8 (narrowed to deny), AUTH-12, AUTH-I. |
-| **T270-08** | **Medium** | Pairing UI advances to approvals with a locally fabricated identity after expected key-generation failure; it never performs registration or activation. | AUTH-I plus a new UI-state finding. |
-| **T270-09** | **Medium** | Canonical TypeScript uses global Node `Buffer`, but the React Native dependency graph has no explicit Buffer implementation or polyfill and no RN-host execution evidence. | New runtime-portability finding. |
-| **T270-10** | **Low** | `SoftHsmKeystore` is a public, functional non-cryptographic implementation despite the contract/test-map description as an UNIMPLEMENTED-style fail-closed stub. It is not imported by the app and its signatures cannot authorize. | AUTH-9, recommended reclassification to Low/documentation-test drift. |
+| **T270-01** | **H** | There is no production pairing/approval path: no pairing channel, native key, live challenge handoff, durable identity, or canonical deny/audit path. | `transport/transport.ts:14-23`; `keystore/keystore.ts:47-64`; `App.tsx:55-64`; `commands/system.rs:166-240`. | Keep fail-closed; complete the signed Phase-4 work only after all gates below and the required crypto review. |
+| **T270-02** | **H** | The desktop and mobile challenge/response wires are incompatible at nonce, schema version, and decision boundaries. | `types/system.rs:48-90`; `protocol/canonical.ts:70-99`; `protocol/types.ts:24-47`; `kiwi-app/src/kiwi.ts:946-955`. | Ratify one wire and add a typed adapter; explicitly branch deny. Covers AUTH-2/AUTH-3. |
+| **T270-03** | **M** | QR trust fields are prefix/length checks only: malformed desktop keys, plaintext endpoints, and long-lived windows pass. | `protocol/qr.ts:41-58`; `kiwi-pair/src/engine.rs:257-284`; `tests/protocol/qr.test.ts:18,58-69`. | Enforce secure endpoint, exact canonical key bytes, and 300-second maximum on both sides. |
+| **T270-04** | **M** | The approval shell does not implement the normative decision transaction: binding can be skipped, clocks freeze, stale pending can be actioned, and taps do not re-gate. | `PendingApprovalsScreen.tsx:33-96`; `App.tsx:42-60`. | Centralize all gates and revalidate the exact displayed challenge on every action. |
+| **T270-05** | **M** | Local identity, replay, and queue state is component-scoped and non-durable; prune is not wired and deny retention is unbounded. | `PendingApprovalsScreen.tsx:33-38,67-78,139`; `protocol/replay.ts:30-54`; `protocol/queue.ts:51-130`. | Add bounded integrity-protected persistence and lifecycle-owned state. |
+| **T270-06** | **M** | Challenge input has no total size cap and parse errors can echo unbounded attacker-controlled schema text. | `PendingApprovalsScreen.tsx:41-43,61-64,106-116`; `protocol/canonical.ts:70-74`. | Bound raw UTF-8 bytes before parse and use fixed bounded error codes/messages. Extends AUTH-14. |
+| **T270-07** | **M** | Session IDs are not validated by event; the canonical test fixture uses the reserved transaction form for unlock. | `protocol/canonical.ts:74-89`; `tests/helpers/protocol.ts:16-26`; `authenticator.md:167-174`. | Correct examples and enforce the event/session grammar. Extends AUTH-16. |
+| **T270-08** | **M** | The queue trusts caller-supplied response/challenge/decision relationships, stores mutable references, and permits re-admission after delivery. | `protocol/queue.ts:26-32,66-87,104-107`. | Validate/copy/freeze entries and couple admission to durable replay state. |
+| **T270-09** | **M** | The canonical module depends on Node's global `Buffer`; Node types make typecheck pass, but no RN Buffer dependency/polyfill or Hermes-host proof exists. | `protocol/canonical.ts:27-32,57-61,103-108`; `tsconfig.core.json:2-5`; `package.json:15-27`; `index.js:1-5`. | Use RN-safe byte/Base64 primitives or an approved polyfill; add a device-host smoke test. |
+| **T270-10** | **M** | Current `PairEngine` transaction improvements are not exercised by tests or wired into Tauri, so T-235 high rows cannot yet be closed. | `kiwi-pair/src/store.rs:329-420,448-557`; `kiwi-pair/tests/pair_tests.rs:1-454`; `commands/system.rs:87-240`. | Add migration/rollback/race/disk-reopen tests and complete T-269 single-authority wiring. |
+| **T270-11** | **L** | Soft HSM is functional non-crypto fixture code, not an unimplemented fail-closed signer; current production does not import it. | `keystore/soft-hsm.ts:23-82`; `tests/keystore/soft-hsm.test.ts:19-49`. | Keep the existing AUTH-9 row open as accidental-reachability/documentation drift, not a presently usable authorization path. |
 
 ## Existing AUTH finding disposition
 
-| Existing ID | T-270 disposition |
-|---|---|
-| AUTH-1 | **Confirmed High.** Missing failure/deny/pairing audit outcomes; success action name is also wrong. |
-| AUTH-2 | **End-to-end defect confirmed, wording corrected.** Mobile emits deny correctly; Tauri drops `decision` and reports empty signature as `InvalidSignature`. |
-| AUTH-3 | **Confirmed.** Tauri runtime emits `nonceHex`; canonical mobile wire expects `nonce_b64`; TS desktop interface says `nonceB64`. |
-| AUTH-4 | **Confirmed.** Both mobile and PairEngine validate only `ed25519:` prefix, not exact canonical 32-byte Base64. |
-| AUTH-5 | **Confirmed.** Mobile and PairEngine accept plaintext/invalid endpoints; live transport is correctly absent/fail closed. |
-| AUTH-6 | **Confirmed.** Binding is skipped when identity is null; no action-time re-gate exists. |
-| AUTH-7 | **Confirmed.** `FixedClock(Date.now())` is frozen for screen lifetime. |
-| AUTH-8 | **Confirmed but narrowed.** The definite queue defect is indefinite deny retention; approvals correctly have no implicit local wire expiry. |
-| AUTH-9 | **Confirmed as documentation/test drift; recommend Low.** The HSM is functional and test-only, not production-imported, and emits non-verifying filler. |
-| AUTH-10 | **Confirmed.** QR parser does not enforce a 300-second maximum. |
-| AUTH-11 | **Confirmed.** Expired challenge is not recorded in the ledger. |
-| AUTH-12 | **Confirmed.** One-hour prune exists as a tested method but has no production caller. |
-| AUTH-13 | **Confirmed and partly under-specified.** UI lacks desktop label, transaction/session ID, and issue time; the challenge wire defines no trusted desktop-label source. |
-| AUTH-14 | **Confirmed and broadened.** Challenge raw input lacks a pre-parse cap; untrusted version text can be reflected into UI status. |
-| AUTH-15 | **Contract-wording issue, not a functional defect.** `displayName` is `KIWI Authenticator`; RN's internal registered name is `kiwi-mobile`. Clarify whether the contract means display name. |
-| AUTH-16 | **Confirmed and broadened.** Production parsing does not enforce boot/x-tx event semantics, and the canonical unlock fixture uses `x-tx-test-0001`. |
-| AUTH-I | **Confirmed.** Native keystore, live pairing/transport, durable state, background delivery, revocation notification, and local key deletion remain absent. |
+This audit confirms the existing register rows against the current snapshot:
 
-## Test coverage and verification
+- **AUTH-1 remains open:** success, failure, deny, and pairing outcomes are not audited under the required actions.
+- **AUTH-2 remains open:** mobile can construct an explicit deny, but Tauri has no decision field and routes it to signature verification.
+- **AUTH-3 remains open:** the active runtime handoff uses `nonceHex`, while the mobile contract parser requires `nonce_b64`; the Rust and desktop TypeScript views also disagree.
+- **AUTH-4 remains open:** desktop-key validation is prefix/length only on mobile and in `PairEngine`.
+- **AUTH-5 remains open:** plaintext endpoints pass both mobile parsing and pair QR generation; the contract's own example conflicts with its TLS rule.
+- **AUTH-6 remains open:** identity-null binding is skipped and action-time revalidation is absent.
+- **AUTH-7 remains open:** the production approval screen mounts a frozen clock.
+- **AUTH-8 remains open and is narrowed:** the definite defect is indefinite deny retention; retaining expired approvals until the desktop decides `Expired` is correct under `authenticator.md:289-292`.
+- **AUTH-9 remains open with impact clarification:** the fake HSM is reachable from production source but not from the current app graph and cannot produce a valid Ed25519 signature.
+- **AUTH-10, AUTH-11, and AUTH-12 remain open:** no five-minute parser maximum, expired recording, or production prune wiring.
+- **AUTH-13 remains open:** desktop label/session/issue context is absent; the contract also lacks a trustworthy desktop-label source in the challenge shape.
+- **AUTH-14 remains open and is broadened:** schema text is echoed, and the whole challenge input lacks a pre-parse cap.
+- **AUTH-15 remains a wording ambiguity:** the user-visible `displayName` is correct while the internal registered name is `kiwi-mobile`.
+- **AUTH-16 remains open and is broadened:** parser enforcement and fixtures both violate the event/session-form rule.
+- **AUTH-I remains open:** pairing channel, native keystore, durable state, live transport, and local key destruction are absent as expected Phase-4 gates.
 
-### Mobile evidence
+## Existing PAIR/T-235 disposition
 
-- `npx vitest run tests/protocol tests/keystore` — **5 files, 32 tests passed**.
-- `npm run typecheck` — passed.
-- `npm run typecheck:app` — passed.
-- `npm run lint -- --quiet` — passed with zero errors.
-- Full `npm test` — **43 passed, 3 failed**. All three failures are in the
-  concurrently modified QR encoder/vector work (`json-v21-l`, `json-v25-l`, and
-  mask selection), not in the T-270 protocol/keystore suites.
-- Full `npm run lint` — zero errors and 4099 warnings, overwhelmingly from the
-  concurrently generated QR tables. The focused `--quiet` gate is clean.
+The T-269 worktree materially changes the T-235 snapshot, but this audit does not mark canonical register rows fixed:
 
-The passing tests prove deterministic pure-module behavior, not the React Native
-runtime. No native bundle or device test was run.
+- **PAIR-1 / T235-09:** implementation now restricts device-pairing to pending devices; the current 11 tests do not cover active-device rejection.
+- **PAIR-2:** the preferred claim transaction returns `TicketConsumed`; unknown and legacy-consumed semantics still differ. No production caller uses the transaction yet.
+- **PAIR-3:** the verify comment still reverses the first implementation checks; behavior is not the defect.
+- **PAIR-4:** missing linked devices now map to `DeviceNotFound` in the current worktree; untested.
+- **PAIR-5 / T235-03:** consume result is now checked and activation is transactional; add a two-engine race test before closure.
+- **PAIR-6:** response IDs/session now have primitive bounds; root/resource concerns remain outside this audit.
+- **PAIR-7:** not a defect; the engine and current §9d wording use inclusive `8..=128`.
+- **PAIR-8:** nonce and challenge insertion are now transactional; add rollback coverage.
+- **T235-01:** ticket status/link/schema/transaction primitives now exist, but there are no current regression tests for claim, status, migration, rollback, or disk reopen.
+- **T235-02:** still open in the active runtime—Tauri has not adopted `PairEngine`.
+- **T235-04..08:** remain open until the canonical Tauri commands, endpoint/key validation, wire migration, audit/deny mapping, and resource integration land.
 
-### `kiwi-pair` evidence
+## Test coverage assessment
 
-- `cargo test -p kiwi-pair` — **11 passed, 0 failed** for the current snapshot.
-- `cargo clippy -p kiwi-pair --all-targets -- -D warnings` — passed.
-- `cargo fmt -p kiwi-pair -- --check` — failed only on two formatting deltas in
-  T-269's current `engine.rs`; T-270 did not modify them.
+The current focused mobile suite is **5 files / 32 tests** and passes. It covers QR basic parsing, canonical layout/tags, replay helpers, queue mechanics, and test-HSM behavior. It does **not** cover:
 
-The 11 tests do not yet cover the current ticket-status, atomic ticket claim,
-schema migration, disk reopen, concurrent consume, new resource limits,
-Tauri wire, explicit deny, or revoked-after-issue paths.
+- malformed/wrong-length/noncanonical desktop keys, endpoint scheme/LAN validation, or QR windows over 300 seconds;
+- session-form rules, total challenge-size limits, event/session bounds, or a shared kiwi-core golden vector;
+- live clock progression, identity-null rejection, stale pending, action-time revalidation, expired recording, automatic prune, or restart/remount;
+- actual canonical signing, deny receiver/audit behavior, queue response/challenge consistency, finite deny retention, transport errors, scheduler wiring, or durable recovery;
+- an Android/iOS native-host build or keystore lifecycle;
+- current T-269 ticket claim/status/migration/rollback, nonce transaction rollback, or multi-engine challenge-consume race.
 
-### Missing regression coverage
-
-- React Native host execution of canonical bytes/Base64 (the `Buffer` path).
-- QR exact desktop-key decode, canonical Base64, `wss://`/LAN validation, and
-  >300-second lifetime.
-- Raw challenge byte cap, bounded fixed errors, and event/session form matrix.
-- Screen gate order, null identity, stale pending challenge, tap-time expiry,
-  and truthful paired state.
-- Replay prune/capacity/expired recording across remount/restart.
-- Queue deny drop, durable restart recovery, scheduler behavior, transport
-  failure normalization, and terminal desktop rejection.
-- Tauri explicit deny, every audit outcome, `nonceB64` serialization,
-  revoked-after-issue, unsupported-event, and PairEngine integration.
-- One shared kiwi-core-generated canonical/Ed25519 vector consumed by mobile
-  and Rust tests.
+The current `kiwi-pair` suite still defines 11 tests. It covers the RFC 8032 vector, fixed canonical layout, legacy ticket lifecycle, QR shape, registration/revocation, issue gates, full pairing-to-unlock, replay, and revoked-device rejection. It does not yet cover the new T-269 schema and transaction surface.
 
 ## Required implementation order
 
-1. **Contract ratification:** resolve endpoint/pin semantics, the
-   `nonce_b64`/`nonceB64` adapter, required approval context, exact session and
-   challenge bounds, and the Lead + Agent 6 crypto gate.
-2. **Desktop authority:** finish T-269's persistent PairEngine integration,
-   deny/audit semantics, exact wire projections, and revoked-device checks.
-3. **Mobile trust boundary:** enforce exact QR key/endpoint/TTL validation,
-   RN-compatible bytes/Base64, bounded challenge errors, and event/session rules.
-4. **Real pairing/key lifecycle:** implement native Ed25519 keystore, secure
-   channel, peer-pin comparison, atomic registration/activation, persistent
-   identity metadata, and local key destruction.
-5. **Decision coordinator:** centralize ordered review and tap-time revalidation;
-   record the exact displayed challenge before signing or recording deny.
-6. **Durable state and delivery:** persist replay/queue state, wire pruning,
-   separate bounded deny delivery, and add terminal result handling and a
-   lifecycle-owned retry scheduler.
-7. **Verification:** add the missing screen, transport, persistence, race,
-   audit, and shared-vector tests; rerun full mobile, PairEngine, and Tauri gates
-   only after T-269 stabilizes.
+1. **Ratify contract details:** one `wss://` endpoint form; TLS pin representation; event/session grammar; exact key/field bounds; desktop-label source; bounded challenge error/input rules; mandatory response decision.
+2. **Close the wire blocker:** make Tauri and mobile exchange one exact challenge/response shape, including `schema_version`, nonce encoding, and a separate audited non-consuming deny path.
+3. **Complete T-269:** test and integrate `PairEngine` as the single persistent device/challenge authority; retire the process-local parallel path.
+4. **Harden QR trust validation:** exact canonical desktop key bytes, approved secure endpoint/LAN form, five-minute maximum, safe label rendering, and no bearer-ticket retention in display state.
+5. **Build the single approval transaction:** live clock, real identity binding, durable replay reservation, exact displayed snapshot, canonicalization, native signing, response validation, and durable queue admission.
+6. **Add durable lifecycle state:** persisted paired identity, replay retention/prune, immutable queue, bounded metadata, restart recovery, foreground/background retry, and truthful delivery outcomes.
+7. **Implement gated key lifecycle:** native Android/iOS key generation/signing/deletion, revocation-triggered destruction, and the separately approved wrapped-seed fallback.
+8. **Add security tests and host proof:** core-generated vectors, adversarial parsers, screen/transport tests, RN/Hermes smoke coverage, PairEngine migration/race/disk tests, and exact audit-row tests.
 
 ## T-270 conclusion
 
-The scaffold contains credible deterministic protocol work, not a blank module:
-canonical bytes, event tags, strict known-field parsing, exact nonce length,
-replay/queue data structures, and the core/pair verification algorithms are
-implemented. The deployable authenticator is nevertheless incomplete. The
-highest-risk current issues are on the desktop receiver (revoked-device
-acceptance, incompatible nonce/decision wire, and incomplete audit coverage);
-the mobile path remains safely unable to sign or deliver. Phase 4 must not be
-enabled until the Lead + Agent 6 gate, desktop authority/wire/audit fixes,
-native key lifecycle, secure pairing transport, real approval coordinator, and
-durable replay/delivery state are complete.
+The mobile scaffold has credible deterministic building blocks, but only a subset of the contract is implemented. QR/challenge primitives should not be mistaken for an end-to-end authenticator. The decisive gaps are a compatible desktop wire, a single fail-closed approval transaction, exact QR trust validation, durable replay/queue/identity state, explicit deny and audit semantics, native key lifecycle, and verified integration of the current T-269 `PairEngine` work. Until those are resolved and the Lead + Agent 6 crypto gate is satisfied, Phase 4 must remain disabled.

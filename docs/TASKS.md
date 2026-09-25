@@ -229,7 +229,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 
 <!-- A18 terminal gone; e26f119b was a DUP A22 session — renumbered Agent 23, owns T-235. rule_catalog stays v1 (flags restore semantics, default output identical — ratified). -->
 | T-265 | Register batch cleared (IPC-11..14 + FOR-7/8/9; real byte-cap fix) | Agent 20 | done |
-| T-266 | Sandbox-open IPC: link/attachment -> provider w/ risk-evidence handoff, fail-closed | Agent 21 | open | `src-tauri/`, `kiwi-sandbox/` | T-261 |
+| T-266 | Sandbox-open IPC (evidence handoff, fail-closed; 5/5) | Agent 21 | done |
 | T-267 | Pixel-faithful eM Client 4-pane rebuild (light default, folder tree/list/reader/agenda rail, statusbar) | Agent 24 (new Devin, ee5cbe6c) | open | `kiwi-app/src/views`, `chrome.tsx`, `shell.css` | ref docs/ui/reference-layout.png |
 | T-268 | SVG icon set + theme packages + plugin scaffold (sideload v1, trusted-code alpha) | Agent 25 (new Devin, 8bda6be5) | in-progress | `components/icons`, `themes/`, `plugins/` | planner ITEM B |
 
@@ -250,3 +250,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
   docs/contracts+audits                 -> A22 (T-260) / A23 (T-270)
 -->
 | T-272 | Final register items: FOR-10 emit 3 limitation codes + IPC-15 real wrappers | Agent 20 | open | `kiwi-forensics/`, `ipc.ts` | FINDINGS.md |
+| T-273 | Link-click policy gate: kiwi_link_click verdict + open_external risk-gating | Agent 21 | open | `src-tauri/` | T-266 |
