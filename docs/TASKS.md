@@ -273,4 +273,6 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-293 | resizable panes: a11y separators, keyboard+drag, persisted widths, CDP-verified | Agent 25 | done |
 | T-294 | drag-drop+paste attachments in composer via real attach IPC, ≤25MiB UI cap | Agent 24 | done | `kiwi-app/src` compose | T-267 |
 | T-295 | kiwi_message_source IPC (raw RFC822) + POP3 delete-after-download account toggle | Agent 19 | open | `kiwi-mail`, `commands/mail.rs`, ipc.md, ipc.ts | T-292,T-285 |
-| T-296 | outbox/scheduled-send view: real queue w/ sendAt, cancel/reschedule/retry via IPC | Agent 25 | done | `kiwi-app/src` | T-262 |
+| T-296 | outbox view: real state chips/undo/reschedule via IPC; OutboxItem state+lastError gap filed | Agent 25 | done |
+| T-297 | no-mock UI audit: every surface classified working|dead|mocked|gap → ui-honesty-1.md | Agent 25 | open | `kiwi-app/src` + CDP | final QA |
+| T-298 | OutboxItem + state/lastError fields (held-vs-failed distinguishable) — backend gap from T-296 | unassigned (Rust) | open | `kiwi-mail`, `commands/`, kiwi.ts | T-296 |

@@ -864,6 +864,77 @@ call or a rule's explicit action.
   delete). `targetFolderId` is the Junk id for `junk`, the INBOX id
   for un-junk-from-Junk; `null` when nothing moved.
 
+## 6i. Commands — message templates **[gated]** (T-288)
+
+Composer boilerplate: a flat named list — content, not policy, so no
+account scoping or ordering. The stored row keeps `{{name}}`
+placeholders verbatim; substitution happens only at `render`.
+
+```ts
+interface TemplateView {
+  id: string;            // `tpl-N`, store-assigned on create
+  name: string;          // non-blank, ≤128 B
+  subject: string;       // ≤998 B (RFC 5322 line cap)
+  bodyText: string;      // ≤64 KiB
+  bodyHtml?: string;     // optional, ≤128 KiB — omitted (not null) when absent
+  createdUnix: number;
+  updatedUnix: number;
+}
+interface TemplateInput {      // create payload — no id/timestamps
+  name: string;
+  subject?: string;
+  bodyText?: string;
+  bodyHtml?: string;
+}
+interface RenderedTemplateView {
+  subject: string;
+  bodyText: string;
+  bodyHtml?: string;           // omitted when the template has none
+  missingVars: string[];       // sorted+deduped well-formed names with no value
+}
+```
+
+### `kiwi_templates_list() → TemplateView[]`
+Name-then-id order.
+
+### `kiwi_templates_create(template: TemplateInput) → TemplateView`
+Store assigns `tpl-N` + both timestamps. The `tpl-` prefix is reserved —
+a caller-supplied id using it fails `invalid-input`; any other explicit
+id is stored as given. Audit: `template-created` (id only — bodies are
+user content and never enter the log).
+
+### `kiwi_templates_update(template: TemplateView) → TemplateView`
+Full replace by `id`, not a merge — `createdUnix` is preserved from the
+stored row, `updatedUnix` bumps. Absent id → `not-found`.
+Audit: `template-updated` (id only).
+
+### `kiwi_templates_delete(templateId) → { removed: bool }`
+Idempotent — `removed: false` is a normal answer, not an error.
+Audit: `template-deleted` (id only, only when a row existed).
+
+### `kiwi_templates_render(templateId, vars?) → RenderedTemplateView`
+Server-side `{{name}}` substitution — the composer gets ready-to-use
+fields, and placeholder semantics stay tested once in Rust rather than
+re-implemented in the renderer. Grammar (`kiwi_mail::templates`):
+
+- Token: `{{` + name + `}}`; name is `[A-Za-z0-9_.-]+` ≤64 B, inner
+  whitespace trimmed (`{{ name }}` works). Invalid or unterminated
+  tokens are literal text — never reported, never guessed.
+- Single non-recursive pass: a substituted value containing `{{x}}`
+  stays literal.
+- Unknown names stay verbatim **and** are reported in `missingVars`
+  (sorted, deduped) — the composer flags them.
+- `vars` is a flat `{name: value}` object: ≤64 entries, values ≤4 KiB;
+  violating bounds fails `invalid-input` (no partial render).
+
+Errors: `locked`, `invalid-input` (bounds/validation), `not-found`
+(render/update of an absent id).
+
+Audit posture: create/update/delete are recorded (drafts-adjacent writes
+— tamper-evident trail costs nothing and matches contacts); `list` and
+`render` are reads and unaudited. Template **content** never enters the
+log — event detail is the id only.
+
 ## 7. Commands — send / outbox **[gated]**
 
 ### `kiwi_send_message(accountId, message: ComposeInput, options?) → SendReceipt`

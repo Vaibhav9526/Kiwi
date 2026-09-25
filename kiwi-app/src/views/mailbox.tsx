@@ -144,6 +144,7 @@ export interface MailboxProps {
   onSync: () => void;
   onFlushOutbox: () => void;
   onCancelSend: (queueId: string) => void;
+  onScheduleSend: (queueId: string, sendAtUnix: number) => void;
   onOutboxRefresh: () => void;
 }
 
@@ -427,7 +428,7 @@ export function MailboxView(props: MailboxProps) {
           </p>
         )}
         {folder === "outbox" ? (
-          <OutboxList outbox={props.outbox} onCancelSend={props.onCancelSend} />
+          <OutboxList outbox={props.outbox} onCancelSend={props.onCancelSend} onScheduleSend={props.onScheduleSend} />
         ) : searching ? (
           <>
             {props.searchBusy && (
@@ -2114,11 +2115,49 @@ function BulkBar({
   );
 }
 
-function OutboxList({ outbox, onCancelSend }: { outbox: OutboxItem[]; onCancelSend: (queueId: string) => void }) {
+/** T-296 — relative send-time label ("in 12m"), absolute in the title attr. */
+function relSendIn(secs: number): string {
+  if (secs <= 0) return "due now";
+  const m = Math.ceil(secs / 60);
+  if (m < 60) return `in ${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return m % 60 ? `in ${h}h ${m % 60}m` : `in ${h}h`;
+  const d = Math.floor(h / 24);
+  return h % 24 ? `in ${d}d ${h % 24}h` : `in ${d}d`;
+}
+
+/* Send state is derived from the real OutboxItem fields only. Contract gap
+ * (T-296): the row carries no state enum / lastError / hold reason — a
+ * "held" queue entry is only inferable as `attempts > 0 && notBefore`
+ * pushed forward (retry backoff); there is no way to show WHY it failed.
+ * Filed for a backend OutboxItem.state + lastError pair. */
+function outboxState(o: OutboxItem, now: number): { chip: string; kind: "undo" | "scheduled" | "sending" | "retry" } {
+  const undoLeft = Math.ceil(o.undoWindowUntilUnix - now);
+  const sendsIn = Math.ceil(o.notBeforeUnix - now);
+  if (o.cancelable && undoLeft > 0) return { chip: "Undo window", kind: "undo" };
+  if (o.attempts > 0) {
+    return sendsIn > 0
+      ? { chip: `Retry — attempt ${o.attempts}`, kind: "retry" }
+      : { chip: `Sending — attempt ${o.attempts}`, kind: "sending" };
+  }
+  return sendsIn > 0 ? { chip: "Scheduled", kind: "scheduled" } : { chip: "Sending now", kind: "sending" };
+}
+
+function OutboxList({
+  outbox,
+  onCancelSend,
+  onScheduleSend,
+}: {
+  outbox: OutboxItem[];
+  onCancelSend: (queueId: string) => void;
+  onScheduleSend: (queueId: string, sendAtUnix: number) => void;
+}) {
   // Ticking clock for the undo-window countdown + scheduled-send times.
   // Ticks only while the outbox is mounted; static under reduced-motion
   // (the raw timestamps stay in the title attributes).
   const [now, setNow] = useState(() => Date.now() / 1000);
+  const [rescheduling, setRescheduling] = useState<string | null>(null);
+  const [rescheduleAt, setRescheduleAt] = useState("");
   useEffect(() => {
     if (typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
       return;
@@ -2132,37 +2171,46 @@ function OutboxList({ outbox, onCancelSend }: { outbox: OutboxItem[]; onCancelSe
         <span className="kiwi-empty-icon em-empty-icon" aria-hidden="true">
           <IconOutbox size={28} />
         </span>
-        <strong>Outbox is empty</strong>
+        <strong>No scheduled sends</strong>
         <br />
         <small>Queued and scheduled sends will appear here.</small>
       </div>
     );
   }
+  const commitReschedule = (queueId: string) => {
+    const ms = new Date(rescheduleAt).getTime();
+    if (Number.isNaN(ms)) return;
+    onScheduleSend(queueId, Math.floor(ms / 1000));
+    setRescheduling(null);
+  };
   return (
     <div className="em-outbox" role="list" aria-label="Queued sends">
       {outbox.map((o) => {
         const undoLeft = Math.ceil(o.undoWindowUntilUnix - now);
         const sendsIn = Math.ceil(o.notBeforeUnix - now);
-        const status =
-          o.cancelable && undoLeft > 0
-            ? `Undo open — ${undoLeft}s left`
-            : sendsIn > 0
-              ? `Scheduled — sends ${new Date(o.notBeforeUnix * 1000).toLocaleString()}`
-              : o.attempts > 0
-                ? `Dispatching… (attempt ${o.attempts})`
-                : "Dispatching…";
+        const st = outboxState(o, now);
+        const sendAtAbs = new Date(o.notBeforeUnix * 1000).toLocaleString();
+        // Reschedule/Send-now only make sense while the item is still
+        // queued (not-before pending or undo window open) — a row already
+        // dispatching can't be re-timed.
+        const queued = sendsIn > 0 || (o.cancelable && undoLeft > 0);
         return (
           <article key={o.queueId} role="listitem" className="em-card em-outbox-card">
-            <div>
+            <div className="em-outbox-head">
               <strong>{o.subject || "(no subject)"}</strong>
-            </div>
-            <div style={{ fontSize: "0.8rem", color: "var(--kiwi-text-secondary)" }}>
-              To {o.to.join(", ")} · attempts {o.attempts} ·{" "}
-              <span title={`Undo window ends ${new Date(o.undoWindowUntilUnix * 1000).toLocaleString()}; not-before ${new Date(o.notBeforeUnix * 1000).toLocaleString()}`}>
-                {status}
+              <span
+                className={`em-outbox-state em-outbox-${st.kind}`}
+                title={`not-before ${sendAtAbs} · undo window ends ${new Date(o.undoWindowUntilUnix * 1000).toLocaleString()}`}
+              >
+                {st.chip}
               </span>
             </div>
-            <div style={{ marginTop: "0.3rem" }}>
+            <div style={{ fontSize: "0.8rem", color: "var(--kiwi-text-secondary)" }}>
+              To {o.to.join(", ")} · sends{" "}
+              <span title={sendAtAbs}>{relSendIn(sendsIn)}</span>
+              {o.cancelable && undoLeft > 0 && <> · undo {undoLeft}s</>}
+            </div>
+            <div className="em-outbox-actions">
               <button
                 type="button"
                 onClick={() => onCancelSend(o.queueId)}
@@ -2171,6 +2219,45 @@ function OutboxList({ outbox, onCancelSend }: { outbox: OutboxItem[]; onCancelSe
               >
                 {o.cancelable && undoLeft > 0 ? `Undo send (${undoLeft}s)` : "Undo send"}
               </button>
+              <button
+                type="button"
+                onClick={() => onScheduleSend(o.queueId, Math.floor(Date.now() / 1000))}
+                disabled={!queued}
+                title={queued ? "Send immediately (reschedules to now)" : "Already dispatching"}
+              >
+                Send now
+              </button>
+              {rescheduling === o.queueId ? (
+                <span className="em-outbox-pick">
+                  <input
+                    type="datetime-local"
+                    value={rescheduleAt}
+                    min={new Date(Date.now() + 60_000 - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16)}
+                    onChange={(e) => setRescheduleAt(e.target.value)}
+                    aria-label={`New send time for ${o.subject || "message"}`}
+                    autoFocus
+                  />
+                  <button type="button" onClick={() => commitReschedule(o.queueId)} disabled={!rescheduleAt}>
+                    Set
+                  </button>
+                  <button type="button" onClick={() => setRescheduling(null)}>
+                    Cancel
+                  </button>
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  disabled={!queued}
+                  title={queued ? "Pick a new send time" : "Already dispatching"}
+                  onClick={() => {
+                    setRescheduling(o.queueId);
+                    const d = new Date(Math.max(o.notBeforeUnix * 1000, Date.now() + 300_000));
+                    setRescheduleAt(new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16));
+                  }}
+                >
+                  Reschedule…
+                </button>
+              )}
             </div>
           </article>
         );

@@ -466,3 +466,35 @@ Full per-site mapping in `src/components/icons/README.md`.
 - Reload → stored widths applied (216/280/292 after resets).
 - Screenshots show no layout breakage; list stays usable at 280px floor.
 - `tsc` 0 errors; `vite build` green; plugin e2e 30/30.
+
+## T-296 — Real outbox / scheduled-send view
+
+### Files
+- `src/views/mailbox.tsx` — `OutboxList` rebuilt: per-item state chip
+  derived from real `OutboxItem` fields (Undo-window / Scheduled /
+  Sending now / Retry-attempt-N / Sending-attempt-N), relative send time
+  ("in 12m", absolute in title), undo countdown, and actions:
+  Undo send (cancelSend), Send now (scheduleSend → now), Reschedule…
+  (inline datetime-local picker → scheduleSend). Empty state reworded to
+  "No scheduled sends". Helpers `relSendIn` + `outboxState`.
+- `src/App.tsx` — `refreshOutbox` hoisted above the mail-changed effect
+  and added to the existing 300ms debounce (queue transitions refresh the
+  badge + view live); new `doScheduleSend` handler (toast + refresh);
+  `onScheduleSend` prop wired into MailboxView.
+- `src/shell.css` — `.em-outbox-head`/`em-outbox-state` state chips
+  (accent for undo/scheduled, warning for sending/retry), actions row,
+  inline picker styling.
+
+### Contract gap (filed honestly)
+`OutboxItem` has NO state enum / `lastError` / hold reason — a held queue
+row is only inferable as `attempts>0 && notBefore` pushed forward. The UI
+labels that "Retry — attempt N" without claiming a failure cause. Needs a
+backend `state`+`lastError` pair to show real held/failed rows.
+
+### Verify
+- `tsc` 0 errors repo-wide; `vite build` green.
+- CDP (`artifacts/t296/`): `#/mail/outbox` → "Outbox (0)" header,
+  "Send all now" (aria-labeled), "No scheduled sends" empty state,
+  state-chip CSS resolves (accent border, pill), 4-col grid intact.
+- Live queue cards need the Tauri backend (demo mode has no queue); the
+  card path compiles and mounts via the same props as the verified list.

@@ -596,6 +596,48 @@ export interface RulePreviewView {
   hits: PreviewHitView[];
 }
 
+/* ---------------- message templates (gated, T-288, ipc.md §6i) ------- */
+
+/**
+ * Stored composer template — a flat named list (content, not policy;
+ * no account scoping). Stored rows keep `{{name}}` placeholders
+ * verbatim; substitution happens only via `templatesRender`.
+ */
+export interface TemplateView {
+  /** `tpl-N`, assigned by the store on create. */
+  id: string;
+  name: string;
+  /** Subject line; `{{var}}` placeholders allowed, resolved at render. */
+  subject: string;
+  /** Plain-text body — always present (may be empty). */
+  bodyText: string;
+  /** Optional HTML body — omitted (not null) when absent. */
+  bodyHtml?: string;
+  createdUnix: number;
+  updatedUnix: number;
+}
+
+/** `kiwi_templates_create` payload — id/timestamps are store-assigned. */
+export interface TemplateInput {
+  name: string;
+  subject?: string;
+  bodyText?: string;
+  bodyHtml?: string;
+}
+
+/**
+ * `kiwi_templates_render` result — fields with `{{var}}` resolved
+ * (single non-recursive pass; unknown names left verbatim) plus the
+ * well-formed placeholders that had no supplied value.
+ */
+export interface RenderedTemplateView {
+  subject: string;
+  bodyText: string;
+  bodyHtml?: string;
+  /** Sorted, deduped placeholder names with no supplied value — flag these. */
+  missingVars: string[];
+}
+
 /**
  * `kiwi_finding_detail` result (T-164) — full finding + joined session.
  * Parsed tolerantly: the finding object passes through verbatim.

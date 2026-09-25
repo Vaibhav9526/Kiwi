@@ -2093,6 +2093,62 @@ span.em-tool-primary {
   padding: 10px 12px;
 }
 
+.em-outbox-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.em-outbox-head strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.em-outbox-state {
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--kiwi-ms-accent);
+  color: var(--kiwi-ms-accent);
+  background: color-mix(in srgb, var(--kiwi-ms-accent) 10%, var(--kiwi-ms-surface));
+}
+
+.em-outbox-sending,
+.em-outbox-retry {
+  border-color: var(--kiwi-ms-warning);
+  color: var(--kiwi-ms-warning);
+  background: color-mix(in srgb, var(--kiwi-ms-warning) 10%, var(--kiwi-ms-surface));
+}
+
+.em-outbox-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 0.35rem;
+}
+
+.em-outbox-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.em-outbox-pick input[type="datetime-local"] {
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 2px 6px;
+  border: 1px solid var(--kiwi-ms-border);
+  border-radius: 6px;
+  background: var(--kiwi-ms-surface);
+  color: var(--kiwi-ms-text);
+}
+
 /* ---------- agenda rail ---------- */
 
 .em-rail {

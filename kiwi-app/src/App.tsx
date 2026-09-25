@@ -206,6 +206,15 @@ export default function App() {
     void loadFolders();
   }, [demo, accountsRaw, loadFolders]);
 
+  const refreshOutbox = useCallback(async () => {
+    if (demo) return;
+    try {
+      setOutbox(await api.listOutbox());
+    } catch {
+      setOutbox([]);
+    }
+  }, [demo]);
+
   // Live sync → refresh (kiwi://mail-changed, IPC-16/T-271). The worker
   // emits one event per changed pass — a sync bursts per folder — so
   // events debounce ~300 ms into ONE list reload + folder-count refresh,
@@ -227,6 +236,9 @@ export default function App() {
         pendingNew = 0;
         setMailboxRev((r) => r + 1);
         void loadFolders();
+        // T-296: queue transitions (sent → row gone, retry → notBefore moved)
+        // ride the same debounce so the outbox badge + view stay live.
+        void refreshOutbox();
         if (n > 0) notify("info", `${n} new message${n === 1 ? "" : "s"} arrived.`);
         // T-280: fan the same debounced signal out to plugin hosts.
         broadcastPluginEvent("mail-changed", { added: n });
@@ -240,7 +252,7 @@ export default function App() {
       if (timer) clearTimeout(timer);
       unlisten?.();
     };
-  }, [demo, loadFolders, notify]);
+  }, [demo, loadFolders, refreshOutbox, notify]);
 
   const folderKey = route.name === "mail" ? (route.folder ?? "all-inboxes") : "all-inboxes";
 
@@ -487,15 +499,6 @@ export default function App() {
     setFindingDetail(null);
     setFindingDetailError(null);
   }, []);
-
-  const refreshOutbox = useCallback(async () => {
-    if (demo) return;
-    try {
-      setOutbox(await api.listOutbox());
-    } catch {
-      setOutbox([]);
-    }
-  }, [demo]);
 
   useEffect(() => {
     if (demo || folderKey !== "outbox") return;
@@ -1036,6 +1039,26 @@ export default function App() {
     [refreshOutbox, notify],
   );
 
+  const doScheduleSend = useCallback(
+    async (queueId: string, sendAtUnix: number) => {
+      if (demo) {
+        notify("info", "Demo mode — scheduling needs the Tauri backend.");
+        return;
+      }
+      try {
+        const r = await api.scheduleSend(queueId, sendAtUnix);
+        const when = new Date(r.notBeforeUnix * 1000).toLocaleString();
+        notify("ok", `Send rescheduled — ${when}.`);
+      } catch (e) {
+        const msg = e instanceof Error ? `Reschedule failed: ${e.message}` : String(e);
+        setSyncNote(msg);
+        notify("error", msg);
+      }
+      await refreshOutbox();
+    },
+    [demo, refreshOutbox, notify],
+  );
+
   /* ---------- command palette actions (T-153) ---------- */
 
   const cycleTheme = useCallback(() => {
@@ -1308,6 +1331,7 @@ export default function App() {
             onSync={() => void doSync()}
             onFlushOutbox={() => void doFlushOutbox()}
             onCancelSend={(q) => void doCancelSend(q)}
+            onScheduleSend={(q, at) => void doScheduleSend(q, at)}
             onOutboxRefresh={() => void refreshOutbox()}
           />
         )}
