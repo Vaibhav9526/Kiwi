@@ -9,7 +9,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
 import { api, IpcError } from "../ipc";
 import { DEMO_MESSAGES } from "../mock";
-import { trustTokenToSeverity, unixToIso } from "../kiwi";
+import { normalizeCategory, parseUnsubscribe, trustTokenToSeverity, unixToIso } from "../kiwi";
 import type {
   AccountView,
   AttachmentSavedView,
@@ -52,6 +52,8 @@ function toEnvelope(
     hasAttachments: m.hasAttachments === true,
     trust,
     snippet: m.snippet || "",
+    category: normalizeCategory(m.category),
+    unsub: parseUnsubscribe(m),
   };
 }
 
