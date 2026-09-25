@@ -306,7 +306,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-326 | import refuses synced folders by construction (resolver, policy-blocked pre-write, NOCASE) | Agent 19 | done |
 | T-327 | audit retention: hash-chain re-anchor sweep, dual bounds, self-audited, hostile-pref clamp | Agent 21 | done |
 | T-323-aux | Empty Trash/Junk via real delete loop + count-aware confirm | Agent 24 | done |
-| T-328 | IMAP server-folder CRUD: real CREATE/RENAME/DELETE wire cmds, local mirror post-ACK | Agent 19 | open | `kiwi-mail/imap*`, `commands/` folder IPCs | T-319 gap |
+| T-328 | IMAP folder CRUD real wire ops + mirror-post-ACK, loopback E2E | Agent 19 | done |
 | T-329 | new-mail OS notifications (mockable seam, 4 sync sites, pref+rate-limit+junk-suppress, fail-soft) | Agent 20 | done |
 | T-330 | storage stats+compact IPCs (registered+wrapped; consumed by T-333) | Agent 15-substitute | done |
 | T-331 | surface audit-corruption in UI: persistent honest state + proactive integrity signal | Agent 21 | open | `commands/`, `security-center`, status strip | T-327/T-324 |
@@ -317,3 +317,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-336 | ci.yml ui-smoke job: headless Chrome + vite preview + smoke, honest browser-absence skip | Agent 26 | open | `.github/workflows/ci.yml`, `scripts/ui-smoke.mjs` | T-305 |
 | T-337 | release packaging: real tauri build + bundle targets + RELEASING.md honest unsigned notes | Agent 20 | open | `kiwi-app/src-tauri/tauri.conf.json`, `docs/RELEASING.md` | |
 | T-338 | audit-integrity UI: strip indicator + corrupt surface (consumes T-331 signal) | Agent 25 | open | `chrome.tsx` strip, security-center | T-331 |
+| T-339 | lazy attachment fetch: BODYSTRUCTURE-first sync + on-demand BODY.PEEK part fetch | Agent 19 | open | `kiwi-mail/imap`, store schema | sync depth |
