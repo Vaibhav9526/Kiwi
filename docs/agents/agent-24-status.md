@@ -535,3 +535,47 @@ exit 1 on any failure. `--url` attaches to an already-running server,
 the `test:ui` script line — A25's in-flight vitest/testing-library dep
 edits deliberately left unstaged (blob-staged via hash-object +
 update-index since the diff shared a hunk).
+
+## T-308 — device-management surface vs canonical §9d commands
+
+**Contract audit result: the wire was already complete.** The flagged
+"drift" was a stale file — `types.rs` had been split (T-181) and my first
+read hit a dead flat file; `types/devices.rs` projects the full §9d.5
+`PairDeviceView` (`fingerprint` dash-grouped, `keystoreRef`,
+`revokedUnix`, `registeredUnix`, `lastSeenUnix`, `keyFingerprintTail`)
+from `DeviceRow`. `kiwi.ts` `DeviceView` matches the wire exactly.
+`api.listDevices` calls canonical `device_list`; `api.revokeDevice` calls
+`device_revoke` (terminal + idempotent, audits on transition AND retry,
+refreshes trust — commands/pair.rs:263).
+
+**Surface fixes (settings.tsx Identity → Devices):**
+- Rows now render EVERY real field: label + status pill (revoked styled
+  differently w/ "terminal, cannot satisfy challenges" title), deviceId,
+  algorithm, paired (registeredUnix) + last-seen + revoked dates,
+  keystoreRef alias or "none", and the full dash-grouped `fingerprint`
+  in <code> with a display-only title (§9d.5: never a trust input).
+  `keyFingerprintTail` retained inside the row for the short form.
+- **"this device"**: `loadDevices` now also fetches `securityStatus()` —
+  its `deviceId` is THIS desktop's own device record id
+  (`state.index.device_id`, state.rs:960). Matching row gets a
+  "this device" badge.
+- Empty state: "No paired devices." + the T-303 `PairQrFlow` entry
+  (Pair new device… → claimed → real listDevices refresh).
+- Revoke: inline Confirm/Keep → real `device_revoke` → `loadDevices()`
+  + `onStatusChanged()` (trust refresh); revoked rows show the timestamp
+  and the button disables with "Already revoked".
+
+**Verification (live, real commands):** `cargo test -p kiwi-app pair::`
+7/7 green — `device_list_ordering_fields_and_label_conflict`,
+`revocation_survives_engine_reopen`, `pair_status_lifecycle`,
+`pair_begin_fails_closed…`, `unlock_challenge_canonical_wire_while_locked`,
+plus the §9d.7 locked-gate assertions for device_list/device_revoke.
+These exercise the exact impls the UI calls (register→list→revoke→reopen
+persistence). Renderer-side: the T-305 suite gained a `devices` check —
+Identity tab mounts, "Pair new device…" present, demo-disabled, honest
+empty state → 11/11 PASS on real Edge. `tsc && vite build` green (91
+modules). Nothing fabricated: every rendered field is on the wire view.
+
+Mid-session the settings.tsx edits were swept into commit 43b528a
+("A24 → T-308") — final content verified in HEAD; this commit carries
+the smoke-suite addition + this log.
