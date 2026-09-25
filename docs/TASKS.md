@@ -289,5 +289,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-309 | mbox import: parser (From_ boundaries, flags map) + kiwi_import_mbox IPC + audit | Agent 19 | open | `kiwi-mail`, `commands/` | onboarding/migration |
 | T-310 | reader polish: quote collapse, splitQuotedText, in-reply-to jump, sig muted | Agent 24 | done |
 | T-311 | draft rulings for 8 authenticator contract contradictions (T-270 table) → DECISIONS.md proposals for owner ratification | Agent 20 | open | `docs/` | T-270,T-194 |
-| T-312 | contacts depth (detail/edit or honest gap) + rail sandbox-pending row once T-300 lands | Agent 25 | open | `kiwi-app/src` | T-231,T-300 |
-| T-313 | quick-filter chips on message list (unread/starred/attachments + sender; client-side over fetched rows) | Agent 24 | done | `mailbox.tsx` | |
+| T-312 | contacts depth (server search, compose handoff) + agenda sandbox row lit | Agent 25 | done |
+| T-313 | quick-filter chips (unread/starred/attachments/sender; live counts, AND-combine) | Agent 24 | done |
+| T-314 | deepen CDP smoke: flow checks (reply prefill, ctx-menu state flip, settings roundtrip, demo send, filter narrowing, agenda, lock) | Agent 24 | open | `kiwi-app/scripts/ui-smoke.mjs` | T-305 |
+| T-315 | About tab: real version, honest diagnostics (omit un-IPC-able stats), shared keymap panel | Agent 25 | open | `kiwi-app/src/views/settings.tsx` | |
