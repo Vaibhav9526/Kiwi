@@ -644,6 +644,13 @@ impl MailStore {
                  FROM message_attachment_risk WHERE folder_id = ?3 AND uid = ?4",
                 params![dst_folder_id, dst_uid, src_folder_id, *uid as i64],
             )?;
+            self.conn.execute(
+                "INSERT OR REPLACE INTO message_link_risk
+                    (folder_id, uid, risk, reasons_json)
+                 SELECT ?1, ?2, risk, reasons_json
+                 FROM message_link_risk WHERE folder_id = ?3 AND uid = ?4",
+                params![dst_folder_id, dst_uid, src_folder_id, *uid as i64],
+            )?;
             // Carry the snooze state across the move (T-255) — parked mail
             // stays parked at its new coordinates. Must run BEFORE the
             // source-row DELETE below: the composite FK would otherwise
@@ -659,6 +666,10 @@ impl MailStore {
             )?;
             self.conn.execute(
                 "DELETE FROM message_attachment_risk WHERE folder_id = ?1 AND uid = ?2",
+                params![src_folder_id, *uid as i64],
+            )?;
+            self.conn.execute(
+                "DELETE FROM message_link_risk WHERE folder_id = ?1 AND uid = ?2",
                 params![src_folder_id, *uid as i64],
             )?;
             moved.push((*uid, dst_uid as u64));
@@ -873,6 +884,72 @@ impl MailStore {
             };
             message.attach_risk = Some(crate::attachrisk::AttachRiskEvidence {
                 risk: crate::attachrisk::AttachRisk::from_wire(&risk),
+                reasons: serde_json::from_str(&reasons_json).unwrap_or_default(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Persist bounded link-risk evidence parsed from received MIME bodies.
+    /// Independent of auth sealing; no resolve/open/block behavior exists here.
+    pub fn set_link_risk(
+        &self,
+        folder_id: i64,
+        uid: u64,
+        evidence: &crate::linkrisk::LinkRiskEvidence,
+    ) -> Result<bool> {
+        let reasons = serde_json::to_string(&evidence.reasons)
+            .map_err(|_| MailError::Store(rusqlite::Error::InvalidQuery))?;
+        let n = self.conn.execute(
+            "INSERT OR REPLACE INTO message_link_risk
+                (folder_id, uid, risk, reasons_json) VALUES (?1, ?2, ?3, ?4)",
+            params![folder_id, uid as i64, evidence.risk.as_str(), reasons],
+        )?;
+        Ok(n > 0)
+    }
+
+    pub fn get_link_risk(
+        &self,
+        folder_id: i64,
+        uid: u64,
+    ) -> Result<Option<crate::linkrisk::LinkRiskEvidence>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT risk, reasons_json FROM message_link_risk
+             WHERE folder_id = ?1 AND uid = ?2",
+        )?;
+        let mut rows = stmt.query(params![folder_id, uid as i64])?;
+        let Some(row) = rows.next()? else {
+            return Ok(None);
+        };
+        let risk: String = row.get(0)?;
+        let reasons_json: String = row.get(1)?;
+        Ok(Some(crate::linkrisk::LinkRiskEvidence {
+            risk: crate::linkrisk::LinkRisk::from_wire(&risk),
+            reasons: serde_json::from_str(&reasons_json).unwrap_or_default(),
+        }))
+    }
+
+    fn attach_link_risks(&self, folder_id: i64, msgs: &mut [MessageMeta]) -> Result<()> {
+        if msgs.is_empty() {
+            return Ok(());
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT uid, risk, reasons_json FROM message_link_risk WHERE folder_id = ?1",
+        )?;
+        let rows = stmt.query_map(params![folder_id], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })?;
+        for row in rows {
+            let (uid, risk, reasons_json) = row?;
+            let Some(message) = msgs.iter_mut().find(|m| m.uid == uid as u64) else {
+                continue;
+            };
+            message.link_risk = Some(crate::linkrisk::LinkRiskEvidence {
+                risk: crate::linkrisk::LinkRisk::from_wire(&risk),
                 reasons: serde_json::from_str(&reasons_json).unwrap_or_default(),
             });
         }

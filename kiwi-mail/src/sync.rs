@@ -167,6 +167,7 @@ pub async fn sync_folder(
                 continue;
             };
             let _ = store.set_attachment_risk(folder_id, uid, &parsed.attach_risk);
+            let _ = store.set_link_risk(folder_id, uid, &parsed.link_risk);
             if crate::rules::apply_on_ingest(
                 store,
                 account_id,
@@ -250,6 +251,7 @@ async fn fetch_missing_bodies_inner(
             // values (absent fact, no guess).
             if let Ok(parsed) = crate::mime::parse_message(bytes) {
                 let _ = store.set_attachment_risk(folder_id, uid, &parsed.attach_risk);
+                let _ = store.set_link_risk(folder_id, uid, &parsed.link_risk);
                 let category = crate::category::categorize(&parsed).category;
                 let _ = store.set_category(folder_id, uid, category);
                 if let Some(info) = &parsed.unsubscribe {
@@ -407,6 +409,7 @@ async fn sync_pop3_inner(
         store.upsert_message(folder_id, &meta, now)?;
         store.store_body(folder_id, number as u64, &bytes)?;
         let _ = store.set_attachment_risk(folder_id, number as u64, &parsed.attach_risk);
+        let _ = store.set_link_risk(folder_id, number as u64, &parsed.link_risk);
         // T-233: the POP3 drop folder *is* the inbox — rules run on the
         // full parse at ingest (POP3 has no envelope-only stage). Errors
         // count, never abort the download; an unmarked eval is retried by

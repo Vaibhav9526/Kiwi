@@ -1300,6 +1300,59 @@ mod tests {
         assert_eq!(rest[0].id, "g");
     }
 
+    // -- T-261 link risk evidence --------------------------------------------
+
+    #[test]
+    fn link_risk_roundtrips_attaches_and_moves() {
+        let s = MailStore::open_memory().unwrap();
+        seed_account(&s, "a1");
+        let src = s.ensure_folder("a1", "INBOX").unwrap();
+        let dst = s.ensure_folder("a1", "Archive").unwrap();
+        s.upsert_message(src, &meta(19), 0).unwrap();
+        let evidence = crate::linkrisk::LinkRiskEvidence {
+            risk: crate::linkrisk::LinkRisk::Failed,
+            reasons: vec![
+                crate::linkrisk::LinkRiskReason::IpLiteralHost,
+                crate::linkrisk::LinkRiskReason::DisplayDomainMismatch,
+            ],
+        };
+        assert!(s.set_link_risk(src, 19, &evidence).unwrap());
+        assert_eq!(s.get_link_risk(src, 19).unwrap(), Some(evidence.clone()));
+        assert_eq!(
+            s.list_messages(src, 10).unwrap()[0].link_risk,
+            Some(evidence.clone())
+        );
+        assert_eq!(
+            s.list_messages_by_category(src, Category::Primary, 10)
+                .unwrap()[0]
+                .link_risk,
+            Some(evidence.clone())
+        );
+        let moved = s.move_messages(src, dst, &[19]).unwrap();
+        assert_eq!(moved, vec![(19, 1)]);
+        assert!(s.get_link_risk(src, 19).unwrap().is_none());
+        assert_eq!(s.get_link_risk(dst, 1).unwrap(), Some(evidence));
+    }
+
+    #[test]
+    fn v12_to_v13_creates_link_sibling_without_backfill() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(DDL).unwrap();
+        conn.execute_batch("DROP TABLE message_link_risk; PRAGMA user_version = 12")
+            .unwrap();
+        let root = std::env::temp_dir().join(format!("kiwi-mig-link-{}", std::process::id()));
+        migrate_conn(&conn, &root).unwrap();
+        assert_eq!(
+            conn.query_row("PRAGMA user_version", [], |r| r.get::<_, u32>(0))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM message_link_risk", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0, "historical URL evidence is not fabricated");
+    }
+
     // -- T-254 attachment risk evidence ---------------------------------------
 
     #[test]

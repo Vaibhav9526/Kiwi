@@ -142,6 +142,33 @@ pub struct UnsnoozeResultView {
     pub unsnoozed: u64,
 }
 
+/// One relocated ref from `kiwi_message_set_junk` — moves remap uids and
+/// refs may span folders, so each leg records its source coordinates.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetJunkMoveView {
+    pub from_folder_id: i64,
+    pub from_uid: u64,
+    /// Fresh uid in the destination folder (uids are folder-scoped).
+    pub to_uid: u64,
+}
+
+/// `kiwi_message_set_junk` result (T-263).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetJunkView {
+    /// Direction applied — `true` = marked junk, `false` = un-junked.
+    pub junk: bool,
+    /// Rows whose `\Junk` flag actually changed locally.
+    pub flagged: u64,
+    /// Rows physically moved (into Junk, or out to INBOX on un-junk).
+    pub moved: u64,
+    /// The destination folder when moves happened (the account's Junk
+    /// folder for `junk=true`; INBOX for `junk=false` on Junk rows).
+    pub target_folder_id: Option<i64>,
+    pub moves: Vec<SetJunkMoveView>,
+}
+
 /// One row of `kiwi_list_snoozed` — parked coordinates + the display
 /// fields the Snoozed view renders (T-255).
 #[derive(Debug, Serialize)]

@@ -58,8 +58,9 @@ fn resolve_until(preset: Option<&str>, until_unix: Option<i64>, now: i64) -> Cmd
 
 /// Validate `refs` (non-empty, ≤500, non-negative, deduped) and prove
 /// every referenced folder belongs to `account_id`. Returns
-/// `folder_id → uids` grouped for the store calls.
-async fn owned_refs(
+/// `folder_id → uids` grouped for the store calls. Shared by the junk
+/// command (T-263) — `pub(super)` keeps it out of the glob re-export.
+pub(super) async fn owned_refs(
     state: &AppState,
     account_id: &str,
     refs: &[MessageRefInput],

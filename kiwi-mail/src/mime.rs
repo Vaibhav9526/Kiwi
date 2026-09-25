@@ -569,6 +569,23 @@ mod tests {
     }
 
     #[test]
+    fn parse_time_link_risk_combines_text_and_html() {
+        let raw = b"From: a@x.test\r\nTo: b@y.test\r\nSubject: links\r\nMIME-Version: 1.0\r\nContent-Type: multipart/alternative; boundary=\"B\"\r\n\r\n--B\r\nContent-Type: text/plain\r\n\r\nhttp://safe.example/\r\n--B\r\nContent-Type: text/html\r\n\r\n<a href=\"https://evil.example/\">bank.example</a>\r\n--B--\r\n";
+        let p = parse_message(raw).unwrap();
+        assert_eq!(p.link_risk.risk, crate::linkrisk::LinkRisk::Failed);
+        assert!(
+            p.link_risk
+                .reasons
+                .contains(&crate::linkrisk::LinkRiskReason::InsecureHttp)
+        );
+        assert!(
+            p.link_risk
+                .reasons
+                .contains(&crate::linkrisk::LinkRiskReason::DisplayDomainMismatch)
+        );
+    }
+
+    #[test]
     fn build_roundtrips_through_parser() {
         let msg = OutboundMessage {
             from: Addr {

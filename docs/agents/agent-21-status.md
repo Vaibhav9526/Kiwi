@@ -244,6 +244,51 @@ PDF/encrypted containers, mapped/unmapped Unicode confusables, bounded long
 filenames, parse-time MIME integration, persistence/list/move, and v10→v11
 migration without fabricated backfill. All offline.
 
+## 2026-09-25 — T-261 deterministic link risk hints
+
+**Status:** COMPLETE. `cargo test -p kiwi-mail --all-targets` = 203 passed /
+0 failed; `cargo clippy -p kiwi-mail --all-targets -- -D warnings` clean;
+`cargo fmt --all -- --check` clean; `cargo check -p kiwi-app` clean; frontend
+`npx tsc --noEmit` clean.
+
+**Files changed (12):**
+- `kiwi-mail/src/linkrisk.rs` — new bounded enum, fixed reasons, bounded
+  text/HTML URL + anchor classifier, offline tests.
+- `kiwi-mail/Cargo.toml` / `Cargo.lock` — `url` parser dependency.
+- `kiwi-mail/src/lib.rs` — registers the module.
+- `kiwi-mail/src/mime.rs` — derives link evidence at MIME parse time.
+- `kiwi-mail/src/sync.rs` — persists IMAP/POP3 evidence independently of auth.
+- `kiwi-mail/src/store/schema.rs` — schema v13 adds `message_link_risk` sibling.
+- `kiwi-mail/src/store/mod.rs` — `MessageMeta.link_risk` + migration/lifecycle tests.
+- `kiwi-mail/src/store/queries.rs` — persistence, list attach, move/delete/reset.
+- `kiwi-mail/src/search.rs` — unevaluated rows remain explicit `None`.
+- `kiwi-app/src-tauri/src/types/mail.rs` — `MessageView.linkRisk` typed wire.
+- `kiwi-app/src/kiwi.ts` — matching bounded frontend vocabulary.
+- `docs/agents/agent-21-status.md` — this entry.
+
+**Exact table:** `failed` only for an IP-literal HTTP(S) host, credentials in
+the URL authority, or an HTML anchor whose explicit display domain is unrelated
+to the href host. Otherwise `http://`, known shorteners, >4 subdomain labels,
+>=4 hyphens, `xn--`, and Unicode/IDNA hosts are `noted`; noted signals never
+escalate without a clear failure. All other observed web links aggregate to
+`clean`. The worst URL wins, and every heuristic remains capped at `noted`.
+
+**Bounded parsing:** at most 2 MiB per body, 256 URLs/anchors, 2,048 chars per
+URL, 512 chars per display label, and a fixed nine-reason vocabulary. Case,
+Unicode IDN, HTML entity, quoted/unquoted href, IPv4/IPv6, and multi-URL
+aggregation are covered offline. No DNS/host resolution, redirects, or network
+access occurs.
+
+**Persistence choice:** sibling table, not auth metadata, because link evidence
+is local parsed-body work and must work without DNS auth sealing. It stores only
+a CHECK-constrained `clean|noted|failed` value and fixed reason-code JSON—never
+URLs, domains, display text, or body fragments. Historical rows are not
+backfilled.
+
+**Safety boundary:** deterministic UI evidence only. It never creates findings,
+resolves or opens links, blocks UI/actions, or mutates/moves mail. `None` on the
+wire means the body has not been parsed, not clean.
+
 ## 2026-09-25 — T-199 dependency vulnerability audit delivered
 
 **Status:** COMPLETE. `cargo audit` (0.22.2, 1,269 advisories, 579 crates) +

@@ -223,9 +223,10 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-258 | mailauth post-T-183 verification (14 groups + 3 deviations documented) | Agent 22 | done |
 | T-259 | Admin code-side drift fixes: ADM-01 policy projection, ADM-13 evaluate shape, ADM-14 not.found | Agent 11 | open | `kiwi-admin/` | T-250 |
 | T-260 | security-session.md contract-vs-impl enumeration (TrustMachine/lock gates) | Agent 22 | open | `docs/audits/` | T-196 |
-| T-261 | LinkRisk hints: IP-literal, text/href mismatch, shorteners, punycode, cred-in-URL | Agent 21 | open | `kiwi-mail/` | T-254 |
+| T-261 | LinkRisk hints (linkrisk.rs 459L, 203/203, wired to TS) | Agent 21 | done |
 | T-262 | Send-path e2e: compose->outbox->scripted SMTP->sent (fail branches: reject/undo/no-STARTTLS) | Agent 19 | open | `src-tauri/`, `kiwi-mail/` testutil | T-257 |
 | T-264 | Folder exists/unseen COUNT query + FolderView fields (IPC-6 follow-up) | queued | backlog | `kiwi-mail/store` | T-247 |
 
 <!-- A18 terminal gone; e26f119b was a DUP A22 session — renumbered Agent 23, owns T-235. rule_catalog stays v1 (flags restore semantics, default output identical — ratified). -->
 | T-265 | Register cleanup: IPC-11..14 + FOR-7/8/9 (nullability/units/titles/diff-kinds) | Agent 20 | open | `types/`, `ipc.md`, `kiwi-forensics/` | FINDINGS.md |
+| T-266 | Sandbox-open IPC: link/attachment -> provider w/ risk-evidence handoff, fail-closed | Agent 21 | open | `src-tauri/`, `kiwi-sandbox/` | T-261 |

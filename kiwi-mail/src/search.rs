@@ -311,6 +311,7 @@ fn map_message_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<MessageMeta> {
         // `attach_auth`; search rows carry no verdicts.
         auth: None,
         attach_risk: None,
+        link_risk: None,
     })
 }
 
