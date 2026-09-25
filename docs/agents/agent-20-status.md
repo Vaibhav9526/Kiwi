@@ -660,3 +660,62 @@ ownership note, UIS-13/14/17 wrapper-landed annotations, sweep bullets).
 - T-269's pair-engine swap landed mid-task (devices.rs/system.rs/pair
   churn in working tree + commits); my register annotation was written
   against the documented ownership, not the in-flight code.
+
+---
+
+## T-279 — HickoryResolver production DNS (MAUTH-1)
+
+**Goal:** close the T-196-era gap — mailauth's SPF/DKIM/DMARC had only
+`MockResolver` (test-only); no live `DnsResolver` existed and the
+`*_with_auth` sync variants were dead code.
+
+**Shipped:**
+
+- `kiwi-mailauth/src/dns.rs` — `HickoryResolver` (hickory-resolver 0.26,
+  tokio feature): `system()` = 2 s × 2 attempts per query, `with_bounds`
+  for explicit bounds (`attempts` clamps ≥ 1 — zero would fabricate
+  `Temp`). System resolver config via `builder_tokio()` (preserves
+  system ndots/search/transport opts; only our bounds overridden).
+  Private `current_thread` runtime + resolver build **lazily** on first
+  lookup inside a `Mutex`; a failed build memoizes as `Broken` → every
+  lookup returns `Temp` (no rebuild loop on DNS-less hosts).
+  `block_on` runs on a scoped thread — `Runtime::block_on` panics when
+  called from a thread already inside a runtime, and this sync facade
+  is invoked from Tauri async handlers. A panicking lookup thread maps
+  to `Temp`. Error map: `is_no_records_found` (NXDOMAIN + NODATA) →
+  `NxDomain`; everything else → `Temp`. TXT strings concat per RFC
+  7208 §3.3, capped at `MAX_TXT_LEN` like the mock; MX sorted by
+  preference ascending.
+- `kiwi-app` wiring: `kiwi-mailauth` dep added; shared
+  `OnceLock<HickoryResolver>` (`commands/mail.rs::auth_sealer()`) keeps
+  the answer cache warm. `sync_pop3` → `sync_pop3_with_auth(sealer,
+  None)`; lazy IMAP body ingest (`get_message_raw` on-demand fetch) now
+  parses + `evaluate_and_stamp` + `set_auth` on first-body store.
+  `SmtpReceipt: None` on both paths — POP3/IMAP cannot know client IP /
+  envelope sender, so SPF records `none` honestly (DKIM/DMARC still
+  evaluate from headers). Stamp failures swallowed — never fail mail
+  read/sync.
+- `docs/contracts/mailauth.md` §6 — bounds, lazy-build memoization,
+  scoped-thread `block_on`, wiring locations, `None` receipt rationale,
+  fail-closed error map.
+- `docs/audits/FINDINGS.md` — MAUTH-1 → **fixed**.
+
+**Tests (offline seam — no live DNS required):**
+
+- `hickory_lookup_fails_closed_offline`: 1 ms bound against RFC 2606
+  `.invalid` TLD must produce `NxDomain`/`Temp` — never `Ok`, never
+  panic — proving the runtime → config → query → error-map path works.
+- `hickory_resolver_fits_the_resolver_seam`: `Send + Sync + DnsResolver`
+  compile assertion (the `AuthSealer` blanket impl follows).
+- `with_bounds_clamps_zero_attempts`.
+
+**Verification:** `cargo test -p kiwi-mailauth` — **66 green**; `cargo
+test -p kiwi-app --lib` — **125 green** (T-277's e2e_send fix landed;
+previous hang gone); `clippy -p kiwi-mailauth --all-targets -D warnings`
+clean; `cargo fmt` clean on touched files; `cargo check -p kiwi-app`
+green.
+
+**Not done (scope note):** a mass `fetch_missing_bodies_with_auth`
+deferred pass is still unwired — bodies are lazy-fetch-only by design;
+the syncer never bulk-downloads. IMAP messages already stored before
+this change keep no stamp (ingest-time evidence is not backfilled).

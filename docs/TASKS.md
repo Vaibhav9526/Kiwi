@@ -256,7 +256,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-276 | ACFG-4 GoDaddy: resolved inline — removed from ISPDB_FIXTURES roster (correctly MX_HINTS-only, no fixed domains) | Lead | done |
 | T-277 | e2e_send hang FIXED: empty-line wildcard matcher ate DATA dot → exact-empty + finite timeouts (complements A19 bound) | Agent 21 | done |
 | T-278 | integrations drift audit — 19 findings (1H renderer consent-bypass, 11M, 7L) w/ rulings | Agent 23 | done |
-| T-279 | HickoryResolver production DNS impl for mailauth (bounded timeouts, fail-closed temperror) | Agent 20 | open | `kiwi-mailauth`, app resolver wiring | T-196 |
+| T-279 | HickoryResolver production DNS: bounded, fail-closed temperror, wired POP3+IMAP auth paths; MAUTH-1 fixed | Agent 20 | done |
 | T-280 | host plugin surfaces: notify→toasts, settings-page→mounted panes+lifecycle, runtime supervisor, 30/30 | Agent 25 | done |
 | T-281 | rules management UI: Settings/Mail Rules AST+action editors, preview, apply-now | Agent 24 | done |
 | T-282 | AUTH-1 failure/denied authenticator audit rows + timeout-audit contract ruling (evidence-before-effect) | Agent 11 | open | `kiwi-pair`, `commands/security.rs` | T-272 |
@@ -265,4 +265,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-285 | POP3 e2e: scripted loopback POP3 server, add→sync→ingest green + failure branches + delete-policy | Agent 19 | open | `kiwi-app/src-tauri/src/e2e.rs`, testutil | T-257,T-262 |
 | T-286 | implement T-278 findings by severity — H consent-bypass server-side first, then 11M, 7L; apply own rulings | Agent 23 | open | `kiwi-integrations`, `commands/`, contracts | T-278 |
 | T-287 | UI hardening sweep: real error/empty/offline states, keyboard-help overlay-or-remove, a11y pass | Agent 25 | open | `kiwi-app/src` | T-267 |
-| T-288 | message templates feature: backend (store+IPC) + composer UI — needs Rust pair, queued | unassigned | queued | `kiwi-mail`, `kiwi-app` | Mailspring parity |
+| T-288 | message templates: backend (Agent 20: store+IPC+contract) then composer UI (A25) | Agent 20 backend / A25 UI | open | `kiwi-mail`, `commands/`, `kiwi.ts`/`ipc.ts`, composer | Mailspring parity |
