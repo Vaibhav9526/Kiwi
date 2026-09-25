@@ -234,7 +234,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-268 | Icons(53)+theme packages+plugin scaffold (alpha trusted-code, T-PLG/B10/RR-11) | Agent 25 | done |
 
 <!-- PLANNER PLAN accepted: ITEM A eM-client layout (light default supersedes flagship-dark default), ITEM B themes+plugins alpha=trusted-code (isolation deferred — accepted risk recorded in THREAT-MODEL by A25 + post-alpha hardening task). -->
-| T-269 | CRITICAL: wire kiwi-pair canonical — persistent revocation + 9d commands + atomic txn | Agent 11 | in-progress | `kiwi-pair/`, `src-tauri/` | T-235 |
+| T-269 | canonical kiwi-pair wiring: persistent engine sole authority, atomic consume+link, revocation survives restart, 5 §9d cmds, nonceB64, TOFU | Agent 11 | done |
 | T-270 | authenticator↔mobile/pair audit — fail-closed scaffold verdict + 8 contract decisions needed | Agent 23 | done |
 | T-271 | mail-changed event wired (debounce+toast) + IPC-5 docs + 25 rows closed | Agent 20 | done |
 
@@ -259,3 +259,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-279 | HickoryResolver production DNS impl for mailauth (bounded timeouts, fail-closed temperror) | Agent 20 | open | `kiwi-mailauth`, app resolver wiring | T-196 |
 | T-280 | host-side plugin surfaces: notify.show→toast sink + settings-page→pane mount (alpha trusted-code) | Agent 25 | open | `kiwi-app/src/plugins/`, `components/toasts.tsx`, `views/settings.tsx` | T-274,T-268 |
 | T-281 | rules management UI: list/create/edit predicate+action forms, enable/disable, reorder, preview seam | Agent 24 | open | `kiwi-app/src` | T-200,T-263 |
+| T-282 | AUTH-1 failure/denied authenticator audit rows + timeout-audit contract ruling (evidence-before-effect) | Agent 11 | open | `kiwi-pair`, `commands/security.rs` | T-272 |
