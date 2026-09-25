@@ -459,7 +459,7 @@ export function MailboxView(props: MailboxProps) {
                 <small>{props.messagesError}</small>
               </div>
             )}
-            {messages.length === 0 && !props.messagesLoading && !props.hasAccounts && !props.demo ? (
+            {messages.length === 0 && !props.messagesLoading && !props.hasAccounts && !props.demo && (
               <div className="kiwi-empty">
                 <span className="kiwi-empty-icon em-empty-icon" aria-hidden="true">
                   <IconMail size={28} />
@@ -472,8 +472,8 @@ export function MailboxView(props: MailboxProps) {
                   Add account…
                 </button>
               </div>
-            ) : (
-            messages.length === 0 && !props.messagesLoading && (
+            )}
+            {messages.length === 0 && !props.messagesLoading && (props.hasAccounts || props.demo) && (
               <div className="kiwi-empty">
                 <span className="kiwi-empty-icon em-empty-icon" aria-hidden="true">
                   <IconMail size={28} />

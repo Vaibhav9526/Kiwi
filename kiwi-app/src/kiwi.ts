@@ -539,6 +539,12 @@ export interface RuleView {
   isBlock: boolean;
   when: RulePredicate;
   then: RuleAction[];
+  /** Store-owned cumulative sync-time apply failures; badge broken rules when > 0. */
+  failureCount: number;
+  /** Most recent bounded diagnostic, or null before any failure. */
+  lastError: string | null;
+  /** Unix seconds of the most recent failure, or null. */
+  lastFailureUnix: number | null;
 }
 
 /** One audit row — which rule fired on which stored message, when. */
@@ -570,6 +576,13 @@ export interface PreviewHitView {
   folder: string;
   subject: string | null;
   messageId: string | null;
+  /** True predicate leaves with stable AST paths; no body/header values. */
+  conditionHits: PreviewConditionHitView[];
+}
+
+export interface PreviewConditionHitView {
+  path: string;
+  kind: "sender" | "recipient" | "subject" | "header" | "body_contains" | "attachment_name" | "always";
 }
 
 /**

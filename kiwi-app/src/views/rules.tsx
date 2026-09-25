@@ -304,6 +304,9 @@ export function RulesView({
       isBlock: false,
       when: { kind: "sender", op: "contains", value: "" },
       then: [{ do: "mark_read" }],
+      failureCount: 0,
+      lastError: null,
+      lastFailureUnix: null,
     });
     setPreview(null);
     setError(null);
@@ -481,6 +484,14 @@ export function RulesView({
                       {r.isBlock && (
                         <span className="kiwi-pill danger" title="Evaluated before regular rules; a match is terminal (Trash)">
                           block-list
+                        </span>
+                      )}
+                      {r.failureCount > 0 && (
+                        <span
+                          className="kiwi-pill warning"
+                          title={`${r.failureCount} apply-time failure(s)${r.lastFailureUnix ? ` — last ${new Date(r.lastFailureUnix * 1000).toLocaleString()}` : ""}${r.lastError ? `: ${r.lastError}` : ""}`}
+                        >
+                          failing ×{r.failureCount}
                         </span>
                       )}
                       <span className="kiwi-pill unknown" title={`Rule id ${r.id}`}>

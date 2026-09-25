@@ -84,6 +84,9 @@ export function OAuth2SignIn(props: {
   // by kiwi_add_account (or already persisted for re-auth).
   const keepRef = useRef(false);
   const [copied, setCopied] = useState<string | null>(null);
+  // Effective poll cadence — displayed honestly because retryAfterSecs
+  // (RFC 8628 slow_down) changes it after begin.
+  const [pollSecs, setPollSecs] = useState<number | null>(null);
 
   const label = oauth2ProviderLabel(provider);
 
@@ -128,6 +131,7 @@ export function OAuth2SignIn(props: {
     // the provider's pollIntervalSecs, else a 2 s floor — clamped so a
     // hostile/buggy value can never busy-loop the IPC channel.
     let delaySecs = Math.min(60, Math.max(1, begin.pollIntervalSecs ?? 2));
+    setPollSecs(delaySecs);
     for (;;) {
       await sleep(delaySecs * 1000);
       if (gen !== genRef.current) return;
@@ -153,6 +157,7 @@ export function OAuth2SignIn(props: {
           return;
         }
         delaySecs = Math.min(60, Math.max(1, p.retryAfterSecs ?? begin.pollIntervalSecs ?? 2));
+        setPollSecs(delaySecs);
       } catch (e) {
         if (e instanceof BackendUnavailableError) {
           setPhase({ stage: "failed", code: "backend-unavailable", message: e.message });
@@ -245,14 +250,20 @@ export function OAuth2SignIn(props: {
     <div className="kiwi-banner warn" role="status" aria-live="polite">
       {device ? (
         <>
-          <p style={{ margin: "0 0 0.4rem" }}>
-            <small>Enter this code at {label}:</small>
-            <br />
-            <code style={{ fontSize: "1.5rem", letterSpacing: "0.12em", userSelect: "all" }}>{begin.userCode}</code>{" "}
-            <button type="button" onClick={() => void copy(begin.userCode ?? "")}>
-              {copied === begin.userCode ? "Copied" : "Copy code"}
-            </button>
-          </p>
+          {begin.userCode ? (
+            <p style={{ margin: "0 0 0.4rem" }}>
+              <small>Enter this code at {label}:</small>
+              <br />
+              <code style={{ fontSize: "1.5rem", letterSpacing: "0.12em", userSelect: "all" }}>{begin.userCode}</code>{" "}
+              <button type="button" onClick={() => void copy(begin.userCode ?? "")}>
+                {copied === begin.userCode ? "Copied" : "Copy code"}
+              </button>
+            </p>
+          ) : (
+            <p style={{ margin: "0 0 0.4rem" }}>
+              <small>The provider did not return a user code — open the sign-in page below to continue.</small>
+            </p>
+          )}
         </>
       ) : (
         <p style={{ margin: "0 0 0.4rem" }}>
@@ -276,7 +287,7 @@ export function OAuth2SignIn(props: {
       )}
       <p style={{ margin: 0 }}>
         <small>
-          Waiting for {label}… (checking every {Math.max(1, begin.pollIntervalSecs ?? 2)}s
+          <strong>Pending</strong> — waiting for {label} approval (checking every {pollSecs ?? begin.pollIntervalSecs ?? 2}s
           {begin.expiresAtUnix ? `, expires ${new Date(begin.expiresAtUnix * 1000).toLocaleTimeString()}` : ""})
         </small>{" "}
         <button type="button" onClick={cancel}>

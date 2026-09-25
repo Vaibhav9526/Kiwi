@@ -247,3 +247,23 @@
 ### Verification
 
 - `npm run build` (`tsc && vite build`) — green, 81 modules.
+
+## T-289 — account-add + OAuth2 flow in the new shell
+
+### Audit result: surface was live, not stubbed — gaps fixed, rest verified
+
+| Requirement | Verdict |
+|---|---|
+| Wizard end-to-end (Address→Servers→Credentials→Verify & add) | PASS — `setup.tsx` 4-step wizard inside AppShell route `setup`; autoconfig via `kiwi_discover_account` (registered `lib.rs:90`) with a labeled `local-guess` fallback on failure/absence; verify probes both servers via `kiwi_verify_server` with per-step detail; add via `kiwi_add_account` carrying `oauth2Ticket` for xoauth2. Plaintext requires explicit ack; secrets cleared post-add, never stored. |
+| Device-code display + polling | PASS, tightened — `components/oauth2.tsx` renders `userCode` large w/ copy button + `verificationUriComplete ?? verificationUri` link via `kiwi_open_external` (never in-webview), per §9f. Poll loop honored `retryAfterSecs` internally already; FIXED the status line to display the live cadence (`pollSecs` state) instead of the stale begin value, added explicit **Pending** status word (approved→"Signed in as …", expired→"session expired" + "Start over"), and a missing-`userCode` guard. |
+| needsRefresh badge + re-auth | PASS — Settings → Accounts polls `kiwi_oauth2_status` per account; `!credentialPresent || needsRefresh` → "OAuth2 · provider — re-auth needed" pill → inline `OAuth2SignIn` re-auth (completing the grant rewrites the same credential-store key — no re-add), posture re-fetched on done. |
+| Error paths | PASS — discovery failure/absence → labeled guess-or-manual notes; §9f vocabulary mapped (`oauth2-denied/expired/not-configured/reauth/incomplete/endpoint`, `backend-unavailable`, `locked`); transient poll IPC errors keep the grant alive; verify/add failures → `${code}: ${message}` banner + Retry; demo → explicit "needs the backend" banners, nothing fabricated. |
+| First-run CTA | FIXED — StatusStrip "Add account" and the +New menu entry already routed; ADDED a list-pane first-run empty state (`hasAccounts` prop = real `accountsRaw.length`): live + zero accounts → "No accounts yet / Add account…" instead of a misleading "no messages". FolderPane's empty-state CTA is A25's in-flight T-283/287 edit — left untouched. |
+
+### Fix-forward (broken in-flight tree, not mine)
+
+- `RuleView` gained `failureCount`/`lastError`/`lastFailureUnix` (paired backend apply-failure telemetry, in-flight kiwi.ts + src-tauri change). `rules.tsx` draft-constructor broke the build — added the fields (`0/null/null`) and rendered the intended "failing ×N" pill with `lastError`/timestamp in the tooltip. kiwi.ts staged alongside since the commit must typecheck standalone.
+
+### Verification
+
+- `npm run build` (`tsc && vite build`) — green, 83 modules.
