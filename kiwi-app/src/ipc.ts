@@ -31,6 +31,9 @@ import type {
   MessageUpdateView,
   MessageView,
   MoveResultView,
+  OAuth2BeginView,
+  OAuth2PollView,
+  OAuth2StatusView,
   OutboxItem,
   RemoteContentView,
   RenderedBodyView,
@@ -45,7 +48,7 @@ import type {
   UnsubscribeResultView,
   VerifyResult,
 } from "./kiwi";
-import { parseAutoconfigSuggestion, parseContact, parseSearchHit } from "./kiwi";
+import { parseAutoconfigSuggestion, parseContact, parseOAuth2Begin, parseOAuth2Poll, parseOAuth2Status, parseSearchHit } from "./kiwi";
 
 export class BackendUnavailableError extends Error {
   constructor(command: string, cause?: unknown) {
@@ -149,14 +152,60 @@ export const api = {
   /**
    * Discovery chain for an email address (ISPDB → autoconfig XML →
    * MX heuristics → manual). Invokes `kiwi_discover_account`, the
-   * contract-ratified command name (ipc.md §5); the backend handler lands
-   * with T-230. Until then this throws BackendUnavailableError and the
-   * wizard falls back to its labeled local stub / manual entry. Same
-   * wrapper either way, so no view changes on land.
+   * contract-ratified command name (ipc.md §5; `kiwi_lookup_autoconfig`
+   * is a registered alias for stale wrappers — T-230). The backend
+   * returns a DiscoveryOutcomeView; the parser unwraps `suggestion`.
+   * When the backend is absent this throws BackendUnavailableError and
+   * the wizard falls back to its labeled local stub / manual entry.
    */
   async lookupAutoconfig(email: string): Promise<AutoconfigSuggestion | null> {
     const raw = await call<unknown>("kiwi_discover_account", { email });
     return parseAutoconfigSuggestion(raw);
+  },
+
+  /* ---------------- oauth2 acquisition (gated, T-230/243) ---------------- */
+
+  /**
+   * `kiwi_oauth2_begin(provider, email?)` → the ticket plus whatever the
+   * user must see: `userCode` + `verificationUri` (device_code) or
+   * `authorizeUrl` to open in the system browser (loopback_code).
+   * `oauth2-not-configured` lands here as an IpcError when the deployment
+   * ships no client id for the provider.
+   */
+  async oauth2Begin(provider: string, email?: string): Promise<OAuth2BeginView | null> {
+    const raw = await call<unknown>("kiwi_oauth2_begin", { provider, email });
+    return parseOAuth2Begin(raw);
+  },
+  /**
+   * `kiwi_oauth2_poll(ticketId)` → pending / complete / error. Terminal
+   * failures come back as `status:"error"` with a §9f `errorCode`;
+   * transient transport failures throw IpcError (the grant stays alive).
+   */
+  async oauth2Poll(ticketId: string): Promise<OAuth2PollView | null> {
+    const raw = await call<unknown>("kiwi_oauth2_poll", { ticketId });
+    return parseOAuth2Poll(raw);
+  },
+  /** `kiwi_oauth2_cancel(ticketId)` — abandon a grant the user walked away from. */
+  async oauth2Cancel(ticketId: string): Promise<boolean> {
+    const raw = await call<unknown>("kiwi_oauth2_cancel", { ticketId });
+    return typeof raw === "object" && raw !== null && (raw as Record<string, unknown>)["cancelled"] === true;
+  },
+  /**
+   * `kiwi_oauth2_status(accountId)` → auth posture for the accounts view
+   * (`authMethod`, `needsRefresh`, `credentialPresent`) — no token
+   * material ever crosses this boundary.
+   */
+  async oauth2Status(accountId: string): Promise<OAuth2StatusView | null> {
+    const raw = await call<unknown>("kiwi_oauth2_status", { accountId });
+    return parseOAuth2Status(raw);
+  },
+  /**
+   * `kiwi_open_external(url)` — open an https:// URL in the system
+   * browser (the OAuth2 browser handoff; webview navigation is never
+   * used for provider sign-in). Invalid → IpcError "invalid-input".
+   */
+  openExternal(url: string): Promise<void> {
+    return call<void>("kiwi_open_external", { url });
   },
 
   /* ---------------- search (gated, T-160) ---------------- */

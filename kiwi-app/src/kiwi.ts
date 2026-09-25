@@ -213,7 +213,11 @@ export interface MessageView {
  * means the check could not complete. Both are *absence of evidence* — never
  * render them as a pass, and never as a finding.
  */
+export type AuthRisk = "clean" | "noted" | "failed";
+
 export interface AuthResultsView {
+  /** Bounded deterministic hint for the frontend pill; never a finding. */
+  authRisk: AuthRisk;
   spf: string;
   dkim: string;
   dmarc: string;
@@ -491,6 +495,12 @@ export interface AutoconfigSuggestion {
   outSec: string;
   username: string;
   authKind: string;
+  /**
+   * ipc.md §5 `suggestion.oauth2` — present iff the suggestion is XOAUTH2
+   * on a shipped-provider host (IMAP only). `provider` feeds
+   * `kiwi_oauth2_begin`; `grant` tells the wizard which UX to render.
+   */
+  oauth2?: { provider: string; grant: string };
 }
 
 function secToken(v: unknown): string {
@@ -500,23 +510,39 @@ function secToken(v: unknown): string {
   return "tls";
 }
 
-/** Tolerant parse of a future `kiwi_discover_account` response (ipc.md §5); null when unusable. */
+/** Tolerant parse of a `kiwi_discover_account` response (ipc.md §5); null when unusable. */
 export function parseAutoconfigSuggestion(raw: unknown): AutoconfigSuggestion | null {
   if (typeof raw !== "object" || raw === null) return null;
-  const r = raw as Record<string, unknown>;
+  const envelope = raw as Record<string, unknown>;
   const str = (v: unknown) => (typeof v === "string" ? v : "");
   const num = (v: unknown, fb: number) => (typeof v === "number" && Number.isSafeInteger(v) && v > 0 && v < 65536 ? v : fb);
-  // Accept both the flat wizard shape and the nested Rust
-  // AccountSuggestion shape ({ incoming: { kind, host, port, … }, … }).
+  // The wire shape is a DiscoveryOutcomeView — the suggestion lives under
+  // `suggestion`. Accept that envelope, a bare suggestion, or the flat
+  // wizard stub shape.
+  const nested =
+    typeof envelope["suggestion"] === "object" && envelope["suggestion"] !== null
+      ? (envelope["suggestion"] as Record<string, unknown>)
+      : null;
+  const r = nested ?? envelope;
   const inc = (r["incoming"] ?? {}) as Record<string, unknown>;
   const out = (r["outgoing"] ?? {}) as Record<string, unknown>;
-  const pick = (flat: unknown, nested: unknown, fb: string) => str(flat) || str(nested) || fb;
+  const pick = (flat: unknown, nestedV: unknown, fb: string) => str(flat) || str(nestedV) || fb;
   const inHost = pick(r["inHost"], inc["host"], "");
   const outHost = pick(r["outHost"], out["host"], "");
   if (!inHost || !outHost) return null;
   const protoRaw = (str(r["protocol"]) || str(inc["kind"])).toLowerCase();
+  const oauthRaw = r["oauth2"];
+  const oauth2 =
+    typeof oauthRaw === "object" && oauthRaw !== null
+      ? (() => {
+          const o = oauthRaw as Record<string, unknown>;
+          const provider = str(o["provider"]);
+          const grant = str(o["grant"]);
+          return provider && grant ? { provider, grant } : undefined;
+        })()
+      : undefined;
   return {
-    source: str(r["source"]) || "manual",
+    source: str(envelope["source"]) || str(r["source"]) || "manual",
     protocol: protoRaw === "pop3" ? "pop3" : "imap",
     inHost,
     inPort: num(r["inPort"] ?? inc["port"], 993),
@@ -526,6 +552,108 @@ export function parseAutoconfigSuggestion(raw: unknown): AutoconfigSuggestion | 
     outSec: secToken(r["outSec"] ?? out["security"]),
     username: str(r["username"]) || str(inc["username"]),
     authKind: str(r["authKind"]) || str(inc["auth"]) || "password",
+    oauth2,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// OAuth2 acquisition views (ipc.md §9f; kiwi.oauth2/1) — no token material
+// ever crosses IPC: ticket ids, credential-key names, and posture only.
+// ---------------------------------------------------------------------------
+
+export type OAuth2GrantKind = "loopback_code" | "device_code" | string;
+
+/** `kiwi_oauth2_begin` result — the ticket plus whatever the user must see. */
+export interface OAuth2BeginView {
+  ticketId: string;
+  kind: OAuth2GrantKind;
+  authorizeUrl?: string;
+  userCode?: string;
+  verificationUri?: string;
+  verificationUriComplete?: string;
+  expiresAtUnix?: number;
+  pollIntervalSecs?: number;
+}
+
+/** `kiwi_oauth2_poll` result — terminal failures arrive as `status:"error"`. */
+export interface OAuth2PollView {
+  status: "pending" | "complete" | "error";
+  ticketId: string;
+  retryAfterSecs?: number;
+  provider?: string;
+  email?: string;
+  credentialKey?: string;
+  errorCode?: string;
+  errorMessage?: string;
+}
+
+/** `kiwi_oauth2_status` result — stored-account grant posture, no secrets. */
+export interface OAuth2StatusView {
+  accountId: string;
+  authMethod: string;
+  provider?: string;
+  email?: string;
+  credentialPresent: boolean;
+  expiresAtUnix?: number;
+  needsRefresh?: boolean;
+  hasRefreshToken?: boolean;
+}
+
+const optStr = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+const optNum = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+
+export function parseOAuth2Begin(raw: unknown): OAuth2BeginView | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const ticketId = optStr(r["ticketId"]);
+  const kind = optStr(r["kind"]);
+  if (!ticketId || !kind) return null;
+  return {
+    ticketId,
+    kind,
+    authorizeUrl: optStr(r["authorizeUrl"]),
+    userCode: optStr(r["userCode"]),
+    verificationUri: optStr(r["verificationUri"]),
+    verificationUriComplete: optStr(r["verificationUriComplete"]),
+    expiresAtUnix: optNum(r["expiresAtUnix"]),
+    pollIntervalSecs: optNum(r["pollIntervalSecs"]),
+  };
+}
+
+export function parseOAuth2Poll(raw: unknown): OAuth2PollView | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const status = optStr(r["status"]);
+  const ticketId = optStr(r["ticketId"]);
+  if (!ticketId || (status !== "pending" && status !== "complete" && status !== "error")) return null;
+  return {
+    status,
+    ticketId,
+    retryAfterSecs: optNum(r["retryAfterSecs"]),
+    provider: optStr(r["provider"]),
+    email: optStr(r["email"]),
+    credentialKey: optStr(r["credentialKey"]),
+    errorCode: optStr(r["errorCode"]),
+    errorMessage: optStr(r["errorMessage"]),
+  };
+}
+
+export function parseOAuth2Status(raw: unknown): OAuth2StatusView | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const accountId = optStr(r["accountId"]);
+  const authMethod = optStr(r["authMethod"]);
+  if (!accountId || !authMethod) return null;
+  return {
+    accountId,
+    authMethod,
+    provider: optStr(r["provider"]),
+    email: optStr(r["email"]),
+    credentialPresent: r["credentialPresent"] === true,
+    expiresAtUnix: optNum(r["expiresAtUnix"]),
+    needsRefresh: r["needsRefresh"] === true ? true : r["needsRefresh"] === false ? false : undefined,
+    hasRefreshToken:
+      r["hasRefreshToken"] === true ? true : r["hasRefreshToken"] === false ? false : undefined,
   };
 }
 

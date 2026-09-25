@@ -2,6 +2,7 @@
 
 use serde::Serialize;
 
+use kiwi_mail::authrisk::AuthRisk;
 use kiwi_mail::store::{FolderMeta, MessageMeta};
 
 #[derive(Debug, Clone, Serialize)]
@@ -61,6 +62,22 @@ pub struct MessageView {
     pub auth: Option<AuthView>,
 }
 
+/// Wire row for `kiwi_search_messages` (T-231): an FTS hit with the owning
+/// account resolved server-side from the folder row — the UI never guesses
+/// ownership. `fromAddr` matches the envelope wire key convention.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchHitView {
+    pub account_id: String,
+    pub folder_id: i64,
+    pub uid: u64,
+    pub subject: String,
+    pub from_addr: String,
+    pub snippet: String,
+    pub date_unix: Option<i64>,
+    pub has_attachments: bool,
+}
+
 /// Authentication-Results verdicts for the UI security pill (T-232).
 ///
 /// Verdict strings are the `kiwi.mailauth/1` vocabulary: `pass`, `fail`,
@@ -86,6 +103,9 @@ pub struct AuthView {
     /// True only for an upstream pass/fail contradiction. This is an evidence
     /// flag, not a security finding.
     pub discrepancy: bool,
+    /// Deterministic bounded hint for the frontend pill (T-249). It never
+    /// creates a finding and never moves or otherwise mutates mail.
+    pub auth_risk: AuthRisk,
 }
 
 /// Wire view of upstream Authentication-Results evidence (T-240).
@@ -206,6 +226,7 @@ impl From<&MessageMeta> for MessageView {
                     header_value: a.header_value.clone(),
                     evidence: a.evidence.clone(),
                     discrepancy: a.upstream.has_discrepancy(),
+                    auth_risk: a.auth_risk,
                     upstream,
                 }
             }),
@@ -316,4 +337,10 @@ pub struct SyncReportView {
     pub downloaded: u64,
     #[serde(default)]
     pub deleted_remote: u64,
+    /// Rule-apply errors swallowed during the pass (T-244) — rules never
+    /// fail a sync, but a nonzero count means a rule didn't run and the
+    /// affected messages retry at the next pass (eval watermark stays
+    /// unwritten on failure).
+    #[serde(default)]
+    pub rule_failures: u64,
 }

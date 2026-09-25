@@ -188,7 +188,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-228 | F1 rules engine core (AST/eval/persistence v6, 25 tests) | Agent 15 | done | `kiwi-mail/src/rules/` | T-181 |
 | T-229 | Review oauth2.md contract for drift vs Agent 19 impl when it lands | Agent 18 | queued | `docs/contracts/` | T-195 |
 | T-230 | OAuth2 IPC + wizard seam (begin/poll/cancel/status/discover, CredentialStore, 86/86) | Agent 19 | done |
-| T-231 | Live-data wiring: category tabs + search IPC + contacts IPC (A12 orphan -> A11) | Agent 11 | open |
+| T-231 | Live-data wiring (search IPC added, category tabs real, demo sealed; 91/91) | Agent 11 | done |
 | T-232 | Authentication-Results stamping on ingest (RFC 8601) + verdict field on MessageView | Agent 16 | open | `kiwi-mail/` | T-183 |
 | T-233 | Rules ingest application + IPC (5 cmds, rule_hits audit, schema v8) | Agent 15 | done |
 
@@ -215,4 +215,4 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-248 | Repo hygiene sweep (junk cleanup + gitignore + gate verify) | Watcher | done | repo-wide | — |
 | T-249w | Standing gate-watch loop (fmt/tsc/overlap/secrets, report NEW failures only) | Watcher | standing | fast gates | T-248 |
 | T-252 | Master findings register FINDINGS.md (dedupe 3 audits -> owner-task/status) | Agent 22 | open | `docs/audits/` | T-196/246/250 |
-| T-253 | Implement §14 device-inventory endpoint (ratified, unimplemented — ADM-T250-08) | queued | backlog | `kiwi-admin/` | T-250 |
+| T-253 | Implement §14 device-inventory endpoint (ADM-T250-08) | Agent 11 | open | `kiwi-admin/` | T-250 |

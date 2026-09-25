@@ -155,7 +155,7 @@ pub(crate) async fn add_account_impl(
         &account_id,
         "out",
         input.outgoing_auth.as_ref(),
-        false,
+        false, // SMTP has no POP3-only auth classes
         oauth2_key.as_deref(),
     )?;
 
@@ -227,12 +227,15 @@ pub(crate) async fn add_account_impl(
 /// Build the `AuthRef` (key names are generated here — the renderer never
 /// picks credential-store keys). `oauth2_key` is the completed grant's
 /// `oauth2/<provider>/<email>` key when the wizard bound a ticket — one
-/// grant covers both directions, so both AuthRefs carry it.
+/// grant covers both directions, so both AuthRefs carry it. `is_pop3` is
+/// the incoming-protocol check: `apop` requires it, `xoauth2` forbids it
+/// (ipc.md §5 / audit IPC-10 — a POP3+XOAuth2 account would be unusable,
+/// so it is rejected at add time, not discovered at connect).
 fn auth_ref(
     account_id: &str,
     direction: &str,
     input: Option<&AuthInput>,
-    allow_apop: bool,
+    is_pop3: bool,
     oauth2_key: Option<&str>,
 ) -> CmdResult<AuthRef> {
     let key = format!("kiwi/{account_id}/{direction}");
@@ -241,10 +244,11 @@ fn auth_ref(
         "password" => Ok(AuthRef::Password {
             credential_key: key,
         }),
+        "xoauth2" if is_pop3 => Err(IpcError::invalid("xoauth2 not supported on POP3")),
         "xoauth2" => Ok(AuthRef::XOAuth2 {
             credential_key: oauth2_key.map(str::to_string).unwrap_or(key),
         }),
-        "apop" if allow_apop => Ok(AuthRef::Apop {
+        "apop" if is_pop3 => Ok(AuthRef::Apop {
             credential_key: key,
         }),
         "apop" => Err(IpcError::invalid("apop applies to POP3 only")),
@@ -844,6 +848,29 @@ mod tests {
         tokio::time::timeout(Duration::from_millis(50), state.sync_wakeup.notified())
             .await
             .expect("add_account_impl must kick the sync supervisor");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// ipc.md §5 / audit IPC-10: xoauth2 is not a valid POP3 auth kind —
+    /// rejected at add time so an unusable account never persists.
+    #[tokio::test(flavor = "current_thread")]
+    async fn xoauth2_rejected_for_pop3_at_add_time() {
+        let dir = std::env::temp_dir().join(format!(
+            "kiwi-acct-pop3xo-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let state = AppState::open_test(dir.clone()).unwrap();
+        let mut input = acct_input();
+        input.incoming_protocol = "pop3".into();
+        input.incoming_auth.as_mut().unwrap().kind = "xoauth2".into();
+        let err = add_account_impl(&state, input).await.unwrap_err();
+        assert_eq!(err.code, "invalid-input");
+        assert!(err.message.contains("POP3"), "{err:?}");
+        assert!(state.index.lock().await.account_ids.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

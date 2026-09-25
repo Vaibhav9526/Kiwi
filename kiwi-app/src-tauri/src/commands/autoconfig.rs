@@ -37,6 +37,20 @@ pub async fn kiwi_discover_account(
     discover_account_impl(state.inner(), &email).await
 }
 
+/// `kiwi_lookup_autoconfig(email) → DiscoveryOutcomeView` — alias.
+///
+/// The pre-reconcile frontend wrapper (audit UIS-6) invokes this name;
+/// it delegates to the same implementation so either spelling works.
+/// `kiwi_discover_account` remains the contract name (ipc.md §5).
+#[tauri::command]
+pub async fn kiwi_lookup_autoconfig(
+    state: State<'_, Arc<AppState>>,
+    email: String,
+) -> CmdResult<DiscoveryOutcomeView> {
+    gate(state.inner()).await?;
+    discover_account_impl(state.inner(), &email).await
+}
+
 pub(crate) async fn discover_account_impl(
     state: &AppState,
     email: &str,

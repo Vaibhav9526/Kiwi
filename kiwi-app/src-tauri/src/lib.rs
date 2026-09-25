@@ -78,14 +78,17 @@ pub fn run() {
             kiwi_test_account,
             kiwi_verify_server,
             kiwi_discover_account,
+            kiwi_lookup_autoconfig,
             // oauth2 acquisition (gated)
             kiwi_oauth2_begin,
             kiwi_oauth2_poll,
             kiwi_oauth2_cancel,
+            kiwi_open_external,
             kiwi_oauth2_status,
             // mail read (gated)
             kiwi_list_folders,
             kiwi_list_messages,
+            kiwi_search_messages,
             kiwi_get_message,
             kiwi_sync_account,
             kiwi_sync_status,
@@ -146,6 +149,7 @@ pub fn run() {
             kiwi_rules_delete,
             kiwi_rules_apply_now,
             kiwi_rules_hits,
+            kiwi_rules_preview,
             // endpoint signals (exempt — feeds trust)
             kiwi_collect_endpoint_signals,
         ])

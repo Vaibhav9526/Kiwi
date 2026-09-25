@@ -22,7 +22,9 @@ use super::{bounded, gate, resolve_secret, run_mail_io};
 use crate::error::{CmdResult, IpcError};
 use crate::observe::{self, ObservationContext};
 use crate::state::{AppState, now_unix};
-use crate::types::{AttachmentView, FolderView, MessageBodyView, MessageView, SyncReportView};
+use crate::types::{
+    AttachmentView, FolderView, MessageBodyView, MessageView, SearchHitView, SyncReportView,
+};
 
 /// `kiwi_list_folders { accountId }` → folders known for the account
 /// (sync populates them; `INBOX` is auto-registered on first sync).
@@ -143,6 +145,68 @@ pub(crate) async fn list_messages_impl(
         let _ = index.save(&state.data_dir);
     }
     Ok(msgs)
+}
+
+/// `kiwi_search_messages { query, folderId?, limit? }` → FTS hits,
+/// newest first. Grammar lives in `kiwi_mail::search` (terms, `subject:`/
+/// `from:`/`to:`/`body:` scopes, `"phrases"`, `-negation`). `folderId`
+/// scopes the search to one folder; absent → every folder. The owning
+/// `accountId` is resolved server-side per hit from the folder row —
+/// the caller never guesses it. `has:`/`folder:` tokens are UI-side
+/// post-filters and never reach this command.
+#[tauri::command]
+pub async fn kiwi_search_messages(
+    state: State<'_, Arc<AppState>>,
+    query: String,
+    folder_id: Option<i64>,
+    limit: Option<u32>,
+) -> CmdResult<Vec<SearchHitView>> {
+    gate(state.inner()).await?;
+    search_messages_impl(state.inner(), &query, folder_id, limit).await
+}
+
+pub(crate) async fn search_messages_impl(
+    state: &AppState,
+    query: &str,
+    folder_id: Option<i64>,
+    limit: Option<u32>,
+) -> CmdResult<Vec<SearchHitView>> {
+    bounded("query", query, 512)?;
+    if let Some(fid) = folder_id
+        && fid < 0
+    {
+        return Err(IpcError::invalid("folderId must be >= 0"));
+    }
+    let limit = super::clamp_u32(limit, 50, 500);
+    let store = state.store.lock().await;
+    let metas = store.search(query, folder_id, limit)?;
+    // folder → owning-account resolution, once per unique folder.
+    let mut owners: std::collections::BTreeMap<i64, String> = std::collections::BTreeMap::new();
+    let mut out = Vec::with_capacity(metas.len());
+    for m in metas {
+        let account_id = match owners.get(&m.folder_id) {
+            Some(a) => a.clone(),
+            None => {
+                let a = store
+                    .folder_meta(m.folder_id)?
+                    .map(|f| f.account_id)
+                    .unwrap_or_default();
+                owners.insert(m.folder_id, a.clone());
+                a
+            }
+        };
+        out.push(SearchHitView {
+            account_id,
+            folder_id: m.folder_id,
+            uid: m.uid,
+            subject: m.subject.unwrap_or_default(),
+            from_addr: m.from_addr.unwrap_or_default(),
+            snippet: m.snippet.unwrap_or_default(),
+            date_unix: m.date_unix,
+            has_attachments: m.has_attachments,
+        });
+    }
+    Ok(out)
 }
 
 /// `kiwi_get_message { accountId, folderId, uid }` → parsed body view.
@@ -608,6 +672,7 @@ async fn imap_sync(
             expunged: report.expunged,
             remote_exists: report.remote_exists,
             uid_validity_reset: report.uid_validity_reset,
+            rule_failures: report.rule_failures,
             ..Default::default()
         });
     }
@@ -753,6 +818,7 @@ pub(crate) async fn pop3_sync(
         downloaded: report.downloaded,
         deleted_remote: report.deleted_remote,
         remote_exists: report.remote_drops,
+        rule_failures: report.rule_failures,
         ..Default::default()
     }])
 }
@@ -927,6 +993,148 @@ mod tests {
                 .await
                 .thread_headers
                 .contains_key(&crate::state::thread_key(1, 10))
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// T-231: `kiwi_search_messages` — FTS hits carry the owning
+    /// `accountId` resolved server-side; folderId scopes the search;
+    /// bounds are enforced.
+    async fn seed_searchable(state: &AppState) -> (i64, i64) {
+        let acct = |id: &str| MailAccount {
+            account_id: id.into(),
+            display_name: "A".into(),
+            email: format!("{id}@x.test"),
+            incoming: kiwi_mail::account::IncomingAccount {
+                protocol: IncomingProtocol::Pop3,
+                server: kiwi_mail::account::ServerConfig {
+                    host: "pop.x.test".into(),
+                    port: 995,
+                    security: kiwi_mail::transport::SocketSecurity::ImplicitTls,
+                },
+                username: "a".into(),
+                auth: kiwi_mail::account::AuthRef::None,
+            },
+            outgoing: kiwi_mail::account::OutgoingAccount {
+                server: kiwi_mail::account::ServerConfig {
+                    host: "smtp.x.test".into(),
+                    port: 465,
+                    security: kiwi_mail::transport::SocketSecurity::ImplicitTls,
+                },
+                username: "a".into(),
+                auth: kiwi_mail::account::AuthRef::None,
+            },
+        };
+        let store = state.store.lock().await;
+        store.upsert_account(&acct("a1")).unwrap();
+        store.upsert_account(&acct("a2")).unwrap();
+        let f1 = store.ensure_folder("a1", "INBOX").unwrap();
+        let f2 = store.ensure_folder("a2", "INBOX").unwrap();
+        for (fid, uid, subject) in [
+            (f1, 1, "Quarterly invoice draft"),
+            (f1, 2, "Lunch plans"),
+            (f2, 1, "Invoice for a2"),
+        ] {
+            store
+                .upsert_message(
+                    fid,
+                    &NewMessageMeta {
+                        uid,
+                        message_id: Some(format!("<s{uid}-{fid}@x>")),
+                        subject: Some(subject.into()),
+                        from_addr: Some("b@y.test".into()),
+                        to_addrs: None,
+                        date_unix: Some(1_700_000_000 + uid as i64),
+                        size: None,
+                        flags: vec![],
+                        has_attachments: uid == 1,
+                        snippet: Some(format!("snippet about {subject}")),
+                        category: Default::default(),
+                        unsub_http: None,
+                        unsub_mailto: None,
+                        unsub_oneclick: false,
+                    },
+                    now_unix(),
+                )
+                .unwrap();
+        }
+        (f1, f2)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn search_messages_returns_account_and_scopes() {
+        let dir = std::env::temp_dir().join(format!(
+            "kiwi-search-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let state = AppState::open_test(dir.clone()).unwrap();
+        let (f1, _f2) = seed_searchable(&state).await;
+
+        // Cross-account search: hits carry the resolved owner.
+        let hits = search_messages_impl(&state, "invoice", None, None)
+            .await
+            .unwrap();
+        assert_eq!(hits.len(), 2);
+        let mut owners: Vec<&str> = hits.iter().map(|h| h.account_id.as_str()).collect();
+        owners.sort_unstable();
+        assert_eq!(owners, ["a1", "a2"]);
+        assert!(hits.iter().all(|h| !h.subject.is_empty()));
+
+        // Folder scope narrows to one account's folder.
+        let scoped = search_messages_impl(&state, "invoice", Some(f1), None)
+            .await
+            .unwrap();
+        assert_eq!(scoped.len(), 1);
+        assert_eq!(scoped[0].account_id, "a1");
+        assert_eq!(scoped[0].folder_id, f1);
+        assert!(scoped[0].has_attachments);
+
+        // Scoped grammar + negation pass through to the FTS layer.
+        let from = search_messages_impl(&state, "subject:invoice", Some(f1), None)
+            .await
+            .unwrap();
+        assert_eq!(from.len(), 1);
+        let neg = search_messages_impl(&state, "invoice -draft", None, None)
+            .await
+            .unwrap();
+        assert_eq!(neg.len(), 1);
+        assert_eq!(neg[0].account_id, "a2");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn search_messages_enforces_bounds() {
+        let dir = std::env::temp_dir().join(format!(
+            "kiwi-search2-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let state = AppState::open_test(dir.clone()).unwrap();
+
+        // Over-long query → invalid-input.
+        let long = "x".repeat(600);
+        let err = search_messages_impl(&state, &long, None, None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "invalid-input");
+        // Negative folder id → invalid-input.
+        let err = search_messages_impl(&state, "a", Some(-3), None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "invalid-input");
+        // Empty store → empty hits, no error.
+        assert!(
+            search_messages_impl(&state, "anything", None, None)
+                .await
+                .unwrap()
+                .is_empty()
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -17,7 +17,7 @@ use kiwi_mail::rules::{self, Rule};
 use super::{bounded, clamp_u32, gate};
 use crate::error::{CmdResult, IpcError};
 use crate::state::{AppState, now_unix};
-use crate::types::{RuleHitView, RuleView, RulesApplyView};
+use crate::types::{RuleHitView, RulePreviewView, RuleView, RulesApplyView};
 
 /// `kiwi_rules_list { accountId? }` — with `accountId`: the rules in
 /// scope for that account (global + its own), evaluation order. Without
@@ -136,6 +136,41 @@ async fn rules_hits_impl(
         .into_iter()
         .map(RuleHitView::from)
         .collect())
+}
+
+/// `kiwi_rules_preview { accountId, rule, limit? }` → `RulePreviewView`.
+/// Dry-run a candidate rule against the newest stored messages — powers
+/// the editor's "test this rule" button. NEVER executes actions, records
+/// hits, or writes eval watermarks. `limit` default 50, clamp 1–200.
+#[tauri::command]
+pub async fn kiwi_rules_preview(
+    state: State<'_, Arc<AppState>>,
+    account_id: String,
+    rule: RuleView,
+    limit: Option<u32>,
+) -> CmdResult<RulePreviewView> {
+    gate(state.inner()).await?;
+    rules_preview_impl(state.inner(), &account_id, rule, limit).await
+}
+
+async fn rules_preview_impl(
+    state: &AppState,
+    account_id: &str,
+    view: RuleView,
+    limit: Option<u32>,
+) -> CmdResult<RulePreviewView> {
+    bounded("accountId", account_id, 128)?;
+    let rule = Rule::from(view);
+    // Candidate is renderer input — same bounds gate as the store write.
+    rule.validate().map_err(IpcError::from)?;
+    let store = state.store.lock().await;
+    if store.get_account(account_id)?.is_none() {
+        return Err(IpcError::not_found("unknown account"));
+    }
+    let limit = clamp_u32(limit, 50, 200);
+    Ok(RulePreviewView::from(rules::preview_rule(
+        &store, account_id, &rule, limit,
+    )?))
 }
 
 #[cfg(test)]
@@ -281,6 +316,80 @@ mod tests {
         // Unknown account → not-found, not a zero report.
         let err = rules_apply_now_impl(&state, "ghost").await.unwrap_err();
         assert_eq!(err.code, "not-found");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn preview_dry_run_matches_and_writes_nothing() {
+        let (state, dir) = state_with_account("prev").await;
+        let fid = {
+            let store = state.store.lock().await;
+            let fid = store.ensure_folder("a1", "INBOX").unwrap();
+            for uid in [1u64, 2] {
+                store
+                    .upsert_message(
+                        fid,
+                        &kiwi_mail::store::NewMessageMeta {
+                            uid,
+                            message_id: None,
+                            subject: Some(format!("m{uid}")),
+                            from_addr: Some(format!("u{uid}@x.example")),
+                            to_addrs: None,
+                            date_unix: None,
+                            size: None,
+                            flags: vec![],
+                            has_attachments: false,
+                            snippet: None,
+                            category: Default::default(),
+                            unsub_http: None,
+                            unsub_mailto: None,
+                            unsub_oneclick: false,
+                        },
+                        now_unix(),
+                    )
+                    .unwrap();
+            }
+            // Only uid 1's sender matches the candidate; uid 2 has a body
+            // too, so both are scanned.
+            for uid in [1u64, 2] {
+                store
+                    .store_body(
+                        fid,
+                        uid,
+                        format!("From: u{uid}@x.example\r\nSubject: m{uid}\r\n\r\nb").as_bytes(),
+                    )
+                    .unwrap();
+            }
+            fid
+        };
+
+        // Candidate matches domain x.example via uid 1 — and nothing else.
+        let mut cand = view("cand", Some("a1"));
+        cand.when = Predicate::Sender {
+            op: MatchOp::Is,
+            value: "u1@x.example".into(),
+        };
+        cand.then = vec![RuleAction::Delete];
+        let p = rules_preview_impl(&state, "a1", cand, None).await.unwrap();
+        assert_eq!(p.scanned, 2);
+        assert_eq!(p.matched, 1);
+        assert_eq!(p.hits[0].uid, 1);
+        assert_eq!(p.hits[0].folder, "INBOX");
+
+        // Nothing executed: uid 1 is still in INBOX, unread, no hit rows,
+        // and its eval watermark slot is untouched.
+        let store = state.store.lock().await;
+        assert_eq!(store.folder_uids(fid).unwrap(), vec![1, 2]);
+        assert!(store.list_rule_hits("a1", 10).unwrap().is_empty());
+        assert_eq!(store.uids_pending_body_eval(fid, 10).unwrap().len(), 2);
+
+        // Invalid candidate → invalid-input before touching the store.
+        let mut bad = view("bad", None);
+        bad.then = vec![];
+        let err = rules_preview_impl(&state, "a1", bad, None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "invalid-input");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

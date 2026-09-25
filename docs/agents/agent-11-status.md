@@ -410,4 +410,7 @@ no remote assets or navigation.
 - While working, `src/views/setup.tsx` (T-230) and `kiwi-mail/src/
   sync.rs`+`store/queries.rs` (T-233 EvalStage param, T-232 auth_risk
   field) churned mid-flight — transient red states; owners landed their
-  own fixes. No repairs needed from me this time; verified green after.
+  own fixes. One minimal repair from me: `#[allow(clippy::too_many_
+  arguments)]` on `rules::apply::apply_on_ingest` after T-233's new
+  `stage` param pushed it to 7 args (matches existing allows on
+  `execute` and sync.rs helpers — flagged for the T-233 owner).

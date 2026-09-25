@@ -216,11 +216,19 @@ export function ComposeView({
   });
   const timer = useRef<number | null>(null);
 
-  // Address book for autocomplete (T-173): server list once, else the
-  // local book. Filtered client-side per keystroke either way.
+  // Address book for autocomplete (T-173, live-wired T-231): live mode is
+  // IPC-only — a backend failure leaves autocomplete empty rather than
+  // surfacing demo fixtures. Demo mode owns the seeded local book.
   useEffect(() => {
     let cancelled = false;
     void (async () => {
+      if (mode === "demo") {
+        if (!cancelled) {
+          setBook(loadLocalBook());
+          setBookSource("local");
+        }
+        return;
+      }
       try {
         const list = await api.searchContacts("", 500);
         if (!cancelled) {
@@ -229,15 +237,15 @@ export function ComposeView({
         }
       } catch {
         if (!cancelled) {
-          setBook(loadLocalBook());
-          setBookSource("local");
+          setBook([]);
+          setBookSource("server");
         }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [mode]);
 
   // Per-account signature (T-167): stored in prefs (Settings → Accounts),
   // appended at send time only — drafts and the outbox never gain it silently.
@@ -576,7 +584,7 @@ export function ComposeView({
           Add
         </button>{" "}
         <small style={{ color: "var(--kiwi-text-secondary)" }}>
-          Contacts: {bookSource === "server" ? "address book" : "local book (contacts IPC pending)"}.
+          Contacts: {bookSource === "server" ? "address book" : "demo book (localStorage fixture)"}.
         </small>
       </p>
       <p aria-label="Recipients">

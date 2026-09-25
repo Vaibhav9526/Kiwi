@@ -10,6 +10,7 @@
 import { useEffect, useState } from "react";
 import { api, BackendUnavailableError, IpcError } from "../ipc";
 import type { AutoconfigSuggestion, VerifyResult } from "../kiwi";
+import { OAuth2SignIn, oauth2ProviderLabel } from "../components/oauth2";
 import { navigate } from "../router";
 
 const STEPS = ["Address", "Servers", "Credentials", "Verify & add"] as const;
@@ -84,6 +85,12 @@ export function SetupWizardView({ mode, onAdded }: { mode: "live" | "demo"; onAd
   const [lookingUp, setLookingUp] = useState(false);
   const [lookupNote, setLookupNote] = useState<string | null>(null);
   const [reconfiguring, setReconfiguring] = useState<string | null>(null);
+  // OAuth2 wizard branch (T-243): the discovery suggestion carries an
+  // `oauth2` spec (provider + grant kind); a completed grant leaves its
+  // ticket here for `kiwi_add_account`'s `oauth2Ticket` field.
+  const [oauth2Spec, setOauth2Spec] = useState<{ provider: string; grant: string } | null>(null);
+  const [oauth2Ticket, setOauth2Ticket] = useState<string | null>(null);
+  const [pasteToken, setPasteToken] = useState(false);
 
   // Reconfigure handoff: Settings stores server fields (never secrets) under
   // EDIT_HANDOFF_KEY; the wizard prefills and consumes it once.
@@ -115,11 +122,23 @@ export function SetupWizardView({ mode, onAdded }: { mode: "live" | "demo"; onAd
   const emailOk = email.includes("@") && email.indexOf("@") > 0;
   const serversOk = inHost.trim().length > 0 && outHost.trim().length > 0 && /^\d+$/.test(inPort) && /^\d+$/.test(outPort);
   const plaintext = inSec === "plaintext" || outSec === "plaintext";
-  const credsOk = authKind === "none" || authKind === "xoauth2" || password.length > 0;
-  const canVerify = emailOk && serversOk && credsOk && (!plaintext || plaintextAck) && mode === "live";
+  // xoauth2 is satisfied by a completed grant ticket or a pasted token —
+  // never by nothing (a null auth would persist AuthRef::None).
+  const credsOk =
+    authKind === "none" ||
+    (authKind === "xoauth2" ? oauth2Ticket !== null || password.length > 0 : password.length > 0);
+  const canVerify =
+    emailOk && serversOk && credsOk && (!plaintext || plaintextAck) && mode === "live" && !oauth2Ticket;
 
-  const authInput = () =>
-    authKind === "none" || authKind === "xoauth2" ? null : { kind: authKind, secret: password };
+  const authInput = () => {
+    if (authKind === "none") return null;
+    if (authKind === "xoauth2") {
+      return oauth2Ticket
+        ? { kind: "xoauth2", oauth2Ticket }
+        : { kind: "xoauth2", secret: password };
+    }
+    return { kind: authKind, secret: password };
+  };
 
   const applySuggestion = (s: AutoconfigSuggestion, note: string) => {
     setProtocol(s.protocol);
@@ -133,6 +152,11 @@ export function SetupWizardView({ mode, onAdded }: { mode: "live" | "demo"; onAd
     if (s.authKind === "apop" && s.protocol === "pop3") setAuthKind("apop");
     else if (s.authKind === "none" || s.authKind === "xoauth2") setAuthKind("xoauth2");
     else setAuthKind("password");
+    // OAuth2 spec rides along with XOAUTH2 suggestions — the Credentials
+    // step renders the provider sign-in instead of a token box.
+    setOauth2Spec(s.oauth2 ?? null);
+    setOauth2Ticket(null);
+    setPasteToken(false);
     // A new lookup invalidates earlier probe results.
     setIncoming(null);
     setOutgoing(null);
@@ -250,6 +274,7 @@ export function SetupWizardView({ mode, onAdded }: { mode: "live" | "demo"; onAd
         acceptInvalidCerts: false,
       });
       setPassword("");
+      setOauth2Ticket(null); // consumed by the backend on a successful add
       setAdded(true);
       onAdded();
     } catch (e) {
@@ -421,18 +446,44 @@ export function SetupWizardView({ mode, onAdded }: { mode: "live" | "demo"; onAd
           <p>
             <label>
               Auth:{" "}
-              <select value={authKind} onChange={(e) => setAuthKind(e.target.value as "password" | "xoauth2" | "apop" | "none")}>
+              <select
+                value={authKind}
+                onChange={(e) => {
+                  const k = e.target.value as "password" | "xoauth2" | "apop" | "none";
+                  setAuthKind(k);
+                  if (k !== "xoauth2") setOauth2Ticket(null);
+                }}
+              >
                 <option value="password">Password</option>
-                <option value="xoauth2">OAuth2 (token pasted, stored once)</option>
+                <option value="xoauth2">OAuth2 (sign-in grant or pasted token)</option>
                 {protocol === "pop3" && <option value="apop">APOP</option>}
                 <option value="none">None</option>
               </select>
             </label>
           </p>
-          {(authKind === "password" || authKind === "apop") && (
+          {authKind === "xoauth2" && oauth2Spec && !pasteToken && (
+            <>
+              <OAuth2SignIn
+                provider={oauth2Spec.provider}
+                email={email.trim() || undefined}
+                onDone={(ticket) => setOauth2Ticket(ticket)}
+              />
+              <p>
+                <small>
+                  <button type="button" onClick={() => setPasteToken(true)}>
+                    Paste an OAuth2 token instead
+                  </button>{" "}
+                  — for advanced setups; the sign-in flow above is recommended.
+                </small>
+              </p>
+            </>
+          )}
+          {(authKind === "password" ||
+            authKind === "apop" ||
+            (authKind === "xoauth2" && (pasteToken || !oauth2Spec))) && (
             <p>
               <label>
-                {authKind === "password" ? "Password" : "APOP secret"}:{" "}
+                {authKind === "password" ? "Password" : authKind === "apop" ? "APOP secret" : "OAuth2 token"}:{" "}
                 <input
                   type={showPassword ? "text" : "password"}
                   value={password}
@@ -444,6 +495,14 @@ export function SetupWizardView({ mode, onAdded }: { mode: "live" | "demo"; onAd
                 </button>
               </label>
             </p>
+          )}
+          {oauth2Ticket && (
+            <div className="kiwi-banner warn" role="status">
+              <small>
+                Signed in via {oauth2Spec ? oauth2ProviderLabel(oauth2Spec.provider) : "the provider"} — the grant is
+                bound to this wizard. Continue to Verify &amp; add.
+              </small>
+            </div>
           )}
           <p style={{ color: "var(--kiwi-text-secondary)" }}>
             <small>
@@ -458,7 +517,9 @@ export function SetupWizardView({ mode, onAdded }: { mode: "live" | "demo"; onAd
         <>
           <p>
             <small>
-              Verify probes both servers and records the TLS observation, then Add persists the account.
+              {oauth2Ticket
+                ? "The provider grant already authorizes these servers — Add persists the account and binds the stored credential."
+                : "Verify probes both servers and records the TLS observation, then Add persists the account."}
             </small>
           </p>
           {renderResult("Incoming", incoming)}
@@ -485,12 +546,22 @@ export function SetupWizardView({ mode, onAdded }: { mode: "live" | "demo"; onAd
             Next →
           </button>
         )}
+        {step === 3 && !oauth2Ticket && (
+          <button type="button" onClick={() => void verify()} disabled={!canVerify || checking}>
+            {checking ? "Checking…" : "Verify connection"}
+          </button>
+        )}
         {step === 3 && (
           <>
-            <button type="button" onClick={() => void verify()} disabled={!canVerify || checking}>
-              {checking ? "Checking…" : "Verify connection"}
-            </button>
-            <button type="button" className="kiwi-btn-primary" onClick={() => void add()} disabled={!canVerify || checking || !incoming?.ok || !outgoing?.ok}>
+            <button
+              type="button"
+              className="kiwi-btn-primary"
+              onClick={() => void add()}
+              disabled={
+                checking ||
+                (oauth2Ticket ? !credsOk : !canVerify || !incoming?.ok || !outgoing?.ok)
+              }
+            >
               Add account
             </button>
             <button type="button" onClick={() => navigate({ name: "mail" })} disabled={!added}>

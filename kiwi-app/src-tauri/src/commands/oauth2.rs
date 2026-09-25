@@ -732,6 +732,67 @@ pub(crate) async fn consume_oauth2_ticket(state: &AppState, ticket_id: &str) {
     state.oauth2_sessions.lock().await.remove(ticket_id);
 }
 
+// ---------------------------------------------------------------------------
+// Browser handoff — the OAuth2 UX needs the system browser, never a webview
+// navigation (provider sign-in inside an embedded webview is both blocked
+// by Google and a phishing surface).
+// ---------------------------------------------------------------------------
+
+/// `kiwi_open_external(url)` — open an HTTPS URL in the system browser.
+///
+/// Exists for the OAuth2 handoff (`authorizeUrl` / `verificationUri`) but
+/// is a generic gated utility. Validation is fail-closed: `https://`
+/// scheme only, bounded length, no whitespace/quotes — the URL is passed
+/// as a single argv element to the OS opener (no shell parsing anywhere).
+#[tauri::command]
+pub async fn kiwi_open_external(state: State<'_, Arc<AppState>>, url: String) -> CmdResult<()> {
+    gate(state.inner()).await?;
+    open_external_impl(&url)
+}
+
+pub(crate) fn open_external_impl(url: &str) -> CmdResult<()> {
+    bounded("url", url, 2048)?;
+    if !url.to_ascii_lowercase().starts_with("https://") {
+        return Err(IpcError::invalid(
+            "only https:// URLs may be opened in the system browser",
+        ));
+    }
+    if url
+        .bytes()
+        .any(|b| b.is_ascii_whitespace() || b == b'"' || b == b'\'')
+    {
+        return Err(IpcError::invalid("url contains whitespace or quotes"));
+    }
+    let mut cmd = browser_command(url);
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| IpcError::new("internal", format!("cannot open system browser: {e}")))?;
+    Ok(())
+}
+
+/// The OS-native "open this URL" invocation — a direct exec, never a
+/// shell, so the URL cannot inject arguments or commands.
+#[cfg(target_os = "windows")]
+fn browser_command(url: &str) -> std::process::Command {
+    let mut c = std::process::Command::new("rundll32");
+    c.arg("url.dll,FileProtocolHandler").arg(url);
+    c
+}
+#[cfg(target_os = "macos")]
+fn browser_command(url: &str) -> std::process::Command {
+    let mut c = std::process::Command::new("open");
+    c.arg(url);
+    c
+}
+#[cfg(all(unix, not(target_os = "macos")))]
+fn browser_command(url: &str) -> std::process::Command {
+    let mut c = std::process::Command::new("xdg-open");
+    c.arg(url);
+    c
+}
+
 /// The `oauth2` spec attached to a discovery suggestion (ipc.md §5) —
 /// `Some` only when a shipped provider config can service the endpoint.
 pub(crate) fn oauth2_spec_for(
@@ -1132,5 +1193,30 @@ mod tests {
             oauth2_status_impl(&s, "acct-nope").await.unwrap_err().code,
             "not-found"
         );
+    }
+
+    /// `kiwi_open_external` fails closed: non-https schemes, quotes,
+    /// whitespace, and oversized URLs are rejected before any spawn.
+    /// (The valid case would launch a real browser — not CI-testable.)
+    #[test]
+    fn open_external_rejects_unsafe_urls() {
+        let too_long = "https://a".repeat(500);
+        for bad in [
+            "http://example.test/",
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "https://exa mple.test/",
+            "https://example.test/\"quoted\"",
+            "https://example.test/'quoted'",
+            "notaurl",
+            "",
+            too_long.as_str(),
+        ] {
+            assert_eq!(
+                open_external_impl(bad).unwrap_err().code,
+                "invalid-input",
+                "{bad:?} must be rejected"
+            );
+        }
     }
 }

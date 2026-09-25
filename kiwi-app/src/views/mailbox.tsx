@@ -90,9 +90,11 @@ export interface MailboxProps {
 export function MailboxView(props: MailboxProps) {
   const { folder, folderLabel, messages: allMessages, selectedId, findings, locked } = props;
   // F2 category tabs (T-231): the backend classifies per message
-  // (`MessageView.category`); tabs filter the loaded list with counts.
-  // No `list_messages_by_category` command exists, so scoping is the
-  // loaded list — labeled on the tabs.
+  // (`MessageView.category`, real data on the wire); tabs filter the
+  // loaded list with counts. Deliberate choice: no
+  // `list_messages_by_category` IPC exists, so scoping is the loaded
+  // list — labeled on the tabs. A server-scoped variant can land here
+  // unchanged if the command is ever exposed.
   const [catTab, setCatTab] = useState<MessageCategory>("primary");
   const messages = useMemo(
     () => allMessages.filter((m) => (m.category ?? "primary") === catTab),
@@ -162,9 +164,10 @@ export function MailboxView(props: MailboxProps) {
     setContactNote(null);
   }, [selectedId]);
 
-  /** Add the sender to contacts (T-173): server first, labeled local book
-    * fallback. Display name guessed from `Name <addr>` shape; editable in
-    * the Contacts view. */
+  /** Add the sender to contacts (T-173, live-wired T-231): live mode is
+    * IPC-only — a backend failure surfaces as a note, never a silent
+    * local write. Demo mode saves to the seeded local book. Display name
+    * guessed from `Name <addr>` shape; editable in the Contacts view. */
   const addSenderToContacts = async () => {
     if (!selected) return;
     const raw = props.body?.from?.[0] ?? selected.from;
@@ -181,12 +184,16 @@ export function MailboxView(props: MailboxProps) {
       emails: [{ address }],
       phones: [] as { number: string; label: string | null }[],
     };
+    if (props.demo) {
+      saveLocalBook(upsertLocal(loadLocalBook(), input));
+      setContactNote(`Saved ${address} to the demo book.`);
+      return;
+    }
     try {
       await api.createContact(input);
       setContactNote(`Saved ${address} to contacts.`);
-    } catch {
-      saveLocalBook(upsertLocal(loadLocalBook(), input));
-      setContactNote(`Saved ${address} locally — contacts IPC not in the backend yet.`);
+    } catch (e) {
+      setContactNote(`Save failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
 

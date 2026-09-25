@@ -115,3 +115,51 @@ impl From<ApplyNowReport> for RulesApplyView {
         }
     }
 }
+
+/// One candidate-rule match in `kiwi_rules_preview` — eval-time
+/// coordinates plus the display fields the preview list renders.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreviewHitView {
+    pub folder_id: i64,
+    pub uid: u64,
+    /// Folder name (not id) — this is a display list.
+    pub folder: String,
+    pub subject: Option<String>,
+    pub message_id: Option<String>,
+}
+
+/// `kiwi_rules_preview` receipt — a pure read: nothing was moved,
+/// flagged, hit-logged, or watermarked.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RulePreviewView {
+    /// Candidates with a parseable stored body that were evaluated.
+    pub scanned: u64,
+    /// Candidates skipped — no stored body (absent fact, no guess).
+    pub skipped_no_body: u64,
+    /// `hits.len()` — explicit for the UI's "N messages would match".
+    pub matched: u64,
+    pub hits: Vec<PreviewHitView>,
+}
+
+impl From<kiwi_mail::rules::RulePreview> for RulePreviewView {
+    fn from(p: kiwi_mail::rules::RulePreview) -> Self {
+        Self {
+            scanned: p.scanned,
+            skipped_no_body: p.skipped_no_body,
+            matched: p.hits.len() as u64,
+            hits: p
+                .hits
+                .into_iter()
+                .map(|h| PreviewHitView {
+                    folder_id: h.folder_id,
+                    uid: h.uid,
+                    folder: h.folder_name,
+                    subject: h.subject,
+                    message_id: h.message_id,
+                })
+                .collect(),
+        }
+    }
+}

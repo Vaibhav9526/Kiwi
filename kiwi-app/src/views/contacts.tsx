@@ -1,10 +1,12 @@
 /**
  * Contacts view (T-173): list/search/detail/edit panels over the address
- * book (`kiwi.contacts/1`, docs/contracts/contacts.md §3). No backend
- * command exists yet (Agent 7) — the view tries `kiwi_list_contacts` first
- * and falls back to the labeled localStorage book (`src/contacts.ts`),
- * which also seeds two demo cards. Writes try the IPC then the local book
- * with an honest note. Same wrappers either way: zero view changes on land.
+ * book (`kiwi.contacts/1`, docs/contracts/contacts.md §3), live-wired to
+ * the contacts IPC commands (T-231). Live mode is IPC-only — a backend
+ * failure surfaces as an error banner, never as local/demo data. The
+ * labeled localStorage book (`src/contacts.ts`, with seeded demo cards)
+ * is reachable only when `demo` is set — a live account never sees it.
+ * The search box filters the loaded list client-side (bounded at 500);
+ * `kiwi_search_contacts` remains for larger books.
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -98,16 +100,28 @@ export function ContactsView({
     let cancelled = false;
     setLoading(true);
     void (async () => {
+      if (demo) {
+        // Demo mode owns the seeded localStorage book — no IPC at all.
+        if (!cancelled) {
+          setContacts(loadLocalBook());
+          setSource("local");
+          setLoading(false);
+        }
+        return;
+      }
       try {
         const list = await api.listContacts(500);
         if (!cancelled) {
           setContacts(list);
           setSource("server");
         }
-      } catch {
+      } catch (e) {
+        // Live mode never falls back to local/demo fixtures — surface
+        // the failure and show an empty book.
         if (!cancelled) {
-          setContacts(loadLocalBook());
-          setSource("local");
+          setContacts([]);
+          setSource("server");
+          setError(`Address book unavailable: ${e instanceof Error ? e.message : String(e)}`);
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -116,7 +130,7 @@ export function ContactsView({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [demo]);
 
   const filtered = useMemo(() => filterContacts(contacts, query), [contacts, query]);
   const selected = contacts.find((c) => c.id === selectedId) ?? null;
@@ -159,35 +173,43 @@ export function ContactsView({
     setError(null);
     try {
       if (creating) {
-        try {
-          const created = parseContact(await api.createContact(input));
-          const list = await api.listContacts(500);
-          setContacts(list);
-          setSource("server");
-          if (created) setSelectedId(created.id);
-          setCreating(false);
-          onNotify("ok", "Contact created.");
-        } catch {
+        if (demo) {
           const next = upsertLocal(loadLocalBook(), input);
-          persistLocal(next, "Saved locally — contacts IPC not in the backend yet.");
+          persistLocal(next, "Saved to the demo book.");
           setCreating(false);
           const last = next[next.length - 1];
           if (last) setSelectedId(last.id);
+        } else {
+          try {
+            const created = parseContact(await api.createContact(input));
+            const list = await api.listContacts(500);
+            setContacts(list);
+            setSource("server");
+            if (created) setSelectedId(created.id);
+            setCreating(false);
+            onNotify("ok", "Contact created.");
+          } catch (e) {
+            setError(`Create failed: ${e instanceof Error ? e.message : String(e)}`);
+          }
         }
       } else if (selected) {
-        try {
-          await api.updateContact(selected.id, input);
-          const list = await api.listContacts(500);
-          setContacts(list);
-          setSource("server");
-          setEditing(false);
-          onNotify("ok", "Contact updated.");
-        } catch {
+        if (demo) {
           persistLocal(
             upsertLocal(loadLocalBook(), input, selected.id),
-            "Updated locally — contacts IPC not in the backend yet.",
+            "Updated in the demo book.",
           );
           setEditing(false);
+        } else {
+          try {
+            await api.updateContact(selected.id, input);
+            const list = await api.listContacts(500);
+            setContacts(list);
+            setSource("server");
+            setEditing(false);
+            onNotify("ok", "Contact updated.");
+          } catch (e) {
+            setError(`Update failed: ${e instanceof Error ? e.message : String(e)}`);
+          }
         }
       }
     } finally {
@@ -200,12 +222,17 @@ export function ContactsView({
     setBusy(true);
     setError(null);
     try {
-      try {
-        await api.deleteContact(selected.id);
-        setContacts(await api.listContacts(500));
-        onNotify("ok", "Contact deleted.");
-      } catch {
-        persistLocal(deleteLocal(loadLocalBook(), selected.id), "Deleted locally — contacts IPC not in the backend yet.");
+      if (demo) {
+        persistLocal(deleteLocal(loadLocalBook(), selected.id), "Deleted from the demo book.");
+      } else {
+        try {
+          await api.deleteContact(selected.id);
+          setContacts(await api.listContacts(500));
+          onNotify("ok", "Contact deleted.");
+        } catch (e) {
+          setError(`Delete failed: ${e instanceof Error ? e.message : String(e)}`);
+          return;
+        }
       }
       setSelectedId(null);
       setConfirmDelete(false);
@@ -243,52 +270,57 @@ export function ContactsView({
     reader.readAsText(file);
   };
 
-  /** Import previewed cards: server first, local book fallback. Re-imports
-    * match on primary email (case-insensitive) so the same file twice does
-    * not duplicate — imports update the matched card wholesale. */
+  /** Import previewed cards: live mode writes the server book only
+    * (per-card failures are counted, not silently diverted); demo mode
+    * upserts the local book, matching on primary email (case-insensitive)
+    * so the same file twice does not duplicate. */
   const importPreview = async () => {
     if (!preview || preview.contacts.length === 0) return;
     setBusy(true);
     setIoNote(null);
-    let added = 0;
-    let updated = 0;
-    let local = 0;
     try {
-      const book = loadLocalBook();
-      let next = book;
+      if (demo) {
+        let next = loadLocalBook();
+        let added = 0;
+        let updated = 0;
+        for (const input of preview.contacts) {
+          const primary = (input.emails[0]?.address ?? "").toLowerCase();
+          const match = next.find((c) => c.emails.some((e) => e.address.toLowerCase() === primary) && primary);
+          if (match) {
+            next = upsertLocal(next, input, match.id);
+            updated++;
+          } else {
+            next = upsertLocal(next, input);
+            added++;
+          }
+        }
+        saveLocalBook(next);
+        setContacts(next);
+        const msg = `Demo import: ${added} added, ${updated} updated.`;
+        setIoNote(msg);
+        onNotify("ok", msg);
+        setPreview(null);
+        return;
+      }
+      let added = 0;
+      let failed = 0;
       for (const input of preview.contacts) {
-        const primary = (input.emails[0]?.address ?? "").toLowerCase();
         try {
           await api.createContact(input);
           added++;
-          continue;
         } catch {
-          // Local path below.
-        }
-        const match = next.find((c) => c.emails.some((e) => e.address.toLowerCase() === primary) && primary);
-        if (match) {
-          next = upsertLocal(next, input, match.id);
-          updated++;
-        } else {
-          next = upsertLocal(next, input);
-          local++;
+          failed++;
         }
       }
-      saveLocalBook(next);
-      // Prefer the server list when it answers; the local book otherwise
-      // (it already contains every locally-saved card).
-      let shown = next;
-      try {
-        shown = await api.listContacts(500);
-        setSource("server");
-      } catch {
-        setSource("local");
-      }
-      setContacts(shown);
-      const msg = `Import done: ${added} server, ${local} new + ${updated} updated locally.`;
+      setContacts(await api.listContacts(500));
+      const msg = failed
+        ? `Import done: ${added} imported, ${failed} failed.`
+        : `Import done: ${added} imported.`;
       setIoNote(msg);
-      onNotify("ok", msg);
+      onNotify(failed ? "warn" : "ok", msg);
       setPreview(null);
+    } catch (e) {
+      setIoNote(`Import failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setBusy(false);
     }
@@ -317,7 +349,7 @@ export function ContactsView({
           Contacts{" "}
           <small style={{ color: "var(--kiwi-text-secondary)" }}>
             ({filtered.length}
-            {source === "server" ? "" : demo ? " · demo" : " · local"})
+            {source === "server" ? "" : " · demo"})
           </small>
         </h1>
         <p>
@@ -384,7 +416,7 @@ export function ContactsView({
           <small>
             {source === "server"
               ? "Live address book (kiwi.contacts/1)."
-              : "Local address book — contacts IPC not in the backend yet; cards sync when it lands."}
+              : "Demo address book — localStorage fixture, no IPC."}
           </small>
         </p>
         <p>

@@ -1,7 +1,10 @@
 /**
- * Search view (T-160, T-176): results over `kiwi_search_messages` (Agent 8's
- * `MailStore::search` is in; the Tauri IPC is still pending) with a labeled
- * client-side fallback over already-loaded messages.
+ * Search view (T-160, T-176, live-wired T-231): results over the real
+ * `kiwi_search_messages` IPC (lock-gated FTS over the local store,
+ * `accountId` resolved server-side per hit). A labeled client-side
+ * fallback over already-loaded real messages applies only when the IPC
+ * is unreachable or errors — it never reads mock fixtures; demo mode
+ * searches the fixtures directly.
  *
  * Query grammar mirrors `kiwi-mail/src/search.rs` exactly: plain tokens,
  * `subject:`/`from:`/`to:`/`body:` scopes, `"quoted phrases"`, `-negation`
@@ -411,7 +414,7 @@ export function SearchView({
               ? `Server results (${rows.length}) — FTS grammar ran in the backend.`
               : demo
                 ? `Local demo results (${rows.length}) — fixtures only.`
-                : `Local results (${rows.length}) — search IPC not yet in the backend; grammar mirrored over loaded messages${parsed.hasToScope ? "; to: is server-only here" : ""}.`}
+                : `Local results (${rows.length}) — search IPC unavailable; grammar mirrored over already-loaded messages${parsed.hasToScope ? "; to: is server-only here" : ""}.`}
         </small>
       </p>
       {searchError && (

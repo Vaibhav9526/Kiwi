@@ -10,7 +10,8 @@ import { useEffect, useRef, useState } from "react";
 import type { ComponentProps } from "react";
 import { accountPref, applyPrefsBag, applyUiPrefs, collectPrefs, loadMuted, loadPref, savePref } from "../prefs";
 import { api, BackendUnavailableError, IpcError } from "../ipc";
-import type { AccountView, DeviceView, VerifyResult } from "../kiwi";
+import type { AccountView, DeviceView, OAuth2StatusView, VerifyResult } from "../kiwi";
+import { OAuth2SignIn, oauth2ProviderLabel } from "../components/oauth2";
 import { navigate } from "../router";
 import { EDIT_HANDOFF_KEY, localAutoconfigGuess } from "./setup";
 import { FiltersView } from "./filters";
@@ -68,6 +69,10 @@ export function SettingsView({
   const [remoteState, setRemoteState] = useState<Record<string, boolean>>({});
   const [remoteBusy, setRemoteBusy] = useState<string | null>(null);
   const [draftCount, setDraftCount] = useState(0);
+  // OAuth2 posture per account (T-243): `kiwi_oauth2_status` drives the
+  // needs-refresh badge + inline re-auth on Accounts cards.
+  const [oauth2Status, setOauth2Status] = useState<Record<string, OAuth2StatusView | null>>({});
+  const [reauthFor, setReauthFor] = useState<string | null>(null);
   const [defaultId, setDefaultId] = useState(() => loadPref("kiwi.defaultAccount", ""));
   const [accent, setAccent] = useState(() => loadPref("kiwi.accent", "standard"));
   const [density, setDensity] = useState(() => loadPref("kiwi.density", "comfortable"));
@@ -164,6 +169,45 @@ export function SettingsView({
       return n;
     });
   }, [accounts]);
+
+  // OAuth2 posture per account (T-243): non-secret grant posture only —
+  // authMethod/needsRefresh/credentialPresent. Failures leave null (no
+  // badge rendered); the command is absent in demo mode.
+  useEffect(() => {
+    if (mode !== "live") return;
+    let alive = true;
+    void (async () => {
+      const rows = await Promise.all(
+        accounts.map(async (a) => {
+          try {
+            return [a.id, await api.oauth2Status(a.id)] as const;
+          } catch {
+            return [a.id, null] as const;
+          }
+        }),
+      );
+      if (alive) setOauth2Status(Object.fromEntries(rows));
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [accounts, mode]);
+
+  const refreshOauth2Status = async (accountId: string) => {
+    try {
+      const st = await api.oauth2Status(accountId);
+      setOauth2Status((m) => ({ ...m, [accountId]: st }));
+    } catch {
+      // Posture refresh is best-effort; the badge simply stays.
+    }
+  };
+
+  /** Provider id fallback when status omits it — host-derived. */
+  const oauth2ProviderFor = (a: AccountView): string => {
+    const h = a.incoming.host.toLowerCase();
+    if (h.includes("office365") || h.includes("outlook")) return "microsoft";
+    return "google";
+  };
   useEffect(() => {
     for (const [id, v] of Object.entries(syncFreq)) savePref(accountPref("kiwi.syncFreq", id), v);
   }, [syncFreq]);
@@ -507,6 +551,20 @@ export function SettingsView({
                       muted
                     </span>
                   )}
+                  {(() => {
+                    const st = oauth2Status[a.id];
+                    if (!st || st.authMethod !== "xoauth2") return null;
+                    const stale = !st.credentialPresent || st.needsRefresh === true;
+                    return (
+                      <span
+                        className={`kiwi-pill ${stale ? "warning" : "secure"}`}
+                        title={`OAuth2 grant posture (kiwi_oauth2_status) — token material stays in the OS credential store.${st.credentialPresent === false ? " No credential stored at the account's key." : ""}${st.needsRefresh === true ? " Token is at/past its refresh window." : ""}`}
+                      >
+                        OAuth2{st.provider ? ` · ${oauth2ProviderLabel(st.provider)}` : ""}
+                        {stale ? " — re-auth needed" : ""}
+                      </span>
+                    );
+                  })()}
                 </h2>
                 <p>
                   <small>
@@ -520,6 +578,36 @@ export function SettingsView({
                     command in kiwi.ipc/1; saving creates a new entry, then remove this one).
                   </small>
                 </p>
+                {(() => {
+                  const st = oauth2Status[a.id];
+                  if (!st || st.authMethod !== "xoauth2") return null;
+                  const stale = !st.credentialPresent || st.needsRefresh === true;
+                  if (reauthFor === a.id) {
+                    const provider = st.provider ?? oauth2ProviderFor(a);
+                    return (
+                      <OAuth2SignIn
+                        provider={provider}
+                        email={st.email ?? a.email}
+                        buttonLabel={`Sign in with ${oauth2ProviderLabel(provider)} again`}
+                        onDone={() => {
+                          // Completing the grant re-wrote the token at the
+                          // same credential-store key — no re-add needed.
+                          setReauthFor(null);
+                          void refreshOauth2Status(a.id);
+                        }}
+                        onCancel={() => setReauthFor(null)}
+                      />
+                    );
+                  }
+                  if (!stale) return null;
+                  return (
+                    <p>
+                      <button type="button" onClick={() => setReauthFor(a.id)}>
+                        Re-authorize {st.provider ? oauth2ProviderLabel(st.provider) : "OAuth2"} sign-in
+                      </button>
+                    </p>
+                  );
+                })()}
                 <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap" }}>
                   <button type="button" onClick={() => void testAccount(a.id)}>
                     Test connection
