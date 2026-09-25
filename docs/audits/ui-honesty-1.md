@@ -34,7 +34,7 @@ during the whole sweep: **0**.
 | Message source → raw RFC822 | `views/mailbox.tsx` SourceDialog | `kiwi_message_source` IPC (parsed headers/parts shown instead) | Title text says so explicitly. Backend task: **T-295** (Agent 19) |
 | Mobile pairing QR | `components/security.tsx` ~264 | device-pairing flow | Title: "QR placeholder — real codes arrive with the device-pairing flow" |
 | Outbox held/failed state + reason | `views/mailbox.tsx` `outboxState` | `OutboxItem.state`/`lastError` fields | UI derives only real states; gap filed in T-296 + code comment |
-| Plugin `message-list-read` / `composer-action` | `src/plugins/runtime.ts` | host methods | Bridge returns `not-implemented` — documented in GETTING-STARTED, no UI promise |
+| Plugin `message-list-read` / `composer-action` | `src/plugins/runtime.ts` | host methods | **Wired in T-302** — bounded snapshot sinks + composer-action store, harness-proven 47/47 |
 
 ## Surfaces verified working (no observable-effect misses)
 
@@ -80,3 +80,12 @@ during the whole sweep: **0**.
 **One dead control existed and is fixed.** Nothing on screen silently lies:
 the only remaining non-functional affordances are the four labelled gaps above,
 each filed to a backend owner. `vite build` green.
+
+**T-302 addendum:** plugin host surfaces for the last two declared caps are now
+wired (`messages.list`/`getEnvelope` whitelist-projected; `composer.registerAction`
+→ compose-toolbar button → `composer.action` evt). One live-exec constraint
+surfaced: `index.html` CSP (`script-src 'self'`) refuses the loader's
+`new Function`, so plugin sessions run only in the harness today — documented
+in GETTING-STARTED post-alpha hardening; `'unsafe-eval'` deliberately not added
+(B2 CSP backstop). No UI lies implied: the Plugins tab surfaces real install/
+enable state and the capability gates are honest.

@@ -63,10 +63,14 @@ function CopyButton({ text, label }: { text: string; label: string }) {
       type="button"
       className="ms-btn"
       onClick={() => {
-        void navigator.clipboard.writeText(text).then(() => {
-          setDone(true);
-          window.setTimeout(() => setDone(false), 1500);
-        });
+        if (!navigator.clipboard) return;
+        void navigator.clipboard.writeText(text).then(
+          () => {
+            setDone(true);
+            window.setTimeout(() => setDone(false), 1500);
+          },
+          () => {},
+        );
       }}
     >
       {done ? "Copied" : `Copy ${label}`}
@@ -472,6 +476,8 @@ export function DeliverabilityPanel({ accounts, live }: { accounts: AccountView[
   const generation = useRef(0);
   const timer = useRef<number | null>(null);
   const inFlightGeneration = useRef<number | null>(null);
+  const pollAgain = useRef(false);
+  const pollTarget = useRef<{ generation: number; testId: string } | null>(null);
   const reportRef = useRef<DeliverabilityReportView | null>(null);
   const pollRef = useRef<(generation: number, testId: string) => Promise<void>>(async () => {});
 
@@ -491,6 +497,8 @@ export function DeliverabilityPanel({ accounts, live }: { accounts: AccountView[
 
   const stopPolling = useCallback(() => {
     generation.current += 1;
+    pollAgain.current = false;
+    pollTarget.current = null;
     clearTimer();
   }, [clearTimer]);
 
@@ -516,7 +524,11 @@ export function DeliverabilityPanel({ accounts, live }: { accounts: AccountView[
   };
 
   const poll = async (currentGeneration: number, testId: string) => {
-    if (!mounted.current || currentGeneration !== generation.current || inFlightGeneration.current === currentGeneration) return;
+    if (!mounted.current || currentGeneration !== generation.current) return;
+    if (inFlightGeneration.current !== null) {
+      pollAgain.current = true;
+      return;
+    }
     inFlightGeneration.current = currentGeneration;
     setBusy("status");
     setError(null);
@@ -539,7 +551,14 @@ export function DeliverabilityPanel({ accounts, live }: { accounts: AccountView[
       setError(errText(e));
       if (retryableError(e)) schedule(currentGeneration, testId, pollDelay(undefined, e));
     } finally {
-      if (inFlightGeneration.current === currentGeneration) inFlightGeneration.current = null;
+      if (inFlightGeneration.current === currentGeneration) {
+        inFlightGeneration.current = null;
+        if (mounted.current && currentGeneration !== generation.current && pollAgain.current) {
+          const target = pollTarget.current;
+          pollAgain.current = false;
+          if (target?.generation === generation.current) void pollRef.current(target.generation, target.testId);
+        }
+      }
       if (mounted.current && currentGeneration === generation.current) setBusy(null);
     }
   };
@@ -549,10 +568,15 @@ export function DeliverabilityPanel({ accounts, live }: { accounts: AccountView[
     if (!sent || !begin) return;
     const currentGeneration = generation.current + 1;
     generation.current = currentGeneration;
+    pollTarget.current = { generation: currentGeneration, testId: begin.testId };
     clearTimer();
     void pollRef.current(currentGeneration, begin.testId);
     return () => {
-      if (generation.current === currentGeneration) generation.current += 1;
+      if (generation.current === currentGeneration) {
+        generation.current += 1;
+        pollAgain.current = false;
+        pollTarget.current = null;
+      }
       clearTimer();
     };
   }, [begin?.testId, clearTimer, sent?.testId]);

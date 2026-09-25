@@ -117,16 +117,11 @@ function retryAfterMs(value: unknown): number | undefined {
   return Math.min(value, 60 * 60 * 1000);
 }
 
-function retryAfterFromMessage(message: string): number | undefined {
-  const match = message.match(/retry after\s+(\d+)\s*ms/i);
-  return match?.[1] === undefined ? undefined : retryAfterMs(Number(match[1]));
-}
-
 function asIpcError(value: unknown): IpcError | null {
   if (typeof value === "object" && value !== null) {
     const r = value as Record<string, unknown>;
     if (typeof r["code"] === "string" && typeof r["message"] === "string") {
-      const hint = retryAfterMs(r["retryAfterMs"] ?? r["retry_after_ms"]) ?? retryAfterFromMessage(r["message"]);
+      const hint = retryAfterMs(r["retryAfterMs"] ?? r["retry_after_ms"]);
       return new IpcError(r["code"], r["message"], hint);
     }
   }

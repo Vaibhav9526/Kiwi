@@ -21,7 +21,7 @@ import { accountPref, loadPref } from "../prefs";
 import { api, IpcError } from "../ipc";
 import { filterContacts, loadLocalBook } from "../contacts";
 import { PolicyBanner } from "../components/security";
-import { Icon } from "../components/icons/index";
+import { Icon, isIconName } from "../components/icons/index";
 import { navigate } from "../router";
 import { fireComposerAction, useComposerActions } from "../plugins";
 
@@ -207,6 +207,8 @@ export function ComposeView({
   const [body, setBody] = useState("");
   const [recipients, setRecipients] = useState<string[]>([]);
   const [ccRecipients, setCcRecipients] = useState<string[]>([]);
+  // T-302: plugin-registered composer actions (composer-action capability).
+  const pluginActions = useComposerActions();
   const [book, setBook] = useState<ContactView[]>([]);
   const [bookSource, setBookSource] = useState<"server" | "local">("local");
   const [scheduled, setScheduled] = useState<string | null>(null);
@@ -822,7 +824,29 @@ export function ComposeView({
             Cancel
           </button>{" "}
           <small style={{ color: "var(--kiwi-text-secondary)" }}>
-            saves the current subject + body verbatim (placeholders like {"{{name}}"} included)          </small>
+            saves the current subject + body verbatim (placeholders like {"{{name}}"} included)
+          </small>
+        </p>
+      )}
+      {/* T-302: plugin composer actions (composer-action capability). Click
+          posts `composer.action` to the owning plugin with bounded draft
+          metadata (subject + recipient addresses — never body bytes). */}
+      {pluginActions.length > 0 && (
+        <p role="toolbar" aria-label="Plugin actions" style={{ display: "flex", gap: "0.3rem", flexWrap: "wrap", alignItems: "center" }}>
+          <small style={{ color: "var(--kiwi-text-secondary)" }}>Plugins:</small>
+          {pluginActions.map((a) => (
+            <button
+              key={`${a.pluginId}/${a.actionId}`}
+              type="button"
+              title={a.title ?? `${a.label} — provided by ${a.pluginName}`}
+              onClick={() => {
+                const ok = fireComposerAction(a, { subject, to: recipients, cc: ccRecipients });
+                if (!ok) onNotify("warn", `[${a.pluginId}] plugin is not running — action not delivered.`);
+              }}
+            >
+              <Icon name={a.icon && isIconName(a.icon) ? a.icon : "puzzle"} size={11} /> {a.label}
+            </button>
+          ))}
         </p>
       )}
       {tplError && (

@@ -307,6 +307,128 @@ ok(
   "session dispose removes the plugin's panes",
 );
 
+/* ---------- 11) T-302 sinks: message-list-read + composer-action ---------- */
+/* A plugin with both caps exercises the real runtime sinks; a second plugin
+   without them proves the gate denies both directions. */
+
+const snapFiles = {
+  "plugin.js": `
+    kiwi.onEvent("host.ready", async () => {
+      try {
+        const l = await kiwi.request("messages.list");
+        await kiwi.request("notify.show", {
+          kind: "info",
+          text: "list:" + JSON.stringify({
+            n: l.messages.length,
+            keys: l.messages.length ? Object.keys(l.messages[0]).sort().join(",") : "",
+          }),
+        });
+        const env = await kiwi.request("messages.getEnvelope", { id: "a:1:1" });
+        await kiwi.request("notify.show", { kind: "info", text: "env:" + (env.envelope ? env.envelope.subject : "null") });
+        const miss = await kiwi.request("messages.getEnvelope", { id: "nope" });
+        await kiwi.request("notify.show", { kind: "info", text: "miss:" + (miss.envelope === null ? "null" : "leak") });
+      } catch (e) {
+        await kiwi.request("notify.show", { kind: "error", text: "snap-fail:" + e.code });
+      }
+    });
+    (async () => {
+      try {
+        await kiwi.request("composer.registerAction", { actionId: "summary", label: "Summarize", icon: "mail" });
+      } catch (e) {}
+    })();
+    kiwi.onEvent("composer.action", (d) => {
+      kiwi.request("notify.show", { kind: "ok", text: "action:" + (d && d.actionId) + "|" + (d && d.subject) }).catch(() => {});
+    });
+  `,
+};
+const snapInst = installPlugin(
+  JSON.stringify({
+    id: "snap-plugin",
+    version: "0.1.0",
+    permissions: ["message-list-read", "composer-action", "notify"],
+  }),
+  snapFiles,
+);
+ok(snapInst.ok, "T-302 test plugin installs (list-read + composer-action + notify)");
+
+// The bounded list-view fixture — includes fields the whitelist must strip.
+const fixtureList = [
+  {
+    id: "a:1:1", from: "ava@example.test", subject: "Invoice ready", date: "2026-09-25T10:00:00Z",
+    unread: true, starred: false, hasAttachments: true, category: "primary", trust: "secure", answered: false,
+    snippet: "BODY-DERIVED-MUST-NOT-LEAK", unsub: { x: 1 }, evidenceHints: { y: 2 }, to: ["leak@test"],
+  },
+  {
+    id: "a:1:2", from: "team@project.test", subject: "Launch checklist", date: "2026-09-25T11:00:00Z",
+    unread: false, starred: true, hasAttachments: false, category: "other", trust: "unknown", answered: true,
+    snippet: "leak2",
+  },
+];
+const sinks2 = {
+  notify: (k, t) => toasts.push({ k, t }),
+  isLocked: () => locked,
+  listSnapshot: () => fixtureList,
+};
+const sess2 = P.startPluginSession(getPlugin("snap-plugin"), sinks2);
+ok(!!sess2, "snap-plugin session starts");
+ok(!toasts.some((t) => /plugin failed to load/.test(t.t)), "plugin source parsed + ran (no loader error toast)");
+for (let i = 0; i < 40 && !toasts.some((t) => /miss:/.test(t.t)); i++) await sleep(20); // host.ready → async echo chain
+const listToast = toasts.find((t) => /list:/.test(t.t));
+ok(!!listToast && /"n":2/.test(listToast.t), "messages.list returned the snapshot through the real sink");
+ok(
+  !!listToast && /answered,category,date,from,hasAttachments,id,starred,subject,trust,unread/.test(listToast.t) &&
+    !listToast.t.includes("snippet") && !listToast.t.includes("unsub") && !listToast.t.includes("evidenceHints") && !listToast.t.includes("leak@test"),
+  "snapshot rows carry ONLY the whitelisted fields (no snippet/unsub/recipients)",
+);
+ok(toasts.some((t) => t.t === "[snap-plugin] env:Invoice ready"), "messages.getEnvelope resolves a row by id");
+ok(toasts.some((t) => t.t === "[snap-plugin] miss:null"), "messages.getEnvelope unknown id → envelope:null");
+ok(!toasts.some((t) => /snap-fail:/.test(t.t)), "no capability rejection on the declared path");
+
+// composer-action round-trip: register → store → click evt → plugin acts.
+ok(
+  P.listComposerActions().some((a) => a.pluginId === "snap-plugin" && a.actionId === "summary" && a.label === "Summarize"),
+  "composer.registerAction landed an action in the host store",
+);
+const act = P.listComposerActions().find((a) => a.actionId === "summary");
+ok(P.fireComposerAction(act, { subject: "hi", to: ["x@y"] }) === true, "fireComposerAction delivers to a running session");
+await sleep(50);
+ok(
+  toasts.some((t) => t.t === "[snap-plugin] action:summary|hi" && t.k === "ok"),
+  "composer.action evt reached the plugin with draft metadata; plugin acted",
+);
+ok(P.fireComposerAction({ pluginId: "not-running", actionId: "x" }) === false, "fireComposerAction=false for absent session");
+
+// Denial direction: plugin lacking both caps hits the gate before any sink.
+const deniedManifest = validatePluginManifest({
+  id: "denied-plugin", version: "0.1.0", permissions: ["notify"],
+}).manifest;
+const deniedBus = makeBus("plugin:denied");
+createPluginHost({ manifest: deniedManifest, target: deniedBus, isLocked: () => locked, handlers: {} });
+const deniedCli = createPluginClient({ pluginId: "denied-plugin", host: hostBus, listenOn: deniedBus });
+let listDenied = null;
+await deniedCli.request("messages.list", {}).catch((e) => (listDenied = e.code));
+ok(listDenied === "capability-denied", "messages.list denied without message-list-read");
+let actDenied = null;
+await deniedCli.request("composer.registerAction", { actionId: "x", label: "X" }).catch((e) => (actDenied = e.code));
+ok(actDenied === "capability-denied", "composer.registerAction denied without composer-action");
+ok(
+  !P.listComposerActions().some((a) => a.pluginId === "denied-plugin"),
+  "denied registerAction created no action record",
+);
+deniedCli.dispose();
+
+// Unregister + dispose cleanup.
+const snapClient = createPluginClient({ pluginId: "snap-plugin", host: hostBus, listenOn: makeBus("unused") });
+// unregister goes through a request — reuse a direct host-level call via session client:
+const unreg = await sess2.client.request("composer.unregisterAction", { actionId: "summary" }).catch(() => null);
+ok(unreg?.removed === true || P.listComposerActions().every((a) => a.actionId !== "summary"), "composer.unregisterAction removes the action");
+snapClient.dispose();
+sess2.dispose();
+ok(
+  !P.listComposerActions().some((a) => a.pluginId === "snap-plugin"),
+  "session dispose removes the plugin's composer actions",
+);
+
 host.detach();
 hostRogue.detach();
 kiwi.dispose();

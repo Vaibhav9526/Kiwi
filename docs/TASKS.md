@@ -279,7 +279,8 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-299 | context menus real: shared menu, message+folder actions on real IPC, state-aware | Agent 24 | done |
 | T-300 | kiwi_sandbox_sessions IPC (live/pending sessions for rail security card) — gap from T-283 | Agent 21 | open | `kiwi-sandbox`, `commands/`, ipc.ts | T-266,T-283 |
 | T-301 | templates UI real (picker/render/save-as/Settings CRUD, missingVars honest) — Mailspring parity complete | Agent 24 | done |
-| T-302 | plugin capability hosts: message-list-read (bounded snapshot) + composer-action (toolbar button→event) — last 2 declared caps | Agent 25 | open | `kiwi-app/src/plugins/` | T-297,T-274 |
+| T-302 | all 4 plugin caps have real hosts (whitelist sinks, composer action, gates, 47/47); CSP-blocks-live-exec finding filed | Agent 25 | done |
 | T-303 | real pairing QR: reused mobile encoder, pair_begin payload→QR, status poll, Settings+LockOverlay | Agent 24 | done |
 | T-304 | LAN pair-claim listener: bounded endpoint → claim_ticket_and_register, loopback-tested (T-269 flag) | Agent 20 | open | `kiwi-pair`, `kiwi-app/src-tauri` | T-269,T-270 |
 | T-305 | scripted UI smoke suite (CDP/playwright): boot→folders→list→reader→compose→settings→theme→menu→lock assertions, CI-runnable | Agent 24 | open | `kiwi-app`, scripts/ | regression gate |
+| T-306 | CSP-safe plugin loader: Worker-based (no unsafe-eval), live exec proven in built app | Agent 25 | open | `kiwi-app/src/plugins/`, CSP config | T-302 |

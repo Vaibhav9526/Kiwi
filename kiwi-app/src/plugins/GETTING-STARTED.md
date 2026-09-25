@@ -65,14 +65,16 @@ Rules: `id` = `^[a-z0-9][a-z0-9.-]{1,63}$`; `version` = semver `x.y.z`;
 
 | Capability | Bridge methods it unlocks | Host sink (T-280) |
 |---|---|---|
-| `message-list-read` | `messages.list`, `messages.getEnvelope` | *unwired — `not-implemented` until the read API lands* |
-| `composer-action` | `composer.registerAction`, `composer.unregisterAction` | *unwired — composer mount point pending* |
+| `message-list-read` | `messages.list`, `messages.getEnvelope` | current message-list snapshot (whitelisted envelope fields only — no body/snippet/recipients) |
+| `composer-action` | `composer.registerAction`, `composer.unregisterAction` | toolbar button in **Compose**; click fires `composer.action` back to the plugin |
 | `settings-page` | `settings.registerPane`, `settings.unregisterPane`, `settings.renderPane` | pane in **Settings → Plugins** (title/icon live; body = plugin markup) |
 | `notify` | `notify.show` | app toast system, text scoped `[plugin-id] …` |
 
 **Host events:** `host.ready` fires after each session loads; `pane.mount`/
 `pane.unmount` fire when a plugin pane opens/closes (reply with
-`settings.renderPane` to fill the body); `mail-changed` is broadcast from
+`settings.renderPane` to fill the body); `composer.action` fires when the
+plugin's registered compose button is clicked (`{actionId, subject, to[], cc[]}` —
+no body bytes); `mail-changed` is broadcast from
 the app's `kiwi://mail-changed` debounce (`{added: n}`).
 
 Undeclared capabilities → host replies `{ ok:false, error.code:"capability-denied" }`.
@@ -115,8 +117,10 @@ validate → `installPlugin` → `getPlugin` → exec `plugin.js` with an inject
 `PluginClient` → `mail-changed` event → `notify.show` request → capability
 gate → host handler. It also exercises the T-280 sinks end-to-end via
 `startPluginSession`: pane registration, `pane.mount` → `renderPane` markup,
-scoped `notify.show` toasts, and the capability denial. 30 assertions; exits
-non-zero on any failure.
+scoped `notify.show` toasts, the capability denial, and the T-302 sinks:
+whitelisted `messages.list`/`getEnvelope` snapshots, composer-action
+register → fire → dispose cleanup, and denial without the caps.
+47 assertions; exits non-zero on any failure.
 
 ## Lifecycle (v1)
 
@@ -130,6 +134,15 @@ remove UI) is wired by the layout task onto `listPlugins()` etc.
 
 Tracked as a follow-up task (THREAT-MODEL RR-11). Each item closes a gap
 listed in "NOT enforced in alpha" above:
+
+**Live-exec blocker (found T-302):** `index.html`'s CSP is
+`script-src 'self'` — `new Function` (the alpha plugin loader's exec
+mechanism) is refused in the real app, so plugin sessions only ever run
+inside the e2e harness today. The bridge contract, capability gates, and
+all host sinks are proven there; live in-app execution arrives with item 1
+(sandboxed context gets its own CSP). Deliberately **not** worked around by
+adding `'unsafe-eval'` — that would weaken the mail-content CSP backstop
+(threat-model B2) for every script in the app.
 
 1. **Isolated context** — run `plugin.js` in a sandboxed `<iframe
    sandbox="allow-scripts">` or a `Worker`; no same-context `new Function`.

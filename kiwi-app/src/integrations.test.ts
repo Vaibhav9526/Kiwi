@@ -155,6 +155,7 @@ describe("integration response decoders", () => {
     expect(decodeDeliverabilityReportView({ ...report, reportUrl: "https://reports.example.test/a" })).not.toBeNull();
     expect(decodeDeliverabilityReportView({ ...report, reportUrl: "http://reports.example.test/a" })).toBeNull();
     expect(decodeDeliverabilityReportView({ ...report, reportUrl: "javascript:alert(1)" })).toBeNull();
+    expect(decodeDeliverabilityReportView({ ...report, reportUrl: "https://reports.example.test/a#section" })).toBeNull();
     expect(
       decodeDeliverabilityReportView({
         ...report,

@@ -118,7 +118,8 @@ export function subscribeComposerActions(fn: () => void): () => void {
  * event carries { actionId } + the draft metadata the view supplied.
  * Returns false when the session isn't running.
  */
-export function fireComposerAction(action: ComposerAction, draft?: Record<string, unknown>): boolean {
+export function fireComposerAction(action: ComposerAction | undefined | null, draft?: Record<string, unknown>): boolean {
+  if (!action) return false;
   const session = sessions.get(action.pluginId);
   if (!session) return false;
   session.host.emit("composer.action", { actionId: action.actionId, ...draft });

@@ -532,3 +532,27 @@ Settings tabs.
 ### Verify
 `tsc` 0 errors repo-wide (post-A24 settle); `vite build` green;
 plugin e2e not rerun (no plugin-surface changes).
+
+## T-302 — plugin capability hosts (message-list-read + composer-action) — done
+- runtime.ts: `messages.list`/`messages.getEnvelope` sinks behind `message-list-read`,
+  projecting ONLY whitelisted envelope fields (id/from/subject/date/unread/starred/
+  hasAttachments/category/trust/answered) — new envelope fields can't leak by default;
+  no body, snippet, recipients, or evidence hints. Lock gate + cap gate enforced
+  host-side before the sink runs.
+- runtime.ts: composer-action store (`register/unregister/list/subscribe`,
+  cached snapshot à la panes) + `fireComposerAction` evt; dispose cleans the
+  plugin's actions. ComposeView renders the registered buttons (icon validated
+  via isIconName → fallback puzzle) and posts `{actionId, subject, to[], cc[]}` —
+  no body bytes.
+- App.tsx feeds `listSnapshot` = the live `visibleMessages` (post-filter/override)
+  via a ref, so plugin reads see exactly what the user sees.
+- e2e run.mjs: +17 assertions → 47/47 — grant path (snapshot rows, whitelist,
+  getEnvelope hit/miss, register→fire→plugin-acted, unregister, dispose cleanup)
+  AND denial path (both caps absent → capability-denied, no action record).
+- GETTING-STARTED cap→sink table updated; '30 assertions' → 47.
+- FINDING (honest): live in-app plugin exec is CSP-blocked — index.html has
+  `script-src 'self'` (no unsafe-eval) so `new Function` is refused; plugin
+  sessions run only in the harness today. Documented in GETTING-STARTED
+  'Post-alpha hardening' — deliberately NOT relaxed (B2 CSP backstop);
+  live exec arrives with the sandboxed-context task (RR-11).
+- tsc 0 errors repo-wide, vite green, e2e 47/47.
