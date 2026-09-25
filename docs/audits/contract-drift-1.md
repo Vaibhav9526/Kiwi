@@ -383,3 +383,89 @@ contract implementation files were changed.
 primarily contract corrections, ACFG-4 requires an offline-support product
 decision, and ACFG-7/8/9 need fail-closed parser code work. No additional
 source changes or tests were made by this audit.
+
+## T-258 follow-up — mailauth post-T-183 contract-vs-code verification (2026-09-25)
+
+**Reviewer:** Agent 22 · **Mode:** read-only analysis. **Snapshot:** current
+`release/v0.1.0` HEAD `2aa1e1c`; T-183 is commit `467b858`. The current
+mailauth contract, crate source, Agent 16 T-183 status, and the original MAUTH
+rows were read together. No Rust, contract, or test files were changed by this
+follow-up.
+
+T-183's Agent 16 entry describes 23 implementation sub-items; the task-level
+T-258 grouping below covers the 14 requested behavior groups (with the
+sub-points shown explicitly in each row). The current suite is **63/63**,
+Clippy is clean, and rustfmt is clean.
+
+### Result
+
+- The 14 requested T-183 behavior groups have explicit ⛔ text in
+  `docs/contracts/mailauth.md` and the current code exercises the new behavior
+  in focused tests.
+- The three ratified §9 deviations are present: invalid/absent DMARC `p=` or
+  `sp=` returns `permerror`; strict macro-label handling rejects percent-escaped
+  output through the domain grammar; and the KIWI-only 14-day DKIM `t=` window
+  is documented with `x=` precedence.
+- The old MAUTH-2 and MAUTH-3 rows are now resolved by the contract/code pair:
+  `l=` is applied **after** canonicalization, and a future `x=` takes
+  precedence over the 14-day `t=` check. Those rows are historical audit
+  provenance, not current drift.
+- The contract still has non-T-183 residuals (live DNS adapter, wire enum
+  spelling, forward-compatible enum parsing, key/error taxonomy, and test
+  coverage) plus three small implementation/document metadata gaps. They are
+  listed below rather than silently treating T-183 as a complete contract fix.
+
+### Fourteen-group verification
+
+| # | T-183 behavior group | Contract evidence | Current code/test evidence | Result |
+|---:|---|---|---|---|
+| 1 | DKIM empty-body canonicalization: simple is CRLF, relaxed is the null input. | `mailauth.md:120-124` | `dkim.rs:505-575`; RFC-vector tests `dkim.rs:903-973`. | **Matches.** |
+| 2 | `l=` is measured/truncated after body canonicalization, including `l=0` and over-length cases. | `mailauth.md:90-99` | `canon_body_bytes` calls `canon_body_untruncated` then truncates at `dkim.rs:471-503`; tests `dkim.rs:1033-1097`. | **Matches; MAUTH-2 resolved.** The old “before canon” statement is gone. |
+| 3 | DKIM hash step 2: `h=` fields first in `h=` order, then the current DKIM-Signature field with `b=` emptied and no trailing CRLF. | `mailauth.md:100-112` | `header_hash_input`/`push_canon_header` at `dkim.rs:577-688`; ordering tests `dkim.rs:1513-1533`. | **Matches normal path.** A value-identity edge is recorded below. |
+| 4 | `h=` selection: no self-reference, last unused occurrence, bottom-up repeats, and absent names contribute nothing. | `mailauth.md:106-112` | `dkim.rs:595-623`; tests `dkim.rs:1535-1635`. | **Matches.** |
+| 5 | Simple header canonicalization preserves transmitted field name, WSP, and folding. | `mailauth.md:113-116` | `dkim.rs:649-662`; RFC example test `dkim.rs:1490-1498`. | **Matches.** |
+| 6 | `b=` emptying preserves tag/FWS/`=` structure and removes folded value whitespace. | `mailauth.md:117-119` | `dkim.rs:691-743`; tests `dkim.rs:1638-1663`. | **Matches.** |
+| 7 | DKIM `x=`/`t=` ordering: `x > t`, expired `x` fails before DNS, and `x` bypasses the 14-day policy. | `mailauth.md:84-88,125-126`; §9.4 `mailauth.md:203-206` | `dkim.rs:223-253,349-367`; tests `dkim.rs:1181-1263`. | **Matches.** |
+| 8 | SPF dangling `include:` is `permerror`, not a no-match/neutral result. | `mailauth.md:49-54` | `spf.rs:377-401`; test `spf.rs:1151-1160`. | **Matches.** |
+| 9 | SPF dangling `redirect=` is `permerror`, not neutral. | `mailauth.md:52-54` | `spf.rs:310-341`; test `spf.rs:1162-1169`. | **Matches.** |
+| 10 | SPF void accounting covers `exists` and empty/NXDOMAIN `mx`/`ptr` address answers; the third void is `permerror`. | `mailauth.md:55-56` | `spf.rs:543-556,589-624,653-684,707-719`; tests `spf.rs:1171-1193`. | **Mostly matches.** Address-answer paths are covered; an empty `lookup_ptr` result itself is not charged (T258-05). |
+| 11 | SPF `mx` and `ptr` address-query caps are 10: `mx` errors beyond ten; `ptr` ignores records after ten. | `mailauth.md:57-58` | constants `spf.rs:24-29`; `mx` check `spf.rs:589-634`; `ptr` take `spf.rs:670-692`; test `spf.rs:1195-1209`. | **Matches.** |
+| 12 | SPF §7.3 macro grammar/transformers: specified delimiters/rejoin, reversal, uppercase URL escaping, IPv6 `%{i}`, zero DIGIT, invalid `%`, CIDR-only `a/24`, empty `a:`/`exists:`, `exp=` skip, and non-double-charged `mx`. | `mailauth.md:59-72` | `spf.rs:269-283,403-407,460-511,819-967`; tests `spf.rs:1211-1272,1316-1377`. | **Requested cases match;** unknown macro-name removal remains a small fail-open edge below. |
+| 13 | DMARC policy discovery queries the RFC5322.From domain before the organizational-domain fallback. | `mailauth.md:139-149` | `dmarc.rs:300-340`; test `dmarc.rs:538-558`. | **Matches.** |
+| 14 | DMARC direct-subdomain records use `p=` (not `sp=`), and multiple valid records at one level return `permerror`. | `mailauth.md:150-162` | `dmarc.rs:256-279,359-365`; tests `dmarc.rs:560-583`. | **Matches.** |
+
+### Ratified §9 deviations
+
+| Deviation | Contract evidence | Code evidence | Result |
+|---|---|---|---|
+| Invalid/absent DMARC `p=` or invalid `sp=` returns `permerror`; no `rua` special case. | `mailauth.md:187-194` | `dmarc.rs:167-179,344-356` | **Documented and matched.** |
+| Percent-escaped macro output cannot be used as a domain-spec because the domain grammar is `[A-Za-z0-9_-]`. | `mailauth.md:195-199` | `lib.rs:29-61`; uppercase expansion/escaping `spf.rs:961-995` | **Documented and matched.** The contract's explicit underscore allowance is intentional for DNS query labels, despite calling the set “LDH.” |
+| KIWI-only 14-day `t=` freshness window; `x=` takes precedence. | `mailauth.md:203-206` | `dkim.rs:16-17,349-367` | **Documented and matched.** |
+
+The other §9 entries (org-domain heuristic, `exists` A/AAAA, ignored `i=`,
+unsupported algorithms, and the RSA advisory) are also present and consistent
+with current source; they were not the three newly ratified deviations in the
+T-258 request.
+
+### Residual findings after T-183
+
+| ID | Contract/code mismatch | Severity | Recommended resolution |
+|---|---|---|---|
+| **MAUTH-1 (retained)** | `HickoryResolver::system()` is promised as the live adapter (`mailauth.md:164-170`), but `dns.rs` contains only the trait and `MockResolver`; no `HickoryResolver` implementation exists. | H | Implement the live adapter or amend the contract to make live DNS a future scope item. |
+| **MAUTH-4 (retained)** | DKIM `algorithm` is documented as `rsa-sha256`/`ed25519-sha256` (`mailauth.md:75-82`), but `SigAlgorithm` has no serde rename or `as_str` wire mapping (`dkim.rs:68-75`). | L | Add explicit serde spellings or amend the JSON contract. |
+| **MAUTH-5 (retained)** | The invariant says unknown enum values are ignored (`mailauth.md:14-23`), but result/algorithm/alignment enums derive `Deserialize` without `serde(other)` (`spf.rs:38-55`, `dkim.rs:19-75`, `dmarc.rs:16-46`). | M | Add forward-compatible unknown variants or make the invariant explicitly non-binding for this crate. |
+| **MAUTH-6 (retained)** | “Key missing → fail” is ambiguous: NXDOMAIN returns `Fail`, while NODATA and revoked keys return `PermError` (`mailauth.md:84-88`; `dkim.rs:390-417,751-785`). | L | Define NXDOMAIN, NODATA, and revoked-key results separately. |
+| **MAUTH-7 (retained)** | The SPF output caps are applied with `.chars().take(...)` while the contract's bounded-evidence language has been read as byte-bounded (`mailauth.md:38-42`; `spf.rs:174-188,291-305`). | L | State units explicitly or enforce byte caps. |
+| **MAUTH-8 (retained)** | `MockResolver::with_temp_fail` is documented for the test resolver, but `lookup_ptr` does not consult `temp_fail` (`mailauth.md:164-168`; `dns.rs:101-110,136-138`). | L | Make PTR mock failures injectable or scope the builder promise to name-based lookups. |
+| **MAUTH-T258-05** | The contract's broad “empty (NODATA) answers on ... `ptr`” wording can include an empty result from the PTR query itself. `eval_ptr` charges a void for `NxDomain` and empty address results, but not for `Ok(vec![])` from `lookup_ptr` (`spf.rs:653-664`). | L | Clarify that only PTR target address queries count, or charge the empty PTR response as a void and add a regression test. |
+| **MAUTH-T258-01** | `DmarcInput.org_override` is documented as the exact-org escape hatch (`mailauth.md:139-143`), but relaxed alignment still recomputes both identifiers with `org_domain_heuristic` instead of the override (`dmarc.rs:295-298,414-420`). | M | Apply the override to alignment comparisons, or narrow the contract to discovery only. |
+| **MAUTH-T258-02** | The SPF macro comment says unknown macros remain literal, but `expand_one` returns an empty string for an unknown macro (`spf.rs:819-862,865-947`). In a domain-spec such as `a%{z}.example`, the malformed macro can be removed and leave a valid shorter name, contrary to the fail-closed macro promise (`mailauth.md:44-47,59-63`). | M | Return the invalid-macro sentinel (or otherwise make the whole term invalid) for unknown macro names. |
+| **MAUTH-T258-03** | `h=dkim-signature` is documented to select other DKIM-Signature fields, but the current field is identified by comparing trimmed values (`dkim.rs:602-615`); an identical-valued other header is skipped too. | L | Pass an explicit header index/identity or otherwise distinguish the field under verification. |
+| **MAUTH-T258-04** | The contract still labels T-183 changes “pending Lead review” and §9 “Lead review requested” (`mailauth.md:3-8,183-185`) even though the Lead has now ratified the three deviations. | L | Update the contract status labels in a later documentation-only change; T-258 made no contract edits. |
+
+### T-258 disposition
+
+The requested T-183 behavior set is present and test-covered. MAUTH-2 and
+MAUTH-3 should be treated as resolved in later register bookkeeping; the
+retained MAUTH rows and T258-specific rows above remain open for their named
+owners. This section does not modify `FINDINGS.md`, source, or the contract.

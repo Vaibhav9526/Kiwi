@@ -220,5 +220,6 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-255 | Snooze: store snoozeUntil + unsnooze sweep + IPC presets (schema v10) | Agent 15 | open | `kiwi-mail/`, `src-tauri/` | T-244 |
 | T-256 | sandbox.md enumeration (sandbox-drift-1.md, 138L, honest WSL2 scoping) | Agent 22 | done |
 | T-257 | Account-add -> first-sync e2e verification vs fixtures (PASS/FAIL per stage) | Agent 19 | open | `kiwi-autoconfig/`, `kiwi-mail/`, `src-tauri/` | T-230/243 |
-| T-258 | mailauth.md post-T-183 contract-vs-code verification (14 fixes + 3 deviations) | Agent 22 | open | `docs/` | T-183 |
+| T-258 | mailauth post-T-183 verification (14 groups + 3 deviations documented) | Agent 22 | done |
 | T-259 | Admin code-side drift fixes: ADM-01 policy projection, ADM-13 evaluate shape, ADM-14 not.found | Agent 11 | open | `kiwi-admin/` | T-250 |
+| T-260 | security-session.md contract-vs-impl enumeration (TrustMachine/lock gates) | Agent 22 | open | `docs/audits/` | T-196 |

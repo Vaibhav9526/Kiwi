@@ -191,6 +191,59 @@ non-failure coverage, discrepancy-only, missing/untrusted upstream, wire
 vocabulary/corruption, stamp-time aligned-SPF integration, store roundtrip, and
 v7→v10 migration without fabricated backfill. All offline.
 
+## 2026-09-25 — T-254 deterministic attachment risk hints
+
+**Status:** COMPLETE. `cargo test -p kiwi-mail --all-targets` = 189 passed /
+0 failed; `cargo clippy -p kiwi-mail --all-targets -- -D warnings` clean;
+`cargo fmt --all -- --check` clean; `cargo check -p kiwi-app` clean; frontend
+`npx tsc --noEmit` clean.
+
+**Files changed (11):**
+- `kiwi-mail/src/attachrisk.rs` — new bounded enum, fixed reason vocabulary,
+  filename/content-type/magic classifier and table-driven offline tests.
+- `kiwi-mail/src/lib.rs` — registers the module.
+- `kiwi-mail/src/mime.rs` — computes the hint at MIME parse time; scans at most
+  2 MiB per decoded attachment and retains no payload bytes.
+- `kiwi-mail/src/sync.rs` — persists IMAP deferred/body-fetch and POP3 ingest
+  evidence independently of optional DNS auth sealing.
+- `kiwi-mail/src/store/schema.rs` — schema v11 adds sibling
+  `message_attachment_risk` table.
+- `kiwi-mail/src/store/mod.rs` — `MessageMeta.attach_risk`, migration/roundtrip/
+  move tests.
+- `kiwi-mail/src/store/queries.rs` — bounded JSON reason persistence, list attach,
+  move/delete/UID-reset lifecycle.
+- `kiwi-mail/src/search.rs` — keeps unevaluated search rows explicit `None`.
+- `kiwi-app/src-tauri/src/types/mail.rs` — `MessageView.attachRisk` typed wire.
+- `kiwi-app/src/kiwi.ts` — matching frontend enum/reason contract.
+- `docs/agents/agent-21-status.md` — this entry.
+
+**Exact table:** `failed` for any configured dangerous extension
+(`.exe/.scr/.bat/.cmd/.com/.pif/.js/.jse/.vbs/.ps1/.lnk/.iso/.img/.msi/.jar/
+.hta/.wsf`), dangerous extension/content type, including a dangerous final
+segment after another extension; otherwise `noted` for `.docm/.xlsm/.pptm`,
+OLE/ZIP magic with `vbaProject`, archive/encrypted/opaque containers, and bounded
+Unicode-confusable names; otherwise `clean`. Failed dominates noted. Filenames
+are ASCII-case-folded and a fixed confusable map catches fullwidth/Cyrillic
+lookalikes; unmapped Unicode is noted, never silently trusted. Archive contents
+are never extracted.
+
+**Persistence choice:** sibling table, not `message_auth`, because attachment
+classification is local MIME evidence and must work when no DNS auth sealer is
+available. The table stores only a CHECK-constrained `clean|noted|failed` value
+and a JSON array from the fixed eight-reason vocabulary—never filenames, MIME
+parameters, or bodies. Historical rows are not backfilled.
+
+**Safety boundary:** deterministic evidence for the frontend pill only. It is
+not a finding, never blocks UI or attachment access, never opens/executes/
+extracts content, and never moves or mutates mail. `None` on the wire means the
+body has not been parsed, not clean.
+
+**Tests:** every dangerous extension, double extensions, case tricks, dangerous
+content type, all macro extensions, OLE/ZIP `vbaProject`, unreadable archives,
+PDF/encrypted containers, mapped/unmapped Unicode confusables, bounded long
+filenames, parse-time MIME integration, persistence/list/move, and v10→v11
+migration without fabricated backfill. All offline.
+
 ## 2026-09-25 — T-199 dependency vulnerability audit delivered
 
 **Status:** COMPLETE. `cargo audit` (0.22.2, 1,269 advisories, 579 crates) +

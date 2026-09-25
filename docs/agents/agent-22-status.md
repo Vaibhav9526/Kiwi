@@ -270,3 +270,63 @@ were changed by T-256. Unrelated shared-worktree changes were preserved.
 - `git diff --check` for the T-256 audit/status files — passed.
 - T-256 Orca DONE report sent to terminal
   `term_c20c6737-9b80-4911-bcd2-38aa5113e4d7`; receipt returned `accepted: true`.
+
+## 2026-09-25 — T-258: mailauth post-T-183 contract-vs-code verification
+
+**Status:** done (read-only contract/source audit; no source or contract
+implementation changes).
+
+### Files changed
+
+- `docs/audits/contract-drift-1.md` — appended the T-258 14-group
+  mailauth verification matrix, §9 deviation check, MAUTH-2/3 resolution, and
+  residual findings.
+- `docs/agents/agent-22-status.md` — this entry.
+
+No `kiwi-mailauth` source, test, dependency, or `docs/contracts/*` files were
+changed. Unrelated shared-worktree changes were preserved.
+
+### Evidence and findings
+
+- Read `docs/contracts/mailauth.md`, all current `kiwi-mailauth/src/` modules,
+  `Cargo.toml`, Agent 16's T-183 status/commit, and the existing MAUTH rows.
+- Verified the 14 task-level T-183 behavior groups against current code and
+  tests: DKIM empty-body/`l=`/header-hash/order/canonicalization/`b=`/`t=x=`;
+  SPF include/redirect/void/caps/macro grammar; and DMARC From-first,
+  subdomain `sp=`, and multi-record behavior.
+- Confirmed the three ratified §9 deviations are documented and implemented:
+  invalid/absent DMARC `p=`/`sp=` → `permerror`, strict macro-label rejection
+  of percent escapes, and KIWI's 14-day `t=` window with `x=` precedence.
+- MAUTH-2 and MAUTH-3 are resolved by the updated contract/code pair; retained
+  residuals include MAUTH-1/4/5/6/7/8 and T258-specific org-override,
+  empty-PTR-void, unknown-macro, identical-DKIM-field, and contract-status
+  observations.
+- No `FINDINGS.md` changes were made; this read-only task did not alter the
+  canonical register.
+
+### Commands run
+
+- `cargo test -p kiwi-mailauth` — **63 passed, 0 failed**.
+- `cargo clippy -p kiwi-mailauth --all-targets -- -D warnings` — passed.
+- `cargo fmt -p kiwi-mailauth --check` — passed.
+- `git diff --check -- docs/contracts/mailauth.md docs/audits/contract-drift-1.md docs/agents/agent-22-status.md` — passed after the T-258 append.
+
+### Assumptions / risks
+
+- Line references reflect the current shared-worktree snapshot; unrelated
+  concurrent changes may shift them.
+- T258-specific findings are provisional owner-review notes and are not
+  silently promoted to canonical register IDs.
+- The contract still says T-183/§9 review is pending in its metadata; T-258
+  records that documentation-state mismatch without editing the contract.
+- No live DNS/network test was run; the crate's tests use `MockResolver` and
+  remain fully offline.
+
+### Verification
+
+- T-258 audit section contains all 14 requested groups, file:line evidence,
+  the three ratified deviations, and residual recommendations.
+- `cargo test -p kiwi-mailauth` — **63 passed, 0 failed**.
+- Clippy, rustfmt, and targeted diff checks — passed.
+- T-258 Orca DONE report sent to terminal
+  `term_c20c6737-9b80-4911-bcd2-38aa5113e4d7`; receipt returned `accepted: true`.
