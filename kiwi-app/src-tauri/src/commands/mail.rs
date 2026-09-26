@@ -821,12 +821,13 @@ pub(crate) async fn connect_imap(state: &AppState, acct: &MailAccount) -> CmdRes
     )
     .await
     .map_err(IpcError::from)?;
-    let mut client = ImapClient::connect_with(t, {
-        let mut c = kiwi_mail::imap::ImapConfig::default();
-        // KIWI_DEV_PLAINTEXT fixture seam — loopback hosts only.
-        c.allow_plaintext_auth = kiwi_core::dev::plaintext_fixture_for(&acct.incoming.server.host);
-        c
-    })
+    let mut client = ImapClient::connect_with(
+        t,
+        kiwi_mail::imap::ImapConfig {
+            // KIWI_DEV_PLAINTEXT fixture seam — loopback hosts only.
+            allow_plaintext_auth: kiwi_core::dev::plaintext_fixture_for(&acct.incoming.server.host),
+        },
+    )
     .await
     .map_err(IpcError::from)?;
     let secret = resolve_secret(state, &acct.incoming.auth)?;
@@ -1093,12 +1094,14 @@ pub(crate) async fn pop3_sync(
     )
     .await
     .map_err(IpcError::from)?;
-    let mut client = kiwi_mail::pop3::Pop3Client::connect(t, {
-        let mut c = kiwi_mail::pop3::Pop3Config::default();
-        // KIWI_DEV_PLAINTEXT fixture seam — loopback hosts only.
-        c.allow_plaintext_auth = kiwi_core::dev::plaintext_fixture_for(&acct.incoming.server.host);
-        c
-    })
+    let mut client = kiwi_mail::pop3::Pop3Client::connect(
+        t,
+        kiwi_mail::pop3::Pop3Config {
+            // KIWI_DEV_PLAINTEXT fixture seam — loopback hosts only.
+            allow_plaintext_auth: kiwi_core::dev::plaintext_fixture_for(&acct.incoming.server.host),
+            ..Default::default()
+        },
+    )
     .await
     .map_err(IpcError::from)?;
     if let Some(secret) = resolve_secret(state, &acct.incoming.auth)? {
