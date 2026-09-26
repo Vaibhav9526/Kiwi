@@ -1,0 +1,125 @@
+/* Gmail Blue — stock theme package. Google-ergonomics light: white
+ * surfaces, #1a73e8 primary + selection, minimal chrome. */
+
+:root[data-theme="light-blue"],
+[data-theme="light-blue"] {
+  color-scheme: light;
+
+  /* ---- canonical palette ---- */
+  --accent: #1a73e8;
+  --accent-hover: #1765cc;
+  --accent-ink: #ffffff;
+  --selection: #e8f0fe;
+
+  /* ---- mailspring tokens ---- */
+  --kiwi-ms-bg: #f6f8fc;
+  --kiwi-ms-surface: #ffffff;
+  --kiwi-ms-surface-2: #f2f5f9;
+  --kiwi-ms-surface-3: #e4e9f0;
+  --kiwi-ms-sidebar: #f0f4f9;
+  --kiwi-ms-toolbar: #f6f8fc;
+  --kiwi-ms-list-bg: #ffffff;
+  --kiwi-ms-list-border: #dde3ec;
+  --kiwi-ms-list-hover: #f0f4f9;
+  --kiwi-ms-text: #1f1f1f;
+  --kiwi-ms-text-heading: #1f1f1f;
+  --kiwi-ms-text-secondary: #444746;
+  --kiwi-ms-text-muted: #747775;
+  --kiwi-ms-link: #0b57d0;
+  --kiwi-ms-accent: #1a73e8;
+  --kiwi-ms-accent-active: #1765cc;
+  --kiwi-ms-accent-emphasis: #4285f4;
+  --kiwi-ms-primary: #1a73e8;
+  --kiwi-ms-primary-text: #ffffff;
+  --kiwi-ms-icon-muted: #8b9097;
+  --kiwi-ms-border: #dde3ec;
+  --kiwi-ms-border-strong: #c2c9d4;
+  --kiwi-ms-divider: #e9edf3;
+  --kiwi-ms-hairline: rgba(31, 31, 31, 0.08);
+  --kiwi-ms-info: #0b57d0;
+  --kiwi-ms-success: #188038;
+  --kiwi-ms-warning: #b06000;
+  --kiwi-ms-danger: #d93025;
+  --kiwi-ms-toast-info: #0b57d0;
+  --kiwi-ms-toast-success: #188038;
+  --kiwi-ms-toast-warning: #b06000;
+  --kiwi-ms-toast-error: #d93025;
+  --kiwi-ms-toast-pending: #9aa3ad;
+  --kiwi-ms-shadow-color: rgba(60, 64, 67, 0.14);
+  --kiwi-ms-shadow-standard: 0 1px 2px 0 rgba(60, 64, 67, 0.1);
+  --kiwi-ms-shadow-raised: 0 2px 8px 0 rgba(60, 64, 67, 0.14);
+  --kiwi-ms-shadow-popover: 0 2px 10px rgba(60, 64, 67, 0.18);
+  --kiwi-ms-shadow-modal: 0 12px 40px rgba(60, 64, 67, 0.28);
+  --kiwi-ms-focus-glow: 0 0 0 3px rgba(26, 115, 232, 0.24);
+  --kiwi-ms-select-tint: #e8f0fe;
+  --kiwi-ms-select-border: #c2d7f5;
+  --kiwi-ms-select-solid: var(--kiwi-ms-accent-active);
+
+  /* ---- legacy kiwi tokens ---- */
+  --kiwi-bg: #f6f8fc;
+  --kiwi-surface: #ffffff;
+  --kiwi-sidebar: #f0f4f9;
+  --kiwi-card: #ffffff;
+  --kiwi-input: #ffffff;
+  --kiwi-border: #dde3ec;
+  --kiwi-border-soft: #e9edf3;
+  --kiwi-text: #1f1f1f;
+  --kiwi-text-secondary: #444746;
+  --kiwi-text-disabled: #8b9097;
+  --kiwi-brand: #1a73e8;
+  --kiwi-brand-hover: #1765cc;
+  --kiwi-brand-ink: #0b3d91;
+  --kiwi-focus: #1a73e8;
+  --kiwi-focus-ring: rgba(26, 115, 232, 0.24);
+  --kiwi-secure: #188038;
+  --kiwi-secure-bg: #e6f4ea;
+  --kiwi-secure-border: rgba(24, 128, 56, 0.45);
+  --kiwi-warning: #b06000;
+  --kiwi-warning-bg: #fef7e0;
+  --kiwi-warning-border: rgba(176, 96, 0, 0.45);
+  --kiwi-danger: #d93025;
+  --kiwi-danger-bg: #fce8e6;
+  --kiwi-danger-border: rgba(217, 48, 37, 0.45);
+  --kiwi-unknown: #5f6470;
+  --kiwi-unknown-bg: #e8ebf0;
+  --kiwi-unknown-border: rgba(95, 100, 112, 0.4);
+  --kiwi-lock: #9a4f08;
+  --kiwi-lock-bg: #f6e8c8;
+  --kiwi-hover-bg: rgba(26, 115, 232, 0.06);
+  --kiwi-shadow: 0 4px 20px rgba(60, 64, 67, 0.14);
+  --kiwi-shimmer: rgba(26, 115, 232, 0.07);
+
+  /* ---- pane tokens (self-contained — :root --em-* defaults don't
+   * recolor for new ids) ---- */
+  --em-pane-border: #dde3ec;
+  --em-hairline: #eceff4;
+  --em-pane-bg: #ffffff;
+  --em-pane-alt: #f6f8fc;
+  --em-pane-titlebar: #fbfcfe;
+  --em-toolbar-bg: #f6f8fc;
+  --em-select: #e8f0fe;
+  --em-select-border: #c2d7f5;
+  --em-select-focus: #d2e3fc;
+  --em-unread-dot: #1a73e8;
+  --em-sender-blue: #1a73e8;
+  --em-link: #0b57d0;
+  --em-hover: #f0f4f9;
+  --em-text-dim: #5f6368;
+  --em-text-faint: #9aa0a6;
+  --em-group-head: #5f6368;
+  --em-avatar-text: #ffffff;
+  --em-card-bg: #ffffff;
+  --em-menu-bg: #ffffff;
+  --em-tab-line: #dde3ec;
+  --em-star: #f9ab00;
+  --em-cat-news: #1a73e8;
+  --em-cat-news-bg: #e8f0fe;
+  --em-cat-personal: #b06000;
+  --em-cat-personal-bg: #fef7e0;
+  --em-cat-logs: #188038;
+  --em-cat-logs-bg: #e6f4ea;
+  --em-cat-social: #9334e6;
+  --em-cat-social-bg: #f3e8fd;
+  --em-cat-other: #5f6368;
+  --em-cat-other-bg: #eceef1;
+}

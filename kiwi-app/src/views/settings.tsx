@@ -35,6 +35,15 @@ import type { TempMail } from "../state/tempmail";
 const SECTIONS = ["General", "Accounts", "Identity", "Appearance", "Shortcuts", "Mail Rules", "Integrations", "Plugins", "About"] as const;
 type Section = (typeof SECTIONS)[number];
 
+/** Left-rail groupings (dispatch 2026-09-26c item 3) — order must match
+ * SECTIONS so arrow-key traversal still lands on the right section. */
+const SECTION_GROUPS: { label: string; sections: Section[] }[] = [
+  { label: "Mail", sections: ["General", "Accounts", "Mail Rules"] },
+  { label: "Security & services", sections: ["Identity", "Integrations", "Plugins"] },
+  { label: "Application", sections: ["Appearance", "Shortcuts"] },
+  { label: "About", sections: ["About"] },
+];
+
 function errText(e: unknown): string {
   return e instanceof IpcError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e);
 }
@@ -621,10 +630,11 @@ export function SettingsView({
 
   return (
     <div className="ms-prefs ms-view-enter">
-      <div
-        className="ms-tabs"
+      <nav
+        className="ms-tabs ms-prefs-rail"
         role="tablist"
         aria-label="Preferences"
+        aria-orientation="vertical"
         onKeyDown={(e) => {
           const tabs = Array.from(
             (e.currentTarget as HTMLElement).querySelectorAll<HTMLElement>('[role="tab"]'),
@@ -643,21 +653,28 @@ export function SettingsView({
           }
         }}
       >
-        {SECTIONS.map((s) => (
-          <button
-            key={s}
-            type="button"
-            role="tab"
-            aria-selected={s === section}
-            className="ms-tab"
-            tabIndex={s === section ? 0 : -1}
-            onClick={() => setSection(s)}
-          >
-            {s}
-          </button>
+        {SECTION_GROUPS.map((g) => (
+          <div key={g.label} className="ms-rail-group" role="presentation">
+            <div className="ms-rail-label" aria-hidden="true">
+              {g.label}
+            </div>
+            {g.sections.map((s) => (
+              <button
+                key={s}
+                type="button"
+                role="tab"
+                aria-selected={s === section}
+                className="ms-tab"
+                tabIndex={s === section ? 0 : -1}
+                onClick={() => setSection(s)}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
         ))}
-      </div>
-      <section aria-label={`${section} settings`} role="tabpanel">
+      </nav>
+      <section className="ms-prefs-content" aria-label={`${section} settings`} role="tabpanel">
         <h1>{section}</h1>
         {actionError && (
           <div className="kiwi-banner error" role="alert">

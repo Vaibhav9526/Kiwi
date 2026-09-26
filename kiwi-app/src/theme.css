@@ -44,6 +44,24 @@
   --kiwi-shadow: 0 4px 20px rgba(60, 45, 10, 0.14);
   --kiwi-shimmer: rgba(138, 90, 6, 0.08);
 
+  /* ---- canonical flat palette (dispatch 2026-09-26c item 1) ----
+   * Single source of truth for primary actions + selection. Stock theme
+   * packages override these; --kiwi-brand/--em-orange/--kiwi-ms-primary
+   * stay as the surface-level aliases. */
+  --accent: var(--kiwi-brand);
+  --accent-hover: var(--kiwi-brand-hover);
+  --accent-ink: #1c1204;
+  --surface: var(--kiwi-surface);
+  --surface-2: var(--kiwi-bg);
+  --border: var(--kiwi-border-soft);
+  --text: var(--kiwi-text);
+  --text-muted: var(--kiwi-text-secondary);
+  --selection: #d7ebfb;
+  --ok: var(--kiwi-secure);
+  --warn: var(--kiwi-warning);
+  --danger: var(--kiwi-danger);
+  --info: #2f6fd6;
+
   /* ---- T-342 global radius scale ("soft corners everywhere" — planner UI
    * pass#2). Tiers: sm = controls (buttons/inputs/chips, 6–8px band); md =
    * menus, popovers, small surfaces; card = cards/panels/readers (10–14px
@@ -98,11 +116,26 @@
   --kiwi-hover-bg: rgba(255, 255, 255, 0.035);
   --kiwi-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
   --kiwi-shimmer: rgba(255, 255, 255, 0.06);
+
+  /* ---- canonical flat palette (dark side) ---- */
+  --accent: var(--kiwi-brand);
+  --accent-hover: var(--kiwi-brand-hover);
+  --accent-ink: #1c1204;
+  --surface: var(--kiwi-surface);
+  --surface-2: var(--kiwi-bg);
+  --border: var(--kiwi-border-soft);
+  --text: var(--kiwi-text);
+  --text-muted: var(--kiwi-text-secondary);
+  --selection: #2a2f45;
+  --ok: var(--kiwi-secure);
+  --warn: var(--kiwi-warning);
+  --danger: var(--kiwi-danger);
+  --info: #8ab4e8;
 }
 
 * { box-sizing: border-box; }
 
-::selection { background: rgba(234, 161, 50, 0.32); }
+::selection { background: var(--selection); }
 
 body {
   margin: 0;
@@ -157,14 +190,14 @@ button[aria-disabled="true"] {
 
 /* Primary action — flat accent, reserved for the one main action per surface. */
 .kiwi-btn-primary {
-  background: var(--kiwi-brand);
+  background: var(--accent);
   border: none;
-  color: #1c1204;
+  color: var(--accent-ink);
   font-weight: 700;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.14);
 }
 .kiwi-btn-primary:hover:not(:disabled) {
-  background: var(--kiwi-brand-hover);
+  background: var(--accent-hover);
   border: none;
 }
 
@@ -247,9 +280,9 @@ input:focus, select:focus, textarea:focus {
   background: var(--kiwi-card);
   border: 1px solid var(--kiwi-border-soft);
   border-radius: var(--kiwi-radius-card);
-  padding: 0.9rem 1rem;
+  padding: 0.8rem 1rem;
   margin-bottom: 0.8rem;
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 
 .kiwi-dialog-backdrop {
@@ -295,7 +328,7 @@ input:focus, select:focus, textarea:focus {
   font-size: 2.6rem;
   border-radius: var(--kiwi-radius-circle);
   background: var(--kiwi-surface);
-  border: 2px solid var(--kiwi-brand);
+  border: 2px solid var(--accent);
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.18);
 }
 
@@ -323,8 +356,8 @@ input:focus, select:focus, textarea:focus {
 .kiwi-row:hover { border-color: var(--kiwi-border); background: var(--kiwi-hover-bg); }
 .kiwi-row[aria-selected="true"] {
   background: var(--kiwi-surface);
-  border-color: rgba(234, 161, 50, 0.45);
-  box-shadow: inset 2px 0 0 var(--kiwi-brand), 0 4px 16px rgba(0, 0, 0, 0.25);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--kiwi-border-soft));
+  box-shadow: inset 2px 0 0 var(--accent), 0 1px 4px rgba(0, 0, 0, 0.08);
 }
 .kiwi-row.is-unread { font-weight: 700; }
 

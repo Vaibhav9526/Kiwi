@@ -94,3 +94,12 @@
   --kiwi-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
   --kiwi-shimmer: rgba(255, 255, 255, 0.06);
 }
+
+/* Canonical palette (dispatch 26c): amber brand primary action. */
+:root[data-theme="dark"],
+[data-theme="dark"] {
+  --accent: #eaa132;
+  --accent-hover: #f2b64c;
+  --accent-ink: #1c1204;
+  --selection: #2a2f45;
+}

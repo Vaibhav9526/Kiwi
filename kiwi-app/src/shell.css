@@ -140,9 +140,9 @@
 }
 
 .ms-btn-primary {
-  background: var(--kiwi-ms-accent);
+  background: var(--accent, var(--kiwi-ms-accent));
   border-color: transparent;
-  color: #1c1204;
+  color: var(--accent-ink, #1c1204);
   font-weight: 700;
 }
 
@@ -151,7 +151,7 @@
 }
 
 .ms-btn-primary:hover:not(:disabled) {
-  background: var(--kiwi-ms-accent-active);
+  background: var(--accent-hover, var(--kiwi-ms-accent-active));
   border-color: transparent;
 }
 
@@ -623,30 +623,55 @@
   margin: 0 auto 0 0;
 }
 
-/* ---------- tabbed preferences ---------- */
+/* ---------- tabbed preferences (Mailspring pattern: left rail + cards) ---------- */
 
 .ms-prefs {
-  max-width: 900px;
+  display: flex;
+  gap: 24px;
+  max-width: 1100px;
+  align-items: flex-start;
 }
 
 .ms-tabs {
   display: flex;
   gap: 2px;
-  justify-content: center;
-  border-bottom: 1px solid var(--kiwi-ms-border);
+}
+
+.ms-prefs-rail {
+  flex-direction: column;
+  flex: 0 0 176px;
+  position: sticky;
+  top: 0;
+  padding-top: 6px;
+}
+
+.ms-rail-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
   margin-bottom: 14px;
+}
+
+.ms-rail-label {
+  padding: 4px 10px 6px;
+  font-size: 11px;
+  font-weight: var(--kiwi-ms-weight-semibold, 600);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--em-text-faint, var(--kiwi-ms-text-muted));
 }
 
 .ms-tab {
   background: transparent;
   border: 1px solid transparent;
-  border-bottom: none;
-  border-radius: var(--kiwi-ms-radius-base) var(--kiwi-ms-radius-base) 0 0;
+  border-radius: var(--kiwi-ms-radius-base);
   color: var(--kiwi-ms-text-secondary);
   cursor: pointer;
   font: inherit;
   font-size: var(--kiwi-ms-text-small);
-  padding: 8px 14px;
+  padding: 7px 10px;
+  text-align: left;
+  width: 100%;
 }
 
 .ms-tab:hover {
@@ -658,8 +683,73 @@
   color: var(--kiwi-ms-text);
   font-weight: var(--kiwi-ms-weight-semibold);
   background: var(--kiwi-ms-surface);
-  border-color: var(--kiwi-ms-border);
-  box-shadow: inset 0 2px 0 var(--kiwi-ms-accent);
+  box-shadow: inset 2px 0 0 var(--accent, var(--kiwi-ms-accent));
+}
+
+/* Content column: single stacked card. Direct children become rows —
+ * consistent padding, hairline dividers, controls right-aligned where the
+ * row is a label wrapping its control. Cards/banners keep their own chrome
+ * (inset margin instead of full-bleed row). */
+.ms-prefs-content {
+  flex: 1;
+  min-width: 0;
+  max-width: 760px;
+  background: var(--kiwi-ms-surface);
+  border: 1px solid var(--kiwi-ms-border);
+  border-radius: var(--kiwi-radius-card, var(--kiwi-ms-radius-large, 12px));
+  padding: 0;
+  overflow: hidden;
+}
+
+.ms-prefs-content > h1 {
+  margin: 0;
+  padding: 16px 18px 10px;
+  font-size: 1.15rem;
+  border-bottom: 1px solid var(--kiwi-ms-divider, var(--em-hairline, #eef0f3));
+}
+
+.ms-prefs-content > p,
+.ms-prefs-content > ul,
+.ms-prefs-content > ol,
+.ms-prefs-content > h2,
+.ms-prefs-content > h3,
+.ms-prefs-content > details,
+.ms-prefs-content > fieldset {
+  margin: 0;
+  padding: 11px 18px;
+  border-bottom: 1px solid var(--kiwi-ms-divider, var(--em-hairline, #eef0f3));
+}
+
+.ms-prefs-content > :last-child {
+  border-bottom: none;
+}
+
+/* Label-wrapping-control rows: label text left, last control right. */
+.ms-prefs-content > p > label {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+.ms-prefs-content > p > label > :last-child:not(:first-child) {
+  margin-left: auto;
+}
+
+/* Section sub-headers inside a pane read as muted group labels. */
+.ms-prefs-content > h2,
+.ms-prefs-content > h3 {
+  font-size: 0.8rem;
+  font-weight: var(--kiwi-ms-weight-semibold, 600);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--em-group-head, var(--kiwi-ms-text-secondary));
+  background: var(--kiwi-ms-surface-2, transparent);
+}
+
+/* Nested chrome keeps its card look but sits inset inside the pane card. */
+.ms-prefs-content > .kiwi-card,
+.ms-prefs-content > .kiwi-banner {
+  margin: 10px 16px;
 }
 
 /* ---------- switch primitive (role=switch buttons) ---------- */
@@ -1028,9 +1118,9 @@
   --em-unread-dot: #3b82c4;
   --em-sender-blue: #2f6fb0;
   --em-link: #3b82c4;
-  --em-orange: #f5a623;
-  --em-orange-hover: #e5960f;
-  --em-orange-ink: #4a3200;
+  --em-orange: var(--accent, #f5a623);
+  --em-orange-hover: var(--accent-hover, #e5960f);
+  --em-orange-ink: var(--accent-ink, #4a3200);
   --em-hover: #eef1f5;
   --em-text-dim: #69707c;
   --em-text-faint: #98a0ab;
@@ -1066,9 +1156,9 @@
   --em-unread-dot: #f2c063;
   --em-sender-blue: #8ab4e8;
   --em-link: #f2c063;
-  --em-orange: #eaa132;
-  --em-orange-hover: #f2b64c;
-  --em-orange-ink: #1c1204;
+  --em-orange: var(--accent, #eaa132);
+  --em-orange-hover: var(--accent-hover, #f2b64c);
+  --em-orange-ink: var(--accent-ink, #1c1204);
   --em-hover: #1d1d26;
   --em-text-dim: #a9a7bd;
   --em-text-faint: #5e5c72;
@@ -1103,7 +1193,9 @@
   align-items: center;
   gap: 8px;
   height: 40px;
-  padding: 0 8px;
+  /* Overlay titlebar: reserve room for the OS caption buttons (min/max/close)
+     so the theme picker + trust chip never slide under them. */
+  padding: 0 138px 0 8px;
   background: var(--em-pane-titlebar);
   border-bottom: 1px solid var(--em-pane-border);
   user-select: none;
@@ -1425,8 +1517,8 @@ span.em-tool-primary {
 .em-send,
 .em-send-chev {
   border: none;
-  background: var(--em-orange, var(--kiwi-brand));
-  color: var(--em-orange-ink, #1c1204);
+  background: var(--accent, var(--em-orange, var(--kiwi-brand)));
+  color: var(--accent-ink, var(--em-orange-ink, #1c1204));
   font: inherit;
   font-weight: var(--kiwi-ms-weight-semibold, 600);
   cursor: pointer;
@@ -1447,7 +1539,7 @@ span.em-tool-primary {
 
 .em-send:hover:not(:disabled),
 .em-send-chev:hover:not(:disabled) {
-  background: var(--em-orange-hover);
+  background: var(--accent-hover, var(--em-orange-hover));
 }
 
 .em-send:disabled,

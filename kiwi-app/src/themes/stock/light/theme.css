@@ -95,3 +95,12 @@
   --kiwi-shadow: 0 18px 48px rgba(15, 23, 42, 0.18);
   --kiwi-shimmer: rgba(47, 111, 214, 0.07);
 }
+
+/* Canonical palette (dispatch 26c): eM orange primary action. */
+:root[data-theme="light"],
+[data-theme="light"] {
+  --accent: #e8781e;
+  --accent-hover: #cf6a12;
+  --accent-ink: #2a1800;
+  --selection: #dbe8fa;
+}
