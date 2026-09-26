@@ -329,7 +329,7 @@
   width: 3px;
   align-self: stretch;
   min-height: 2rem;
-  border-radius: 2px;
+  border-radius: var(--kiwi-radius-pill);
 }
 
 .ms-account-meta {
@@ -603,7 +603,7 @@
 .ms-composer-modal {
   background: var(--kiwi-ms-surface);
   border: 1px solid var(--kiwi-ms-border);
-  border-radius: var(--kiwi-ms-radius-large);
+  border-radius: var(--kiwi-radius-large);
   box-shadow: var(--kiwi-ms-shadow-modal);
   width: min(760px, 100%);
   max-height: calc(100vh - 220px);
@@ -767,7 +767,7 @@
 .ms-reader::-webkit-scrollbar-thumb,
 .ms-content::-webkit-scrollbar-thumb {
   background: var(--kiwi-ms-border-strong);
-  border-radius: 6px;
+  border-radius: var(--kiwi-radius-pill);
   border: 2px solid transparent;
   background-clip: content-box;
 }
@@ -1119,7 +1119,7 @@
   margin: 0 auto;
   background: var(--em-pane-alt);
   border: 1px solid var(--em-pane-border);
-  border-radius: 999px;
+  border-radius: var(--kiwi-radius-pill);
   padding: 3px 12px;
   color: var(--em-text-dim);
 }
@@ -1880,7 +1880,7 @@ span.em-tool-primary {
   align-items: center;
   font-size: var(--kiwi-ms-text-tiny);
   font-weight: var(--kiwi-ms-weight-medium);
-  border-radius: var(--kiwi-ms-radius-small);
+  border-radius: var(--kiwi-radius-pill);
   padding: 0 5px;
   line-height: 1.6;
 }
@@ -2112,7 +2112,7 @@ span.em-tool-primary {
   font-size: 0.72rem;
   font-weight: 600;
   padding: 1px 7px;
-  border-radius: 999px;
+  border-radius: var(--kiwi-radius-pill);
   border: 1px solid var(--kiwi-ms-accent);
   color: var(--kiwi-ms-accent);
   background: color-mix(in srgb, var(--kiwi-ms-accent) 10%, var(--kiwi-ms-surface));
@@ -2144,7 +2144,7 @@ span.em-tool-primary {
   font-size: 0.78rem;
   padding: 2px 6px;
   border: 1px solid var(--kiwi-ms-border);
-  border-radius: 6px;
+  border-radius: var(--kiwi-radius-sm);
   background: var(--kiwi-ms-surface);
   color: var(--kiwi-ms-text);
 }
@@ -2276,7 +2276,7 @@ summary:focus-visible {
 .em-security-demo {
   color: var(--kiwi-ms-warning);
   border: 1px solid var(--kiwi-ms-warning);
-  border-radius: 3px;
+  border-radius: var(--kiwi-radius-sm);
   padding: 0 3px;
   font-size: var(--kiwi-ms-text-smaller);
 }
@@ -2581,7 +2581,7 @@ summary:focus-visible {
   justify-content: center;
   gap: 0.5rem;
   border: 2px dashed var(--kiwi-ms-accent, #4a6fa5);
-  border-radius: 8px;
+  border-radius: var(--kiwi-radius-md);
   background: var(--em-card-bg, rgba(255, 255, 255, 0.94));
   color: var(--kiwi-ms-accent, #4a6fa5);
   font-weight: 600;
@@ -2598,7 +2598,7 @@ summary:focus-visible {
   padding: 4px;
   background: var(--em-card-bg, #fff);
   border: 1px solid var(--kiwi-ms-border, #d8d4cc);
-  border-radius: 8px;
+  border-radius: var(--kiwi-radius-md);
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
   font: inherit;
   outline: none;
@@ -2616,7 +2616,7 @@ summary:focus-visible {
   box-sizing: border-box;
   padding: 5px 10px;
   border: none;
-  border-radius: 5px;
+  border-radius: var(--kiwi-radius-sm);
   background: transparent;
   color: var(--kiwi-ms-text, inherit);
   font: inherit;
@@ -2688,7 +2688,7 @@ summary:focus-visible {
 button.em-quote-toggle {
   background: none;
   border: 1px solid var(--kiwi-border, #d5d5d5);
-  border-radius: 4px;
+  border-radius: var(--kiwi-radius-sm);
   padding: 1px 8px;
   font: inherit;
   font-size: 0.82rem;
@@ -2723,7 +2723,7 @@ pre.em-quote-region {
   font-size: 0.8rem;
   padding: 0.12rem 0.55rem;
   border: 1px solid var(--kiwi-border, #ccc);
-  border-radius: 999px;
+  border-radius: var(--kiwi-radius-pill);
   background: transparent;
   color: var(--kiwi-text-secondary, #555);
   cursor: pointer;
@@ -2858,7 +2858,7 @@ pre.em-quote-region {
   max-width: 14rem;
   background: var(--kiwi-surface, #fff);
   border: 1px solid var(--kiwi-border, #d7d7d7);
-  border-radius: 8px 8px 0 0;
+  border-radius: var(--kiwi-radius-md, 8px) var(--kiwi-radius-md, 8px) 0 0;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
   overflow: hidden;
 }
@@ -2988,4 +2988,19 @@ pre.em-quote-region {
   .kiwi-dispo-split {
     grid-template-columns: 1fr;
   }
+}
+
+/* T-342 density pass: the palette's bare "no matches" line gets the same
+   icon+muted idiom as the other empty states, sized down for the dialog. */
+.kiwi-palette-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  padding: 0.9rem 0.5rem;
+  color: var(--em-text-dim, var(--kiwi-text-secondary));
+  font-size: var(--kiwi-ms-text-smaller, 0.8rem);
+}
+.kiwi-palette-empty svg {
+  opacity: 0.55;
 }

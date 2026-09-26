@@ -66,6 +66,8 @@ import { SearchView } from "./views/search";
 import type { SearchResultRow } from "./views/search";
 import { ContactsView } from "./views/contacts";
 import { FiltersView } from "./views/filters";
+import { DisposableInboxView } from "./views/disposable";
+import { useTempMail } from "./state/tempmail";
 
 
 function toEnvelope(
@@ -137,6 +139,12 @@ export default function App() {
   // ref (declared before `messages` exists in scope — ref reads at call time).
   const pluginListRef = useRef<MessageEnvelope[]>([]);
   usePluginRuntime(notify, trust.locked, () => pluginListRef.current);
+  // T-342: one shared disposable-inbox session for the app — sidebar badge
+  // + quick-action, the #/disposable view, and the Integrations management
+  // card all read this instance (no double polling). Paused while locked:
+  // the provider session isn't mailbox content the lock protects, but a
+  // locked app shouldn't keep hitting the provider either.
+  const temp = useTempMail(!demo && !trust.locked);
   const [folderLists, setFolderLists] = useState<Record<string, FolderView[]>>({});
   const [foldersError, setFoldersError] = useState<string | null>(null);
   const { emailById, folders, folderLabel, filtersListLabel, smartFolders, accountSections, smartUnread } = useAccountModel(
@@ -1608,6 +1616,17 @@ export default function App() {
             outboxCount={outbox.length}
             foldersError={foldersError}
             demo={demo}
+            disposable={{
+              unread: temp.unread,
+              active: route.name === "disposable",
+              canCreate: !demo,
+              busy: temp.busy !== null,
+              onNew: () => {
+                // Create (or fail) THEN land on the inbox view either way —
+                // the view surfaces temp.error/flash honestly.
+                void temp.create().finally(() => navigate({ name: "disposable" }));
+              },
+            }}
             onMarkAllRead={(key) => void markFolderRead(key)}
             onExportMbox={openFolderExport}
             onFolderOp={folderOp}
@@ -1921,6 +1940,7 @@ export default function App() {
             }}
             onLock={() => void doLock()}
             folderLists={folderLists}
+            temp={temp}
             filters={{
               demo,
               accounts: accountsRaw.map((a) => ({ id: a.id, email: a.email, displayName: a.displayName || a.email })),
@@ -1947,6 +1967,7 @@ export default function App() {
             onNotify={notify}
           />
         )}
+        {route.name === "disposable" && <DisposableInboxView temp={temp} live={!demo} />}
         {route.name === "search" && (
           <SearchView
             query={query}

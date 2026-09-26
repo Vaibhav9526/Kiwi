@@ -292,6 +292,38 @@ async function runChecks(cdp, sid) {
     return `recipient+body fields${hasAcct ? ", account select" : ""}`;
   });
 
+  await check("disposable", "T-342: disposable sidebar promo → #/disposable, honest demo gating", async () => {
+    // Sidebar promo: section + row + "+ New" quick-action render next to the
+    // mailboxes — no fabricated unread chip without a real session.
+    await cdp.eval(sid, "window.location.hash = '#/mail'");
+    if (!(await waitFor(cdp, sid, qs("nav.em-folders .em-dispo")))) throw new Error("no disposable sidebar section");
+    const demoMode = await cdp.eval(sid, `/demo data/i.test(document.body.innerText)`);
+    const newBtn = await cdp.eval(sid,
+      `(()=>{const b=document.querySelector('.em-dispo-new'); return b?{disabled:b.disabled,title:b.title||''}:null})()`);
+    if (!newBtn) throw new Error('"+ New" quick-action missing');
+    if (demoMode && !newBtn.disabled) throw new Error('"+ New" enabled in demo — would fabricate a session');
+    if (demoMode && !newBtn.title) throw new Error("demo-disabled +New has no honest title");
+    // Row navigates to the first-class view; notice + honest empty state.
+    await cdp.eval(sid, `[...document.querySelectorAll('.em-dispo [role=treeitem]')].find(r=>/Disposable Inbox/.test(r.textContent))?.click()`);
+    if (!(await waitFor(cdp, sid, `location.hash.includes('disposable') && ${qs(".kiwi-dispo")}`, 4000)))
+      throw new Error("row did not route to #/disposable view");
+    const notice = await cdp.eval(sid,
+      `(document.querySelector('.kiwi-dispo [role=note]')?.textContent||'')`);
+    if (!/public|anyone/i.test(notice)) throw new Error("public-inbox notice not rendered");
+    if (demoMode) {
+      const demoNote = await cdp.eval(sid,
+        `(document.querySelector('.kiwi-dispo')?.innerText||'')`);
+      if (!/backend|demo/i.test(demoNote)) throw new Error("demo gating copy missing");
+      const fabricated = await cdp.eval(sid, qsa(".kiwi-dispo-row, .kiwi-dispo [role=option]"));
+      if (fabricated > 0) throw new Error(`${fabricated} fabricated message rows in demo`);
+      const createDisabled = await cdp.eval(sid,
+        `[...document.querySelectorAll('.kiwi-dispo button')].filter(b=>/Create disposable address/.test(b.textContent)).every(b=>b.disabled)`);
+      if (!createDisabled) throw new Error("view create button not demo-disabled");
+    }
+    await cdp.eval(sid, "window.location.hash = '#/mail'");
+    return `section+row+route ok, notice verbatim, ${demoMode ? "demo-gated honestly (no fabrication)" : "live-mode controls enabled"}`;
+  });
+
   await check("settings-tabs", "settings mounts every section", async () => {
     await cdp.eval(sid, "window.location.hash = '#/settings'");
     if (!(await waitFor(cdp, sid, `${qsa("button[role=tab]")} >= 5`))) throw new Error("tab bar missing");

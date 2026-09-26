@@ -105,13 +105,18 @@
   --kiwi-ms-narrow-breakpoint: 540px;
   --kiwi-ms-badge-min: 15px;
 
-  /* ---- radii ---- */
-  --kiwi-ms-radius-base: 3px;
-  --kiwi-ms-radius-large: 5px;
-  --kiwi-ms-radius-small: 2px;
-  --kiwi-ms-radius-toolbar: 6px;
-  --kiwi-ms-radius-pill: 999px;
-  --kiwi-ms-radius-circle: 50%;
+  /* ---- radii ----
+   * T-342: re-based onto the global --kiwi-radius-* scale (planner UI pass#2
+   * — "soft corners everywhere"). The observed Mailspring literals
+   * (2/3/5/6px) were sharper than the shipped design language, so these now
+   * alias the global tiers: base/small → controls, toolbar → menus, large →
+   * cards/panels. Dialogs/composer use --kiwi-radius-large directly. */
+  --kiwi-ms-radius-base: var(--kiwi-radius-sm);
+  --kiwi-ms-radius-large: var(--kiwi-radius-card);
+  --kiwi-ms-radius-small: var(--kiwi-radius-sm);
+  --kiwi-ms-radius-toolbar: var(--kiwi-radius-md);
+  --kiwi-ms-radius-pill: var(--kiwi-radius-pill);
+  --kiwi-ms-radius-circle: var(--kiwi-radius-circle);
 
   /* ---- shadows ---- */
   --kiwi-ms-shadow-color: rgba(0, 0, 0, 0.15);

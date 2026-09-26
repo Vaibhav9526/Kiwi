@@ -25,6 +25,7 @@ import { Icon, isIconName } from "../components/icons/index";
 import { PairQrFlow } from "../components/pair";
 import { ThemePicker, useTheme } from "../themes";
 import { emitToPlugin, installPlugin, removePlugin, setPluginEnabled, useInstalledPlugins, usePluginPanes } from "../plugins";
+import type { TempMail } from "../state/tempmail";
 
 // T-191 tabbed preferences (Mailspring idiom): the eight legacy sections
 // fold into seven tabs — General (general + notifications + privacy +
@@ -57,6 +58,7 @@ export function SettingsView({
   onLock,
   filters,
   folderLists,
+  temp,
 }: {
   mode: "live" | "demo";
   accounts: AccountView[];
@@ -71,6 +73,8 @@ export function SettingsView({
   filters?: ComponentProps<typeof FiltersView>;
   /** Real folder list per account — the rules editor's move-folder picker. */
   folderLists?: Record<string, FolderView[]>;
+  /** T-342: shared disposable-inbox session for the Integrations card. */
+  temp: TempMail;
 }) {
   const [section, setSection] = useState<Section>("General");
   // T-275: theme is owned by useTheme() — the ThemePicker (Appearance tab)
@@ -1448,7 +1452,7 @@ export function SettingsView({
           </>
         )}
 
-        {section === "Integrations" && <IntegrationsView accounts={accounts} mode={mode} />}
+        {section === "Integrations" && <IntegrationsView accounts={accounts} mode={mode} temp={temp} />}
 
         {section === "Plugins" && (
           <>

@@ -545,6 +545,7 @@ function FolderRow({
   active,
   indent,
   onContextMenu,
+  onOpen,
   dropTarget,
 }: {
   id: string;
@@ -554,6 +555,9 @@ function FolderRow({
   active: boolean;
   indent?: boolean;
   onContextMenu?: (e: ReactMouseEvent) => void;
+  /** T-342: override the default mail-folder navigation (disposable inbox
+   *  and other non-folder rows route elsewhere). */
+  onOpen?: () => void;
   /** T-317: real drop target — only set on real account folders (never on
    *  smart views/outbox, which have no folderId to move INTO). The source
    *  folder's id rides inside a dataTransfer TYPE (getData is unreadable
@@ -571,7 +575,7 @@ function FolderRow({
       aria-dropeffect={dropState === "over" ? "move" : dropState === "denied" ? "none" : undefined}
       data-folder-key={dropTarget?.folderKey}
       aria-label={`${label}${count > 0 ? `, ${count} unread` : ""}`}
-      onClick={() => navigate({ name: "mail", folder: id })}
+      onClick={onOpen ?? (() => navigate({ name: "mail", folder: id }))}
       onContextMenu={onContextMenu}
       onDragOver={
         dropTarget
@@ -628,6 +632,7 @@ export function FolderPane({
   outboxCount,
   foldersError,
   demo,
+  disposable,
   onMarkAllRead,
   onDropMessages,
   onExportMbox,
@@ -640,6 +645,15 @@ export function FolderPane({
   outboxCount: number;
   foldersError?: string | null;
   demo?: boolean;
+  /** T-342: disposable-inbox sidebar promo — real session state from the
+   *  shared useTempMail hook (unread badge + create quick-action). */
+  disposable?: {
+    unread: number;
+    active: boolean;
+    canCreate: boolean;
+    busy: boolean;
+    onNew: () => void;
+  };
   /** T-299: right-click folder menu — real folder ops only (mark-all-read
    *  loops kiwi_update_message server-side). */
   onMarkAllRead?: (folderId: string) => void;
@@ -831,6 +845,41 @@ export function FolderPane({
           );
         })}
       </div>
+      {disposable && (
+        /* T-342: Disposable Inbox promoted to a sidebar section under the
+           mailboxes (Mailspring userSection idiom). The row opens the
+           inbox view; "+ New" mints an address then opens it. Lifecycle
+           management stays in Settings → Integrations. */
+        <div className="em-dispo">
+          <div className="em-dispo-head">
+            <span className="em-dispo-title">Disposable</span>
+            <button
+              type="button"
+              className="em-dispo-new"
+              disabled={!disposable.canCreate || disposable.busy}
+              title={
+                !disposable.canCreate
+                  ? "Needs the Tauri backend — demo has no provider session"
+                  : "Create a new disposable address"
+              }
+              onClick={disposable.onNew}
+            >
+              <Icon name="plus" size={11} /> New
+            </button>
+          </div>
+          <div role="tree" aria-label="Disposable inbox" className="em-group">
+            <FolderRow
+              id="disposable"
+              label="Disposable Inbox"
+              icon={<Icon name="clock" size={13} />}
+              count={disposable.unread}
+              active={disposable.active}
+              onOpen={() => navigate({ name: "disposable" })}
+              indent
+            />
+          </div>
+        </div>
+      )}
       {ctx && (
         <ContextMenu
           x={ctx.x}

@@ -5,7 +5,7 @@
  */
 import { useEffect, useState } from "react";
 
-export type RouteName = "mail" | "compose" | "setup" | "settings" | "security" | "search" | "contacts" | "filters";
+export type RouteName = "mail" | "compose" | "setup" | "settings" | "security" | "search" | "contacts" | "filters" | "disposable";
 
 export interface Route {
   name: RouteName;
@@ -33,6 +33,8 @@ export function parseHash(hash: string): Route {
       return { name: "contacts" };
     case "filters":
       return { name: "filters" };
+    case "disposable":
+      return { name: "disposable" };
     case "mail":
       return { name: "mail", folder: rest[0] || "all-inboxes", messageId: rest[1] };
     default:
