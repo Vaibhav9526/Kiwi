@@ -136,7 +136,7 @@
 
 .ms-btn:disabled {
   cursor: not-allowed;
-  opacity: 0.55;
+  opacity: 0.65;
 }
 
 .ms-btn-primary {
@@ -1017,6 +1017,7 @@
 :root,
 [data-theme="light"][data-shell="mailspring"] {
   --em-pane-border: #e1e5ea;
+  --em-hairline: #eef0f3;
   --em-pane-bg: #ffffff;
   --em-pane-alt: #f7f8fa;
   --em-pane-titlebar: #fcfcfd;
@@ -1054,6 +1055,7 @@
 
 [data-theme="dark"][data-shell="mailspring"] {
   --em-pane-border: #26262e;
+  --em-hairline: #1e1e26;
   --em-pane-bg: #131318;
   --em-pane-alt: #17171d;
   --em-pane-titlebar: #141419;
@@ -1215,12 +1217,12 @@
 }
 
 .em-tool:disabled {
-  opacity: 0.45;
+  opacity: 0.62;
   cursor: not-allowed;
 }
 
 .em-tool.is-disabled {
-  opacity: 0.45;
+  opacity: 0.62;
 }
 
 .em-tool.is-disabled .em-tool-main,
@@ -1269,7 +1271,7 @@ span.em-tool {
 
 .em-tool-main:disabled,
 .em-tool-caret:disabled {
-  opacity: 0.45;
+  opacity: 0.62;
   cursor: not-allowed;
 }
 
@@ -1396,6 +1398,94 @@ span.em-tool-primary {
 .em-iconbtn.is-active {
   color: var(--em-link);
   background: var(--em-select);
+}
+
+/* ---------- Gmail-style compose footer ---------- */
+/* Solid accent Send pill + split chevron, hairline top rule, icon row. */
+
+.em-compose-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--em-pane-border, var(--kiwi-border-soft, #e5e0d5));
+}
+
+.em-send-wrap {
+  align-self: center;
+}
+
+.em-send-split {
+  display: inline-flex;
+  border-radius: var(--kiwi-radius-pill, 999px);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+.em-send,
+.em-send-chev {
+  border: none;
+  background: var(--em-orange, var(--kiwi-brand));
+  color: var(--em-orange-ink, #1c1204);
+  font: inherit;
+  font-weight: var(--kiwi-ms-weight-semibold, 600);
+  cursor: pointer;
+}
+
+.em-send {
+  padding: 7px 16px 7px 20px;
+  border-radius: var(--kiwi-radius-pill, 999px) 0 0 var(--kiwi-radius-pill, 999px);
+}
+
+.em-send-chev {
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 10px 7px 8px;
+  border-left: 1px solid rgba(0, 0, 0, 0.2);
+  border-radius: 0 var(--kiwi-radius-pill, 999px) var(--kiwi-radius-pill, 999px) 0;
+}
+
+.em-send:hover:not(:disabled),
+.em-send-chev:hover:not(:disabled) {
+  background: var(--em-orange-hover);
+}
+
+.em-send:disabled,
+.em-send-chev:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.em-compose-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  margin-left: 2px;
+}
+
+.em-compose-tools .em-iconbtn {
+  border-radius: var(--kiwi-radius-circle, 50%);
+}
+
+.em-compose-tools .em-fmt {
+  width: auto;
+  padding: 0 7px;
+  font-size: var(--kiwi-ms-text-small, 0.8rem);
+  font-weight: 600;
+}
+
+.em-compose-trash {
+  margin-left: auto;
+}
+
+.em-compose-trash:hover:not(:disabled) {
+  color: var(--kiwi-danger, #b3261e);
+}
+
+/* Footer menus open upward — the compose surface sits at the window bottom. */
+.em-compose-footer .em-menu {
+  top: auto;
+  bottom: calc(100% + 5px);
 }
 
 .em-iconbtn.is-starred,
@@ -1751,9 +1841,9 @@ span.em-tool-primary {
   grid-template-columns: 8px auto 30px minmax(0, 1fr);
   align-items: center;
   column-gap: 4px;
-  padding: 7px 8px 7px 6px;
+  padding: 10px 8px 10px 6px;
   border: none;
-  border-bottom: 1px solid var(--em-pane-border);
+  border-bottom: 1px solid var(--em-hairline);
   border-radius: 0;
   background: transparent;
   cursor: pointer;
@@ -2816,7 +2906,7 @@ pre.em-quote-region {
   background: var(--kiwi-surface, #fff);
   border: 1px solid var(--kiwi-border, #d7d7d7);
   border-radius: var(--kiwi-radius-lg, var(--kiwi-radius-large, 16px)) var(--kiwi-radius-lg, var(--kiwi-radius-large, 16px)) 0 0;
-  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28), 0 2px 8px rgba(0, 0, 0, 0.12);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16), 0 8px 24px rgba(0, 0, 0, 0.1);
   pointer-events: auto;
   overflow: hidden;
 }

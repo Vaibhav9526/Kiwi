@@ -317,8 +317,9 @@ export function SetupWizardView({ mode, onAdded }: { mode: "live" | "demo"; onAd
       <h1>Add account</h1>
       {mode === "demo" && (
         <div className="kiwi-banner warn" role="status">
-          Demo mode — verification and creation need the backend. Discovery falls back to a labeled local guess; run
-          the Tauri app for live setup.
+          <strong>Backend unavailable</strong> — this is the browser preview; no mail backend is connected.
+          Verification and account creation need the desktop app. Discovery falls back to a labeled local guess
+          here — nothing is verified or persisted.
         </div>
       )}
       {reconfiguring && (

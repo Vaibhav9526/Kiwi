@@ -1,7 +1,8 @@
 /* KIWI premium theme (T-145) — deep-black flagship + refined light.
- * Brand: orange→pink gradient (#EAA132→#E580CC), used SPARINGLY (wordmark,
- * primary actions, secure/lock accents, selected markers). Severity is never
- * color-only (glyph + text label carry meaning in every pill).
+ * Brand: flat orange accent (#EAA132) on every surface — no gradients.
+ * (--kiwi-gradient remains defined as a flat solid for theme-package
+ * compatibility; new code should use --kiwi-brand directly.) Severity is
+ * never color-only (glyph + text label carry meaning in every pill).
  * Operate-mode surface: tokens + classes only — no function/route changes. */
 
 :root,
@@ -19,8 +20,9 @@
   --kiwi-text-disabled: #8d8672;
   --kiwi-accent-from: #eaa132;
   --kiwi-accent-to: #d16fb5;
-  --kiwi-gradient: linear-gradient(135deg, #eaa132, #e580cc);
+  --kiwi-gradient: var(--kiwi-brand);
   --kiwi-brand: #eaa132;
+  --kiwi-brand-hover: #d8912a;
   --kiwi-brand-ink: #8a5a06;
   --kiwi-focus: #b45309;
   --kiwi-focus-ring: rgba(180, 83, 9, 0.22);
@@ -39,7 +41,7 @@
   --kiwi-lock: #8a5a06;
   --kiwi-lock-bg: #f6e8c4;
   --kiwi-hover-bg: rgba(138, 90, 6, 0.06);
-  --kiwi-shadow: 0 18px 48px rgba(60, 45, 10, 0.18);
+  --kiwi-shadow: 0 4px 20px rgba(60, 45, 10, 0.14);
   --kiwi-shimmer: rgba(138, 90, 6, 0.08);
 
   /* ---- T-342 global radius scale ("soft corners everywhere" — planner UI
@@ -73,8 +75,9 @@
   --kiwi-text-disabled: #5e5c72;
   --kiwi-accent-from: #eaa132;
   --kiwi-accent-to: #e580cc;
-  --kiwi-gradient: linear-gradient(135deg, #eaa132, #e580cc);
+  --kiwi-gradient: var(--kiwi-brand);
   --kiwi-brand: #eaa132;
+  --kiwi-brand-hover: #f0ab3f;
   --kiwi-brand-ink: #f2c063;
   --kiwi-focus: #f0a83c;
   --kiwi-focus-ring: rgba(234, 161, 50, 0.25);
@@ -93,7 +96,7 @@
   --kiwi-lock: #f2c063;
   --kiwi-lock-bg: #241b0b;
   --kiwi-hover-bg: rgba(255, 255, 255, 0.035);
-  --kiwi-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+  --kiwi-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
   --kiwi-shimmer: rgba(255, 255, 255, 0.06);
 }
 
@@ -152,17 +155,16 @@ button[aria-disabled="true"] {
   opacity: 0.75;
 }
 
-/* Primary gradient action — reserved for the one main action per surface. */
+/* Primary action — flat accent, reserved for the one main action per surface. */
 .kiwi-btn-primary {
-  background: var(--kiwi-gradient);
+  background: var(--kiwi-brand);
   border: none;
   color: #1c1204;
   font-weight: 700;
-  box-shadow: 0 4px 18px rgba(234, 161, 50, 0.28);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.14);
 }
 .kiwi-btn-primary:hover:not(:disabled) {
-  background: var(--kiwi-gradient);
-  filter: brightness(1.07);
+  background: var(--kiwi-brand-hover);
   border: none;
 }
 
@@ -180,14 +182,11 @@ input:focus, select:focus, textarea:focus {
   outline: none;
 }
 
-/* Gradient wordmark — the single brand moment in the top bar. */
+/* Flat brand wordmark. */
 .kiwi-brand {
   font-weight: 800;
   letter-spacing: 0.08em;
-  background: var(--kiwi-gradient);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--kiwi-brand);
 }
 
 /* ---------- pills: distinct treatments per state ---------- */
@@ -228,9 +227,8 @@ input:focus, select:focus, textarea:focus {
 }
 .kiwi-pill.locked {
   color: var(--kiwi-lock);
-  background: linear-gradient(var(--kiwi-lock-bg), var(--kiwi-lock-bg)) padding-box,
-    var(--kiwi-gradient) border-box;
-  border: 1px solid transparent;
+  background: var(--kiwi-lock-bg);
+  border: 1px solid rgba(138, 90, 6, 0.45);
 }
 
 /* ---------- banners / cards / dialogs ---------- */
@@ -285,10 +283,7 @@ input:focus, select:focus, textarea:focus {
   align-items: center;
   justify-content: center;
   text-align: center;
-  background:
-    radial-gradient(640px 420px at 50% 36%, rgba(234, 161, 50, 0.13), transparent 70%),
-    radial-gradient(500px 380px at 50% 40%, rgba(229, 128, 204, 0.07), transparent 70%),
-    var(--kiwi-bg);
+  background: var(--kiwi-bg);
 }
 .kiwi-lock-mark {
   width: 96px;
@@ -299,10 +294,9 @@ input:focus, select:focus, textarea:focus {
   justify-content: center;
   font-size: 2.6rem;
   border-radius: var(--kiwi-radius-circle);
-  background: linear-gradient(var(--kiwi-surface), var(--kiwi-surface)) padding-box,
-    var(--kiwi-gradient) border-box;
-  border: 2px solid transparent;
-  box-shadow: 0 0 42px rgba(234, 161, 50, 0.25);
+  background: var(--kiwi-surface);
+  border: 2px solid var(--kiwi-brand);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.18);
 }
 
 .kiwi-evidence {
@@ -383,8 +377,8 @@ input:focus, select:focus, textarea:focus {
   right: 14px;
   height: 2px;
   border-radius: var(--kiwi-radius-pill);
-  background: var(--kiwi-gradient);
-  opacity: 0.75;
+  background: var(--kiwi-brand);
+  opacity: 0.55;
 }
 
 .kiwi-section-label {
@@ -554,13 +548,13 @@ input:focus, select:focus, textarea:focus {
 [data-accent="subtle"] .kiwi-reader::before {
   background: var(--kiwi-brand);
 }
-/* Vivid: stronger gradient presence. */
+/* Vivid: stronger flat-accent presence. */
 [data-accent="vivid"] .kiwi-btn-primary {
-  box-shadow: 0 4px 26px rgba(234, 161, 50, 0.5);
+  box-shadow: 0 2px 10px rgba(234, 161, 50, 0.45);
 }
 [data-accent="vivid"] .kiwi-row[aria-selected="true"] {
   border-color: var(--kiwi-brand);
-  box-shadow: inset 3px 0 0 var(--kiwi-brand), 0 6px 22px rgba(234, 161, 50, 0.25);
+  box-shadow: inset 3px 0 0 var(--kiwi-brand), 0 4px 16px rgba(234, 161, 50, 0.18);
 }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }

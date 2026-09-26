@@ -21,6 +21,8 @@ import { accountPref, loadPref } from "../prefs";
 import { api, IpcError } from "../ipc";
 import { filterContacts, loadLocalBook } from "../contacts";
 import { PolicyBanner } from "../components/security";
+import { DropMenu, useDismissable } from "../components/chrome";
+import type { MenuEntry } from "../components/chrome";
 import { Icon, isIconName } from "../components/icons/index";
 import { navigate } from "../router";
 import { fireComposerAction, useComposerActions } from "../plugins";
@@ -367,6 +369,16 @@ export function ComposeView({
   const [draftNote, setDraftNote] = useState<string | null>(null);
   const [includeSig, setIncludeSig] = useState(true);
   const bodyRef = useRef<HTMLTextAreaElement | null>(null);
+  // Gmail-style footer: split Send (chevron = send options), icon row
+  // (formatting toggle, attach, link, image, overflow), trash at the far
+  // right. The hidden inputs are the real pickers — footer icons drive them.
+  const [sendMenuOpen, setSendMenuOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [fmtOpen, setFmtOpen] = useState(true);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const imageRef = useRef<HTMLInputElement | null>(null);
+  const sendMenuRef = useDismissable(sendMenuOpen, () => setSendMenuOpen(false));
+  const moreMenuRef = useDismissable(moreOpen, () => setMoreOpen(false));
   const [graceSeconds] = useState(() => {
     const v = Number(loadPref("kiwi.grace", "10"));
     return [5, 10, 20, 30].includes(v) ? v : 10;
@@ -1109,6 +1121,7 @@ export function ComposeView({
           (plaintext — toolbar inserts markers, no HTML is sent)
         </small>
         <br />
+        {fmtOpen && (
         <span role="toolbar" aria-label="Format body text" style={{ display: "inline-flex", gap: "0.25rem", marginBottom: "0.25rem" }}>
           <button type="button" title="Bold (**text**)" aria-label="Bold" onClick={() => wrapSelection("**")}>
             <strong>B</strong>
@@ -1129,6 +1142,7 @@ export function ComposeView({
             <Icon name="list" size={13} />
           </button>
         </span>
+        )}
         <textarea
           id="compose-body"
           ref={bodyRef}
@@ -1160,34 +1174,152 @@ export function ComposeView({
           </small>
         </p>
       )}
-      <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap" }}>
-        <button type="button" className="kiwi-btn-primary" onClick={() => void send()} disabled={blocked || sending} aria-disabled={blocked || sending}>
-          {sending ? `Sending in ${graceLeft ?? "…"}s…` : scheduled ? "Schedule send" : "Send (Ctrl+Enter)"}
-        </button>
-        <button type="button" onClick={() => setShowSchedule((s) => !s)} aria-expanded={showSchedule}>
-          Send later
-        </button>
-        {dock && (
+      <div className="em-compose-footer">
+        <div className="em-menu-wrap em-send-wrap" ref={sendMenuRef}>
+          <span className="em-send-split">
+            <button
+              type="button"
+              className="em-send"
+              title="Send (Ctrl+Enter)"
+              onClick={() => void send()}
+              disabled={blocked || sending}
+              aria-disabled={blocked || sending}
+            >
+              {sending ? `Sending in ${graceLeft ?? "…"}s…` : scheduled ? "Schedule send" : "Send"}
+            </button>
+            <button
+              type="button"
+              className="em-send-chev"
+              aria-label="Send options"
+              title="Send options"
+              aria-haspopup="menu"
+              aria-expanded={sendMenuOpen}
+              disabled={blocked || sending}
+              onClick={() => setSendMenuOpen((o) => !o)}
+            >
+              <Icon name="chevron-down" size={12} />
+            </button>
+          </span>
+          {sendMenuOpen && (
+            <DropMenu
+              label="Send options"
+              onClose={() => setSendMenuOpen(false)}
+              entries={[
+                {
+                  label: scheduled ? "Edit scheduled time…" : "Schedule send…",
+                  run: () => setShowSchedule(true),
+                },
+              ]}
+            />
+          )}
+        </div>
+        <span className="em-compose-tools" role="toolbar" aria-label="Compose tools">
           <button
             type="button"
-            className="em-dock-discard"
-            aria-label="Discard draft"
-            title="Discard draft"
-            onClick={() => {
-              clearDraft();
-              dock.onDone();
-            }}
+            className={`em-iconbtn em-fmt${fmtOpen ? " is-active" : ""}`}
+            title="Formatting options"
+            aria-label="Formatting options"
+            aria-pressed={fmtOpen}
+            onClick={() => setFmtOpen((o) => !o)}
           >
-            <Icon name="trash" size={12} />
+            Aa
           </button>
-        )}
+          <button
+            type="button"
+            className="em-iconbtn"
+            title="Attach files"
+            aria-label="Attach files"
+            onClick={() => fileRef.current?.click()}
+          >
+            <Icon name="paperclip" size={15} />
+          </button>
+          <button
+            type="button"
+            className="em-iconbtn"
+            title="Insert link"
+            aria-label="Insert link"
+            onClick={() => wrapSelection("[", "](https://)")}
+          >
+            <Icon name="link" size={15} />
+          </button>
+          <button
+            type="button"
+            className="em-iconbtn"
+            title="Attach image"
+            aria-label="Attach image"
+            onClick={() => imageRef.current?.click()}
+          >
+            <Icon name="image" size={15} />
+          </button>
+          <div className="em-menu-wrap" ref={moreMenuRef}>
+            <button
+              type="button"
+              className="em-iconbtn"
+              title="More options"
+              aria-label="More compose options"
+              aria-haspopup="menu"
+              aria-expanded={moreOpen}
+              onClick={() => setMoreOpen((o) => !o)}
+            >
+              <Icon name="more" size={15} />
+            </button>
+            {moreOpen && (
+              <DropMenu
+                label="More compose options"
+                onClose={() => setMoreOpen(false)}
+                entries={
+                  [
+                    { label: "Save as template…", run: () => setSaveTplOpen(true) },
+                    { label: "Manage templates…", run: () => navigate({ name: "settings" }) },
+                    ...(signature
+                      ? [{ label: includeSig ? "✓ Append signature" : "Append signature", run: () => setIncludeSig((s) => !s) }]
+                      : []),
+                  ] as MenuEntry[]
+                }
+              />
+            )}
+          </div>
+        </span>
+        <button
+          type="button"
+          className="em-iconbtn em-compose-trash"
+          aria-label="Discard draft"
+          title="Discard draft"
+          onClick={() => {
+            clearDraft();
+            dock?.onDone();
+          }}
+        >
+          <Icon name="trash" size={15} />
+        </button>
       </div>
+      <input
+        ref={fileRef}
+        type="file"
+        multiple
+        hidden
+        aria-label="Choose files to attach"
+        onChange={(e) => {
+          addFiles(e.target.files);
+          e.target.value = "";
+        }}
+      />
+      <input
+        ref={imageRef}
+        type="file"
+        accept="image/*"
+        multiple
+        hidden
+        aria-label="Attach image"
+        onChange={(e) => {
+          addFiles(e.target.files);
+          e.target.value = "";
+        }}
+      />
       <p>
-        <label>
-          Attachments (25 MiB total cap):{" "}
-          <input type="file" multiple onChange={(e) => addFiles(e.target.files)} aria-label="Choose files to attach" />
-        </label>{" "}
-        <small style={{ color: "var(--kiwi-text-secondary)" }}>or drop files anywhere in this window / paste an image</small>
+        <small style={{ color: "var(--kiwi-text-secondary)" }}>
+          Attachments (25 MiB total cap) — drop files anywhere in this window / paste an image
+        </small>
         {attachError && (
           <span role="alert">
             <br />

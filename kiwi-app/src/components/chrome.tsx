@@ -139,7 +139,7 @@ export interface MenuItem {
 /** `null` renders a separator. */
 export type MenuEntry = MenuItem | { section: string } | null;
 
-function useDismissable(open: boolean, close: () => void) {
+export function useDismissable(open: boolean, close: () => void) {
   const ref = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!open) return;

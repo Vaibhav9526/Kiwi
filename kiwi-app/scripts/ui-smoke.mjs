@@ -484,7 +484,7 @@ async function runChecks(cdp, sid) {
     })()`);
     if (!(await waitFor(cdp, sid, `document.querySelector("p[aria-label='Recipients']").textContent.includes('smoke@example.test')`, 4000)))
       throw new Error("recipient chip never committed");
-    await cdp.eval(sid, `[...document.querySelectorAll("section[aria-label='Compose message'] .kiwi-btn-primary")].find(b=>b.textContent.includes('Send'))?.click()`);
+    await cdp.eval(sid, `document.querySelector("section[aria-label='Compose message'] .em-send")?.click()`);
     if (!(await waitFor(cdp, sid, `document.body.textContent.includes('Demo: sending')`, 5000)))
       throw new Error("demo send toast did not appear");
     await cdp.eval(sid, `[...document.querySelectorAll('.kiwi-toast .kiwi-btn-primary')].find(b=>b.textContent.includes('Undo'))?.click()`);
@@ -693,7 +693,7 @@ async function runChecks(cdp, sid) {
     })()`);
     if (!(await waitFor(cdp, sid, `document.querySelector(".em-dock p[aria-label='Recipients']")?.textContent.includes("dock@example.test")`, 4000)))
       throw new Error("recipient chip never committed inside dock");
-    await cdp.eval(sid, `[...document.querySelectorAll(".em-dock .kiwi-btn-primary")].find(b=>b.textContent.includes("Send"))?.click()`);
+    await cdp.eval(sid, `document.querySelector(".em-dock .em-send")?.click()`);
     if (!(await waitFor(cdp, sid, `document.body.textContent.includes("Demo: sending")`, 5000)))
       throw new Error("dock send did not reach the demo path");
     // Dock stays open during the undo grace; closes only on real finish.
