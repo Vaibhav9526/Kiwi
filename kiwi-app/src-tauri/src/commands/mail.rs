@@ -146,13 +146,15 @@ pub(crate) async fn list_messages_impl(
     Ok(msgs)
 }
 
-/// `kiwi_search_messages { query, folderId?, limit? }` → FTS hits,
-/// newest first. Grammar lives in `kiwi_mail::search` (terms, `subject:`/
-/// `from:`/`to:`/`body:` scopes, `"phrases"`, `-negation`). `folderId`
-/// scopes the search to one folder; absent → every folder. The owning
-/// `accountId` is resolved server-side per hit from the folder row —
-/// the caller never guesses it. `has:`/`folder:` tokens are UI-side
-/// post-filters and never reach this command.
+/// `kiwi_search_messages { query, folderId?, limit? }` → hits,
+/// newest first. Grammar lives in `kiwi_mail::search` (T-159 free text:
+/// tokens, `body:` scope, `"phrases"`, `-negation`; T-334 fielded
+/// operators: `from:`/`to:`/`subject:` substring, `has:attachment`,
+/// `is:unread|read|starred`, `before:`/`after:YYYY-MM-DD`,
+/// `in:`/`folder:` name — all real-column predicates AND-ed with the
+/// FTS terms). `folderId` scopes the search to one folder; absent →
+/// every folder. The owning `accountId` is resolved server-side per hit
+/// from the folder row — the caller never guesses it.
 #[tauri::command]
 pub async fn kiwi_search_messages(
     state: State<'_, Arc<AppState>>,

@@ -26,9 +26,11 @@ mod diagnostics;
 mod outbox;
 mod queries;
 mod schema;
+mod threads;
 
 pub use diagnostics::{CompactReport, StorageStats};
 pub use outbox::OutboxRow;
+pub use threads::MAX_CONVERSATION_KEY_LEN;
 
 /// Canonical junk flag (F13/T-212): the keyword stored in a message's
 /// `flags` column and applied server-side as `+FLAGS (\Junk)`. Comparisons
@@ -435,6 +437,25 @@ pub(crate) fn migrate_conn(conn: &Connection, root: &Path) -> Result<()> {
             if v < 16 {
                 ensure_outbox_error_column(conn)?;
             }
+            // Pre-v18 database: conversation mute (T-341). The column is added
+            // NULL-first and then backfilled from each row's own subject, so
+            // the grouping is derived from data actually in the database — no
+            // message is invented and no row is dropped.
+            //
+            // The index is created HERE, not in the DDL: on a legacy database
+            // the DDL's `CREATE TABLE IF NOT EXISTS messages` is a no-op, so
+            // the column does not exist until `ensure_conversation_key_column`
+            // adds it. An index in the DDL would run first and fail with
+            // "no such column". This block also runs for fresh databases
+            // (v0 < 18), where the column is already present from the DDL.
+            if v < 18 {
+                ensure_conversation_key_column(conn)?;
+                conn.execute_batch(
+                    "CREATE INDEX IF NOT EXISTS idx_messages_conversation
+                        ON messages(conversation_key)",
+                )?;
+                backfill_conversation_keys(conn)?;
+            }
         }
         conn.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(account_id, parent_id)",
@@ -566,6 +587,65 @@ fn rebuild_folders_for_v17(conn: &Connection) -> Result<()> {
         )?;
     }
     Ok(())
+}
+
+/// T-341: add the `conversation_key` column idempotently. It is nullable on
+/// purpose — a subject with no signal has no conversation, and NULL is the
+/// honest value that suppresses nothing.
+fn ensure_conversation_key_column(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare("PRAGMA table_info(messages)")?;
+    let cols = stmt.query_map([], |r| r.get::<_, String>(1))?;
+    for col in cols {
+        if col? == "conversation_key" {
+            return Ok(());
+        }
+    }
+    conn.execute_batch(
+        "ALTER TABLE messages ADD COLUMN conversation_key TEXT;
+         CREATE INDEX IF NOT EXISTS idx_messages_conversation
+             ON messages(conversation_key)",
+    )?;
+    Ok(())
+}
+
+/// Derive `conversation_key` for every stored row that lacks one.
+///
+/// Batched by rowid so a large mailbox does not load every subject into memory
+/// at once. Only rows with a subject can produce a key; a row whose subject is
+/// NULL or folds to nothing keeps NULL forever, which is the honest answer
+/// (it is in no conversation, so nothing can suppress it).
+fn backfill_conversation_keys(conn: &Connection) -> Result<()> {
+    const BATCH: i64 = 500;
+    // Cursor, not "until empty": a row whose subject folds to nothing keeps
+    // NULL forever, so re-selecting "rows still missing a key" would spin on
+    // exactly those rows. Advancing past the last id seen terminates instead.
+    let mut cursor: i64 = 0;
+    loop {
+        let mut stmt = conn.prepare(
+            "SELECT id, subject FROM messages
+              WHERE id > ?1 AND conversation_key IS NULL AND subject IS NOT NULL
+              ORDER BY id LIMIT ?2",
+        )?;
+        let batch = stmt
+            .query_map(params![cursor, BATCH], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(stmt);
+        let Some(last) = batch.last().map(|(id, _)| *id) else {
+            return Ok(());
+        };
+        for (id, subject) in &batch {
+            // A subject that folds to nothing stays NULL (no conversation).
+            if let Some(key) = crate::threading::normalize_subject(subject) {
+                conn.execute(
+                    "UPDATE messages SET conversation_key = ?2 WHERE id = ?1",
+                    params![id, key],
+                )?;
+            }
+        }
+        cursor = last;
+    }
 }
 
 /// T-298: `outbox.last_error` — sanitized reason for the most recent
@@ -838,11 +918,9 @@ mod tests {
         assert!(store.outbox_list(10).unwrap().is_empty());
     }
 
-    /// T-345: the tray tooltip count is `total_unseen` — the same unseen
-    /// predicate as `folder_stats`, summed across every folder.
-    /// `outbox_count` feeds the tray Quit guard, so both are pinned here.
-    /// (Mute-aware suppression rides T-341's schema; this pins the base
-    /// predicate only.)
+    /// T-345: the tray tooltip count is `total_unseen` — the same unseen +
+    /// muted-conversation predicate as `folder_stats`, summed across every
+    /// folder. `outbox_count` feeds the quit guard, so both are pinned here.
     #[test]
     fn total_unseen_and_outbox_count_match_their_consumers() {
         let store = MailStore::open_memory().unwrap();
@@ -852,9 +930,24 @@ mod tests {
         let mut unseen = meta(1);
         unseen.flags = vec![];
         let seen = meta(2); // meta() defaults to \\Seen
+        let mut muted = meta(3);
+        muted.flags = vec![];
+        muted.subject = Some("Deploy".into());
         store.upsert_message(fid, &unseen, 100).unwrap();
         store.upsert_message(fid, &seen, 100).unwrap();
+        store.upsert_message(fid, &muted, 100).unwrap();
+        assert_eq!(store.total_unseen().unwrap(), 2);
+
+        // Muting "deploy" (normalized) drops that message from the total,
+        // matching folder_stats — the badge and the tooltip agree.
+        store
+            .set_conversation_muted("a1", "deploy", true, 100)
+            .unwrap();
         assert_eq!(store.total_unseen().unwrap(), 1);
+        store
+            .set_conversation_muted("a1", "deploy", false, 100)
+            .unwrap();
+        assert_eq!(store.total_unseen().unwrap(), 2);
 
         // The quit guard reads a real row count, not a probe of the file.
         assert_eq!(store.outbox_count().unwrap(), 0);

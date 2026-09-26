@@ -46,6 +46,7 @@ use commands::send::*;
 use commands::storage::*;
 use commands::system::*;
 use commands::templates::*;
+use commands::thread::*;
 
 /// IPC contract version — bump on breaking changes (ipc.md §1).
 pub const IPC_CONTRACT_VERSION: &str = "kiwi.ipc/1";
@@ -160,6 +161,9 @@ pub fn run() {
             // storage diagnostics (gated — T-330: measured db size/health + VACUUM)
             kiwi_storage_stats,
             kiwi_storage_compact,
+            // conversation mute (gated — T-341, Thunderbird "Ignore Thread")
+            kiwi_thread_set_muted,
+            kiwi_thread_list_muted,
             // security data (gated)
             kiwi_security_findings,
             kiwi_security_events,

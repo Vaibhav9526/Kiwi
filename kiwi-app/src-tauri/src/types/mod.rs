@@ -26,6 +26,7 @@ pub mod send;
 pub mod storage;
 pub mod system;
 pub mod templates;
+pub mod thread;
 
 pub use accounts::*;
 pub use contacts::*;
@@ -42,6 +43,7 @@ pub use send::*;
 pub use storage::*;
 pub use system::*;
 pub use templates::*;
+pub use thread::*;
 
 use kiwi_core::session::{AuthMechanism, Protocol, SessionSource, TlsVersion, TransportSecurity};
 use kiwi_core::trust::{RequiredAction, SignalKind, SignalSeverity, TrustState};

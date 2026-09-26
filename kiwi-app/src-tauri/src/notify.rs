@@ -104,16 +104,25 @@ fn clean_field(s: &str) -> String {
 /// Returns `Some((title, body))` to show, or `None` when any rule
 /// suppresses. `first` is `(sender, subject)` of the newest unseen
 /// arrival; both may be absent → fallbacks, never an empty notification.
+///
+/// `muted_thread` (T-341) is the third suppressor, alongside the global pref
+/// and the per-account mute: it is true when every arrival in this batch
+/// belonged to an "Ignore Thread"-muted conversation. It is a plain function
+/// input so the whole suppression matrix stays unit-testable with no store;
+/// the data behind it is resolved by `maybe_notify` through the real
+/// `MailStore::muted_uids_in` query, never asserted by a caller.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn decide(
     folder_name: &str,
     unseen: u64,
     first: Option<(&str, &str)>,
     pref_off: bool,
     account_muted: bool,
+    muted_thread: bool,
     last_sent: Option<i64>,
     now: i64,
 ) -> Option<(String, String)> {
-    if unseen == 0 || pref_off || account_muted {
+    if unseen == 0 || pref_off || account_muted || muted_thread {
         return None;
     }
     if EXCLUDED_FOLDERS.contains(&folder_name.to_ascii_lowercase().as_str()) {
@@ -187,6 +196,31 @@ pub(crate) async fn maybe_notify(
     if arrivals.is_empty() {
         return;
     }
+    // T-341: drop arrivals whose conversation is muted ("Ignore Thread").
+    // Resolved from the store, not from a caller flag: `muted_uids_in` joins
+    // the stored mute rows to the stored per-row conversation keys, so the
+    // suppressed set is derived from data. A batch that was *entirely* muted is
+    // reported to `decide` as the third suppressor, so "no notification"
+    // becomes an explicit, testable decision rather than a side effect of an
+    // emptied vector. A mixed batch keeps its un-muted arrivals and still
+    // notifies, which is what the user expects.
+    let (arrivals, all_muted): (Vec<u64>, bool) = {
+        let store = state.store.lock().await;
+        match store.muted_uids_in(folder_id, &arrivals) {
+            Ok(muted_uids) => {
+                let kept: Vec<u64> = arrivals
+                    .iter()
+                    .copied()
+                    .filter(|u| !muted_uids.contains(u))
+                    .collect();
+                let all_muted = !muted_uids.is_empty() && kept.is_empty();
+                (kept, all_muted)
+            }
+            // A store failure must not silently change the decision: treat the
+            // batch as un-muted and let the ordinary path decide.
+            Err(_) => (arrivals, false),
+        }
+    };
     // Unseen arrivals with envelope, newest-first — notification previews
     // the freshest, counts all unseen.
     let (unseen, first): (u64, Option<(String, String)>) = {
@@ -216,9 +250,10 @@ pub(crate) async fn maybe_notify(
         }
         (count, first)
     };
-    if unseen == 0 {
-        return;
-    }
+    // No pre-check here on purpose: `decide` is the single gate (its own doc
+    // says so) and it already suppresses `unseen == 0` and the all-muted batch.
+    // A duplicate check in front of it would make the muted_thread input
+    // unreachable for the exact case it exists to express.
     let (pref_off, muted) = {
         let index = state.index.lock().await;
         (notify_pref_off(&index), account_muted(&index, account_id))
@@ -231,6 +266,7 @@ pub(crate) async fn maybe_notify(
         first.as_ref().map(|(s, j)| (s.as_str(), j.as_str())),
         pref_off,
         muted,
+        all_muted,
         last,
         now_unix(),
     ) else {
@@ -265,7 +301,16 @@ mod tests {
     fn decide_suppression_matrix() {
         let (now, _) = at(None);
         let show = |folder: &str, unseen: u64, pref: bool, muted: bool, last: Option<i64>| {
-            decide(folder, unseen, Some(("a@x", "hi")), pref, muted, last, now)
+            decide(
+                folder,
+                unseen,
+                Some(("a@x", "hi")),
+                pref,
+                muted,
+                false,
+                last,
+                now,
+            )
         };
         // Base case notifies.
         assert!(show("INBOX", 1, false, false, None).is_some());
@@ -293,17 +338,28 @@ mod tests {
             Some(("Ann <a@x>", "Report")),
             false,
             false,
+            false,
             None,
             now,
         )
         .unwrap();
         assert_eq!(one.0, "New message in INBOX");
         assert_eq!(one.1, "Ann <a@x> — Report");
-        let many = decide("INBOX", 4, Some(("a@x", "s")), false, false, None, now).unwrap();
+        let many = decide(
+            "INBOX",
+            4,
+            Some(("a@x", "s")),
+            false,
+            false,
+            false,
+            None,
+            now,
+        )
+        .unwrap();
         assert_eq!(many.0, "4 new messages in INBOX");
         assert_eq!(many.1, "a@x — s");
         // Missing sender/subject get honest fallbacks.
-        let bare = decide("INBOX", 1, None, false, false, None, now).unwrap();
+        let bare = decide("INBOX", 1, None, false, false, false, None, now).unwrap();
         assert!(bare.1.contains("Unknown sender") && bare.1.contains("(no subject)"));
     }
 
@@ -316,12 +372,80 @@ mod tests {
             Some(("a@x\r\nFAKE", &"x".repeat(300))),
             false,
             false,
+            false,
             None,
             now,
         )
         .unwrap();
         assert!(!hostile.1.contains('\r') && !hostile.1.contains('\n'));
         assert!(hostile.1.len() <= FIELD_CAP + 32);
+    }
+
+    /// T-341: a fully-muted batch is the third suppressor, independent of the
+    /// global pref and the per-account mute. It must silence the ding even
+    /// when a count survived filtering (the mixed-batch path is proven
+    /// end-to-end in `maybe_notify_skips_muted_conversations`).
+    #[test]
+    fn decide_suppresses_a_muted_thread_batch() {
+        let (now, _) = at(None);
+        // Nothing else suppressing, count > 0: only the mute stands between
+        // this batch and a notification.
+        assert!(
+            decide(
+                "INBOX",
+                3,
+                Some(("a@x", "hi")),
+                false,
+                false,
+                false,
+                None,
+                now
+            )
+            .is_some(),
+            "control: not muted, notifies"
+        );
+        assert!(
+            decide(
+                "INBOX",
+                3,
+                Some(("a@x", "hi")),
+                false,
+                false,
+                true,
+                None,
+                now
+            )
+            .is_none(),
+            "a wholly muted conversation never dings"
+        );
+        // The suppressor is independent: it holds even with the other gates
+        // open, and combines with them rather than replacing them.
+        assert!(
+            decide(
+                "INBOX",
+                3,
+                Some(("a@x", "hi")),
+                true,
+                false,
+                false,
+                None,
+                now
+            )
+            .is_none()
+        );
+        assert!(
+            decide(
+                "INBOX",
+                3,
+                Some(("a@x", "hi")),
+                false,
+                true,
+                false,
+                None,
+                now
+            )
+            .is_none()
+        );
     }
 
     #[test]

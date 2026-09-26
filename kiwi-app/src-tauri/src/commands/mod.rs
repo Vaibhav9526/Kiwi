@@ -37,6 +37,7 @@ pub mod send;
 pub mod storage;
 pub mod system;
 pub mod templates;
+pub mod thread;
 
 use std::sync::Arc;
 

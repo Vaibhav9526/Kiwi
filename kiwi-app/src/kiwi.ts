@@ -547,6 +547,24 @@ export interface MessageUpdateView {
   movedToFolderId: number | null;
 }
 
+/**
+ * `kiwi_thread_set_muted` receipt (T-341, Thunderbird "Ignore Thread").
+ *
+ * The echoed state means the caller never re-reads to learn whether its
+ * request took effect, and `changed` distinguishes a real transition from a
+ * redundant repeat that honestly did nothing.
+ */
+export interface ThreadMuteView {
+  /** Echo of the `conversationId` argument, verbatim. */
+  conversationId: string;
+  /** Mutes are per account, so the same subject elsewhere is a different thread. */
+  accountId: string;
+  /** State now in effect; both directions are idempotent. */
+  muted: boolean;
+  /** `false` when this call was a no-op (already in the requested state). */
+  changed: boolean;
+}
+
 export type LinkClickAction = "allow" | "requireConfirm" | "requireSandbox" | "deny";
 
 export interface LinkClickVerdict {

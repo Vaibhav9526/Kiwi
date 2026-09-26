@@ -444,12 +444,21 @@ impl MailStore {
     // -- messages -----------------------------------------------------------
 
     pub fn upsert_message(&self, folder_id: i64, meta: &NewMessageMeta, now: i64) -> Result<i64> {
+        // T-341: materialize the conversation key at ingest so a later mute can
+        // suppress counts in SQL. Set on INSERT only - the conflict clause
+        // below deliberately leaves it (and `subject`) alone, so a re-upsert
+        // can never re-point a stored message at a different conversation.
+        let conversation_key = meta
+            .subject
+            .as_deref()
+            .and_then(crate::threading::normalize_subject);
         self.conn.execute(
             "INSERT INTO messages
                (folder_id, uid, message_id, subject, from_addr, to_addrs,
                 date_unix, size, flags, has_attachments, snippet, fetched_at,
-                category, unsub_http, unsub_mailto, unsub_oneclick)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
+                category, unsub_http, unsub_mailto, unsub_oneclick,
+                conversation_key)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
              ON CONFLICT(folder_id, uid) DO UPDATE SET
                flags = excluded.flags,
                has_attachments = excluded.has_attachments",
@@ -470,6 +479,7 @@ impl MailStore {
                 meta.unsub_http,
                 meta.unsub_mailto,
                 meta.unsub_oneclick as i64,
+                conversation_key,
             ],
         )?;
         let id: i64 = self.conn.query_row(
@@ -655,13 +665,32 @@ impl MailStore {
     /// (SQLite LIKE is ASCII case-insensitive — matching IMAP flag
     /// semantics — and `\Seen` contains no wildcards). Snoozed rows count:
     /// parking hides from the list view, not from the store's truth.
+    ///
+    /// T-341: `unseen` additionally excludes messages in a **muted
+    /// conversation**, so a mute is a real count suppression and not a
+    /// client-side filter. Two deliberate boundaries:
+    /// - `exists` is untouched. It is the honest total of stored rows; the
+    ///   task scopes suppression to *unseen* counts, and inventing a smaller
+    ///   "exists" would misreport what the store holds.
+    /// - A message with a `NULL` conversation_key (subject with no signal) is
+    ///   never suppressed: `NULL = key` is never true, so it drops out of the
+    ///   EXISTS naturally rather than needing a special case.
+    ///
+    /// The frontend's smart-folder badges are sums of this `unseen`, so they
+    /// drop in the same query — no second aggregate to keep in sync.
     pub fn folder_stats(&self, folder_id: i64) -> Result<FolderStats> {
         self.conn
             .query_row(
                 "SELECT COUNT(*),
-                        COALESCE(SUM(CASE WHEN ' ' || flags || ' ' NOT LIKE '% \\Seen %'
+                        COALESCE(SUM(CASE WHEN ' ' || m.flags || ' ' NOT LIKE '% \\Seen %'
+                                          AND NOT EXISTS (
+                                                SELECT 1 FROM folders f
+                                                JOIN muted_conversations mc
+                                                  ON mc.account_id = f.account_id
+                                                 AND mc.conversation_key = m.conversation_key
+                                               WHERE f.id = m.folder_id)
                                           THEN 1 ELSE 0 END), 0)
-                 FROM messages WHERE folder_id = ?1",
+                 FROM messages m WHERE m.folder_id = ?1",
                 params![folder_id],
                 |r| {
                     Ok(FolderStats {
@@ -674,14 +703,20 @@ impl MailStore {
     }
 
     /// Global unseen count across every account/folder (T-345 tray
-    /// tooltip). Same `unseen` predicate as `folder_stats` — no `\Seen`
-    /// token — so the tray number matches the sum of the badges rather
-    /// than inventing its own definition.
+    /// tooltip). Same predicate as `folder_stats`' `unseen` — no `\Seen`
+    /// token and not in a muted conversation — so the tray number matches
+    /// the sum of the badges rather than inventing its own definition.
     pub fn total_unseen(&self) -> Result<u64> {
         self.conn
             .query_row(
                 "SELECT COUNT(*) FROM messages m
-                 WHERE ' ' || m.flags || ' ' NOT LIKE '% \\Seen %'",
+                 WHERE ' ' || m.flags || ' ' NOT LIKE '% \\Seen %'
+                   AND NOT EXISTS (
+                         SELECT 1 FROM folders f
+                         JOIN muted_conversations mc
+                           ON mc.account_id = f.account_id
+                          AND mc.conversation_key = m.conversation_key
+                         WHERE f.id = m.folder_id)",
                 [],
                 |r| r.get::<_, i64>(0),
             )
@@ -768,7 +803,8 @@ impl MailStore {
                     "SELECT message_id, subject, from_addr, to_addrs, date_unix,
                             size, flags, has_attachments, snippet, body_path,
                             fetched_at, category,
-                            unsub_http, unsub_mailto, unsub_oneclick
+                            unsub_http, unsub_mailto, unsub_oneclick,
+                            conversation_key
                      FROM messages WHERE folder_id = ?1 AND uid = ?2",
                     params![src_folder_id, *uid as i64],
                     |r| {
@@ -788,6 +824,7 @@ impl MailStore {
                             r.get::<_, Option<String>>(12)?,
                             r.get::<_, Option<String>>(13)?,
                             r.get::<_, i64>(14)?,
+                            r.get::<_, Option<String>>(15)?,
                         ))
                     },
                 )
@@ -808,6 +845,10 @@ impl MailStore {
                 unsub_http,
                 unsub_mailto,
                 unsub_oneclick,
+                // T-341: carried verbatim — the stored key is the fold of
+                // this row's subject, so move/copy keep the conversation
+                // (and any mute on it) attached instead of re-deriving.
+                conversation_key,
             )) = row
             else {
                 continue; // uid absent in src — skip, not an error
@@ -819,8 +860,8 @@ impl MailStore {
                    (folder_id, uid, message_id, subject, from_addr, to_addrs,
                     date_unix, size, flags, has_attachments, snippet,
                     body_path, fetched_at, category,
-                    unsub_http, unsub_mailto, unsub_oneclick)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,NULL,?12,?13,?14,?15,?16)",
+                    unsub_http, unsub_mailto, unsub_oneclick, conversation_key)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,NULL,?12,?13,?14,?15,?16,?17)",
                 params![
                     dst_folder_id,
                     dst_uid,
@@ -838,6 +879,7 @@ impl MailStore {
                     unsub_http,
                     unsub_mailto,
                     unsub_oneclick,
+                    conversation_key,
                 ],
             )?;
             // Relocate the body payload, then repoint body_path at it.
@@ -958,7 +1000,8 @@ impl MailStore {
                     "SELECT message_id, subject, from_addr, to_addrs, date_unix,
                             size, flags, has_attachments, snippet, body_path,
                             fetched_at, category,
-                            unsub_http, unsub_mailto, unsub_oneclick
+                            unsub_http, unsub_mailto, unsub_oneclick,
+                            conversation_key
                      FROM messages WHERE folder_id = ?1 AND uid = ?2",
                     params![src_folder_id, *uid as i64],
                     |r| {
@@ -978,6 +1021,7 @@ impl MailStore {
                             r.get::<_, Option<String>>(12)?,
                             r.get::<_, Option<String>>(13)?,
                             r.get::<_, i64>(14)?,
+                            r.get::<_, Option<String>>(15)?,
                         ))
                     },
                 )
@@ -998,6 +1042,10 @@ impl MailStore {
                 unsub_http,
                 unsub_mailto,
                 unsub_oneclick,
+                // T-341: carried verbatim — the stored key is the fold of
+                // this row's subject, so move/copy keep the conversation
+                // (and any mute on it) attached instead of re-deriving.
+                conversation_key,
             )) = row
             else {
                 continue; // uid absent in src — skip, not an error
@@ -1009,8 +1057,8 @@ impl MailStore {
                    (folder_id, uid, message_id, subject, from_addr, to_addrs,
                     date_unix, size, flags, has_attachments, snippet,
                     body_path, fetched_at, category,
-                    unsub_http, unsub_mailto, unsub_oneclick)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,NULL,?12,?13,?14,?15,?16)",
+                    unsub_http, unsub_mailto, unsub_oneclick, conversation_key)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,NULL,?12,?13,?14,?15,?16,?17)",
                 params![
                     dst_folder_id,
                     dst_uid,
@@ -1028,6 +1076,7 @@ impl MailStore {
                     unsub_http,
                     unsub_mailto,
                     unsub_oneclick,
+                    conversation_key,
                 ],
             )?;
             // Copy the body payload, then repoint the new row at the copy.

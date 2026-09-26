@@ -1,16 +1,18 @@
 /**
- * Search view (T-160, T-176, live-wired T-231): results over the real
- * `kiwi_search_messages` IPC (lock-gated FTS over the local store,
- * `accountId` resolved server-side per hit). A labeled client-side
- * fallback over already-loaded real messages applies only when the IPC
- * is unreachable or errors — it never reads mock fixtures; demo mode
- * searches the fixtures directly.
+ * Search view (T-160, T-176, live-wired T-231, operators T-334): results
+ * over the real `kiwi_search_messages` IPC — FTS free text AND-ed with
+ * fielded operator predicates evaluated server-side on real columns.
+ * A labeled client-side fallback over already-loaded real messages
+ * applies only when the IPC is unreachable or errors — it never reads
+ * mock fixtures; demo mode searches the fixtures directly.
  *
- * Query grammar mirrors `kiwi-mail/src/search.rs` exactly: plain tokens,
- * `subject:`/`from:`/`to:`/`body:` scopes, `"quoted phrases"`, `-negation`
- * (unknown `prefix:` stays literal). `has:attachment` and `folder:` are
- * UI-side post-filters — stripped before the server call, applied to both
- * sources. Syntax chips surface the grammar; matches highlight with `<mark>`.
+ * Query grammar mirrors `kiwi-mail/src/search.rs`: plain tokens,
+ * `"quoted phrases"`, `-negation`, `body:` scope, and the fielded
+ * operators `from:` `to:` `subject:` `has:attachment`
+ * `is:unread|read|starred` `before:`/`after:YYYY-MM-DD` `in:`/`folder:`.
+ * Unknown `key:value` tokens degrade to literal text server-side — the
+ * same string the index stores. Syntax chips + the `?` shortcuts overlay
+ * surface the grammar; matches highlight with `<mark>`.
  * Demo mode searches the fixtures.
  */
 
@@ -21,7 +23,7 @@ import { api, BackendUnavailableError } from "../ipc";
 import { Icon } from "../components/icons/index";
 
 export interface ParsedQuery {
-  /** Verbatim backend string (real grammar; UI-only tokens removed). */
+  /** Verbatim backend string (the full grammar — nothing stripped). */
   serverQuery: string;
   /** Positive term texts for highlight (scopes/quotes/negation stripped). */
   highlight: string[];
@@ -33,6 +35,10 @@ export interface ParsedQuery {
 }
 
 const KNOWN_SCOPES = new Set(["subject", "from", "to", "body"]);
+/** T-334 fielded operator keys — parsed server-side into column
+ *  predicates. Peeling them out of `highlight` keeps structural values
+ *  ("unread", a date) from being underlined as literal text. */
+const FIELD_OPS = new Set(["has", "is", "in", "folder", "before", "after"]);
 
 /** Quote-aware split (mirrors search.rs split_tokens, UI-scale). */
 function splitTokens(q: string): string[] {
@@ -65,28 +71,41 @@ export function parseSearchQuery(q: string): ParsedQuery {
   let hasToScope = false;
   for (const tok of splitTokens(q)) {
     const low = tok.toLowerCase();
-    if (low === "has:attachment") {
-      hasAttachment = true;
-      continue;
-    }
-    if (low.startsWith("folder:") && tok.length > 7) {
-      folder = tok.slice(7);
-      continue;
-    }
+    // T-334: every token reaches the server — fielded operators are real
+    // column predicates there now, not UI post-filters.
     serverTokens.push(tok);
-    // Highlight texts: drop negation, peel known scopes, trim quotes.
+    if (low === "has:attachment") hasAttachment = true;
+    if (
+      (low.startsWith("folder:") && tok.length > 7) ||
+      (low.startsWith("in:") && tok.length > 3)
+    ) {
+      folder = unquote(tok.slice(tok.indexOf(":") + 1));
+    }
+    // Highlight texts: drop negation, peel display-text scopes and the
+    // structural operators (their values aren't body text), trim quotes.
     let h = tok.startsWith("-") ? tok.slice(1) : tok;
     const colon = h.indexOf(":");
-    if (colon > 0 && KNOWN_SCOPES.has(h.slice(0, colon).toLowerCase())) {
-      const scope = h.slice(0, colon).toLowerCase();
-      h = h.slice(colon + 1);
-      if (scope === "from" && from === undefined) from = h.replace(/^"|"$/g, "");
-      if (scope === "to") hasToScope = true;
+    if (colon > 0) {
+      const key = h.slice(0, colon).toLowerCase();
+      if (FIELD_OPS.has(key)) {
+        h = "";
+      } else if (KNOWN_SCOPES.has(key)) {
+        h = h.slice(colon + 1);
+        if (key === "from" && from === undefined) from = unquote(h);
+        if (key === "to") hasToScope = true;
+      }
     }
-    h = h.replace(/^"|"$/g, "").trim();
+    h = unquote(h).trim();
     if (h) highlight.push(h);
   }
   return { serverQuery: serverTokens.join(" "), highlight, from, hasAttachment, folder, hasToScope };
+}
+
+/** Strip one matching `"…"`/`'…'` pair (mirrors search.rs `unquote`). */
+function unquote(v: string): string {
+  return v.length >= 2 && ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'")))
+    ? v.slice(1, -1)
+    : v;
 }
 
 function setToken(q: string, prefix: string, value: string | null): string {
@@ -181,6 +200,51 @@ function hitToRow(h: SearchHit, emailOf: (accountId: string) => string): SearchR
   };
 }
 
+/** `YYYY-MM-DD` → that day's UTC midnight in ms; undefined when malformed
+ *  (mirrors the strict server parse — loose dates degrade to text). */
+function dayBoundaryMs(v: string): number | undefined {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return undefined;
+  const t = Date.parse(`${v}T00:00:00Z`);
+  return Number.isNaN(t) ? undefined : t;
+}
+
+/** One fielded operator against an envelope, or `undefined` when the
+ *  value is malformed — the server treats that token as literal text and
+ *  the fallback does the same. Envelope fields cover every operator
+ *  except `to:` (no recipient data locally — noted in-view). */
+function fieldOpHit(key: string, rawVal: string, m: MessageEnvelope): boolean | undefined {
+  const v = rawVal.toLowerCase();
+  switch (key) {
+    case "has":
+      return v === "attachment" ? m.hasAttachments : undefined;
+    case "is":
+      switch (v) {
+        case "unread":
+          return m.unread;
+        case "read":
+          return !m.unread;
+        case "starred":
+        case "flagged":
+          return m.starred;
+        default:
+          return undefined;
+      }
+    case "in":
+    case "folder":
+      return v ? m.folder.toLowerCase() === v : undefined;
+    case "before": {
+      const bound = dayBoundaryMs(v);
+      return bound === undefined ? undefined : Date.parse(m.date) < bound;
+    }
+    case "after": {
+      const bound = dayBoundaryMs(v);
+      return bound === undefined ? undefined : Date.parse(m.date) >= bound;
+    }
+    default:
+      return undefined;
+  }
+}
+
 /** Local mirror of the server grammar over envelope fields (no `to:` data). */
 function localMatches(m: MessageEnvelope, serverQuery: string): boolean {
   const fields = (scope: string): string => {
@@ -204,15 +268,25 @@ function localMatches(m: MessageEnvelope, serverQuery: string): boolean {
       negated = true;
       t = t.slice(1);
     }
+    const colon = t.indexOf(":");
+    const key = colon > 0 ? t.slice(0, colon).toLowerCase() : "";
+    if (key && FIELD_OPS.has(key)) {
+      const hit = fieldOpHit(key, unquote(t.slice(colon + 1)), m);
+      if (hit !== undefined) {
+        // The server evaluates this as a column predicate; mirror it.
+        if (negated ? hit : !hit) return false;
+        continue;
+      }
+      // Malformed value → literal text (same fallback as the server).
+    }
     let scope = "";
     let text = t;
-    const colon = t.indexOf(":");
-    if (colon > 0 && KNOWN_SCOPES.has(t.slice(0, colon).toLowerCase()) && t.length > colon + 1) {
-      scope = t.slice(0, colon).toLowerCase();
+    if (colon > 0 && KNOWN_SCOPES.has(key) && t.length > colon + 1) {
+      scope = key;
       text = t.slice(colon + 1);
     }
     if (scope === "to") continue; // server-only locally — noted in-view
-    text = text.replace(/^"|"$/g, "").toLowerCase();
+    text = unquote(text).toLowerCase();
     if (!text) continue;
     const hit = fields(scope).includes(text);
     if (negated ? hit : !hit) return false;
@@ -220,7 +294,20 @@ function localMatches(m: MessageEnvelope, serverQuery: string): boolean {
   return true;
 }
 
-const SYNTAX_CHIPS = ["from:", "to:", "subject:", "body:", "-", '"phrase"', "has:attachment", "folder:"];
+const SYNTAX_CHIPS = [
+  "from:",
+  "to:",
+  "subject:",
+  "body:",
+  "has:attachment",
+  "is:unread",
+  "is:starred",
+  "before:",
+  "after:",
+  "in:",
+  "-",
+  '"phrase"',
+];
 
 export function SearchView({
   query,
@@ -288,30 +375,13 @@ export function SearchView({
   }, [demo, parsed.serverQuery, emailOf]);
 
   const localRows = useMemo(() => {
-    const folder = (parsed.folder ?? "").toLowerCase();
-    return messages
-      .filter((m) => {
-        if (parsed.hasAttachment && !m.hasAttachments) return false;
-        if (folder && !`${m.folder} ${m.accountEmail}`.toLowerCase().includes(folder)) return false;
-        return localMatches(m, parsed.serverQuery);
-      })
-      .map(envelopeToRow);
+    return messages.filter((m) => localMatches(m, parsed.serverQuery)).map(envelopeToRow);
   }, [messages, parsed]);
 
-  // UI-side post-filters also apply to server rows (the backend never sees
-  // has:/folder: tokens).
-  const serverFiltered = useMemo(() => {
-    if (serverRows === null) return null;
-    const folder = (parsed.folder ?? "").toLowerCase();
-    return serverRows.filter((r) => {
-      if (parsed.hasAttachment && !r.hasAttachments) return false;
-      if (folder && !r.accountEmail.toLowerCase().includes(folder)) return false;
-      return true;
-    });
-  }, [serverRows, parsed]);
-
-  const usingServer = serverFiltered !== null;
-  const rows = usingServer ? serverFiltered : localRows;
+  // T-334: no post-filtering of server rows — the backend evaluates every
+  // operator itself now (has:/is:/in:/folder:/before:/after: included).
+  const usingServer = serverRows !== null;
+  const rows = usingServer ? serverRows : localRows;
 
   const insertChip = (chip: string) => {
     const token = chip === '"phrase"' ? '"phrase"' : chip === "-" ? "-" : chip;
@@ -330,7 +400,7 @@ export function SearchView({
             type="search"
             value={query}
             onChange={(e) => onQuery(e.target.value)}
-            placeholder='terms, from:a, to:b, subject:report, body:wood, -spam, "exact phrase"'
+            placeholder='terms, from:a, subject:"two words", is:unread, has:attachment, before:2025-01-01, in:Work, -spam'
             style={{ width: "min(30rem, 100%)" }}
             aria-label="Search query"
           />
@@ -348,10 +418,14 @@ export function SearchView({
                 : chip === '"phrase"'
                   ? "Exact phrase"
                   : chip === "has:attachment"
-                    ? "Post-filter: only messages with attachments"
-                    : chip === "folder:"
-                      ? "Post-filter: folder/account substring"
-                      : `Scope: ${chip}value`
+                    ? "Only messages with attachments"
+                    : chip === "is:unread" || chip === "is:starred"
+                      ? "Flag predicate (also is:read)"
+                      : chip === "before:" || chip === "after:"
+                        ? "Date boundary: YYYY-MM-DD"
+                        : chip === "in:"
+                          ? "Folder name (folder: works too)"
+                          : `Scope: ${chip}value`
             }
             style={{ fontSize: "0.8rem" }}
           >
@@ -380,7 +454,7 @@ export function SearchView({
           type="button"
           aria-pressed={parsed.hasAttachment}
           onClick={() => onQuery(setToken(query, "has:", parsed.hasAttachment ? null : "attachment"))}
-          title="UI-side filter (never sent to the server)"
+          title="Server predicate: only messages with attachments"
         >
           {parsed.hasAttachment && <Icon name="check" size={11} />} has:attachment
         </button>
@@ -391,7 +465,9 @@ export function SearchView({
             value={folderDraft}
             onChange={(e) => {
               setFolderDraft(e.target.value);
-              onQuery(setToken(query, "folder:", e.target.value.trim()));
+              // `in:` is canonical; `folder:` remains a valid alias. Strip
+              // both so the field replaces either spelling.
+              onQuery(setToken(setToken(query, "folder:", null), "in:", e.target.value.trim() || null));
             }}
             placeholder="any folder"
             style={{ width: "10rem" }}
@@ -412,7 +488,7 @@ export function SearchView({
           {searching
             ? "Searching server…"
             : usingServer
-              ? `Server results (${rows.length}) — FTS grammar ran in the backend.`
+              ? `Server results (${rows.length}) — text terms + fielded operators ran in the backend.`
               : demo
                 ? `Local demo results (${rows.length}) — fixtures only.`
                 : `Local results (${rows.length}) — search IPC unavailable; grammar mirrored over already-loaded messages${parsed.hasToScope ? "; to: is server-only here" : ""}.`}

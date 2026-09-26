@@ -70,6 +70,7 @@ import type {
   StorageStatsView,
   SyncStatusView,
   TagCountView,
+  ThreadMuteView,
   RenderedTemplateView,
   TemplateInput,
   TemplateView,
@@ -490,6 +491,34 @@ export const api = {
 
   updateMessage(accountId: string, folderId: number, uid: number, patch: MessagePatch): Promise<MessageUpdateView> {
     return call<MessageUpdateView>("kiwi_update_message", { accountId, folderId, uid, patch });
+  },
+
+  /* ---------------- conversation mute (gated, T-341) ---------------- */
+
+  /**
+   * `kiwi_thread_set_muted(conversationId, muted)` — Thunderbird's
+   * "Ignore Thread". While muted, the conversation's messages leave folder
+   * unseen counts (and the derived smart-folder badges) and raise no
+   * notification; unmuting restores both immediately.
+   *
+   * `conversationId` is the list view's own thread key
+   * (`` `${accountId}\n${normalizedSubject}` ``), so the caller passes back
+   * exactly what it renders. That key is subject folding, not RFC 5322
+   * References threading — see docs/contracts/ipc.md.
+   *
+   * `changed: false` means the thread was already in that state: a redundant
+   * repeat, not a silent failure.
+   */
+  threadSetMuted(conversationId: string, muted: boolean): Promise<ThreadMuteView> {
+    return call<ThreadMuteView>("kiwi_thread_set_muted", { conversationId, muted });
+  },
+  /**
+   * `kiwi_thread_list_muted(accountId)` — that account's muted conversation
+   * keys, sorted. Lets the list render a thread as muted from backend truth
+   * rather than a client cache that a restart would lose.
+   */
+  threadListMuted(accountId: string): Promise<string[]> {
+    return call<string[]>("kiwi_thread_list_muted", { accountId });
   },
   downloadAttachment(
     accountId: string,

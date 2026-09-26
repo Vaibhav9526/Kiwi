@@ -45,6 +45,13 @@ CREATE TABLE IF NOT EXISTS messages (
     unsub_http      TEXT,
     unsub_mailto    TEXT,
     unsub_oneclick  INTEGER NOT NULL DEFAULT 0,
+    -- T-341: normalized conversation key (threading::normalize_subject of
+    -- `subject`), or NULL when the subject carries no signal. Materialized
+    -- at ingest so a conversation mute can suppress *counts* in SQL rather
+    -- than only filtering the client-side list. See the module's honest
+    -- limitation: this is subject-folding, matching the list view, NOT
+    -- RFC 5322 References threading.
+    conversation_key TEXT,
     UNIQUE (folder_id, uid)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_folder ON messages(folder_id, uid);
@@ -186,6 +193,28 @@ CREATE TABLE IF NOT EXISTS snoozed (
     FOREIGN KEY (folder_id, uid) REFERENCES messages(folder_id, uid) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_snoozed_due ON snoozed(until_unix);
+-- Conversation mute (T-341, Thunderbird "Ignore Thread"). A row means
+-- "every stored message whose conversation_key equals this, on this account,
+-- is suppressed": its unseen count is excluded from `folder_stats` (which
+-- also drops the derived smart-folder badges) and it never raises a new-mail
+-- notification.
+--
+-- Deliberately NOT a FK to messages: a mute is keyed by the *conversation*,
+-- not by rows. It must keep suppressing future arrivals that have not synced
+-- yet, and it must survive every message in the thread being deleted or moved
+-- — a mute with a dangling message set is still a real user decision, not
+-- garbage. `ON DELETE CASCADE` on the account is the one cleanup that IS
+-- wanted: removing the account removes the conversation with it.
+--
+-- `conversation_key` is `threading::normalize_subject(subject)`, the same
+-- grouping the list view displays (see the honest limitation there: this is
+-- subject-folding, not RFC 5322 References threading).
+CREATE TABLE IF NOT EXISTS muted_conversations (
+    account_id       TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+    conversation_key TEXT NOT NULL,
+    muted_at_unix    INTEGER NOT NULL,
+    PRIMARY KEY (account_id, conversation_key)
+);
 -- Link hints (T-261): sibling evidence because URL classification is local
 -- parsed-body work, independent of auth sealing. Only the bounded enum and a
 -- fixed reason-code JSON array are retained; URLs/display text are never kept.

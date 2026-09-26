@@ -368,14 +368,38 @@ uids, or lazily from stored bodies (≤32 parses per list call). `null`/
 `[]` means "unknown" — no-body messages predating the cache learn on
 their next sync or body fetch.
 
-### `kiwi_search_messages(query, folderId?, limit?) → SearchHitView[]` (T-231)
+### `kiwi_search_messages(query, folderId?, limit?) → SearchHitView[]` (T-231, operators T-334)
 FTS5 over the local store (`kiwi_mail::search` — subject/from/to/snippet
-columns; `body:` terms match the snippet proxy). Grammar: plain terms,
-`subject:`/`from:`/`to:`/`body:` scopes, `"quoted phrases"`, `-negation`;
-≤8 terms, `limit` default 50 clamp 1–500, `query` bounded at 512 chars.
-`folderId` (must be ≥0) scopes to one folder; omitted → every folder.
-`accountId` is resolved server-side from the folder row per hit.
-`has:`/`folder:` are UI post-filters and are not part of this grammar.
+columns; `body:` terms match the snippet proxy) **plus** fielded
+operators that filter real columns. Grammar:
+
+- Free text: plain terms, `"quoted phrases"`, `-negation`,
+  `body:`/`text:`/`snippet:` scopes. ≤8 terms/predicates total.
+- Fielded operators (AND-combined with each other and the free text):
+  - `from:v`, `to:v`, `subject:v` — case-insensitive substring on the
+    stored column (LIKE, escaped — `%`/`_` are literal).
+  - `has:attachment` — `has_attachments` set.
+  - `is:unread`, `is:read`, `is:starred`/`is:flagged` — `\Seen`/`\Flagged`
+    flag tokens, exact-token match.
+  - `before:YYYY-MM-DD` — `date_unix <` that day's UTC midnight;
+    `after:YYYY-MM-DD` — `date_unix >=` that midnight. Dates are strict
+    (real calendar dates only).
+  - `in:name` / `folder:name` — folder name, case-insensitive, across
+    every account's folder rows; ANDs with `folderId` when both given.
+- Operator values may be quoted (`subject:"two words"`,
+  `in:'Sent Items'`); `-` negates an operator (`-has:attachment`).
+- Unknown `key:value` tokens — and known operators with malformed values
+  (`before:tuesday`, `has:cheese`) — degrade to literal free text: no
+  error, no silent drop.
+- `limit` default 50, clamped 1–500 at the command — and the engine then
+  caps returned rows at its own bound (200), so the effective maximum
+  page is 200 hits. `query` bounded at 512 chars.
+  `folderId` (must be ≥0) scopes to one folder; omitted → every folder.
+  `accountId` is resolved server-side from the folder row per hit.
+- A query made only of fielded predicates runs as a real-column scan
+  (no FTS join); a query of only negated free text still yields nothing.
+- The renderer's `?` help hint (titlebar search placeholder) lists these
+  operators — the SearchView syntax chips mirror this grammar.
 
 ```jsonc
 { "accountId": "a1", "folderId": 1, "uid": 991, "subject": "…",
@@ -579,6 +603,94 @@ audit row (`unsubscribe-http` / `unsubscribe-mailto`).
 received; mailto: queued). `httpStatus` <400 means the endpoint accepted
 the unsubscribe — a 4xx/5xx is still `executed` but reported so the UI
 can tell "sent" from "probably ignored".
+
+## 6b-ii. Commands — conversation mute (T-341)
+
+Thunderbird's **Ignore Thread**, at conversation scope. Distinct from the
+T-167 **account** mute, which silences a whole mailbox; this suppresses one
+conversation and leaves its siblings alone.
+
+### `conversationId` — the exact identity, and its honest limits
+
+A conversation id is `` `${accountId}\n${normalizedSubject}` `` — the literal
+`\n` separator, then the folded subject. It is **the list view's own thread
+key**, chosen deliberately: the UI mutes exactly the grouping it displays,
+so a mute can never disagree with what the user clicked.
+
+The normalization is `kiwi-mail/src/threading.rs` (`normalize_subject`):
+case-folded, `Re:`/`Fwd:`/`Aw:` prefixes stripped (repeatedly, with
+separator punctuation), whitespace collapsed.
+
+> **Honest limitation — this is subject folding, NOT RFC 5322 threading.**
+> The store holds no `References`/`In-Reply-To` graph, so two different
+> conversations that share a normalized subject ("Weekly report" in January
+> and in March) are one conversation, and muting one mutes both. Conversely a
+> reply that changes its subject lands in a different conversation. This
+> matches what the UI already shows, so counts and labels stay consistent —
+> but it is weaker than true threading, and true threading is not
+> implemented. Clients must not assume a conversation is a mail thread.
+
+Because the id carries the account, the same subject on two accounts is two
+independent mutes.
+
+### `kiwi_thread_set_muted(conversationId, muted) → ThreadMuteView`
+Mutes or unmutes one conversation. Both directions are idempotent: asking
+for the state a conversation is already in succeeds and reports
+`changed: false` rather than pretending to have written anything.
+
+Returns `{conversationId, accountId, muted, changed}` — `conversationId` is
+echoed verbatim, so the caller can match the receipt to its request without
+re-deriving anything.
+
+| Field | Meaning |
+|---|---|
+| `conversationId` | Echo of the argument, verbatim. |
+| `accountId` | The account parsed out of the id. Mutes are per account. |
+| `muted` | The state now in effect (echoes the `muted` argument). |
+| `changed` | `true` only when this call changed stored state. |
+
+**What a mute suppresses — and what it does not:**
+
+- **Folder `unseen` counts** drop, immediately and in the store (not a
+  client-side filter). Because the smart-folder badges derive from folder
+  `unseen`, smart counts follow automatically.
+- **Notifications** never fire for that conversation.
+- **`exists` is untouched** — it stays the truthful total of stored rows.
+  Only the *unseen* number is suppressed, so a mute never makes the app
+  claim fewer messages exist than do.
+- **Read state is untouched.** Muting hides nothing from the reader; opening
+  a message still works.
+- Unmuting restores the count on the next `folder_stats` call.
+
+**Persistence & lifetime:** the mute is keyed by conversation, not by
+message rows, so it survives every message in the thread being deleted,
+moved, or expunged, and it keeps suppressing mail that has not synced yet.
+Deleting the **account** cascades and removes the mutes with it.
+
+Errors: `invalid-input` for a malformed id (no `\n`, empty/oversized
+subject, bad control characters) or a subject that normalizes to nothing;
+`not-found` for a well-formed id naming an account that does not exist — a
+mute that silently suppresses nothing is not a success. `locked` while the
+app is locked, like every other gated command.
+
+Audited as `thread-muted` / `thread-unmuted`, recording the account, the
+conversation key, and whether the row changed — never a subject line or a
+message id.
+
+### `kiwi_thread_list_muted(accountId) → string[]`
+The account's muted conversation keys, sorted. The list view uses this to
+render a thread as muted from backend truth rather than from a client cache
+that a restart would lose. Account-scoped: returns `[]` for an account with
+no mutes.
+
+**UI seam (not built here — store + IPC only):** a thread context-menu item,
+"Ignore thread" / "Stop ignoring", calling `threadSetMuted(key, !muted)`
+and re-fetching folder stats on the returned receipt.
+
+```ts
+// { "conversationId": "a1\ndeploy", "accountId": "a1",
+//   "muted": true, "changed": true }
+```
 
 ## 6c. Live sync engine **[background]** (T-157)
 
@@ -1380,10 +1492,11 @@ only a pref, an `AppInfoView` field, and two events.
   exempt on purpose — quitting a locked app leaks nothing, and locking
   must never trap the process.
 - **Tooltip** `"KIWI"` / `"KIWI — N unread"`: `N` is `total_unseen` — the
-  same unseen predicate as `folder_stats`, so the tray number equals the
-  summed folder badges. Refreshed on events only (the post-sync sites
-  plus flag/delete/junk/import mutations) — never polled. Left click
-  restores + focuses the window; right click opens the menu.
+  same muted-conversation-aware predicate as `folder_stats`, so the tray
+  number equals the summed folder badges. Refreshed on events only (the
+  four post-sync sites plus flag/delete/copy/junk/import mutations) —
+  never polled. Left click restores + focuses the window; right click
+  opens the menu.
 - **Icon:** `default_window_icon()` — the verified bundle icon
   (`icons/icon.png`), the real KIWI mark.
 
