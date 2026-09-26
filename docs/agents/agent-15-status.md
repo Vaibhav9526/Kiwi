@@ -829,3 +829,47 @@ new test `a_mute_survives_its_messages_being_moved` covers move + copy.
   `is:sent`/`is:muted` degrade to literal text, documented in ipc.md.
 - Negated-only operator queries (`-from:x` alone) are legal — predicates
   anchor — and return every non-matching row, bounded as usual.
+
+### Committed (Lead-directed surgical staging, 2026-09-26)
+
+Lead verified the claims and directed self-commit with hunk-level staging.
+Done via per-hunk `git apply --cached` patches (helper: `.git/a15/stage.py`,
+repo-internal scratch, not tracked):
+
+- **`c24b774`** — `A15 → T-319+T-330 unswept halves`: schema.rs v17 folders
+  DDL, mod.rs v17 migration + folder mgmt fns + T-319 tests, diagnostics.rs,
+  commands/storage.rs, types/storage.rs, storage mod decls + registrations,
+  types/mail.rs FolderView parentId/origin, ipc.md storage sections.
+  (Side effect: fixes committed-but-unwired refs — HEAD's mod.rs already
+  used `MailError`/`FolderOrigin`/`create_local_folder` without the schema.)
+- **`d5e8d9a`** — `A15 → T-334+T-341 search operators + thread mute`:
+  search.rs (full T-334 rewrite + NULL-safe negation fix), threading.rs,
+  store/threads.rs, schema.rs v18 (conversation_key + muted_conversations),
+  mod.rs v18 migration + backfill + mute-aware test edits, queries.rs
+  (upsert key materialization, folder_stats + total_unseen suppression,
+  move/copy carry — T-328 `*_remote_folder` fns excluded, A19's),
+  commands/thread.rs + types/thread.rs, notify.rs mute seam,
+  commands/mod.rs + types/mod.rs thread decls, lib.rs thread regs,
+  mail.rs search doc hunk, ipc.ts thread wrappers, kiwi.ts ThreadMuteView,
+  views/search.tsx, components/shortcuts.tsx, ipc.md search § + §6b-ii +
+  tooltip wording. `pub mod threading` in kiwi-mail/lib.rs folded in via
+  --amend (initially missed — would have broken the committed crate).
+
+Left uncommitted (foreign, by design): queries.rs T-328 fns; mod.rs
+copy_messages_* tests + stray blank line; commands/mod.rs lock_matrix +
+audit_ok; types/mod.rs T-260 tests; types/mail.rs T-316 hunks; lib.rs
+notify/send_consent/tray/export-import/folder/copy/audit/forensics wiring;
+mail.rs T-329 hunks; ipc.ts `decision` (T-282); ipc.md foreign sections;
+state.rs/syncer.rs/prefs.rs/system.rs/pair.rs/etc.
+
+**Post-commit verification on committed state:** `cargo test -p kiwi-mail
+--lib search` 15/15, `threading` 6/6, `threads::` 10/10 (incl.
+a_mute_survives_its_messages_being_moved); `cargo test -p kiwi-app --lib
+commands::thread` 5/5, `notify` 6/6. Lead-flagged foreign failures
+(parts.rs base64, rules/blocklist idempotent, testutil EOF) untouched
+and unstaged as instructed.
+
+A concurrent foreign staging race was observed mid-commit (A25 UI pass#5
+files entered the index while I was staging); foreign entries were
+unstaged before committing — `git show` audit confirms zero foreign
+content in either commit.
