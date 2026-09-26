@@ -164,16 +164,19 @@ export function FiltersView({
     );
 
   return (
-    <section aria-label="Mail filters" style={{ maxWidth: "52rem" }}>
-      <h1>Filters {demo && <small style={{ color: "var(--kiwi-text-secondary)" }}>(demo)</small>}</h1>
-      <p style={{ color: "var(--kiwi-text-secondary)" }}>
+    <section aria-label="Mail filters" className="em-filters ms-view-enter">
+      <h1 className="em-view-title">
+        Filters {demo && <small>(demo)</small>}
+      </h1>
+      <div className="ms-pane">
+      <p className="em-pane-desc">
         <small>
           Rules run top-down; conditions AND. “To” matches your account address (per-message recipients
           aren’t on the wire). Run applies to the loaded list only — {messages.length} message(s)
           {listLabel ? ` (${listLabel})` : ""}.
         </small>
       </p>
-      <div style={{ display: "flex", gap: "0.4rem", marginBottom: "0.7rem", flexWrap: "wrap" }}>
+      <div className="ms-filterbar" style={{ marginBottom: 0 }}>
         <button
           type="button"
           className="kiwi-btn-primary"
@@ -206,12 +209,13 @@ export function FiltersView({
           <small>Create one — e.g. from contains “invoice” → mark read.</small>
         </div>
       )}
-      <ol style={{ listStyle: "none", margin: 0, padding: 0, display: "flex", flexDirection: "column", gap: "0.4rem" }}>
+      {rules.length > 0 && (
+      <ol className="em-rules-list" style={{ listStyle: "none", margin: 0 }}>
         {rules.map((r, i) => {
           const open = openId === r.id;
           return (
-            <li key={r.id} className="kiwi-card" style={{ marginBottom: 0 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
+            <li key={r.id} className="em-rule-row">
+              <div className="em-rule-row-head">
                 <label style={{ display: "inline-flex", alignItems: "center", gap: "0.3rem" }}>
                   <input
                     type="checkbox"
@@ -224,7 +228,7 @@ export function FiltersView({
                 <small style={{ color: "var(--kiwi-text-secondary)" }}>
                   {describeRule(r, emailOf)} · matches {matchCounts.get(r.id) ?? 0} loaded
                 </small>
-                <span style={{ marginLeft: "auto", display: "inline-flex", gap: "0.25rem" }}>
+                <span className="em-rule-actions">
                   <button type="button" onClick={() => move(r.id, -1)} disabled={i === 0} aria-label={`Move ${r.name} up`}>
                     <Icon name="arrow-up" size={12} />
                   </button>
@@ -255,7 +259,7 @@ export function FiltersView({
                 </span>
               </div>
               {open && draft && draft.id === r.id && (
-                <div style={{ marginTop: "0.6rem", borderTop: "1px solid var(--kiwi-border-soft)", paddingTop: "0.6rem" }}>
+                <div className="em-rule-editor">
                   <p>
                     <label>
                       Name<br />
@@ -360,6 +364,8 @@ export function FiltersView({
           );
         })}
       </ol>
+      )}
+      </div>
     </section>
   );
 }

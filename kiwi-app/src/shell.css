@@ -3196,3 +3196,243 @@ pre.em-quote-region {
 .kiwi-palette-empty svg {
   opacity: 0.55;
 }
+
+/* ---------- professional polish: shared pane primitive ----------------
+ * .ms-pane is the .ms-prefs-content contract without the tab rail: one
+ * stacked card whose direct children become hairline-divided rows —
+ * muted group headers, right-aligned controls where a row lays out as
+ * label→control. Used by Security Center, Contacts, Search, Filters and
+ * Disposable; the same row rule extends to view wrappers embedded inside
+ * a prefs pane (RulesView/FiltersView/IntegrationsView roots). */
+
+.em-view-title {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 1.25rem;
+  font-weight: var(--kiwi-ms-weight-semibold, 600);
+  margin: 0.1rem 0 0.8rem;
+}
+.em-view-title small {
+  font-size: 0.72em;
+  font-weight: 400;
+  color: var(--kiwi-ms-text-secondary, var(--kiwi-text-secondary));
+}
+
+.ms-pane {
+  background: var(--kiwi-ms-surface, var(--kiwi-surface));
+  border: 1px solid var(--kiwi-ms-border, var(--kiwi-border-soft));
+  border-radius: var(--kiwi-radius-card, var(--kiwi-ms-radius-large, 12px));
+  padding: 0;
+  overflow: hidden;
+  margin-bottom: 0.9rem;
+}
+
+.ms-pane > h1,
+.ms-pane > .ms-pane-title {
+  margin: 0;
+  padding: 14px 18px 10px;
+  font-size: 1.12rem;
+  font-weight: var(--kiwi-ms-weight-semibold, 600);
+  border-bottom: 1px solid var(--kiwi-ms-divider, var(--em-hairline, #eef0f3));
+}
+
+/* Direct children are rows. Embedded-view roots (bare <div>/<section>
+   wrappers) count too; card chrome, banners, empty states, dialogs and
+   full-bleed scroll regions keep their own look. */
+.ms-pane > p,
+.ms-pane > ul,
+.ms-pane > ol,
+.ms-pane > h2,
+.ms-pane > h3,
+.ms-pane > details,
+.ms-pane > fieldset,
+.ms-pane > section,
+.ms-pane > pre,
+.ms-pane > table,
+.ms-pane > div:not(.kiwi-card):not(.kiwi-banner):not(.kiwi-empty):not(.kiwi-dialog-backdrop):not(.em-card):not(.em-dock-layer):not(.em-contacts-list):not(.em-rules-list),
+.ms-prefs-content > div:not(.kiwi-card):not(.kiwi-banner):not(.kiwi-empty):not(.kiwi-dialog-backdrop):not(.em-card),
+.ms-prefs-content > section:not([role="tabpanel"]),
+.ms-prefs-content > table,
+.ms-prefs-content > pre {
+  margin: 0;
+  padding: 11px 18px;
+  border-bottom: 1px solid var(--kiwi-ms-divider, var(--em-hairline, #eef0f3));
+}
+
+.ms-pane > :last-child {
+  border-bottom: none;
+}
+
+/* h2/h3 inside a pane read as muted group labels, like prefs sections. */
+.ms-pane > h2:not(.ms-pane-title),
+.ms-pane > h3 {
+  font-size: 0.8rem;
+  font-weight: var(--kiwi-ms-weight-semibold, 600);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--em-group-head, var(--kiwi-ms-text-secondary, var(--kiwi-text-secondary)));
+  background: var(--kiwi-ms-surface-2, transparent);
+}
+
+/* Nested chrome keeps its card look, inset inside the pane. */
+.ms-pane > .kiwi-card,
+.ms-pane > .kiwi-banner {
+  margin: 10px 16px;
+}
+
+/* Tables sit flush — the first/last cell carries the row indent. */
+.ms-pane > table,
+.ms-prefs-content > table {
+  padding: 0;
+}
+.ms-pane > table tr > :first-child,
+.ms-prefs-content > table tr > :first-child {
+  padding-left: 18px;
+}
+.ms-pane > table tr > :last-child,
+.ms-prefs-content > table tr > :last-child {
+  padding-right: 18px;
+}
+
+/* Filter/tool rows inside a pane are rows too; the last control docks right. */
+.ms-pane > .ms-filterbar > :last-child {
+  margin-left: auto;
+}
+
+/* In-list .kiwi-row items lose their card chrome and become hairline rows. */
+.ms-pane .kiwi-row {
+  border: none;
+  border-bottom: 1px solid var(--kiwi-ms-divider, var(--em-hairline, #eef0f3));
+  border-radius: 0;
+  padding: 9px 18px;
+  background: transparent;
+  box-shadow: none;
+}
+.ms-pane .kiwi-row:last-child { border-bottom: none; }
+.ms-pane .kiwi-row:hover { background: var(--kiwi-ms-list-hover, var(--kiwi-hover-bg)); }
+.ms-pane .kiwi-row[aria-selected="true"] {
+  background: var(--em-select, var(--kiwi-surface));
+  box-shadow: inset 2px 0 0 var(--accent, var(--kiwi-ms-accent));
+}
+
+/* Muted section-description rows (the standard's quiet explainer text). */
+.em-pane-desc {
+  color: var(--kiwi-ms-text-secondary, var(--kiwi-text-secondary));
+  font-size: var(--kiwi-ms-text-small, 0.85rem);
+}
+
+/* <hr> inside a prefs pane is just the hairline; no double gap. */
+.ms-prefs-content > hr {
+  margin: 0;
+  border: 0;
+  border-top: 1px solid var(--kiwi-ms-divider, var(--em-hairline, #eef0f3));
+}
+
+/* A view embedded inside a prefs pane keeps a quiet local title — the
+   pane's own h1 already says which section it is. */
+.ms-prefs-content .em-view-title {
+  font-size: 1rem;
+  margin: 0 0 0.5rem;
+}
+
+/* ---------- per-view polish ---------- */
+
+/* Contacts: rail (list card) + detail card, like the prefs rail split. */
+.em-contacts {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  max-width: 1100px;
+}
+.em-contacts-rail {
+  flex: 0 0 320px;
+  position: sticky;
+  top: 12px;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 150px);
+}
+.em-contacts-rail > h1 {
+  font-size: 1.02rem;
+  padding: 13px 18px 9px;
+}
+.em-contacts-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0;
+}
+.em-contacts-detail {
+  flex: 1;
+  min-width: 0;
+}
+.em-contact-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.em-contact-head .em-contact-name {
+  font-size: 1.05rem;
+  font-weight: var(--kiwi-ms-weight-semibold, 600);
+}
+.em-contact-lines {
+  list-style: none;
+  padding-left: 0;
+}
+.em-contact-lines li {
+  padding: 3px 0;
+}
+@media (max-width: 760px) {
+  .em-contacts { flex-direction: column; }
+  .em-contacts-rail { flex: none; width: 100%; position: static; max-height: 40vh; }
+}
+
+/* Search / Filters / Security Center: comfortable single column. */
+.em-search-view,
+.em-filters {
+  max-width: 900px;
+}
+.em-security {
+  max-width: 1050px;
+}
+
+/* Filters: rules become hairline rows inside the pane. */
+.ms-pane > ol.em-rules-list {
+  padding: 0;
+}
+.em-rule-row {
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--kiwi-ms-divider, var(--em-hairline, #eef0f3));
+}
+.em-rule-row:last-child { border-bottom: none; }
+.em-rule-row-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.em-rule-row-head .em-rule-actions {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 0.25rem;
+}
+.em-rule-editor {
+  margin-top: 0.6rem;
+  border-top: 1px solid var(--kiwi-ms-divider, var(--em-hairline, #eef0f3));
+  padding-top: 0.6rem;
+}
+
+/* Disposable: wider once the split list+reader is on screen. */
+.kiwi-dispo:has(.kiwi-dispo-split) {
+  max-width: 1000px;
+}
+.kiwi-dispo .ms-pane > .kiwi-dispo-head {
+  padding: 11px 18px;
+}
+
+/* Search result list inside a pane scrolls rather than pushing the page. */
+.em-search-results .kiwi-empty {
+  padding: 2rem 1rem;
+}

@@ -945,3 +945,61 @@ one-draft-per-account invariant preserved.
   quota rule — unchanged).
 - A hidden dock keeps autosaving to its OWN key — intended crash
   protection while minimized; can no longer touch the page draft.
+
+---
+
+## polish-revamp (planner dispatch) — claimed
+
+**Task:** complete the Mailspring rail+cards standard across secondary views —
+left nav rail, stacked cards, hairline row dividers, right-aligned controls,
+muted section descriptions (docs/ui/reference-layout.png is the target
+idiom; settings rail shell landed in UI pass#4 9061ee7 / A25's live T-362).
+
+**Claimed files (mine):**
+- `kiwi-app/src/views/contacts.tsx` — split-pane → rail + card treatment
+- `kiwi-app/src/views/security-center.tsx` — bare sections → stacked cards
+- `kiwi-app/src/views/search.tsx`, `filters.tsx`, `disposable.tsx` — normalize
+- `kiwi-app/src/views/rules.tsx`, `integrations.tsx` — inner markup normalize
+  (they render inside `.ms-prefs-content`; rows must fit the pattern)
+- `kiwi-app/src/shell.css`, `theme.css` — shared polish layer
+- `docs/agents/agent-24-status.md`, `docs/TASKS.md` row if ledgered
+
+**Deliberately NOT claimed (live owners):**
+- `settings.tsx` — A25 T-362 live; I touch it only via shared CSS selectors
+  so the pane contents adopt the pattern without an edit collision.
+- `chrome.tsx`, `App.tsx`, `mailbox.tsx`, `compose.tsx` — other live tasks.
+
+**Gate:** `tsc --noEmit` + vite build; `ui-smoke` regression pass.
+
+### polish-revamp — result
+
+- New `.ms-pane` primitive appended to `shell.css` (lines ~3605+): the
+  `.ms-prefs-content` children-become-rows contract without the tab rail —
+  hairline-divided rows, muted group headers (`em-pane-desc`,
+  `.ms-pane > h2/h3`), right-aligned last control in `.ms-filterbar`, inset
+  `kiwi-card`/`kiwi-banner`, flush `ms-table` cells.
+- Same row contract extended to view-wrapper `<div>`/`<section>` inside
+  `.ms-prefs-content` so RulesView/FiltersView/IntegrationsView roots adopt
+  the pattern without touching A25's live `settings.tsx`.
+- `security-center.tsx`: three stacked panes (Findings / Events / App audit
+  log); `section[aria-label='KIWI Security event center']`, all `h2`s and
+  the pending `.kiwi-banner` preserved — audit-log smoke intact.
+- `contacts.tsx`: rail pane (search+New filterbar, listbox, honest
+  source/import-export footer) + detail pane (`em-contact-head` with
+  right-aligned Write/Edit/Delete actions, `em-contact-lines` rows, empty
+  state). All IPC/demo gating untouched.
+- `search.tsx`: query+hints pane + results pane; root renamed
+  `em-search-view` — `.em-search` was already the chrome toolbar pill and
+  the collision collapsed the view to a ~223px flex strip (found by CDP
+  probe, confirmed by sweep 8→0 findings).
+- `filters.tsx`: pane + `em-rule-row` hairline list; `disposable.tsx`:
+  pane wraps notice/address-head, public-inbox warning stays first;
+  `rules.tsx`: root div → fragment so children become pane rows.
+- Gates: `tsc --noEmit` clean on all tracked files — the only failures are
+  in `src/ms/outline-view.tsx`, an untracked foreign in-flight file that
+  appeared mid-pass (not claimed, not touched).
+- ui-smoke 27/27 PASS (real Edge headless). ui-sweep after polish:
+  search 0, disposable 0, security 0, contacts 0, filters 0,
+  settings-mail-rules 0, settings-integrations 0. Settings-general
+  contrast findings (muted 3.64:1) are pre-existing token-level issues,
+  same count as baseline — left for token owners.

@@ -194,36 +194,36 @@ export function SecurityCenterView({
   };
 
   return (
-    <section aria-label="KIWI Security event center" className="ms-prefs ms-view-enter">
-      <h1>Security</h1>
-      {demo && (
-        <p>
-          <span className="ms-badge">? demo events</span>
-        </p>
-      )}
-      <h2>Findings ({findings.length})</h2>
-      {findings.length === 0 && (
-        <p style={{ color: "var(--kiwi-ms-text-secondary)" }}>
-          <small>No retained findings.</small>
-        </p>
-      )}
-      <ul className="ms-findings-list">
-        {findings.map((f, i) => (
-          <li key={f.id} className="ms-finding-row">
-            <span className={`kiwi-pill ${f.severity}`}>
-              {severityGlyph(f.severity)} {severityLabel(f.severity)}
-            </span>{" "}
-            <span className="ms-finding-title" title={f.title}>
-              {f.title}
-            </span>{" "}
-            <button type="button" className="ms-btn" onClick={() => onOpenFinding(i)}>
-              Details
-            </button>
-          </li>
-        ))}
-      </ul>
-      <h2>Events</h2>
-      <div className="ms-filterbar">
+    <section aria-label="KIWI Security event center" className="em-security ms-view-enter">
+      <h1 className="em-view-title">
+        Security{" "}
+        {demo && <span className="ms-badge">? demo events</span>}
+      </h1>
+      <div className="ms-pane">
+        <h2 className="ms-pane-title">Findings ({findings.length})</h2>
+        {findings.length === 0 ? (
+          <p className="em-pane-desc">No retained findings.</p>
+        ) : (
+          <ul className="ms-findings-list">
+            {findings.map((f, i) => (
+              <li key={f.id} className="ms-finding-row">
+                <span className={`kiwi-pill ${f.severity}`}>
+                  {severityGlyph(f.severity)} {severityLabel(f.severity)}
+                </span>{" "}
+                <span className="ms-finding-title" title={f.title}>
+                  {f.title}
+                </span>{" "}
+                <button type="button" className="ms-btn" onClick={() => onOpenFinding(i)}>
+                  Details
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      <div className="ms-pane">
+        <h2 className="ms-pane-title">Events</h2>
+        <div className="ms-filterbar">
         <label>
           Account filter:{" "}
           <input type="text" value={accountFilter} onChange={(e) => setAccountFilter(e.target.value)} placeholder="account substring" />
@@ -310,14 +310,16 @@ export function SecurityCenterView({
           )}
         </tbody>
       </table>
-      <h2>App audit log</h2>
-      <p style={{ color: "var(--kiwi-ms-text-secondary)" }}>
-        <small>
-          Action trail (audit.jsonl) — imports, exports, device and account mutations. Distinct from the
-          transport-security events above: these rows record what the app DID, not what the wire showed.
-          Ids and counts only — the trail never carries paths, subjects, or bodies.
-        </small>
-      </p>
+      </div>
+      <div className="ms-pane">
+        <h2 className="ms-pane-title">App audit log</h2>
+        <p className="em-pane-desc">
+          <small>
+            Action trail (audit.jsonl) — imports, exports, device and account mutations. Distinct from the
+            transport-security events above: these rows record what the app DID, not what the wire showed.
+            Ids and counts only — the trail never carries paths, subjects, or bodies.
+          </small>
+        </p>
       {auditState === "pending" && (
         <div className="kiwi-banner" role="status">
           <small>
@@ -469,6 +471,7 @@ export function SecurityCenterView({
           <small>No audit events recorded yet.</small>
         </p>
       )}
+      </div>
       {session && (
         <div className="kiwi-dialog-backdrop" onClick={() => setSession(null)}>
           <div

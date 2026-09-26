@@ -13,7 +13,6 @@
  */
 
 import { useEffect, useMemo, useState } from "react";
-import type { CSSProperties } from "react";
 import type { ContactInput, ContactView } from "../kiwi";
 import { contactLabel, contactPrimaryEmail, parseContact } from "../kiwi";
 import { api } from "../ipc";
@@ -29,8 +28,6 @@ import {
 } from "../contacts";
 import { exportVCard, MAX_VCARD_BYTES, parseVCard } from "../vcard";
 import type { VCardParse } from "../vcard";
-
-const grid: CSSProperties = { display: "grid", gridTemplateColumns: "minmax(240px, 320px) 1fr", gap: "0.8rem", height: "100%" };
 
 interface FormState {
   displayName: string;
@@ -407,35 +404,31 @@ export function ContactsView({
   };
 
   return (
-    <div style={grid}>
-      <section aria-label="Contact list">
-        <h1 style={{ fontSize: "1.1rem", margin: "0 0 0.5rem" }}>
+    <div className="em-contacts ms-view-enter">
+      <section className="ms-pane em-contacts-rail" aria-label="Contact list">
+        <h1>
           Contacts{" "}
-          <small style={{ color: "var(--kiwi-text-secondary)" }}>
+          <small style={{ color: "var(--kiwi-text-secondary)", fontWeight: 400 }}>
             ({filtered.length}
             {source === "server" ? "" : " · demo"})
           </small>
         </h1>
-        <p>
-          <label>
-            <span className="kiwi-sr-only">Search contacts</span>
-            <input
-              type="search"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search name, org, email…"
-              style={{ width: "100%" }}
-              aria-label="Search contacts"
-            />
-          </label>
-          {searchBusy && <small role="status"> searching…</small>}
-        </p>
-        <p>
+        <div className="ms-filterbar">
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search name, org, email…"
+            style={{ flex: 1, minWidth: 0 }}
+            aria-label="Search contacts"
+          />
           <button type="button" className="kiwi-btn-primary" onClick={startCreate}>
-            + New contact
+            + New
           </button>
-        </p>
+        </div>
+        {searchBusy && <p role="status"><small>Searching…</small></p>}
         {loading && <p role="status"><small>Loading…</small></p>}
+        <div className="em-contacts-list" role="listbox" aria-label="Contacts">
         {filtered.length === 0 && !loading && (
           <div className="kiwi-empty">
             <span className="kiwi-empty-icon em-empty-icon" aria-hidden="true"><Icon name="accounts" size={28} /></span>
@@ -444,7 +437,6 @@ export function ContactsView({
             <small>{query ? "No matches — clear the search." : "Create the first card."}</small>
           </div>
         )}
-        <div style={{ overflowY: "auto", display: "flex", flexDirection: "column", gap: "0.3rem" }} role="listbox" aria-label="Contacts">
           {filtered.map((c) => (
             <article
               key={c.id}
@@ -481,13 +473,11 @@ export function ContactsView({
           <small>
             {source === "server"
               ? "Live address book (kiwi.contacts/1)."
-              : "Demo address book — localStorage fixture, no IPC."}
+              : "Demo address book — localStorage fixture, no IPC."}{" "}
+            <button type="button" onClick={() => setShowIO((s) => !s)} aria-expanded={showIO}>
+              {showIO ? "Hide import / export" : "Import / export (.vcf)"}
+            </button>
           </small>
-        </p>
-        <p>
-          <button type="button" onClick={() => setShowIO((s) => !s)} aria-expanded={showIO}>
-            {showIO ? "Hide import / export" : "Import / export (.vcf)"}
-          </button>
         </p>
         {showIO && (
           <div className="kiwi-card" aria-label="vCard import and export">
@@ -571,7 +561,7 @@ export function ContactsView({
           </div>
         )}
       </section>
-      <section className="kiwi-reader" aria-label="Contact detail" tabIndex={0}>
+      <section className="ms-pane em-contacts-detail" aria-label="Contact detail" tabIndex={0}>
         {note && (
           <p role="status"><small>{note}</small></p>
         )}
@@ -580,15 +570,15 @@ export function ContactsView({
         )}
         {(editing || creating) && (
           <>
-            <h2 style={{ marginTop: 0 }}>{creating ? "New contact" : "Edit contact"}</h2>
+            <h2 className="ms-pane-title">{creating ? "New contact" : "Edit contact"}</h2>
             <p><label>Display name<br /><input type="text" value={form.displayName} onChange={set("displayName")} style={{ width: "100%" }} /></label></p>
             <p style={{ display: "flex", gap: "0.5rem" }}>
-              <label>Given name<br /><input type="text" value={form.givenName} onChange={set("givenName")} style={{ width: "100%" }} /></label>
-              <label>Family name<br /><input type="text" value={form.familyName} onChange={set("familyName")} style={{ width: "100%" }} /></label>
+              <label style={{ flex: 1 }}>Given name<br /><input type="text" value={form.givenName} onChange={set("givenName")} style={{ width: "100%" }} /></label>
+              <label style={{ flex: 1 }}>Family name<br /><input type="text" value={form.familyName} onChange={set("familyName")} style={{ width: "100%" }} /></label>
             </p>
             <p style={{ display: "flex", gap: "0.5rem" }}>
-              <label>Organization<br /><input type="text" value={form.org} onChange={set("org")} style={{ width: "100%" }} /></label>
-              <label>Title<br /><input type="text" value={form.title} onChange={set("title")} style={{ width: "100%" }} /></label>
+              <label style={{ flex: 1 }}>Organization<br /><input type="text" value={form.org} onChange={set("org")} style={{ width: "100%" }} /></label>
+              <label style={{ flex: 1 }}>Title<br /><input type="text" value={form.title} onChange={set("title")} style={{ width: "100%" }} /></label>
             </p>
             <p><label>Emails (one per line)<br /><textarea rows={3} value={form.emails} onChange={set("emails")} style={{ width: "100%" }} /></label></p>
             <p><label>Phones (one per line)<br /><textarea rows={2} value={form.phones} onChange={set("phones")} style={{ width: "100%" }} /></label></p>
@@ -613,16 +603,46 @@ export function ContactsView({
         )}
         {!editing && !creating && selected && (
           <>
-            <h2 style={{ marginTop: 0 }}>{contactLabel(selected)}</h2>
-            {(selected.org || selected.title) && (
-              <p style={{ color: "var(--kiwi-text-secondary)" }}>
-                {[selected.title, selected.org].filter(Boolean).join(", ")}
-              </p>
-            )}
+            <div className="em-contact-head">
+              <div>
+                <div className="em-contact-name">{contactLabel(selected)}</div>
+                {(selected.org || selected.title) && (
+                  <small style={{ color: "var(--kiwi-text-secondary)" }}>
+                    {[selected.title, selected.org].filter(Boolean).join(", ")}
+                  </small>
+                )}
+              </div>
+              <span className="kiwi-toolbar-gap" />
+              <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap" }}>
+                <button
+                  type="button"
+                  className="kiwi-btn-primary"
+                  onClick={() => {
+                    const addr = contactPrimaryEmail(selected);
+                    if (addr) composeTo(addr);
+                  }}
+                  disabled={!contactPrimaryEmail(selected)}
+                  title={contactPrimaryEmail(selected) ? `Compose to ${contactPrimaryEmail(selected)}` : "No email address on this card"}
+                >
+                  <Icon name="compose" size={12} /> Write
+                </button>
+                <button type="button" onClick={startEdit}>Edit</button>
+                {confirmDelete ? (
+                  <>
+                    <button type="button" onClick={() => void remove()} disabled={busy}>
+                      Confirm delete {contactLabel(selected)}
+                    </button>
+                    <button type="button" onClick={() => setConfirmDelete(false)}>Keep</button>
+                  </>
+                ) : (
+                  <button type="button" onClick={() => setConfirmDelete(true)}>Delete…</button>
+                )}
+              </div>
+            </div>
             {selected.emails.length > 0 && (
               <>
                 <h3>Emails</h3>
-                <ul>
+                <ul className="em-contact-lines">
                   {selected.emails.map((e) => (
                     <li key={e.address}>
                       {e.address}{e.label && <small> ({e.label})</small>}{" "}
@@ -643,7 +663,7 @@ export function ContactsView({
             {selected.phones.length > 0 && (
               <>
                 <h3>Phones</h3>
-                <ul>
+                <ul className="em-contact-lines">
                   {selected.phones.map((p) => (
                     <li key={p.number}>
                       {p.number}{p.label && <small> ({p.label})</small>}
@@ -662,38 +682,18 @@ export function ContactsView({
             {selected.notes && (
               <>
                 <h3>Notes</h3>
-                <pre style={{ whiteSpace: "pre-wrap", fontFamily: "inherit" }}>{selected.notes}</pre>
+                <pre style={{ whiteSpace: "pre-wrap", fontFamily: "inherit", marginTop: 0 }}>{selected.notes}</pre>
               </>
             )}
-            <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap" }}>
-              <button
-                type="button"
-                className="kiwi-btn-primary"
-                onClick={() => {
-                  const addr = contactPrimaryEmail(selected);
-                  if (addr) composeTo(addr);
-                }}
-                disabled={!contactPrimaryEmail(selected)}
-                title={contactPrimaryEmail(selected) ? `Compose to ${contactPrimaryEmail(selected)}` : "No email address on this card"}
-              >
-                <Icon name="compose" size={12} /> Write
-              </button>
-              <button type="button" onClick={startEdit}>Edit</button>
-              {confirmDelete ? (
-                <>
-                  <button type="button" onClick={() => void remove()} disabled={busy}>
-                    Confirm delete {contactLabel(selected)}
-                  </button>
-                  <button type="button" onClick={() => setConfirmDelete(false)}>Keep</button>
-                </>
-              ) : (
-                <button type="button" onClick={() => setConfirmDelete(true)}>Delete…</button>
-              )}
-            </div>
           </>
         )}
         {!editing && !creating && !selected && (
-          <p style={{ color: "var(--kiwi-text-secondary)" }}>Select a contact — or create one.</p>
+          <div className="kiwi-empty">
+            <span className="kiwi-empty-icon em-empty-icon" aria-hidden="true"><Icon name="accounts" size={26} /></span>
+            <strong>Select a contact</strong>
+            <br />
+            <small>Pick a card on the left — or create one.</small>
+          </div>
         )}
       </section>
     </div>

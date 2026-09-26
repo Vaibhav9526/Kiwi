@@ -430,7 +430,7 @@ export function RulesView({
   const nodes = draft ? countNodes(draft.when) : 0;
 
   return (
-    <div>
+    <>
       <h2 style={{ marginTop: 0 }}>
         Inbox rules{" "}
         <small style={{ color: "var(--kiwi-text-secondary)", fontWeight: "normal" }}>
@@ -732,6 +732,6 @@ export function RulesView({
           )}
         </>
       )}
-    </div>
+    </>
   );
 }

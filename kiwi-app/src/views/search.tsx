@@ -390,23 +390,23 @@ export function SearchView({
   };
 
   return (
-    <section aria-label="Search results" style={{ maxWidth: "52rem" }}>
-      <h1>Search {demo && <small style={{ color: "var(--kiwi-text-secondary)" }}>(demo)</small>}</h1>
-      <p>
-        <label>
-          Query:{" "}
-          <input
-            ref={inputRef}
-            type="search"
-            value={query}
-            onChange={(e) => onQuery(e.target.value)}
-            placeholder='terms, from:a, subject:"two words", is:unread, has:attachment, before:2025-01-01, in:Work, -spam'
-            style={{ width: "min(30rem, 100%)" }}
-            aria-label="Search query"
-          />
-        </label>
-      </p>
-      <div style={{ display: "flex", gap: "0.3rem", flexWrap: "wrap", marginBottom: "0.5rem" }} aria-label="Syntax hints">
+    <section aria-label="Search results" className="em-search-view ms-view-enter">
+      <h1 className="em-view-title">
+        Search {demo && <small>(demo)</small>}
+      </h1>
+      <div className="ms-pane">
+      <div className="ms-filterbar">
+        <input
+          ref={inputRef}
+          type="search"
+          value={query}
+          onChange={(e) => onQuery(e.target.value)}
+          placeholder='terms, from:a, subject:"two words", is:unread, has:attachment, before:2025-01-01, in:Work, -spam'
+          style={{ flex: 1, minWidth: "14rem" }}
+          aria-label="Search query"
+        />
+      </div>
+      <div style={{ display: "flex", gap: "0.3rem", flexWrap: "wrap" }} aria-label="Syntax hints">
         {SYNTAX_CHIPS.map((chip) => (
           <button
             key={chip}
@@ -433,7 +433,7 @@ export function SearchView({
           </button>
         ))}
       </div>
-      <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", marginBottom: "0.6rem" }} aria-label="Filter chips">
+      <div className="ms-filterbar" style={{ marginBottom: 0 }} aria-label="Filter chips">
         <label>
           <small>from: </small>
           <input
@@ -501,45 +501,48 @@ export function SearchView({
           </small>
         </div>
       )}
-      {query.trim() && rows.length === 0 && !searching && (
-        <div className="kiwi-empty">
-          <span className="kiwi-empty-icon em-empty-icon" aria-hidden="true"><Icon name="search" size={28} /></span>
-          <strong>No matches</strong>
-          <br />
-          <small>Try fewer terms, or clear the filter chips.</small>
+      </div>
+      {(rows.length > 0 || query.trim() !== "") && (
+        <div className="ms-pane em-search-results" role="list" aria-label="Search results">
+          {rows.length === 0 && query.trim() && !searching && (
+            <div className="kiwi-empty">
+              <span className="kiwi-empty-icon em-empty-icon" aria-hidden="true"><Icon name="search" size={28} /></span>
+              <strong>No matches</strong>
+              <br />
+              <small>Try fewer terms, or clear the filter chips.</small>
+            </div>
+          )}
+          {rows.map((r) => (
+            <article
+              key={r.key}
+              role="listitem"
+              className="kiwi-row"
+              tabIndex={0}
+              onClick={() => onOpenHit(r)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") onOpenHit(r);
+              }}
+              aria-label={`From ${r.from}: ${r.subject}`}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", gap: "0.4rem" }}>
+                <span>
+                  <Highlight text={r.from} terms={parsed.highlight} />
+                  {r.hasAttachments && <Icon name="paperclip" size={12} label="has attachments" />}
+                </span>
+                <span style={{ color: "var(--kiwi-text-secondary)", fontSize: "0.8rem" }}>
+                  {r.date ? new Date(r.date).toLocaleString() : "—"}
+                </span>
+              </div>
+              <div>
+                <Highlight text={r.subject} terms={parsed.highlight} />
+              </div>
+              <div style={{ fontSize: "0.8rem", color: "var(--kiwi-text-secondary)" }}>
+                {r.accountEmail} · <Highlight text={r.snippet} terms={parsed.highlight} />
+              </div>
+            </article>
+          ))}
         </div>
       )}
-      <div style={{ display: "flex", flexDirection: "column", gap: "0.3rem" }} role="list" aria-label="Search results">
-        {rows.map((r) => (
-          <article
-            key={r.key}
-            role="listitem"
-            className="kiwi-row"
-            tabIndex={0}
-            onClick={() => onOpenHit(r)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") onOpenHit(r);
-            }}
-            aria-label={`From ${r.from}: ${r.subject}`}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", gap: "0.4rem" }}>
-              <span>
-                <Highlight text={r.from} terms={parsed.highlight} />
-                {r.hasAttachments && <Icon name="paperclip" size={12} label="has attachments" />}
-              </span>
-              <span style={{ color: "var(--kiwi-text-secondary)", fontSize: "0.8rem" }}>
-                {r.date ? new Date(r.date).toLocaleString() : "—"}
-              </span>
-            </div>
-            <div>
-              <Highlight text={r.subject} terms={parsed.highlight} />
-            </div>
-            <div style={{ fontSize: "0.8rem", color: "var(--kiwi-text-secondary)" }}>
-              {r.accountEmail} · <Highlight text={r.snippet} terms={parsed.highlight} />
-            </div>
-          </article>
-        ))}
-      </div>
     </section>
   );
 }

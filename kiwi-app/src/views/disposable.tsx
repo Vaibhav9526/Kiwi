@@ -74,10 +74,11 @@ export function DisposableInboxView({ temp, live }: { temp: TempMail; live: bool
   };
 
   return (
-    <section className="ms-view-enter kiwi-dispo" aria-label="Disposable inbox" style={{ padding: "0.9rem 1rem" }}>
-      <h1 style={{ marginTop: 0, display: "flex", alignItems: "center", gap: "0.4rem" }}>
+    <section className="ms-view-enter kiwi-dispo" aria-label="Disposable inbox">
+      <h1 className="em-view-title">
         <Icon name="clock" size={18} /> Disposable Inbox
       </h1>
+      <div className="ms-pane">
       {/* The notice precedes every control — it must be seen before use. */}
       <div className="kiwi-banner warn" role="note" aria-label="Public inbox notice">
         <small>{temp.notice}</small>
@@ -132,8 +133,7 @@ export function DisposableInboxView({ temp, live }: { temp: TempMail; live: bool
       )}
 
       {temp.mailbox && (
-        <>
-          <div className="kiwi-card kiwi-dispo-head" style={{ padding: "0.6rem 0.8rem", marginBottom: "0.7rem" }}>
+          <div className="kiwi-dispo-head">
             <strong>Address:</strong> <code>{temp.mailbox.address}</code>{" "}
             {temp.expiresAtUnix != null && <ExpiryCountdown expiresAtUnix={temp.expiresAtUnix} />}{" "}
             <span className="kiwi-toolbar-gap" />
@@ -147,7 +147,9 @@ export function DisposableInboxView({ temp, live }: { temp: TempMail; live: bool
               {temp.busy === "discard" ? "Discarding…" : "Discard address"}
             </button>
           </div>
-
+      )}
+      </div>
+      {temp.mailbox && (
           <div className="kiwi-dispo-split">
             <div className="em-rows kiwi-dispo-list" role="listbox" aria-label="Disposable inbox messages">
               {temp.messages.length === 0 && (
@@ -239,7 +241,6 @@ export function DisposableInboxView({ temp, live }: { temp: TempMail; live: bool
               )}
             </div>
           </div>
-        </>
       )}
     </section>
   );
