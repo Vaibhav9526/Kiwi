@@ -130,6 +130,8 @@ pub(crate) async fn delete_messages_impl(
         &format!("{account_id}/f{folder_id}: {moved_to_trash}→trash {deleted}×expunge"),
         now_unix(),
     )?;
+    // T-345: deletes/trash moves shift the unread figure.
+    crate::tray::refresh_tooltip(&state).await;
     Ok(DeleteResultView {
         folder_id,
         moved_to_trash,
@@ -296,6 +298,8 @@ pub(crate) async fn copy_messages_impl(
         &format!("{account_id}: f{src_folder_id}→f{dst_folder_id} ×{copied}"),
         now_unix(),
     )?;
+    // T-345: copies of unseen source rows add to the unread count.
+    crate::tray::refresh_tooltip(state).await;
     Ok(CopyResultView {
         src_folder_id,
         dst_folder_id,

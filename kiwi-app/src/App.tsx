@@ -8,7 +8,7 @@
  * NO security verdicts — every verdict comes from the backend.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, IpcError, isTauri, onMailChanged } from "./ipc";
+import { api, IpcError, isTauri, onMailChanged, onQuitRequested, onTrayCompose } from "./ipc";
 import { applyUiPrefs } from "./prefs";
 import { useTheme } from "./themes";
 import { broadcastPluginEvent, usePluginRuntime } from "./plugins";
@@ -179,6 +179,11 @@ export default function App() {
   const [sandboxOpens, setSandboxOpens] = useState<number | null>(null);
   const [findingIndex, setFindingIndex] = useState<number | null>(null);
   const [findingDetail, setFindingDetail] = useState<FindingDetailView | null>(null);
+  // T-345: tray Quit found sends still queued — the backend emitted
+  // kiwi://confirm-quit and raised the window; this modal is the honest
+  // confirm. `confirmQuit` performs the exit (exempt — quitting while
+  // locked leaks nothing).
+  const [quitPending, setQuitPending] = useState<number | null>(null);
   const [findingDetailError, setFindingDetailError] = useState<string | null>(null);
   const [authOpen, setAuthOpen] = useState(false);
   const [authStatus, setAuthStatus] = useState<AuthStatus>("waiting");
@@ -331,9 +336,26 @@ export default function App() {
         unlisten = fn;
       })
       .catch(() => undefined);
+    // T-345: tray events — Compose navigates to the compose route (the
+    // window was already raised backend-side); Quit-with-pending-outbox
+    // arms the confirm modal below.
+    let unlistenTrayCompose: (() => void) | undefined;
+    let unlistenQuit: (() => void) | undefined;
+    onTrayCompose(() => navigate({ name: "compose" }))
+      .then((fn) => {
+        unlistenTrayCompose = fn;
+      })
+      .catch(() => undefined);
+    onQuitRequested((pending) => setQuitPending(pending))
+      .then((fn) => {
+        unlistenQuit = fn;
+      })
+      .catch(() => undefined);
     return () => {
       if (timer) clearTimeout(timer);
       unlisten?.();
+      unlistenTrayCompose?.();
+      unlistenQuit?.();
     };
   }, [demo, loadFolders, refreshOutbox, notify]);
 
@@ -1906,6 +1928,50 @@ export default function App() {
                 </button>{" "}
                 <button type="button" onClick={() => setExportDlg(null)} disabled={exportDlgBusy}>
                   Cancel
+                </button>
+              </p>
+            </div>
+          </div>
+        )}
+        {quitPending !== null && (
+          <div
+            className="ms-composer-backdrop"
+            onMouseDown={(e) => {
+              if (e.target === e.currentTarget) setQuitPending(null);
+            }}
+          >
+            <div
+              className="ms-composer-modal"
+              role="alertdialog"
+              aria-modal="true"
+              aria-label="Confirm quit"
+              style={{ width: "min(430px, 100%)" }}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") setQuitPending(null);
+              }}
+            >
+              <div className="ms-composer-head">
+                <h1>Quit KIWI?</h1>
+                <button
+                  type="button"
+                  className="ms-btn"
+                  onClick={() => setQuitPending(null)}
+                  aria-label="Cancel quit"
+                >
+                  <Icon name="close" size={12} />
+                </button>
+              </div>
+              <p>
+                <b>{quitPending} message{quitPending === 1 ? " is" : "s are"} still queued</b> in the
+                outbox and won’t send until KIWI runs again. Quitting now abandons them to the next
+                launch.
+              </p>
+              <p style={{ marginBottom: 0 }}>
+                <button type="button" onClick={() => void api.confirmQuit()}>
+                  Quit anyway
+                </button>{" "}
+                <button type="button" onClick={() => setQuitPending(null)} autoFocus>
+                  Stay open
                 </button>
               </p>
             </div>

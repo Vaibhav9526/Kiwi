@@ -38,6 +38,7 @@ pub(crate) async fn app_info(state: &AppState) -> CmdResult<AppInfoView> {
         }),
         account_count: index.account_ids.len(),
         sessions_observed,
+        tray_available: state.tray_live.load(std::sync::atomic::Ordering::Relaxed),
     })
 }
 

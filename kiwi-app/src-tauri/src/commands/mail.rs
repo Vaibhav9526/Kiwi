@@ -746,6 +746,9 @@ async fn imap_sync(
             ..Default::default()
         });
     }
+    // T-345: one tooltip refresh per pass — the count is global, not
+    // per-folder, so refreshing inside the loop is waste.
+    crate::tray::refresh_tooltip(state).await;
     let facts = observe::facts_of(client.transport());
     let tls_label = facts
         .observation
@@ -857,6 +860,8 @@ pub(crate) async fn pop3_sync(
         index.remember_folder(&acct.account_id, folder_id, "INBOX");
         index.save(&state.data_dir)?;
     }
+    // T-345: the tray tooltip tracks the same arrival.
+    crate::tray::refresh_tooltip(state).await;
     let facts = observe::facts_of(client.transport());
     let tls_label = facts
         .observation

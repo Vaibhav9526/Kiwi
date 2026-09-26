@@ -655,6 +655,19 @@ pub struct AppState {
     /// `std::sync` — a one-shot take from the sync setup closure.
     pub pair_listen_socket: std::sync::Mutex<Option<std::net::TcpListener>>,
     pub send_queue: Mutex<SendQueue>,
+    /// Tray tooltip sink (T-345) — `None` until setup injects the tray
+    /// (or a test recorder). Same one-shot `std::sync` pattern as
+    /// `pair_listen_socket`.
+    pub tray_tip: std::sync::Mutex<Option<Arc<dyn crate::tray::TooltipSink>>>,
+    /// Whether a tray icon actually built (T-345). False on platforms
+    /// without a tray surface — the close button then stays a real quit,
+    /// and `trayAvailable` reports the truth instead of claiming it.
+    pub tray_live: std::sync::atomic::AtomicBool,
+    /// The `kiwi.trayOnClose` pref mirrored into a lock-free read
+    /// (T-345): `on_window_event` is a sync main-thread callback that
+    /// cannot await the tokio-guarded `index`. `kiwi_prefs_set` updates
+    /// this after persisting, so the mirror can never lead the store.
+    pub tray_on_close: std::sync::atomic::AtomicBool,
     /// queue_id → send metadata (SendQueue exposes no item iterator).
     pub outbox_meta: Mutex<BTreeMap<String, OutboxMeta>>,
     /// Durable single-attempt queue ids — the restart half of
@@ -915,6 +928,9 @@ impl AppState {
         let (provisioned_channel, listen_socket) =
             provision_pair_channel(&data_dir, credentials.as_ref());
         let single_attempt_book = SingleAttemptBook::open(&data_dir)?;
+        // T-345: resolve the close-to-tray pref before `index` moves into
+        // the mutex — the lock-free mirror is what `on_window_event` reads.
+        let tray_on_close = crate::tray::tray_on_close_pref(&index);
         Ok(Self {
             contacts: Mutex::new(
                 kiwi_contacts::ContactStore::open(&data_dir, now_unix())
@@ -930,6 +946,9 @@ impl AppState {
             trust: Mutex::new(TrustMachine::new()),
             policy: TrustPolicy::default(),
             send_queue: Mutex::new(SendQueue::new()),
+            tray_tip: std::sync::Mutex::new(None),
+            tray_live: std::sync::atomic::AtomicBool::new(false),
+            tray_on_close: std::sync::atomic::AtomicBool::new(tray_on_close),
             outbox_meta: Mutex::new(BTreeMap::new()),
             single_attempt: Mutex::new(single_attempt_book),
             sessions: Mutex::new(VecDeque::new()),

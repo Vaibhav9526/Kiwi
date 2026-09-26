@@ -697,6 +697,47 @@ mod tests {
         assert!(store.outbox_list(10).unwrap().is_empty());
     }
 
+    /// T-345: the tray tooltip count is `total_unseen` — the same unseen
+    /// predicate as `folder_stats`, summed across every folder.
+    /// `outbox_count` feeds the tray Quit guard, so both are pinned here.
+    /// (Mute-aware suppression rides T-341's schema; this pins the base
+    /// predicate only.)
+    #[test]
+    fn total_unseen_and_outbox_count_match_their_consumers() {
+        let store = MailStore::open_memory().unwrap();
+        store.upsert_account(&acct("a1")).unwrap();
+        let fid = store.ensure_folder("a1", "INBOX").unwrap();
+
+        let mut unseen = meta(1);
+        unseen.flags = vec![];
+        let seen = meta(2); // meta() defaults to \\Seen
+        store.upsert_message(fid, &unseen, 100).unwrap();
+        store.upsert_message(fid, &seen, 100).unwrap();
+        assert_eq!(store.total_unseen().unwrap(), 1);
+
+        // The quit guard reads a real row count, not a probe of the file.
+        assert_eq!(store.outbox_count().unwrap(), 0);
+        store
+            .outbox_put(&OutboxRow {
+                queue_id: "q1".into(),
+                account_id: "a1".into(),
+                from_addr: "a@x".into(),
+                to_addrs: vec!["b@y".into()],
+                subject: "s".into(),
+                message_id: "<m@x>".into(),
+                mime: b"Subject: s\r\n\r\nbody".to_vec(),
+                not_before_unix: 200,
+                undo_window_until_unix: 0,
+                attempts: 0,
+                last_error: None,
+                created_unix: 100,
+            })
+            .unwrap();
+        assert_eq!(store.outbox_count().unwrap(), 1);
+        store.outbox_delete("q1").unwrap();
+        assert_eq!(store.outbox_count().unwrap(), 0);
+    }
+
     fn acct(id: &str) -> MailAccount {
         use crate::account::{AuthRef, IncomingAccount, IncomingProtocol, OutgoingAccount};
         use crate::transport::SocketSecurity;

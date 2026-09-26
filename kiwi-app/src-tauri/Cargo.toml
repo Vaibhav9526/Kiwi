@@ -26,7 +26,7 @@ kiwi-pair = { path = "../../kiwi-pair" }
 # DNS MX lookups for autoconfig discovery (same pin kiwi-mailauth uses).
 hickory-resolver = { version = "0.26", features = ["tokio"] }
 async-trait.workspace = true
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true

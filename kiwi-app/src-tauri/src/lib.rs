@@ -22,6 +22,7 @@ mod pairing_listen;
 mod signals;
 mod state;
 mod syncer;
+mod tray;
 mod types;
 
 use tauri::Manager;
@@ -59,6 +60,17 @@ pub fn run() {
             };
             let state = state::AppState::open(dir)
                 .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
+            // T-345: the system tray — icon + menu (Show/Hide, Compose,
+            // Quit) + the tooltip sink. `install` returning false means the
+            // platform has no tray surface: `tray_live` stays false, X keeps
+            // quit semantics, and `kiwi_app_info.trayAvailable` reports it.
+            if tray::install(app)? {
+                state
+                    .tray_live
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                *state.tray_tip.lock().unwrap() =
+                    Some(std::sync::Arc::new(tray::TrayTooltip(app.handle().clone())));
+            }
             app.manage(std::sync::Arc::new(state));
             // Background outbox dispatcher (undo-send grace + send-later).
             let handle = app.handle().clone();
@@ -76,12 +88,17 @@ pub fn run() {
             }
             Ok(())
         })
+        // T-345: the main window's X routes through the tray decision —
+        // hide-to-tray only while `kiwi.trayOnClose` is on AND a tray
+        // icon actually exists; everything else keeps plain close=quit.
+        .on_window_event(tray::handle_window_event)
         .invoke_handler(tauri::generate_handler![
             // system / lock path (exempt)
             kiwi_ping,
             kiwi_app_info,
             kiwi_security_status,
             kiwi_lock,
+            tray::kiwi_confirm_quit,
             kiwi_request_challenge,
             kiwi_submit_challenge,
             // pairing engine (§9d — canonical names; kiwi_* above are aliases)

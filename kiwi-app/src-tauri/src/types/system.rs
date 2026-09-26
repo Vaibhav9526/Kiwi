@@ -101,6 +101,10 @@ pub struct AppInfoView {
     pub org: Option<OrgBindingView>,
     pub account_count: usize,
     pub sessions_observed: u64,
+    /// Whether a tray icon actually exists (T-345) — false on platforms
+    /// with no tray surface; the close-to-tray pref is then inert and the
+    /// settings UI must say so rather than pretend the toggle works.
+    pub tray_available: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

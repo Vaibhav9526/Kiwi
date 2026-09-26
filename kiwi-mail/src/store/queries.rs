@@ -673,6 +673,22 @@ impl MailStore {
             .map_err(Into::into)
     }
 
+    /// Global unseen count across every account/folder (T-345 tray
+    /// tooltip). Same `unseen` predicate as `folder_stats` — no `\Seen`
+    /// token — so the tray number matches the sum of the badges rather
+    /// than inventing its own definition.
+    pub fn total_unseen(&self) -> Result<u64> {
+        self.conn
+            .query_row(
+                "SELECT COUNT(*) FROM messages m
+                 WHERE ' ' || m.flags || ' ' NOT LIKE '% \\Seen %'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| n.max(0) as u64)
+            .map_err(Into::into)
+    }
+
     /// All locally-known UIDs for a folder (expunge detection).
     pub fn folder_uids(&self, folder_id: i64) -> Result<Vec<u64>> {
         let mut stmt = self

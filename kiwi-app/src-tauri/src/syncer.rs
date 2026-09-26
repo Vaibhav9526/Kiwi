@@ -347,6 +347,8 @@ async fn imap_live(state: &AppState, acct: &MailAccount, emit: &Emit) -> CmdResu
         total_expunged += report.expunged;
         folders_synced += 1;
     }
+    // T-345: tooltip refresh once per pass (global count, not per-folder).
+    crate::tray::refresh_tooltip(state).await;
 
     // One session record for the whole live connection — IDLE cycles and
     // event-triggered re-syncs below are the same observed session.
@@ -471,6 +473,7 @@ async fn imap_live(state: &AppState, acct: &MailAccount, emit: &Emit) -> CmdResu
                 .await;
             }
         }
+        crate::tray::refresh_tooltip(state).await;
         if let Some(ep) = &endpoint {
             emit_received(state, ep, acct, received, tls_label, security_status).await;
         }

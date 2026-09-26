@@ -185,6 +185,9 @@ pub(crate) async fn update_message_impl(
         now_unix(),
     )?;
 
+    // T-345: a flag/mailbox change can move the global unread number.
+    crate::tray::refresh_tooltip(&state).await;
+
     Ok(MessageUpdateView {
         folder_id,
         uid,

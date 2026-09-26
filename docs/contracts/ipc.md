@@ -54,6 +54,9 @@ able to drive the lock UI — are marked **[exempt]** below:
 - `kiwi_ping`, `kiwi_app_info`, `kiwi_security_status`, `kiwi_lock`,
   `kiwi_request_challenge`, `kiwi_submit_challenge`, `unlock_challenge`,
   `kiwi_collect_endpoint_signals` (signals feed trust even while locked).
+- `kiwi_confirm_quit` (T-345) — the renderer's half of the tray Quit
+  flow: exiting a locked app leaks nothing, and locking must never trap
+  the process (§9c).
 - `pair_begin` / `pair_status` are exempt **only while a backend-owned
   pairing flow is active** (§9d.7); outside it they are gated like the rest.
 
@@ -1263,6 +1266,42 @@ the OS keystore via account auth only.
 
 Bounds: `key` 1–128 chars, `:` refused (scope separator); `value` any
 JSON ≤ 64 KiB serialized; 1024 entries total.
+
+### System tray pref + quit flow (T-345)
+
+The tray icon lives in the main process (`tray.rs`); the renderer sees
+only a pref, an `AppInfoView` field, and two events.
+
+- **`kiwi.trayOnClose`** (global, `"on"`/`"off"`, default **on** — absent
+  or any non-`"off"` value means on): the main window's X hides to the
+  tray instead of quitting while a tray icon exists. Default-on is
+  deliberate: the feature exists because closing the window used to kill
+  sync + notifications; the tray menu's Quit is always a real exit, so
+  opting out is one click. When the platform reports no tray surface
+  (`AppInfoView.trayAvailable == false`), the pref is inert and X always
+  quits — hiding into nothing would strand a running, invisible app.
+  `kiwi_prefs_set` on this key updates the backend's lock-free mirror AND
+  records `pref-tray-set` (close-behavior is posture).
+- **Tray menu:** Show/Hide toggles the main window; Compose raises it and
+  emits `kiwi://tray-compose` (renderer owns the navigation — the backend
+  does not reach into route state); Quit counts queued outbox rows and
+  exits immediately only when zero.
+- **`kiwi://confirm-quit` `{pending: number}`** (backend → renderer):
+  emitted when Quit was chosen with a non-empty outbox. The renderer
+  shows the honest confirm ("N queued, quitting abandons them to the
+  next launch") and calls `kiwi_confirm_quit` to actually exit. An
+  *unreadable* outbox count also takes the confirm path — the guard
+  fails toward honesty.
+- **`kiwi_confirm_quit()`** **[exempt]**: exits the process. Lock-gate
+  exempt on purpose — quitting a locked app leaks nothing, and locking
+  must never trap the process.
+- **Tooltip** `"KIWI"` / `"KIWI — N unread"`: `N` is `total_unseen` — the
+  same unseen predicate as `folder_stats`, so the tray number equals the
+  summed folder badges. Refreshed on events only (the post-sync sites
+  plus flag/delete/junk/import mutations) — never polled. Left click
+  restores + focuses the window; right click opens the menu.
+- **Icon:** `default_window_icon()` — the verified bundle icon
+  (`icons/icon.png`), the real KIWI mark.
 
 ## 9d. Commands — pairing engine, kiwi-pair **[partly gated]** (T-188, ratified; T-269, implemented)
 

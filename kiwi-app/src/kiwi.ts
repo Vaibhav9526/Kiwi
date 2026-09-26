@@ -164,6 +164,12 @@ export interface AppInfoView {
   org: { orgId: string; baseUrl: string } | null;
   accountCount: number;
   sessionsObserved: number;
+  /**
+   * T-345: whether a tray icon actually exists. `false`/`undefined` on
+   * platforms without a tray surface — the close-to-tray pref is then
+   * inert and settings must say so rather than let the toggle pretend.
+   */
+  trayAvailable?: boolean;
 }
 
 export interface SignalView {

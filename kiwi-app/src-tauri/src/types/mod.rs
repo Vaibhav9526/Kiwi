@@ -41,9 +41,7 @@ pub use send::*;
 pub use system::*;
 pub use templates::*;
 
-use kiwi_core::session::{
-    AuthMechanism, Protocol, SessionSource, TlsVersion, TransportSecurity,
-};
+use kiwi_core::session::{AuthMechanism, Protocol, SessionSource, TlsVersion, TransportSecurity};
 use kiwi_core::trust::{RequiredAction, SignalKind, SignalSeverity, TrustState};
 use kiwi_mail::transport::SocketSecurity;
 

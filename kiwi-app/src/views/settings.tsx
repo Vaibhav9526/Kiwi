@@ -137,6 +137,9 @@ export function SettingsView({
   const [toasts, setToasts] = useState(() => loadPref("kiwi.toasts", "on"));
   const [sound, setSound] = useState(() => loadPref("kiwi.sound", "off"));
   const [osNotify, setOsNotify] = useState(() => loadPref("kiwi.notify", "on"));
+  // T-345: close-to-tray — default ON (the feature exists because closing
+  // killed sync); the backend mirrors the pref for its sync close handler.
+  const [trayClose, setTrayClose] = useState(() => loadPref("kiwi.trayOnClose", "on"));
   const [mutedIds, setMutedIds] = useState<string[]>(() => loadMuted());
   const [syncFreq, setSyncFreq] = useState<Record<string, string>>({});
   const [signatures, setSignatures] = useState<Record<string, string>>({});
@@ -160,6 +163,7 @@ export function SettingsView({
   useEffect(() => savePref("kiwi.toasts", toasts), [toasts]);
   useEffect(() => savePref("kiwi.sound", sound), [sound]);
   useEffect(() => savePref("kiwi.notify", osNotify), [osNotify]);
+  useEffect(() => savePref("kiwi.trayOnClose", trayClose), [trayClose]);
   useEffect(() => savePref("kiwi.muted", mutedIds), [mutedIds]);
 
   // Backend prefs push (T-167/T-237): best-effort, debounced; any failure
@@ -181,7 +185,7 @@ export function SettingsView({
       })();
     }, 600);
   };
-  useEffect(() => schedulePush(), [themeDefault, grace, minTls, poll, defaultId, accent, density, toasts, sound, osNotify, mutedIds, syncFreq, signatures, mode]);
+  useEffect(() => schedulePush(), [themeDefault, grace, minTls, poll, defaultId, accent, density, toasts, sound, osNotify, trayClose, mutedIds, syncFreq, signatures, mode]);
   useEffect(() => () => {
     if (pushTimer.current !== null) window.clearTimeout(pushTimer.current);
   }, []);
@@ -204,6 +208,7 @@ export function SettingsView({
         setToasts(loadPref("kiwi.toasts", "on"));
         setSound(loadPref("kiwi.sound", "off"));
         setOsNotify(loadPref("kiwi.notify", "on"));
+        setTrayClose(loadPref("kiwi.trayOnClose", "on"));
         setMutedIds(loadMuted());
         setPrefsSync("synced");
       } catch (e) {
@@ -1312,6 +1317,27 @@ export function SettingsView({
                   <small style={{ color: "var(--kiwi-text-secondary)" }}>
                     — this build has no OS-notification channel; the pref still saves and the desktop
                     app honors it
+                  </small>
+                </>
+              )}
+            </p>
+            <p>
+              <label>
+                Close to tray:{" "}
+                <select
+                  value={trayClose}
+                  onChange={(e) => setTrayClose(e.target.value)}
+                  disabled={appInfo?.trayAvailable === false}
+                >
+                  <option value="on">On (X hides to tray — sync keeps running; Quit exits)</option>
+                  <option value="off">Off (X quits the app)</option>
+                </select>
+              </label>
+              {appInfo?.trayAvailable === false && (
+                <>
+                  {" "}
+                  <small style={{ color: "var(--kiwi-text-secondary)" }}>
+                    — this platform reported no system tray, so the pref is inert and X always quits
                   </small>
                 </>
               )}

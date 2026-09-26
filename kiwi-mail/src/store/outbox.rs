@@ -224,6 +224,16 @@ impl MailStore {
         Ok(out)
     }
 
+    /// Count of queued sends — the tray Quit guard's "messages still
+    /// waiting" figure (T-345). A row exists only while queued, so this is
+    /// the honest pending count.
+    pub fn outbox_count(&self) -> Result<u64> {
+        self.conn
+            .query_row("SELECT COUNT(*) FROM outbox", [], |r| r.get::<_, i64>(0))
+            .map(|n| n.max(0) as u64)
+            .map_err(Into::into)
+    }
+
     /// Earliest `not_before` among queued sends — the scheduler's wake-up
     /// time. `None` when the outbox is empty.
     pub fn outbox_next_due_at(&self) -> Result<Option<i64>> {

@@ -174,6 +174,31 @@ export function onMailChanged(handler: (ev: MailChangedEvent) => void): Promise<
   return listen<MailChangedEvent>("kiwi://mail-changed", (e) => handler(e.payload));
 }
 
+/**
+ * T-345: tray Compose — the backend raised the window and emitted
+ * `kiwi://tray-compose`; the renderer owns the navigation to compose.
+ */
+export function onTrayCompose(handler: () => void): Promise<UnlistenFn> {
+  if (!isTauri()) {
+    return Promise.reject(new BackendUnavailableError("kiwi://tray-compose", "not in Tauri webview"));
+  }
+  return listen<null>("kiwi://tray-compose", () => handler());
+}
+
+/**
+ * T-345: tray Quit with sends still queued — `kiwi://confirm-quit`
+ * carries `{pending}` so the renderer can confirm honestly. Confirming
+ * calls `api.confirmQuit()` (exempt — quitting leaks nothing).
+ */
+export function onQuitRequested(handler: (pending: number) => void): Promise<UnlistenFn> {
+  if (!isTauri()) {
+    return Promise.reject(new BackendUnavailableError("kiwi://confirm-quit", "not in Tauri webview"));
+  }
+  return listen<{ pending?: unknown }>("kiwi://confirm-quit", (e) =>
+    handler(typeof e.payload?.pending === "number" ? e.payload.pending : 0),
+  );
+}
+
 /* ---------------- system / lock path (exempt) ---------------- */
 
 export const api = {
@@ -188,6 +213,13 @@ export const api = {
   },
   lock(): Promise<SecurityStatusView> {
     return call<SecurityStatusView>("kiwi_lock");
+  },
+  /**
+   * T-345: confirmed quit — the exit half of `kiwi://confirm-quit`.
+   * Exempt: quitting a locked app leaks nothing.
+   */
+  confirmQuit(): Promise<void> {
+    return call<void>("kiwi_confirm_quit");
   },
   /** Canonical §9d unlock path — backend fixes `event:"unlock"` and owns
    *  challenge id / nonce / session / TTL; renderer supplies only deviceId. */

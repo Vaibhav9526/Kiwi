@@ -277,6 +277,8 @@ pub(crate) async fn import_mbox_impl(
         ),
         now,
     )?;
+    // T-345: imported unseen rows raise the tray unread count.
+    crate::tray::refresh_tooltip(state).await;
     Ok(view)
 }
 

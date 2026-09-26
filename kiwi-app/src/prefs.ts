@@ -42,6 +42,7 @@ export const PREF_KEYS = [
   "kiwi.minTls",
   "kiwi.templates",
   "kiwi.notify",
+  "kiwi.trayOnClose",
   "kiwi.poll",
   "kiwi.toasts",
   "kiwi.sound",
