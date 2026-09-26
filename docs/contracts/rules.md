@@ -438,6 +438,61 @@ unbounded or negative values are `invalid-input`. It returns the newest-first
 for the audit list: its `matched` IDs are the immediate receipt, while
 `rules_hits` is the durable mailbox history.
 
+### 7.3 Sender block list — F4 (T-203)
+
+A blocked sender **is** an `is_block` rule row; the block list adds no table
+and no migration. This seam exists so a settings surface can block, list and
+lift senders without the renderer hand-authoring a predicate tree.
+
+| logical name | Tauri registration | lock | request | response |
+|---|---|---|---|---|
+| `blocklist_list` | `kiwi_blocklist_list` | gated | `{ accountId: string }` | `BlockedSenderView[]` |
+| `blocklist_block` | `kiwi_blocklist_block` | gated | `{ accountId: string, sender: string }` | `RuleView` |
+| `blocklist_unblock` | `kiwi_blocklist_unblock` | gated | `{ accountId: string, sender: string }` | `{ removed: boolean }` |
+
+All three are **per account**; there is no global (account-less) block list,
+because the spec is explicitly per-account. `accountId` must name an existing
+account, else `not-found`. The block is applied to future ingest only — it
+does not retroactively move existing mail (use `kiwi_rules_apply_now` for
+that).
+
+**Sender normalization is backend-owned and deterministic.** `sender` accepts
+a bare addr-spec, an angle-bracketed one, or a `Display Name <addr>` form.
+The display name is discarded and never matched, because it is
+attacker-painted text. The address is ASCII-lowercased, surrounding
+whitespace/quotes/angle brackets and a `mailto:` prefix are stripped, and the
+result must be a single dotted addr-spec within 254 characters. Embedded
+whitespace or control characters are `invalid-input`; a trailing newline on a
+pasted value is trimmed, not rejected.
+
+**Exact address, never a domain ban.** `blocklist_block` writes
+`when = { kind: "sender", op: "is", value: <normalized address> }`. It
+deliberately does *not* use `op: "domain"`: per §2.3 that op compares the
+text after the last `@`, so a value of `a@evil.com` would also match
+`b@evil.com` and silently trash another sender's mail. Domain-wide blocking is
+a distinct, explicit operation and is not implied by this seam.
+
+**Determinism and ownership of rows.** The rule id is
+`block-<sanitized-address>-<8 hex>`, where the hex is a short MD5 over
+`accountId \0 normalized address`. Two consequences are contractual:
+
+- The id is **account-scoped**, because `rules.rule_id` is the table's global
+  primary key rather than a composite with `account_id`. An id derived from the
+  address alone would let a block on one account rewrite the `account_id` of
+  another account's row and silently lift that block.
+- Re-blocking the same sender on the same account updates one row instead of
+  accumulating duplicates.
+
+`blocklist_unblock` deletes only the row whose id it derives and only while
+that row is still a block rule on the same account. It never removes a
+hand-written block rule.
+
+`BlockedSenderView` is `{ ruleId, name, sender, enabled }`. `sender` is the
+normalized address, or `null`/`absent` for a hand-authored block rule that is
+not a plain sender match — such a row is **still listed**, because it is still
+trashing mail, but this seam does not claim to own it. Disabled rows are also
+listed so a UI can show and lift them.
+
 ## 8. Current implementation boundary
 
 - **Implemented in `kiwi-mail`:** predicate/action model and validation,
@@ -454,6 +509,17 @@ for the audit list: its `matched` IDs are the immediate receipt, while
 - **T-236 scope:** documentation only. No source behavior is changed by this
   contract; any implementation change must be recorded by T-233 and reviewed
   against this document.
+- **F4 (T-203) shipped in `kiwi-mail`:** `rules::blocklist` implements the
+  per-account sender block list over the existing rule table — normalization,
+  deterministic account-scoped ids, block/list/unblock/is_blocked. §7.3's three
+  commands and `BlockedSenderView` are implemented and registered in
+  `kiwi-app/src-tauri`; no schema change was required.
+- **F4 (T-203) not yet shipped:** the renderer bindings and the settings UI.
+  `kiwi-app/src/ipc.ts`, `kiwi-app/src/kiwi.ts` and
+  `kiwi-app/src/views/settings.tsx` were all under other agents' in-flight
+  edits while T-203 was implemented, so the frontend surface was deliberately
+  left untouched rather than risk clobbering concurrent work. The Rust seam is
+  complete and callable; a settings affordance is still owed.
 
 ## 9. Verification baseline
 
@@ -465,3 +531,15 @@ ingest receipt/audit, block-to-Trash behavior, no-match no-op, apply-now
 scanning/Trash exclusion/idempotence, and flag-before-move behavior. IPC
 contract tests and sync-hook tests remain required when the T-233 handlers
 land.
+
+T-203 adds 11 tests in `kiwi-mail/src/rules/blocklist.rs`, including an
+end-to-end pass through the real engine (`apply_on_ingest`) that asserts the
+blocked sender is trashed, that the block verdict is terminal (a broad
+`op: "domain"` rule matching the same domain records no additional hit for the
+blocked message), and that a **different** sender at that same domain is still
+delivered by that rule — the no-domain-over-reach regression. Also covered:
+idempotent re-blocking, cross-account isolation in both directions,
+account-scoped id derivation, rejection of malformed addresses, trimming of
+pasted whitespace, `unblock` refusing to delete hand-written block rules, and
+disabled blocks neither trashing nor disappearing from the list.
+

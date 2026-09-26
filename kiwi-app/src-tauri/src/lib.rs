@@ -199,6 +199,9 @@ pub fn run() {
             kiwi_rules_apply_now,
             kiwi_rules_hits,
             kiwi_rules_preview,
+            kiwi_blocklist_list,
+            kiwi_blocklist_block,
+            kiwi_blocklist_unblock,
             // message templates (gated — T-288)
             kiwi_templates_list,
             kiwi_templates_create,
