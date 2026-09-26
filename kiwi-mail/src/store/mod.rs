@@ -160,11 +160,53 @@ impl UpstreamAuthEvidence {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FolderOrigin {
+    Remote,
+    Local,
+    System,
+}
+
+impl FolderOrigin {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Remote => "remote",
+            Self::Local => "local",
+            Self::System => "system",
+        }
+    }
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "remote" => Ok(Self::Remote),
+            "local" => Ok(Self::Local),
+            "system" => Ok(Self::System),
+            other => {
+                let _ = other;
+                Err(MailError::Store(rusqlite::Error::InvalidQuery))
+            }
+        }
+    }
+}
+
+/// Canonical real mailboxes reserved from local create/rename. These are
+/// store rows; UI smart views (Unread, Snoozed, Starred, categories) are not
+/// rows at all, so there is no id they could pass to folder deletion.
+pub const SYSTEM_FOLDER_NAMES: [&str; 6] = ["INBOX", "SENT", "TRASH", "DRAFTS", "JUNK", "ARCHIVE"];
+
+pub fn is_system_folder_name(name: &str) -> bool {
+    SYSTEM_FOLDER_NAMES
+        .iter()
+        .any(|candidate| name.eq_ignore_ascii_case(candidate))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FolderMeta {
     pub id: i64,
     pub account_id: String,
+    pub parent_id: Option<i64>,
     pub name: String,
+    pub origin: FolderOrigin,
     pub uid_validity: Option<u64>,
     pub uid_next: Option<u64>,
     pub highest_uid: u64,
