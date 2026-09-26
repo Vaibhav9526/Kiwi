@@ -234,7 +234,7 @@ pub(crate) async fn get_message_impl(
         return Err(IpcError::invalid("uid must be >= 0"));
     }
     match load_body_raw(&state, &account_id, folder_id, uid as u64).await? {
-        Some(raw) => body_view(folder_id, uid as u64, &raw).await,
+        Some(raw) => body_view(&state, folder_id, uid as u64, &raw).await,
         None => Ok(MessageBodyView {
             folder_id,
             uid: uid as u64,
@@ -288,7 +288,7 @@ pub(crate) async fn message_source_impl(
     if uid < 0 {
         return Err(IpcError::invalid("uid must be >= 0"));
     }
-    match load_body_raw(&state, &account_id, folder_id, uid as u64).await? {
+    match load_body_full(&state, &account_id, folder_id, uid as u64).await? {
         Some(raw) => {
             let bytes = raw.len() as u64;
             let text = String::from_utf8_lossy(&raw).into_owned();
@@ -306,28 +306,40 @@ pub(crate) async fn message_source_impl(
     }
 }
 
+/// Folder ownership + account lookup shared by the body loaders.
+async fn owned_folder_account(
+    state: &AppState,
+    account_id: &str,
+    folder_id: i64,
+) -> CmdResult<(String, IncomingProtocol, MailAccount)> {
+    let store = state.store.lock().await;
+    let meta = store
+        .folder_meta(folder_id)?
+        .ok_or_else(|| IpcError::not_found("unknown folder"))?;
+    if meta.account_id != account_id {
+        return Err(IpcError::not_found("folder not on account"));
+    }
+    let acct = store
+        .get_account(account_id)?
+        .ok_or_else(|| IpcError::not_found("unknown account"))?;
+    Ok((meta.name, acct.incoming.protocol, acct))
+}
+
 /// Shared body loader for get/render/attachment commands: ownership check →
 /// stored body → on-demand IMAP fetch (recorded + stored). `Ok(None)` means
 /// "not present locally and not fetchable" — never an IPC error.
+///
+/// T-339: `message_parts` rows mean the body is meant to be a *skeleton*
+/// (headers + text leaves; attachment payloads deferred). The loader
+/// composes and stores that skeleton; verbatim surfaces use
+/// [`load_body_full`], which never accepts one.
 pub(crate) async fn load_body_raw(
-    state: &Arc<AppState>,
+    state: &AppState,
     account_id: &str,
     folder_id: i64,
     uid: u64,
 ) -> CmdResult<Option<Vec<u8>>> {
-    let (folder_name, proto) = {
-        let store = state.store.lock().await;
-        let meta = store
-            .folder_meta(folder_id)?
-            .ok_or_else(|| IpcError::not_found("unknown folder"))?;
-        if meta.account_id != account_id {
-            return Err(IpcError::not_found("folder not on account"));
-        }
-        let acct = store
-            .get_account(account_id)?
-            .ok_or_else(|| IpcError::not_found("unknown account"))?;
-        (meta.name, acct.incoming.protocol)
-    };
+    let (folder_name, proto, acct) = owned_folder_account(state, account_id, folder_id).await?;
 
     // Body on disk? Read it (and harvest threading headers once — T-169).
     let raw = {
@@ -345,12 +357,107 @@ pub(crate) async fn load_body_raw(
     if proto != IncomingProtocol::Imap {
         return Ok(None);
     }
-    let acct = state
-        .store
-        .lock()
+    let mut client = connect_imap(state, &acct).await?;
+    client
+        .select(&folder_name, false)
         .await
-        .get_account(account_id)?
-        .ok_or_else(|| IpcError::not_found("unknown account"))?;
+        .map_err(IpcError::from)?;
+
+    // (bytes, complete) — a skeleton is honest reader data but not a
+    // complete RFC822 body, so it skips the auth stamp and keeps its rows.
+    let mut raw: Option<(Vec<u8>, bool)> = None;
+    {
+        let store = state.store.lock().await;
+        if store.has_message_parts(folder_id, uid)?
+            && kiwi_mail::sync::fetch_skeleton_body(&mut client, &store, folder_id, uid)
+                .await
+                .map_err(IpcError::from)?
+        {
+            // Skeleton stored — read it back for the caller. A disk flake
+            // leaves `raw` empty → falls through to the BODY[] fetch.
+            raw = store
+                .body_file(folder_id, uid)?
+                .and_then(|p| std::fs::read(p).ok())
+                .map(|b| (b, false));
+        }
+    }
+    if raw.is_none() {
+        let items = client
+            .uid_fetch(&uid.to_string(), &["UID", "BODY[]"])
+            .await
+            .map_err(IpcError::from)?;
+        raw = items
+            .first()
+            .and_then(|f| f.bodies.first().map(|(_, b)| (b.clone(), true)));
+    }
+    let facts = observe::facts_of(client.transport());
+    observe::record_connection(
+        state,
+        facts,
+        ObservationContext {
+            protocol: Protocol::Imap,
+            account_id: Some(account_id.to_string()),
+            starttls_offered: Some(client.has_capability("STARTTLS")),
+            auth_mechanism: auth_mech_of(&acct.incoming.auth),
+            auth_succeeded: Some(true),
+            label: "imap fetch",
+        },
+    )
+    .await;
+    let _ = client.logout().await;
+    let Some((raw, complete)) = raw else {
+        return Ok(None);
+    };
+    {
+        let store = state.store.lock().await;
+        store.store_body(folder_id, uid, &raw)?;
+        if complete {
+            // The complete body ends the skeleton marker — its "payloads
+            // are deferred" claim would now be a lie.
+            let _ = store.clear_message_parts(folder_id, uid);
+            // T-279: Authentication-Results on lazy body ingest — the same
+            // evidence path `fetch_missing_bodies_with_auth` uses. IMAP
+            // carries no SMTP receipt, so `receipt` is `None` and SPF
+            // records `none` rather than a fabricated verdict. Stamp
+            // failures degrade to "not evaluated" — they must not fail the
+            // read. Skeleton bytes never reach this: stamping a partial
+            // body would mint a fabricated DKIM verdict.
+            if let Ok(parsed) = parse_message(&raw) {
+                let stamp = auth_sealer().evaluate_and_stamp(&parsed, &raw, now_unix(), None);
+                let _ = store.set_auth(folder_id, uid, &stamp);
+            }
+        }
+    }
+    remember_threading(state, folder_id, uid, &raw).await;
+    Ok(Some(raw))
+}
+
+/// Complete-body loader for verbatim surfaces (view-source, mbox export —
+/// T-339). `message_parts` rows mark the stored bytes as a skeleton: a
+/// skeleton is never acceptable output there, so this forces a fresh
+/// `BODY[]` regardless of what's on disk. The landed body replaces the
+/// skeleton and clears the rows — the message is now whole.
+///
+/// Messages without part rows delegate to [`load_body_raw`] unchanged.
+pub(crate) async fn load_body_full(
+    state: &AppState,
+    account_id: &str,
+    folder_id: i64,
+    uid: u64,
+) -> CmdResult<Option<Vec<u8>>> {
+    let has_parts = {
+        let store = state.store.lock().await;
+        store.has_message_parts(folder_id, uid)?
+    };
+    if !has_parts {
+        return load_body_raw(state, account_id, folder_id, uid).await;
+    }
+    let (folder_name, proto, acct) = owned_folder_account(state, account_id, folder_id).await?;
+    if proto != IncomingProtocol::Imap {
+        // Only IMAP sync writes part rows — unreachable in practice. A
+        // stored local body is whatever it is; never fabricate.
+        return load_body_raw(state, account_id, folder_id, uid).await;
+    }
     let mut client = connect_imap(state, &acct).await?;
     client
         .select(&folder_name, false)
@@ -381,18 +488,157 @@ pub(crate) async fn load_body_raw(
     let Some(raw) = raw else {
         return Ok(None);
     };
-    state.store.lock().await.store_body(folder_id, uid, &raw)?;
-    // T-279: Authentication-Results on lazy body ingest — the same
-    // evidence path `fetch_missing_bodies_with_auth` uses. IMAP carries
-    // no SMTP receipt, so `receipt` is `None` and SPF records `none`
-    // rather than a fabricated verdict. Stamp failures degrade to "not
-    // evaluated" — they must not fail the read.
-    if let Ok(parsed) = parse_message(&raw) {
-        let stamp = auth_sealer().evaluate_and_stamp(&parsed, &raw, now_unix(), None);
-        let _ = state.store.lock().await.set_auth(folder_id, uid, &stamp);
+    {
+        let store = state.store.lock().await;
+        store.store_body(folder_id, uid, &raw)?;
+        let _ = store.clear_message_parts(folder_id, uid);
+        if let Ok(parsed) = parse_message(&raw) {
+            let stamp = auth_sealer().evaluate_and_stamp(&parsed, &raw, now_unix(), None);
+            let _ = store.set_auth(folder_id, uid, &stamp);
+        }
     }
     remember_threading(state, folder_id, uid, &raw).await;
     Ok(Some(raw))
+}
+
+/// T-339: resolve a deferred attachment row to its stored payload,
+/// fetching `UID FETCH BODY.PEEK[<section>]` on demand when absent.
+///
+/// The section comes from the persisted server-derived descriptor,
+/// re-verified against a *fresh* BODYSTRUCTURE: index + section + mime
+/// must all match, else the local uid has drifted from the server's
+/// (post-move staleness, folder rebuild) and any bytes fetched would
+/// belong to another message — fail closed. Returns the local payload
+/// path; bytes never cross this API.
+pub(crate) async fn ensure_part_fetched(
+    state: &AppState,
+    account_id: &str,
+    folder_id: i64,
+    uid: u64,
+    part_index: u32,
+) -> CmdResult<std::path::PathBuf> {
+    let (row, folder_name, acct) = {
+        let store = state.store.lock().await;
+        let row = store
+            .message_part(folder_id, uid, part_index)?
+            .ok_or_else(|| IpcError::not_found("no such attachment index"))?;
+        let meta = store
+            .folder_meta(folder_id)?
+            .ok_or_else(|| IpcError::not_found("unknown folder"))?;
+        if meta.account_id != account_id {
+            return Err(IpcError::not_found("folder not on account"));
+        }
+        let acct = store
+            .get_account(account_id)?
+            .ok_or_else(|| IpcError::not_found("unknown account"))?;
+        (row, meta.name, acct)
+    };
+    let payload = {
+        let store = state.store.lock().await;
+        store.attachment_payload_path(folder_id, uid, part_index)
+    };
+    if row.fetched && payload.is_file() {
+        return Ok(payload);
+    }
+    if acct.incoming.protocol != IncomingProtocol::Imap {
+        return Err(IpcError::not_found("attachment payload not stored"));
+    }
+    let mut client = connect_imap(state, &acct).await?;
+    let fetched: CmdResult<Vec<u8>> = async {
+        client
+            .select(&folder_name, false)
+            .await
+            .map_err(IpcError::from)?;
+        let items = client
+            .uid_fetch(&uid.to_string(), &["UID", "BODYSTRUCTURE"])
+            .await
+            .map_err(IpcError::from)?;
+        let bs = items
+            .iter()
+            .find_map(|i| i.bodystructure.clone())
+            .ok_or_else(|| IpcError::new("protocol-error", "server returned no BODYSTRUCTURE"))?;
+        let plan = kiwi_mail::parts::plan_parts(&bs)
+            .ok_or_else(|| IpcError::new("protocol-error", "BODYSTRUCTURE is not plannable"))?;
+        let desc = plan
+            .attachments
+            .get(row.part_index as usize)
+            .filter(|d| d.section == row.section && d.mime == row.mime)
+            .ok_or_else(|| {
+                IpcError::new(
+                    "protocol-error",
+                    "attachment map drifted — resync the folder",
+                )
+            })?;
+        let item = format!("BODY.PEEK[{}]", desc.section);
+        let items = client
+            .uid_fetch(&uid.to_string(), &["UID", &item])
+            .await
+            .map_err(IpcError::from)?;
+        let wire = items
+            .iter()
+            .flat_map(|i| i.bodies.iter())
+            .find(|(key, _)| {
+                kiwi_mail::parts::body_section(key).as_deref() == Some(desc.section.as_str())
+            })
+            .map(|(_, b)| b.clone())
+            .ok_or_else(|| {
+                IpcError::new(
+                    "protocol-error",
+                    "server omitted the requested BODY section",
+                )
+            })?;
+        let decoded = kiwi_mail::parts::decode_transfer_encoding(&row.encoding, &wire)
+            .map_err(IpcError::from)?;
+        if decoded.len() > crate::commands::message::MAX_ATTACHMENT_BYTES {
+            return Err(IpcError::invalid("attachment exceeds 50 MiB bound"));
+        }
+        Ok(decoded)
+    }
+    .await;
+    // Every live IMAP session is observed, success or failure.
+    let facts = observe::facts_of(client.transport());
+    observe::record_connection(
+        state,
+        facts,
+        ObservationContext {
+            protocol: Protocol::Imap,
+            account_id: Some(account_id.to_string()),
+            starttls_offered: Some(client.has_capability("STARTTLS")),
+            auth_mechanism: auth_mech_of(&acct.incoming.auth),
+            auth_succeeded: Some(true),
+            label: "imap part fetch",
+        },
+    )
+    .await;
+    let _ = client.logout().await;
+    let decoded = fetched?;
+    let path = {
+        let store = state.store.lock().await;
+        let path = store.store_attachment(folder_id, uid, part_index, &decoded)?;
+        store.mark_part_fetched(folder_id, uid, part_index)?;
+        // Payload bytes arrived — the skeleton parse could only see
+        // filename/type, so merge the byte-scan evidence in now. Merge
+        // never drops earlier reasons and never downgrades a verdict.
+        let mut evidence = store
+            .get_attachment_risk(folder_id, uid)?
+            .unwrap_or_default();
+        evidence.merge(kiwi_mail::attachrisk::inspect_attachment(
+            row.name.as_deref(),
+            &row.mime,
+            &decoded,
+        ));
+        let _ = store.set_attachment_risk(folder_id, uid, &evidence);
+        path
+    };
+    state.audit.lock().await.record(
+        "attachment-fetched",
+        &format!(
+            "{account_id}/f{folder_id}/u{uid}[{part_index}] → {}",
+            row.name.as_deref().unwrap_or("(unnamed)")
+        ),
+        now_unix(),
+    )?;
+    Ok(path)
 }
 
 /// The production DNS resolver for Authentication-Results stamping
@@ -481,10 +727,50 @@ pub(crate) async fn capture_thread_headers(
     }
 }
 
-async fn body_view(folder_id: i64, uid: u64, raw: &[u8]) -> CmdResult<MessageBodyView> {
+async fn body_view(
+    state: &AppState,
+    folder_id: i64,
+    uid: u64,
+    raw: &[u8],
+) -> CmdResult<MessageBodyView> {
     let parsed = parse_message(raw).map_err(IpcError::from)?;
     let emails = |addrs: &[kiwi_mail::mime::Addr]| -> Vec<String> {
         addrs.iter().map(|a| a.email.clone()).collect()
+    };
+    // T-339: `message_parts` rows are authoritative for a message that has
+    // them — the skeleton body's empty parts must never masquerade as the
+    // real payload list. `fetched` tells the UI whether a save would hit
+    // the wire first.
+    let parts = state.store.lock().await.message_parts(folder_id, uid)?;
+    let attachments = if parts.is_empty() {
+        parsed
+            .attachments
+            .iter()
+            .enumerate()
+            .map(|(i, a)| AttachmentView {
+                index: i as u32,
+                filename: a.filename.clone(),
+                content_type: a.content_type.clone(),
+                size: a.size,
+                fetched: true,
+            })
+            .collect()
+    } else {
+        parts
+            .iter()
+            .map(|p| AttachmentView {
+                index: p.part_index,
+                filename: p.name.clone(),
+                content_type: p.mime.clone(),
+                // Wire size for deferred parts (encoded octets), decoded
+                // once fetched — the only honest numbers we have.
+                size: p
+                    .size_bytes
+                    .and_then(|v| usize::try_from(v).ok())
+                    .unwrap_or(0),
+                fetched: p.fetched,
+            })
+            .collect()
     };
     Ok(MessageBodyView {
         folder_id,
@@ -497,15 +783,7 @@ async fn body_view(folder_id: i64, uid: u64, raw: &[u8]) -> CmdResult<MessageBod
         date_unix: parsed.date_unix,
         text_body: parsed.text_body,
         html_body: parsed.html_body,
-        attachments: parsed
-            .attachments
-            .iter()
-            .map(|a| AttachmentView {
-                filename: a.filename.clone(),
-                content_type: a.content_type.clone(),
-                size: a.size,
-            })
-            .collect(),
+        attachments,
         body_present: true,
         in_reply_to: parsed.in_reply_to.clone(),
         references: parsed.references.clone(),

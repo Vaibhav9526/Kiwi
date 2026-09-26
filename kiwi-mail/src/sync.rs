@@ -7,8 +7,11 @@
 //!    folder; UIDs are meaningless across a validity change.
 //! 3. `UID SEARCH ALL` for the remote UID set (bounded by folder size; the
 //!    chunking below also bounds per-command work).
-//! 4. New UIDs → `UID FETCH (UID FLAGS ENVELOPE RFC822.SIZE INTERNALDATE)`
-//!    in chunks; known UIDs → `UID FETCH (UID FLAGS)` flag refresh.
+//! 4. New UIDs → `UID FETCH (UID FLAGS ENVELOPE RFC822.SIZE INTERNALDATE
+//!    BODYSTRUCTURE)` in chunks; known UIDs → `UID FETCH (UID FLAGS)`
+//!    flag refresh. The structure lets us classify MIME leaves up front:
+//!    attachment leaves become `message_parts` rows and stay deferred —
+//!    their payloads are fetched on demand, never during sync (T-339).
 //! 5. Local UIDs absent remotely → expunged.
 //!
 //! POP3 has no server-side flags/folders: `UIDL` gives stable identities,
@@ -101,12 +104,31 @@ pub async fn sync_folder(
         let items = client
             .uid_fetch(
                 &set,
-                &["UID", "FLAGS", "ENVELOPE", "RFC822.SIZE", "INTERNALDATE"],
+                &[
+                    "UID",
+                    "FLAGS",
+                    "ENVELOPE",
+                    "RFC822.SIZE",
+                    "INTERNALDATE",
+                    "BODYSTRUCTURE",
+                ],
             )
             .await?;
         for item in &items {
             store.upsert_message(folder_id, &to_meta(item), now)?;
             report.new_messages += 1;
+            // T-339: classify MIME leaves while the BODYSTRUCTURE is in
+            // hand — deferred parts become `message_parts` rows (the
+            // skeleton marker) so the reader can enumerate attachments
+            // before their payloads exist locally. Errors are swallowed:
+            // parts metadata is derived data, never worth failing sync.
+            if let Some(uid) = item.uid
+                && let Some(bs) = &item.bodystructure
+                && let Some(plan) = crate::parts::plan_parts(bs)
+                && !plan.attachments.is_empty()
+            {
+                let _ = store.set_message_parts(folder_id, uid, &plan.attachments);
+            }
             if rules_at_ingest && let Some(uid) = item.uid {
                 // Envelope-stage eval: sender/recipient/subject only.
                 // Errors are counted, never fatal — the message is stored
@@ -239,6 +261,31 @@ async fn fetch_missing_bodies_inner(
     };
     let mut done = 0u64;
     for uid in missing.into_iter().take(limit) {
+        // T-339: a message with deferred-part rows gets the skeleton
+        // fetch — headers + text leaves + part headers, attachment
+        // payloads deferred. Any planning/composition gap falls through
+        // to the complete `BODY[]` below.
+        if store.has_message_parts(folder_id, uid)?
+            && fetch_skeleton_body(client, store, folder_id, uid).await?
+        {
+            if let Some(path) = store.body_file(folder_id, uid)?
+                && let Ok(bytes) = std::fs::read(&path)
+            {
+                refine_after_body(
+                    store,
+                    folder_id,
+                    uid,
+                    &bytes,
+                    inbox_scope,
+                    &account_id,
+                    sealer,
+                    receipt,
+                    now,
+                );
+            }
+            done += 1;
+            continue;
+        }
         let items = client
             .uid_fetch(&uid.to_string(), &["UID", "BODY[]"])
             .await?;
@@ -246,47 +293,136 @@ async fn fetch_missing_bodies_inner(
             && let Some((_, bytes)) = item.bodies.first()
         {
             store.store_body(folder_id, uid, bytes)?;
-            // Headers just arrived: refine the envelope-only category and
-            // fill the unsubscribe offer. Parse failures keep the existing
-            // values (absent fact, no guess).
-            if let Ok(parsed) = crate::mime::parse_message(bytes) {
-                let _ = store.set_attachment_risk(folder_id, uid, &parsed.attach_risk);
-                let _ = store.set_link_risk(folder_id, uid, &parsed.link_risk);
-                let category = crate::category::categorize(&parsed).category;
-                let _ = store.set_category(folder_id, uid, category);
-                if let Some(info) = &parsed.unsubscribe {
-                    let _ = store.set_unsubscribe(folder_id, uid, info);
-                }
-                // Full predicates now — body/header/attachment matchers
-                // only become decidable here. Flag merges and
-                // already-moved no-ops make re-eval idempotent. Errors are
-                // swallowed here, not lost: a failed apply writes no
-                // watermark, so the next `sync_folder` deferred pass
-                // retries it (and counts it against `rule_failures`).
-                if inbox_scope {
-                    let _ = crate::rules::apply_on_ingest(
-                        store,
-                        &account_id,
-                        folder_id,
-                        uid,
-                        &parsed,
-                        crate::rules::EvalStage::Full,
-                        now,
-                    );
-                }
-                // T-232: Authentication-Results. Runs only when the caller
-                // supplied a resolver; `None` writes no stamp (see
-                // `authstamp::AuthSealer`). Failures are swallowed — a
-                // security-stamp problem must not fail the body fetch.
-                if let Some(sealer) = sealer {
-                    let stamp = sealer.evaluate_and_stamp(&parsed, bytes, now, receipt);
-                    let _ = store.set_auth(folder_id, uid, &stamp);
-                }
-            }
+            // A complete body on disk ends the skeleton marker — its
+            // "payloads are deferred" claim would now be a lie.
+            let _ = store.clear_message_parts(folder_id, uid);
+            refine_after_body(
+                store,
+                folder_id,
+                uid,
+                bytes,
+                inbox_scope,
+                &account_id,
+                sealer,
+                receipt,
+                now,
+            );
             done += 1;
         }
     }
     Ok(done)
+}
+
+/// T-339 skeleton fetch: `BODY.PEEK[HEADER]` + every leaf's `.MIME` +
+/// eager-leaf contents, stitched by [`crate::parts::compose_skeleton`]
+/// against a *fresh* BODYSTRUCTURE (the persisted rows mark eligibility;
+/// the live structure is authoritative for section naming).
+///
+/// `Ok(true)` — a skeleton was stored. `Ok(false)` — the message isn't
+/// skeletonable right now (no usable structure, too complex, server
+/// omitted a planned section) and the caller should fetch `BODY[]`
+/// instead. Wire errors propagate like any other fetch.
+pub async fn fetch_skeleton_body(
+    client: &mut ImapClient,
+    store: &MailStore,
+    folder_id: i64,
+    uid: u64,
+) -> Result<bool> {
+    let items = client
+        .uid_fetch(&uid.to_string(), &["UID", "BODYSTRUCTURE"])
+        .await?;
+    let Some(bs) = items.iter().find_map(|i| i.bodystructure.clone()) else {
+        return Ok(false);
+    };
+    let Some(plan) = crate::parts::plan_parts(&bs) else {
+        return Ok(false);
+    };
+    if plan.too_complex || plan.attachments.is_empty() {
+        return Ok(false);
+    }
+    let fetch_items = plan.fetch_items();
+    let refs: Vec<&str> = std::iter::once("UID")
+        .chain(fetch_items.iter().map(String::as_str))
+        .collect();
+    let items = client.uid_fetch(&uid.to_string(), &refs).await?;
+    let Some(item) = items.first() else {
+        return Ok(false);
+    };
+    let mut sections = std::collections::BTreeMap::new();
+    let mut header = None;
+    for (key, bytes) in &item.bodies {
+        match crate::parts::body_section(key).as_deref() {
+            Some("HEADER") => header = Some(bytes.clone()),
+            Some(sec) => {
+                sections.insert(sec.to_string(), bytes.clone());
+            }
+            None => {}
+        }
+    }
+    let Some(header) = header else {
+        return Ok(false);
+    };
+    let Ok(bytes) = crate::parts::compose_skeleton(&header, &bs, &sections) else {
+        return Ok(false);
+    };
+    store.store_body(folder_id, uid, &bytes)?;
+    Ok(true)
+}
+
+/// The shared post-fetch refinement — category, unsubscribe offer, risk
+/// evidence, full-stage rule eval, auth stamp. Identical for a complete
+/// `BODY[]` and a skeleton (its deferred leaves parse as empty parts —
+/// `inspect_attachment` still gets real filename/type evidence, and the
+/// byte-scan half lands when the payload is fetched on demand).
+#[allow(clippy::too_many_arguments)]
+fn refine_after_body(
+    store: &MailStore,
+    folder_id: i64,
+    uid: u64,
+    bytes: &[u8],
+    inbox_scope: bool,
+    account_id: &str,
+    sealer: Option<&dyn crate::authstamp::AuthSealer>,
+    receipt: Option<&crate::authstamp::SmtpReceipt>,
+    now: i64,
+) {
+    // Headers just arrived: refine the envelope-only category and fill
+    // the unsubscribe offer. Parse failures keep the existing values
+    // (absent fact, no guess).
+    if let Ok(parsed) = crate::mime::parse_message(bytes) {
+        let _ = store.set_attachment_risk(folder_id, uid, &parsed.attach_risk);
+        let _ = store.set_link_risk(folder_id, uid, &parsed.link_risk);
+        let category = crate::category::categorize(&parsed).category;
+        let _ = store.set_category(folder_id, uid, category);
+        if let Some(info) = &parsed.unsubscribe {
+            let _ = store.set_unsubscribe(folder_id, uid, info);
+        }
+        // Full predicates now — body/header/attachment matchers only
+        // become decidable here. Flag merges and already-moved no-ops
+        // make re-eval idempotent. Errors are swallowed here, not lost:
+        // a failed apply writes no watermark, so the next `sync_folder`
+        // deferred pass retries it (and counts it against
+        // `rule_failures`).
+        if inbox_scope {
+            let _ = crate::rules::apply_on_ingest(
+                store,
+                account_id,
+                folder_id,
+                uid,
+                &parsed,
+                crate::rules::EvalStage::Full,
+                now,
+            );
+        }
+        // T-232: Authentication-Results. Runs only when the caller
+        // supplied a resolver; `None` writes no stamp (see
+        // `authstamp::AuthSealer`). Failures are swallowed — a
+        // security-stamp problem must not fail the body fetch.
+        if let Some(sealer) = sealer {
+            let stamp = sealer.evaluate_and_stamp(&parsed, bytes, now, receipt);
+            let _ = store.set_auth(folder_id, uid, &stamp);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -531,15 +667,7 @@ fn has_attachment_parts(bs: &crate::imap::BodyStructure) -> bool {
     use crate::imap::BodyStructure::*;
     match bs {
         Multi { parts, .. } => parts.iter().any(has_attachment_parts),
-        Single {
-            media_type, params, ..
-        } => {
-            // Heuristic: non-text leaf with a filename param, or any
-            // application/* / image/* leaf not inline text.
-            let has_filename = params.iter().any(|(k, _)| k.eq_ignore_ascii_case("name"));
-            let non_text = !media_type.eq_ignore_ascii_case("text");
-            has_filename || non_text
-        }
+        Single { .. } => crate::parts::is_attachment_leaf(bs),
         Unknown => false,
     }
 }
@@ -578,6 +706,8 @@ mod tests {
             params: vec![("name".into(), "d.pdf".into())],
             encoding: "base64".into(),
             octets: 100,
+            disposition: None,
+            disp_params: vec![],
         };
         assert!(has_attachment_parts(&att));
         let plain = Single {
@@ -586,6 +716,8 @@ mod tests {
             params: vec![],
             encoding: "7bit".into(),
             octets: 10,
+            disposition: None,
+            disp_params: vec![],
         };
         assert!(!has_attachment_parts(&plain));
         let multi = Multi {

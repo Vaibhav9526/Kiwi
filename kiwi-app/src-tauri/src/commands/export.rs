@@ -11,8 +11,9 @@
 //!   fetch failed) is omitted from the file and counted in `skipped`;
 //!   `partial` flips true whenever the file doesn't carry every row.
 //! - **Body loading is honest, not synthesized.** Bodies come from
-//!   `load_body_raw` — stored bytes verbatim, else one bounded on-demand
-//!   IMAP `BODY[]` fetch. Nothing is reconstructed from envelope fields.
+//!   `load_body_full` — stored bytes verbatim, else one bounded on-demand
+//!   IMAP `BODY[]` fetch — and a T-339 skeleton is always replaced by the
+//!   complete fetch. Nothing is reconstructed from envelope fields.
 //!   A run of consecutive load failures trips a breaker so a dead server
 //!   turns into `skipped` rows, not thousands of connection attempts.
 //! - **Atomic write.** The file is built at `<dest>.kiwi-part` and renamed
@@ -31,7 +32,7 @@ use tauri::State;
 
 use kiwi_mail::mbox;
 
-use super::mail::load_body_raw;
+use super::mail::load_body_full;
 use super::{bounded, gate, run_mail_io};
 use crate::error::{CmdResult, IpcError};
 use crate::state::{AppState, now_unix};
@@ -155,7 +156,11 @@ pub(crate) async fn export_mbox_impl(
             // Breaker: once loads keep failing, stop spending round-trips —
             // remaining rows count as skipped without a fetch attempt.
             let raw = if consecutive_failures < MAX_CONSECUTIVE_LOAD_FAILURES {
-                match load_body_raw(state, &account_id, folder_id, m.uid).await {
+                // T-339: export emits complete RFC822 members, so a
+                // skeleton body must never be written — `load_body_full`
+                // forces the real `BODY[]` when part rows mark the stored
+                // bytes as partial.
+                match load_body_full(state, &account_id, folder_id, m.uid).await {
                     Ok(raw) => {
                         consecutive_failures = 0;
                         raw

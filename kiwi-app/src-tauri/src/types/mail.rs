@@ -298,9 +298,18 @@ impl FolderView {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AttachmentView {
+    /// Ordinal among the message's attachments — the `attachmentIndex`
+    /// `kiwi_download_attachment` resolves (T-339).
+    pub index: u32,
     pub filename: Option<String>,
     pub content_type: String,
+    /// Decoded size for complete bodies; for a deferred part this is the
+    /// BODYSTRUCTURE *wire* octet count (the encoded body — the decoded
+    /// payload is smaller). 0 when unknown.
     pub size: usize,
+    /// `false` marks a deferred part (T-339): saving it triggers a live
+    /// `BODY.PEEK` fetch. Always `true` on fully-stored bodies.
+    pub fetched: bool,
 }
 
 /// Full message body view (reader, KIWI-UI-017). HTML is delivered raw from

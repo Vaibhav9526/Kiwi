@@ -254,6 +254,12 @@ pub enum BodyStructure {
         params: Vec<(String, String)>,
         encoding: String,
         octets: u64,
+        /// Content-Disposition token verbatim ("attachment", "inline", …).
+        /// `None` when the server sent no disposition tuple.
+        disposition: Option<String>,
+        /// Disposition's own parameter list — `filename=` lives here,
+        /// distinct from the Content-Type `params` (where `name=` lives).
+        disp_params: Vec<(String, String)>,
     },
     Multi {
         subtype: String,
@@ -512,11 +518,32 @@ pub(crate) fn parse_bodystructure(s: &SExp) -> BodyStructure {
     if media_type.is_empty() {
         return BodyStructure::Unknown;
     }
+    // The disposition tuple `("ATTACHMENT" ("FILENAME" "x.pdf"))` sits in
+    // the extension tail — position varies (text parts carry a `lines`
+    // count first, message/rfc822 carries envelope+structure). Scan for
+    // the list whose head is a known disposition keyword; an embedded
+    // message's envelope/structure lists can't collide (their heads are
+    // a date string and a list, respectively).
+    let mut disposition = None;
+    let mut disp_params = Vec::new();
+    for ext in f.iter().skip(7) {
+        let SExp::List(d) = ext else { continue };
+        let Some(head) = d.first().and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if head.eq_ignore_ascii_case("attachment") || head.eq_ignore_ascii_case("inline") {
+            disposition = Some(head.to_string());
+            disp_params = d.get(1).map(parse_params).unwrap_or_default();
+            break;
+        }
+    }
     BodyStructure::Single {
         media_type,
         subtype,
         params,
         encoding,
         octets,
+        disposition,
+        disp_params,
     }
 }

@@ -2,7 +2,7 @@
 //! bodies/attachments on disk, POP3 dedup. All SQL is parameterized
 //! (SECURITY.md rule 9); row-level schema lives in `schema.rs`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use mail_parser::{MessageParser, MimeHeaders};
 use rusqlite::{OptionalExtension, params};
@@ -903,6 +903,14 @@ impl MailStore {
                  WHERE folder_id = ?3 AND uid = ?4",
                 params![dst_folder_id, dst_uid, src_folder_id, *uid as i64],
             )?;
+            // T-339: deferred-part descriptors re-key too (payload dir
+            // relocated above). Same pre-DELETE ordering — the composite
+            // FK would cascade the rows away.
+            self.conn.execute(
+                "UPDATE message_parts SET folder_id = ?1, uid = ?2
+                 WHERE folder_id = ?3 AND uid = ?4",
+                params![dst_folder_id, dst_uid, src_folder_id, *uid as i64],
+            )?;
             self.conn.execute(
                 "DELETE FROM messages WHERE folder_id = ?1 AND uid = ?2",
                 params![src_folder_id, *uid as i64],
@@ -1072,6 +1080,19 @@ impl MailStore {
                     (folder_id, uid, risk, reasons_json)
                  SELECT ?1, ?2, risk, reasons_json
                  FROM message_link_risk WHERE folder_id = ?3 AND uid = ?4",
+                params![dst_folder_id, dst_uid, src_folder_id, *uid as i64],
+            )?;
+            // T-339: deferred-part descriptors carry (payload dir copied
+            // above). The minted dst uid has no server identity, so a lazy
+            // fetch on the copy fails the drift check rather than pulling
+            // another message's bytes — honest refusal, no fabrication.
+            self.conn.execute(
+                "INSERT OR REPLACE INTO message_parts
+                    (folder_id, uid, part_index, section, name, mime,
+                     size_bytes, encoding, fetched)
+                 SELECT ?1, ?2, part_index, section, name, mime,
+                        size_bytes, encoding, fetched
+                 FROM message_parts WHERE folder_id = ?3 AND uid = ?4",
                 params![dst_folder_id, dst_uid, src_folder_id, *uid as i64],
             )?;
             // Auth evidence carries too — the copy keeps the verdict its
@@ -1565,6 +1586,32 @@ impl MailStore {
         Ok((path, content_type))
     }
 
+    /// Stage an already-stored attachment payload file into the same
+    /// private sandbox-staging layout as [`stage_attachment`] (T-339:
+    /// deferred parts resolve to `attachments/<folder>/<uid>/<idx>` files,
+    /// not a MIME body). Copies bytes — the persisted payload is never
+    /// moved or truncated out from under the fetch marker.
+    pub fn stage_payload_file(&self, src: &Path, uid: u64, max_bytes: usize) -> Result<PathBuf> {
+        let size = std::fs::metadata(src)?.len();
+        if size > max_bytes as u64 {
+            return Err(MailError::InvalidInput(
+                "attachment exceeds sandbox size bound".into(),
+            ));
+        }
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let dir = self
+            .root
+            .join("sandbox-staging")
+            .join(format!("{}-{nonce}-{uid}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join("artifact.bin");
+        std::fs::copy(src, &path)?;
+        Ok(path)
+    }
+
     /// Store a decoded attachment payload.
     pub fn store_attachment(
         &self,
@@ -1583,6 +1630,195 @@ impl MailStore {
         std::fs::write(&path, bytes)?;
         Ok(path)
     }
+
+    // -- deferred attachment parts (T-339) ------------------------------------
+    //
+    // `message_parts` rows are the skeleton marker: present rows mean the
+    // stored body is partial (attachment payloads deferred); absent rows mean
+    // it is whole. Rows carry the server-derived IMAP `section` — the only
+    // lawful input to `BODY.PEEK[<section>]` — so a deferred payload fetch
+    // never builds a part specifier from UI input.
+
+    fn map_part_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<MessagePart> {
+        Ok(MessagePart {
+            part_index: r.get::<_, i64>(0)? as u32,
+            section: r.get(1)?,
+            name: r.get(2)?,
+            mime: r.get(3)?,
+            size_bytes: r.get::<_, Option<i64>>(4)?.map(|v| v as u64),
+            encoding: r.get(5)?,
+            fetched: r.get::<_, i64>(6)? != 0,
+        })
+    }
+
+    /// Record/replace the deferred-attachment descriptor set for a message.
+    /// Re-syncs keep `fetched` on parts that already landed; rows beyond the
+    /// new plan are dropped (structure changed server-side).
+    pub fn set_message_parts(
+        &self,
+        folder_id: i64,
+        uid: u64,
+        parts: &[crate::parts::AttachmentDesc],
+    ) -> Result<()> {
+        let mut stmt = self.conn.prepare(
+            "INSERT INTO message_parts
+               (folder_id, uid, part_index, section, name, mime, size_bytes, encoding)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(folder_id, uid, part_index) DO UPDATE SET
+               section = excluded.section,
+               name = excluded.name,
+               mime = excluded.mime,
+               size_bytes = excluded.size_bytes,
+               encoding = excluded.encoding",
+        )?;
+        for part in parts {
+            stmt.execute(params![
+                folder_id,
+                uid as i64,
+                part.index as i64,
+                part.section,
+                part.name,
+                part.mime,
+                part.size as i64,
+                part.encoding,
+            ])?;
+        }
+        drop(stmt);
+        self.conn.execute(
+            "DELETE FROM message_parts
+             WHERE folder_id = ?1 AND uid = ?2 AND part_index >= ?3",
+            params![folder_id, uid as i64, parts.len() as i64],
+        )?;
+        Ok(())
+    }
+
+    /// All deferred-attachment descriptors for a message, ordered by index.
+    pub fn message_parts(&self, folder_id: i64, uid: u64) -> Result<Vec<MessagePart>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT part_index, section, name, mime, size_bytes, encoding, fetched
+             FROM message_parts
+             WHERE folder_id = ?1 AND uid = ?2
+             ORDER BY part_index",
+        )?;
+        let rows = stmt.query_map(params![folder_id, uid as i64], Self::map_part_row)?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    /// One descriptor by its ordinal — `attachmentIndex` resolution point.
+    pub fn message_part(
+        &self,
+        folder_id: i64,
+        uid: u64,
+        part_index: u32,
+    ) -> Result<Option<MessagePart>> {
+        self.conn
+            .query_row(
+                "SELECT part_index, section, name, mime, size_bytes, encoding, fetched
+                 FROM message_parts
+                 WHERE folder_id = ?1 AND uid = ?2 AND part_index = ?3",
+                params![folder_id, uid as i64, part_index as i64],
+                Self::map_part_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// Any `message_parts` rows at all → the stored body is a skeleton.
+    pub fn has_message_parts(&self, folder_id: i64, uid: u64) -> Result<bool> {
+        let n: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM message_parts WHERE folder_id = ?1 AND uid = ?2",
+            params![folder_id, uid as i64],
+            |r| r.get(0),
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Mark a part's payload as durably stored. Call only after the
+    /// decoded bytes are on disk — the flag is the "can skip the wire"
+    /// bit, so it must never lead the write.
+    pub fn mark_part_fetched(&self, folder_id: i64, uid: u64, part_index: u32) -> Result<bool> {
+        let n = self.conn.execute(
+            "UPDATE message_parts SET fetched = 1
+             WHERE folder_id = ?1 AND uid = ?2 AND part_index = ?3",
+            params![folder_id, uid as i64, part_index as i64],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Absolute path of a fetched payload, present or not.
+    pub fn attachment_payload_path(&self, folder_id: i64, uid: u64, part_index: u32) -> PathBuf {
+        self.root
+            .join("attachments")
+            .join(folder_id.to_string())
+            .join(uid.to_string())
+            .join(part_index.to_string())
+    }
+
+    /// Drop all part rows + fetched payloads for a message — used when a
+    /// complete `BODY[]` replaces a skeleton (the rows' "deferred" claim
+    /// would become a lie) and on any local purge path that bypasses
+    /// `delete_messages`.
+    pub fn clear_message_parts(&self, folder_id: i64, uid: u64) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM message_parts WHERE folder_id = ?1 AND uid = ?2",
+            params![folder_id, uid as i64],
+        )?;
+        let _ = std::fs::remove_dir_all(
+            self.root
+                .join("attachments")
+                .join(folder_id.to_string())
+                .join(uid.to_string()),
+        );
+        Ok(())
+    }
+
+    /// Copy `message_parts` rows + fetched payload dir across a local
+    /// move/copy (the copy-by-reference variant used by `update.rs`'s
+    /// archive path; `move_messages`/`copy_messages` carry rows inline
+    /// inside their own ordering). Payload files are byte-copied — the
+    /// caller removes the source row/dir afterwards for a move.
+    ///
+    /// Honesty note: the descriptors describe the *message*, so they
+    /// carry to a copy faithfully — but the dst uid is locally minted and
+    /// has no server identity. An on-demand fetch against it fails the
+    /// drift check in `ensure_part_fetched` rather than silently pulling
+    /// a different server's-coordinated payload.
+    pub fn copy_parts_state(
+        &self,
+        src_folder_id: i64,
+        src_uid: u64,
+        dst_folder_id: i64,
+        dst_uid: u64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO message_parts
+                (folder_id, uid, part_index, section, name, mime, size_bytes,
+                 encoding, fetched)
+             SELECT ?1, ?2, part_index, section, name, mime, size_bytes,
+                    encoding, fetched
+             FROM message_parts WHERE folder_id = ?3 AND uid = ?4",
+            params![dst_folder_id, dst_uid as i64, src_folder_id, src_uid as i64],
+        )?;
+        let src = self
+            .root
+            .join("attachments")
+            .join(src_folder_id.to_string())
+            .join(src_uid.to_string());
+        if src.exists() {
+            let dst = self
+                .root
+                .join("attachments")
+                .join(dst_folder_id.to_string())
+                .join(dst_uid.to_string());
+            copy_dir_all(&src, &dst)?;
+        }
+        Ok(())
+    }
+
     // -- POP3 dedup ----------------------------------------------------------
 
     pub fn pop3_seen_contains(&self, account_id: &str, uidl: &str) -> Result<bool> {

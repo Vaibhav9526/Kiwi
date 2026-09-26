@@ -66,7 +66,13 @@ pub async fn kiwi_sandbox_open_attachment(
     filename: String,
 ) -> CmdResult<SandboxOpenView> {
     gate(state.inner()).await?;
-    open_attachment_impl(state.inner(), folder_id, uid, filename).await
+    // T-339: staging a deferred part can touch the IMAP wire, so the impl
+    // runs on the mail-io thread like every other client command.
+    let st = state.inner().clone();
+    crate::commands::run_mail_io(st, move |s| async move {
+        open_attachment_impl(&s, folder_id, uid, filename).await
+    })
+    .await
 }
 
 fn validate_link(raw: &str) -> CmdResult<Url> {
@@ -249,9 +255,47 @@ pub(crate) async fn open_attachment_impl(
         return Err(IpcError::invalid("folderId and uid must be >= 0"));
     }
     require_available(state.sandbox.as_ref())?;
-    let (path, _content_type) = {
+    // T-339: `message_parts` rows mark the stored body as a skeleton — its
+    // parts are empty, so the descriptor resolves the filename and the
+    // payload lands via `ensure_part_fetched` (on-demand BODY.PEEK).
+    let part_rows = {
+        let store = state.store.lock().await;
+        store.message_parts(folder_id, uid as u64)?
+    };
+    let (path, _content_type) = if part_rows.is_empty() {
         let store = state.store.lock().await;
         store.stage_attachment(folder_id, uid as u64, &filename, MAX_SANDBOX_BYTES)?
+    } else {
+        let mut matches = part_rows
+            .iter()
+            .filter(|r| r.name.as_deref() == Some(filename.as_str()));
+        let row = matches
+            .next()
+            .ok_or_else(|| IpcError::invalid("stored attachment not found"))?;
+        if matches.next().is_some() {
+            return Err(IpcError::invalid("attachment filename is ambiguous"));
+        }
+        let row = row.clone();
+        let account_id = {
+            let store = state.store.lock().await;
+            store
+                .folder_meta(folder_id)?
+                .ok_or_else(|| IpcError::not_found("unknown folder"))?
+                .account_id
+        };
+        let payload = crate::commands::mail::ensure_part_fetched(
+            state,
+            &account_id,
+            folder_id,
+            uid as u64,
+            row.part_index,
+        )
+        .await?;
+        let staged = {
+            let store = state.store.lock().await;
+            store.stage_payload_file(&payload, uid as u64, MAX_SANDBOX_BYTES)?
+        };
+        (staged, row.mime)
     };
     let (verdict, reasons) = {
         let store = state.store.lock().await;

@@ -113,11 +113,28 @@ pub(crate) fn offscript_reply(proto: Proto, actual: &str) -> Option<Vec<u8>> {
     }
 }
 
+/// A token shaped like an IMAP command tag — ASCII letters followed by
+/// digits and nothing else (`a7`, `A0001`, `b001`), or the bare `a`/`A`
+/// placeholder fixtures write when they don't know the tag. Payload-bearing
+/// `S:` lines (literal continuations like `Content-Type: …`) start with a
+/// letter and contain spaces, but their head is never tag-shaped, so they
+/// must pass through unrewritten — rewriting them would mangle the literal
+/// bytes. (Literal continuations that begin with a bare `a ` are the one
+/// ambiguous shape — fixtures must not start payload bytes that way.)
+fn is_tag_token(tok: &[u8]) -> bool {
+    if tok == b"a" || tok == b"A" {
+        return true;
+    }
+    let letters = tok.iter().take_while(|b| b.is_ascii_alphabetic()).count();
+    letters > 0 && tok.len() > letters && tok[letters..].iter().all(|b| b.is_ascii_digit())
+}
+
 /// IMAP replies must echo the tag the client actually used — rewrite the
-/// fixture's literal tag on tagged `S:` lines (untagged `*`/`+` untouched).
+/// fixture's literal tag on tagged `S:` lines (untagged `*`/`+` and
+/// literal-payload lines untouched).
 pub(crate) fn rewrite_tag(line: &[u8], tag: &str) -> Vec<u8> {
-    if line.first().is_some_and(|b| b.is_ascii_alphabetic())
-        && let Some(sp) = line.iter().position(|b| *b == b' ')
+    if let Some(sp) = line.iter().position(|b| *b == b' ')
+        && is_tag_token(&line[..sp])
     {
         let mut out = tag.as_bytes().to_vec();
         out.extend_from_slice(&line[sp..]);

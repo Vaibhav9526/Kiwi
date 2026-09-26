@@ -461,7 +461,7 @@ async fn sync_folder_end_to_end() {
              C: x UID SEARCH ALL\n\
              S: * SEARCH 1 2\n\
              S: a OK SEARCH completed\n\
-             C: x UID FETCH 1,2 (UID FLAGS ENVELOPE RFC822.SIZE INTERNALDATE)\n\
+             C: x UID FETCH 1,2 (UID FLAGS ENVELOPE RFC822.SIZE INTERNALDATE BODYSTRUCTURE)\n\
              S: * 1 FETCH (UID 1 FLAGS () ENVELOPE {ENV} RFC822.SIZE 50 INTERNALDATE \"01-Jan-2024 00:00:00 +0000\")\n\
              S: * 2 FETCH (UID 2 FLAGS (\\Seen) ENVELOPE {ENV} RFC822.SIZE 60 INTERNALDATE \"01-Jan-2024 00:00:00 +0000\")\n\
              S: a OK FETCH completed\n\
@@ -484,7 +484,7 @@ async fn sync_folder_end_to_end() {
              C: x UID SEARCH ALL\n\
              S: * SEARCH 9\n\
              S: a OK SEARCH completed\n\
-             C: x UID FETCH 9 (UID FLAGS ENVELOPE RFC822.SIZE INTERNALDATE)\n\
+             C: x UID FETCH 9 (UID FLAGS ENVELOPE RFC822.SIZE INTERNALDATE BODYSTRUCTURE)\n\
              S: * 9 FETCH (UID 9 FLAGS () ENVELOPE {ENV} RFC822.SIZE 40 INTERNALDATE \"01-Jan-2024 00:00:00 +0000\")\n\
              S: a OK FETCH completed\n"
     );

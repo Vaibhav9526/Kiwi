@@ -45,6 +45,12 @@ const TRASH_NAMES: &[&str] = &[
 /// One delete/move call is bounded — uid sets come from the untrusted UI.
 const MAX_MOVE_UIDS: usize = 500;
 
+/// One attachment download is bounded — MIME bodies are already size-capped
+/// by the store, this guards the decoded part. Shared by the T-339
+/// deferred-part fetch (`mail::ensure_part_fetched`) and the stored-body
+/// extraction path.
+pub(crate) const MAX_ATTACHMENT_BYTES: usize = 50 * 1024 * 1024;
+
 fn uid_set_of(uids: &[u64]) -> String {
     uids.iter()
         .map(|u| u.to_string())

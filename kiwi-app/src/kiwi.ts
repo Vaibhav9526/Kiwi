@@ -508,10 +508,25 @@ export interface UpstreamAuthView {
 }
 
 export interface MessageAttachmentView {
+  /**
+   * Ordinal among the message's attachments — the `attachmentIndex`
+   * `downloadAttachment` resolves (T-339).
+   */
+  index: number;
   /** `null` when the MIME part carries no filename — never empty string. */
   filename: string | null;
   contentType: string;
+  /**
+   * Decoded size for complete bodies; for a deferred part this is the
+   * BODYSTRUCTURE *wire* octet count (encoded body — the decoded payload
+   * is smaller). 0 when unknown.
+   */
   size: number;
+  /**
+   * `false` marks a deferred part (T-339): saving it triggers a live
+   * `BODY.PEEK` fetch. Always `true` on fully-stored bodies.
+   */
+  fetched: boolean;
 }
 
 export interface MessagePatch {

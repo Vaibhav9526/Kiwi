@@ -372,16 +372,20 @@ Errors: `invalid-input` (query >512 chars, `folderId` < 0), `locked`,
 
 ### `kiwi_get_message(accountId, folderId, uid) → MessageBodyView`
 Reads the stored body; for IMAP, missing bodies are fetched on demand
-(`BODY[]`) and stored — that fetch is itself recorded as a session.
-`inReplyTo`/`references` come from the parsed body (authoritative).
+and stored — that fetch is itself recorded as a session. T-339: a
+message with deferred attachments fetches a **skeleton**
+(`BODY.PEEK[HEADER]` + per-leaf `…MIME` headers + eager text leaves —
+attachment payloads are never pulled by this read); one without part
+rows fetches `BODY[]` as before. `inReplyTo`/`references` come from the
+parsed body (authoritative).
 
 ```jsonc
 { "folderId": 1, "uid": 991, "messageId": "<…>" | null,
   "subject": "…" | null,
   "from": ["a@b"], "to": ["…"], "cc": [], "dateUnix": 0 | null,
   "textBody": "…" | null, "htmlBody": "…" | null,
-  "attachments": [ { "filename": "…" | null, "contentType": "…",
-                   "size": 123 } ],
+  "attachments": [ { "index": 0, "filename": "…" | null,
+                   "contentType": "…", "size": 123, "fetched": false } ],
   "bodyPresent": true,
   "inReplyTo": "<…>" | null, "references": ["<…>"] }
 ```
@@ -392,12 +396,23 @@ honest absence, never an empty string. `textBody: null` with
 `bodyPresent: true` means the message has no text/plain alternative;
 render the sanitized `htmlBody` path instead.
 
+`attachments[]` (T-339): `index` is the ordinal `kiwi_download_attachment`
+resolves; `fetched: false` means the payload is deferred server-side and
+a save triggers a live `BODY.PEEK[<section>]` fetch (recorded). For
+deferred parts `size` is the BODYSTRUCTURE **wire** octet count — the
+encoded body, not the decoded payload — and 0 means unknown. Attachment
+rows on a deferred message come from persisted server-derived
+descriptors, not from re-parsing the skeleton.
+
 ### `kiwi_message_source(accountId, folderId, uid) → MessageSourceView` (T-295)
 Verbatim RFC822 source for the reader's "view source" surface (T-292
-flagged this as missing). Same fetch semantics as `kiwi_get_message`:
-stored body, IMAP `BODY[]` on-demand fetch (recorded + stored) when
-absent. A body that is absent locally AND unfetchable is **`not-found`**
-— never an empty string. `source` is UTF-8-lossy decoded and capped at
+flagged this as missing). Always the **complete** body: stored bytes when
+whole, else a live IMAP `BODY[]` fetch (recorded + stored). T-339: a
+stored skeleton (`message_parts` rows present) is never returned as
+source — the real `BODY[]` lands first, replaces it, and clears the
+deferred marker. A body that is absent locally AND unfetchable is
+**`not-found`** — never an empty string. `source` is UTF-8-lossy decoded
+and capped at
 **8 MiB of bytes** with char-boundary walk-back (same rule as
 `kiwi_render_body`); `bytes` reports the stored total and `truncated`
 marks the cap firing, so the UI can label "first 8 MiB of N".
@@ -448,10 +463,23 @@ row + body file move with it. Returns `{folderId, uid, flags,
 movedToFolderId}` — `folderId` is the *source* the caller passed. Audited.
 
 ### `kiwi_download_attachment(accountId, folderId, uid, attachmentIndex, destPath) → AttachmentSavedView`
-Extracts part N of the stored MIME body to `destPath` (the UI save-dialog
-path; parents created as needed). Bound: decoded bytes ≤50 MiB. `destPath`
-inside the app data dir is refused. `filename`/`contentType` come from the
-MIME part — never the caller. Audited (`attachment-saved`).
+Extracts attachment `attachmentIndex` to `destPath` (the UI save-dialog
+path; parents created as needed). Bound: decoded bytes ≤50 MiB.
+`destPath` inside the app data dir is refused. `filename`/`contentType`
+come from the MIME part or the persisted part descriptor — never the
+caller. Audited (`attachment-saved`, plus `attachment-fetched` when a
+deferred payload lands).
+
+**Deferred parts (T-339):** when `message_parts` rows exist (the stored
+body is a skeleton), the index resolves a server-derived descriptor; a
+payload absent locally is fetched via `UID FETCH BODY.PEEK[<section>]`
+on a fresh connection — the section comes only from the persisted
+descriptor, re-verified against a fresh BODYSTRUCTURE (index + section +
+mime must match; drift fails closed rather than pulling another
+message's bytes). The decoded payload is stored durably under
+`attachments/` and the row marked fetched, so repeat saves are local.
+Without part rows the stored complete body's MIME tree is walked
+verbatim, as before.
 
 ### `kiwi_render_body(accountId, folderId, uid) → RenderedBodyView`
 Sanitized HTML fragment for the webview — ammonia strict allowlist
@@ -787,15 +815,18 @@ WSL2 artifact tier structurally blocks egress and therefore returns
 
 ### `kiwi_sandbox_open_attachment(folderId, uid, filename) → SandboxOpenView`
 
-The input is a **stored payload reference only**: the backend re-opens the
-message's stored MIME body, requires exactly one exact filename match, stages
-the decoded bytes privately, invokes the provider, and deletes the staging
-path afterwards. Raw attachment bytes and host paths never cross IPC and are
-not echoed. Decoded size is bounded at 64 MiB and at the active provider's
-`maxArtifactBytes`. The message's `attachRisk.reasons` are handed into the
-session record; absent evidence is explicitly `evidence-unavailable`, never
-clean. `target` is the coordinate `attachment:f<folderId>/u<uid>`, never the
-filename or staging path.
+The input is a **stored payload reference only**: the backend requires
+exactly one exact filename match, stages the decoded bytes privately,
+invokes the provider, and deletes the staging path afterwards. On a
+complete body the stored MIME tree is walked; on a T-339 skeleton the
+match resolves a persisted `message_parts` descriptor and the payload
+lands first via the on-demand `BODY.PEEK[<section>]` path (recorded,
+drift-checked). Raw attachment bytes and host paths never cross IPC and
+are not echoed. Decoded size is bounded at 64 MiB and at the active
+provider's `maxArtifactBytes`. The message's `attachRisk.reasons` are
+handed into the session record; absent evidence is explicitly
+`evidence-unavailable`, never clean. `target` is the coordinate
+`attachment:f<folderId>/u<uid>`, never the filename or staging path.
 
 Errors: `locked`, `invalid-input`, `not-found` for the stored reference,
 `sandbox-unavailable`, or `sandbox-failed`. No host-open fallback.

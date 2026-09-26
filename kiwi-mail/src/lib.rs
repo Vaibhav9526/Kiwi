@@ -34,6 +34,7 @@ pub mod lines;
 pub mod linkrisk;
 pub mod mbox;
 pub mod mime;
+pub mod parts;
 pub mod pop3;
 pub mod rules;
 pub mod search;

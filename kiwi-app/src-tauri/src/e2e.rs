@@ -26,7 +26,10 @@ use tokio::net::TcpListener;
 
 use crate::commands::accounts::{add_account_impl, list_accounts_impl};
 use crate::commands::autoconfig::discover_account_impl;
-use crate::commands::mail::{list_folders_impl, list_messages_impl, sync_account_impl};
+use crate::commands::mail::{
+    get_message_impl, list_folders_impl, list_messages_impl, message_source_impl, sync_account_impl,
+};
+use crate::commands::message::attachment::download_attachment_impl;
 use crate::commands::send::{Delivered, cancel_impl, deliver, drop_outbox, send_impl};
 use crate::state::{AppState, now_unix};
 use crate::types::{AddAccountInput, AuthInput, ComposeInput, SendOptions, ServerInput};
@@ -157,7 +160,7 @@ S: a5 OK [READ-WRITE] SELECT completed
 C: a6 UID SEARCH ALL
 S: * SEARCH 101 102
 S: a6 OK SEARCH completed
-C: a7 UID FETCH 101,102 (UID FLAGS ENVELOPE RFC822.SIZE INTERNALDATE)
+C: a7 UID FETCH 101,102 (UID FLAGS ENVELOPE RFC822.SIZE INTERNALDATE BODYSTRUCTURE)
 S: * 1 FETCH (UID 101 FLAGS (\Seen) ENVELOPE ("Wed, 01 Jan 2025 12:00:00 +0000" "Hello from E2E" (("Alice" NIL "alice" "e2e.test")) (("Alice" NIL "alice" "e2e.test")) (("Alice" NIL "alice" "e2e.test")) (("User" NIL "u" "e2e.test")) NIL NIL NIL "<m1@e2e.test>") RFC822.SIZE 4321 INTERNALDATE "01-Jan-2025 12:00:00 +0000")
 S: * 2 FETCH (UID 102 FLAGS () ENVELOPE ("Wed, 01 Jan 2025 13:00:00 +0000" "Second message" (("Bob" NIL "bob" "e2e.test")) (("Bob" NIL "bob" "e2e.test")) (("Bob" NIL "bob" "e2e.test")) (("User" NIL "u" "e2e.test")) NIL NIL NIL "<m2@e2e.test>") RFC822.SIZE 555 INTERNALDATE "02-Jan-2025 13:00:00 +0000")
 S: a7 OK FETCH completed
@@ -302,6 +305,286 @@ async fn e2e_auth_rejection_surfaces_server_reject() {
         "server reply must surface: {}",
         err.message
     );
+    server.await.unwrap().expect("transcript replayed fully");
+}
+
+// ---------------------------------------------------------------------------
+// T-339 — lazy attachment fetch: BODYSTRUCTURE persists part descriptors at
+// sync without pulling payloads; the reader fetch is a skeleton (HEADER +
+// per-leaf .MIME + eager text leaf); a save issues `BODY.PEEK[<section>]` on
+// a fresh connection, decodes, and marks the row fetched; view-source forces
+// the complete `BODY[]` and clears the deferred marker.
+// ---------------------------------------------------------------------------
+
+/// Serve `scripts` as sequential connections on one loopback listener —
+/// every client command opens a fresh session, so a multi-command scenario
+/// needs one script per connection.
+async fn serve_imap_seq(
+    scripts: Vec<String>,
+    tls: Option<TlsAcceptor>,
+) -> (u16, tokio::task::JoinHandle<Result<(), String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let parsed: Vec<Vec<testutil::Step>> = scripts.iter().map(|s| testutil::parse(s)).collect();
+    let h = tokio::spawn(async move {
+        for steps in &parsed {
+            let (stream, _) =
+                tokio::time::timeout(testutil::TRANSCRIPT_STEP_TIMEOUT, listener.accept())
+                    .await
+                    .map_err(|_| "timed out waiting for IMAP connection".to_string())?
+                    .map_err(|e| e.to_string())?;
+            testutil::serve(stream, steps, Proto::Imap, tls.clone()).await?;
+        }
+        Ok(())
+    });
+    (port, h)
+}
+
+/// The handshake+select prelude every fresh connection replays.
+const LAZY_PRELUDE: &str = "S: * OK e2e.test IMAP4rev2 TestServer ready\n\
+     C: a1 CAPABILITY\n\
+     S: * CAPABILITY IMAP4rev2 STARTTLS UIDPLUS IDLE LITERAL+\n\
+     S: a1 OK CAPABILITY completed\n\
+     C: a2 STARTTLS\n\
+     S: a2 OK Begin TLS negotiation now\n\
+     # TLS handshake\n\
+     C: a3 LOGIN u@e2e.test REDACTED-DUMMY\n\
+     S: a3 OK LOGIN completed\n\
+     C: a4 SELECT INBOX\n\
+     S: * 1 EXISTS\n\
+     S: * OK [UIDVALIDITY 4242] UIDs valid\n\
+     S: a4 OK [READ-WRITE] SELECT completed\n";
+
+const LAZY_LOGOUT: &str = "C: a7 LOGOUT\n\
+     S: * BYE TestServer logging out\n\
+     S: a7 OK LOGOUT completed\n";
+
+#[tokio::test(flavor = "current_thread")]
+async fn e2e_lazy_attachment_body_peek() {
+    // multipart/mixed: eager text/plain leaf (section 1) + deferred
+    // application/pdf attachment (section 2, base64, 16 wire octets).
+    const BS: &str = "((\"text\" \"plain\" NIL NIL NIL \"7bit\" 10 1)\
+        (\"application\" \"pdf\" (\"name\" \"note.pdf\") NIL NIL \"base64\" 16 NIL\
+        (\"attachment\" (\"filename\" \"note.pdf\")) NIL) \"mixed\"\
+        (\"boundary\" \"outer\"))";
+    let env = "(\"Wed, 01 Jan 2025 12:00:00 +0000\" \"Lazy attach\"\
+        ((\"Alice\" NIL \"alice\" \"e2e.test\"))\
+        ((\"Alice\" NIL \"alice\" \"e2e.test\"))\
+        ((\"Alice\" NIL \"alice\" \"e2e.test\"))\
+        ((\"User\" NIL \"u\" \"e2e.test\")) NIL NIL NIL \"<lazy@e2e.test>\")";
+
+    // Conn 1: sync — metadata FETCH carries BODYSTRUCTURE; the only body
+    // fetch allowed is the threading-headers probe. No BODY[] anywhere.
+    let c1 = format!(
+        "S: * OK e2e.test IMAP4rev2 TestServer ready\n\
+         C: a1 CAPABILITY\n\
+         S: * CAPABILITY IMAP4rev2 STARTTLS UIDPLUS IDLE LITERAL+\n\
+         S: a1 OK CAPABILITY completed\n\
+         C: a2 STARTTLS\n\
+         S: a2 OK Begin TLS negotiation now\n\
+         # TLS handshake\n\
+         C: a3 LOGIN u@e2e.test REDACTED-DUMMY\n\
+         S: a3 OK LOGIN completed\n\
+         C: a4 LIST \"\" \"*\"\n\
+         S: * LIST (\\HasNoChildren) \"/\" \"INBOX\"\n\
+         S: a4 OK LIST completed\n\
+         C: a5 SELECT INBOX\n\
+         S: * FLAGS (\\Seen \\Answered \\Flagged \\Deleted \\Draft)\n\
+         S: * 1 EXISTS\n\
+         S: * 1 RECENT\n\
+         S: * OK [UIDVALIDITY 4242] UIDs valid\n\
+         S: * OK [UIDNEXT 302] Predicted next UID\n\
+         S: a5 OK [READ-WRITE] SELECT completed\n\
+         C: a6 UID SEARCH ALL\n\
+         S: * SEARCH 301\n\
+         S: a6 OK SEARCH completed\n\
+         C: a7 UID FETCH 301 (UID FLAGS ENVELOPE RFC822.SIZE INTERNALDATE BODYSTRUCTURE)\n\
+         S: * 1 FETCH (UID 301 FLAGS () ENVELOPE {env} RFC822.SIZE 200 INTERNALDATE \"01-Jan-2025 12:00:00 +0000\" BODYSTRUCTURE {BS})\n\
+         S: a7 OK FETCH completed\n\
+         C: a8 UID FETCH 301 (UID BODY.PEEK[HEADER.FIELDS (IN-REPLY-TO REFERENCES)])\n\
+         S: * 1 FETCH (UID 301)\n\
+         S: a8 OK FETCH completed\n\
+         C: a9 LOGOUT\n\
+         S: * BYE TestServer logging out\n\
+         S: a9 OK LOGOUT completed\n"
+    );
+
+    // Conn 2: get_message → fresh BODYSTRUCTURE + skeleton fetch (HEADER +
+    // per-leaf .MIME + the text leaf) — the attachment body is NOT fetched.
+    // Literal payloads ride the following S: steps (each step's bytes are
+    // the literal, then the response continuation on the same line).
+    let c2 = format!(
+        "{LAZY_PRELUDE}\
+         C: a5 UID FETCH 301 (UID BODYSTRUCTURE)\n\
+         S: * 1 FETCH (UID 301 BODYSTRUCTURE {BS})\n\
+         S: a5 OK FETCH completed\n\
+         C: a6 UID FETCH 301 (UID BODY.PEEK[HEADER] BODY.PEEK[1.MIME] BODY.PEEK[1] BODY.PEEK[2.MIME])\n\
+         S: * 1 FETCH (UID 301 BODY[HEADER] {{47}}\n\
+         S: Content-Type: multipart/mixed; boundary=\"outer\" BODY[1.MIME] {{24}}\n\
+         S: Content-Type: text/plain BODY[1] {{10}}\n\
+         S: hello body BODY[2.MIME] {{29}}\n\
+         S: Content-Type: application/pdf)\n\
+         S: a6 OK FETCH completed\n\
+         {LAZY_LOGOUT}"
+    );
+
+    // Conn 3: download → re-verify BODYSTRUCTURE then pull only section 2.
+    let c3 = format!(
+        "{LAZY_PRELUDE}\
+         C: a5 UID FETCH 301 (UID BODYSTRUCTURE)\n\
+         S: * 1 FETCH (UID 301 BODYSTRUCTURE {BS})\n\
+         S: a5 OK FETCH completed\n\
+         C: a6 UID FETCH 301 (UID BODY.PEEK[2])\n\
+         S: * 1 FETCH (UID 301 BODY[2] {{16}}\n\
+         S: aGVsbG8gZmlsZQ==)\n\
+         S: a6 OK FETCH completed\n\
+         {LAZY_LOGOUT}"
+    );
+
+    // Conn 4: view-source forces the complete BODY[] even though a
+    // skeleton is on disk, and the deferred marker clears.
+    let raw_body = "From: alice@e2e.test; FULL-BODY-WIRE-MARKER";
+    let c4 = format!(
+        "{LAZY_PRELUDE}\
+         C: a5 UID FETCH 301 (UID BODY[])\n\
+         S: * 1 FETCH (UID 301 BODY[] {{{}}}\n\
+         S: {raw_body})\n\
+         S: a5 OK FETCH completed\n\
+         {LAZY_LOGOUT}",
+        raw_body.len()
+    );
+
+    let (acceptor, _der) = testutil::tls_acceptor(&["e2e.test"]);
+    let (port, server) = serve_imap_seq(vec![c1, c2, c3, c4], Some(acceptor)).await;
+    let state = test_state("lazy", fixture_net(port));
+
+    let disc = discover_account_impl(&state, "u@e2e.test").await.unwrap();
+    let view = add_account_impl(&state, add_input_from(&disc.suggestion, true))
+        .await
+        .unwrap();
+
+    // ── Sync: descriptors persist, no payload pulled ─────────────────
+    let reports = sync_account_impl(state.clone(), view.id.clone(), None)
+        .await
+        .expect("sync account");
+    assert_eq!(reports[0].new_messages, 1);
+    let folder_id = reports[0].folder_id;
+    {
+        let store = state.store.lock().await;
+        assert!(
+            store.has_message_parts(folder_id, 301).unwrap(),
+            "BODYSTRUCTURE must persist deferred-part rows"
+        );
+        let rows = store.message_parts(folder_id, 301).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].part_index, 0);
+        assert_eq!(rows[0].section, "2");
+        assert_eq!(rows[0].name.as_deref(), Some("note.pdf"));
+        assert_eq!(rows[0].mime, "application/pdf");
+        assert_eq!(rows[0].size_bytes, Some(16));
+        assert_eq!(rows[0].encoding, "base64");
+        assert!(!rows[0].fetched);
+        // Ordinary sync never wrote a body — payloads stay server-side.
+        assert!(store.body_file(folder_id, 301).unwrap().is_none());
+    }
+
+    // ── Read: skeleton lands, attachment list is metadata-only ────────
+    let body = get_message_impl(state.clone(), view.id.clone(), folder_id, 301)
+        .await
+        .expect("get message");
+    assert!(body.body_present);
+    assert!(
+        body.text_body
+            .as_deref()
+            .is_some_and(|t| t.contains("hello body")),
+        "eager text leaf must render: {:?}",
+        body.text_body
+    );
+    assert_eq!(body.attachments.len(), 1);
+    let att = &body.attachments[0];
+    assert_eq!(att.index, 0);
+    assert_eq!(att.filename.as_deref(), Some("note.pdf"));
+    assert_eq!(att.content_type, "application/pdf");
+    assert_eq!(att.size, 16, "wire octets, honestly labeled");
+    assert!(!att.fetched, "payload still deferred");
+    {
+        let store = state.store.lock().await;
+        let raw = std::fs::read(store.body_file(folder_id, 301).unwrap().unwrap()).unwrap();
+        let text = String::from_utf8_lossy(&raw);
+        assert!(
+            text.contains("hello body"),
+            "skeleton carries the text leaf"
+        );
+        assert!(
+            text.contains("application/pdf"),
+            "skeleton carries the part's MIME headers"
+        );
+        assert!(
+            !text.contains("aGVsbG8"),
+            "attachment payload must not be in the skeleton"
+        );
+    }
+
+    // ── Save: BODY.PEEK[2] lands, decoded + durably stored ────────────
+    let dest = state
+        .data_dir
+        .parent()
+        .unwrap()
+        .join(format!("kiwi-e2e-lazy-save-{}", std::process::id()));
+    let dest_str = dest.to_string_lossy().to_string();
+    let saved = download_attachment_impl(
+        state.clone(),
+        view.id.clone(),
+        folder_id,
+        301,
+        0,
+        dest_str.clone(),
+    )
+    .await
+    .expect("deferred attachment download");
+    assert_eq!(saved.filename, "note.pdf");
+    assert_eq!(saved.content_type, "application/pdf");
+    assert_eq!(saved.size, 10, "decoded size — base64 expanded honestly");
+    assert_eq!(std::fs::read(&saved.path).unwrap(), b"hello file");
+    {
+        let store = state.store.lock().await;
+        assert!(
+            store
+                .message_part(folder_id, 301, 0)
+                .unwrap()
+                .unwrap()
+                .fetched,
+            "row marked fetched only after bytes are durable"
+        );
+        assert!(store.attachment_payload_path(folder_id, 301, 0).is_file());
+    }
+
+    // ── Repeat save is local — the listener only serves 4 connections ─
+    download_attachment_impl(state.clone(), view.id.clone(), folder_id, 301, 0, dest_str)
+        .await
+        .expect("repeat save must not dial");
+
+    // ── View-source: skeleton is not verbatim — BODY[] forced ─────────
+    let src = message_source_impl(state.clone(), view.id.clone(), folder_id, 301)
+        .await
+        .expect("message source");
+    assert!(
+        src.source.contains("FULL-BODY-WIRE-MARKER"),
+        "source must be the complete body, not the skeleton"
+    );
+    {
+        let store = state.store.lock().await;
+        assert!(
+            !store.has_message_parts(folder_id, 301).unwrap(),
+            "complete body clears the deferred marker"
+        );
+    }
+    // And a second source read is local (listener is gone after conn 4).
+    message_source_impl(state.clone(), view.id.clone(), folder_id, 301)
+        .await
+        .expect("source replay must not dial");
+
+    let _ = std::fs::remove_file(&dest);
     server.await.unwrap().expect("transcript replayed fully");
 }
 
@@ -545,7 +828,7 @@ S: a7 OK [READ-WRITE] SELECT completed
 C: a8 UID SEARCH ALL
 S: * SEARCH 201
 S: a8 OK SEARCH completed
-C: a9 UID FETCH 201 (UID FLAGS ENVELOPE RFC822.SIZE INTERNALDATE)
+C: a9 UID FETCH 201 (UID FLAGS ENVELOPE RFC822.SIZE INTERNALDATE BODYSTRUCTURE)
 S: * 1 FETCH (UID 201 FLAGS (\Seen) ENVELOPE ("Thu, 02 Jan 2025 12:00:00 +0000" "E2E sent subject" (("E2E Sender" NIL "u" "e2e.test")) (("E2E Sender" NIL "u" "e2e.test")) (("E2E Sender" NIL "u" "e2e.test")) (("Bob" NIL "bob" "e2e.test")) NIL NIL NIL "<sent@e2e.test>") RFC822.SIZE 999 INTERNALDATE "02-Jan-2025 12:00:00 +0000")
 S: a9 OK FETCH completed
 C: a10 UID FETCH 201 (UID BODY.PEEK[HEADER.FIELDS (IN-REPLY-TO REFERENCES)])

@@ -1,7 +1,7 @@
 //! SQLite schema — DDL + version. Migrations are explicit and
 //! append-only; `user_version` is the source of truth.
 
-pub(crate) const SCHEMA_VERSION: u32 = 16;
+pub(crate) const SCHEMA_VERSION: u32 = 19;
 
 pub(crate) const DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS accounts (
@@ -204,5 +204,29 @@ CREATE TABLE IF NOT EXISTS templates (
     body_html    TEXT,
     created_unix INTEGER NOT NULL,
     updated_unix INTEGER NOT NULL
+);
+-- Deferred attachment parts (T-339): one row per attachment-classified
+-- MIME leaf, written at sync from the message's BODYSTRUCTURE (real
+-- metadata — the IMAP server computed it). `section` is the RFC 3501
+-- part specifier ("2", "1.3") used for the on-demand BODY.PEEK fetch;
+-- `size_bytes` is the encoded wire size; `fetched` flips when the
+-- decoded payload lands in attachments/<folder>/<uid>/<part_index>.
+-- A skeleton body (deferred parts) still parses — each part keeps its
+-- MIME headers with an empty body — and rows absent entirely means the
+-- stored body is complete (POP3/import/legacy full fetch) or unknown.
+-- The composite FK mirrors snoozed/rule_evals: expunge, move-source
+-- delete, and UIDVALIDITY reset all clean up for free.
+CREATE TABLE IF NOT EXISTS message_parts (
+    folder_id   INTEGER NOT NULL,
+    uid         INTEGER NOT NULL,
+    part_index  INTEGER NOT NULL,
+    section     TEXT NOT NULL,
+    name        TEXT,
+    mime        TEXT NOT NULL,
+    size_bytes  INTEGER,
+    encoding    TEXT NOT NULL DEFAULT '',
+    fetched     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (folder_id, uid, part_index),
+    FOREIGN KEY (folder_id, uid) REFERENCES messages(folder_id, uid) ON DELETE CASCADE
 );
 "#;

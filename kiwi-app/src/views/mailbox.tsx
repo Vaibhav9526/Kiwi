@@ -1648,6 +1648,7 @@ function MessageCard({
           ) : body ? (
             <>
               <AttachmentList
+                key={m.id}
                 body={body}
                 demo={demo}
                 attachNote={attachNote}
@@ -1936,10 +1937,12 @@ function AttachmentList({
         </p>
       )}
       {body.attachments.map((a, i) => (
-        <p key={`${a.filename}-${i}`}>
+        <p key={`${a.filename}-${a.index}-${i}`}>
           <small>
             <IconPaperclip size={11} /> {a.filename ?? "(unnamed attachment)"}{" "}
-            <span style={{ color: "var(--kiwi-text-secondary)" }}>({a.contentType}, {a.size} B)</span>
+            <span style={{ color: "var(--kiwi-text-secondary)" }}>
+              ({a.contentType}, {a.size} B{!a.fetched ? ", downloaded on save" : ""})
+            </span>
           </small>
           {!demo && (
             <>
@@ -1948,14 +1951,14 @@ function AttachmentList({
                 <small>Save to: </small>
                 <input
                   type="text"
-                  value={destPaths[i] ?? a.filename ?? ""}
-                  onChange={(e) => setDestPaths((m) => ({ ...m, [i]: e.target.value }))}
+                  value={destPaths[a.index] ?? a.filename ?? ""}
+                  onChange={(e) => setDestPaths((m) => ({ ...m, [a.index]: e.target.value }))}
                   placeholder={a.filename ?? undefined}
                   style={{ width: "16rem" }}
                   aria-label={`Save destination for ${a.filename ?? "attachment"}`}
                 />
               </label>{" "}
-              <button type="button" disabled={attachBusy} onClick={() => onSaveAttachment(i, destPaths[i] ?? a.filename ?? "attachment")}>
+              <button type="button" disabled={attachBusy} onClick={() => onSaveAttachment(a.index, destPaths[a.index] ?? a.filename ?? "attachment")}>
                 {attachBusy ? "Saving…" : "Save"}
               </button>{" "}
               <button

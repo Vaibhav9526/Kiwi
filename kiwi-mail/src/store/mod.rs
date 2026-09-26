@@ -244,6 +244,35 @@ pub struct NewMessageMeta {
     pub unsub_oneclick: bool,
 }
 
+/// One persisted deferred-attachment row (`message_parts`, T-339).
+///
+/// Presence of any row for a `(folder_id, uid)` marks the stored body as a
+/// *skeleton* — MIME headers and text leaves are real, but attachment
+/// payloads were never downloaded. Absence means the stored body (if any)
+/// is the complete message. `section` is the server-derived IMAP part
+/// specifier used for `BODY.PEEK[<section>]` on demand; callers never
+/// construct it from UI input. `size_bytes` is the *wire* octet count from
+/// BODYSTRUCTURE — the decoded payload is smaller for base64/qp parts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessagePart {
+    /// Ordinal among the message's attachment leaves — the
+    /// `attachmentIndex` the IPC layer resolves.
+    pub part_index: u32,
+    /// IMAP section specifier ("2", "1.3", …).
+    pub section: String,
+    /// Filename from disposition/Content-Type params, if any.
+    pub name: Option<String>,
+    /// `media/subtype` lowercased.
+    pub mime: String,
+    /// Wire size in octets (encoded). `None` when BODYSTRUCTURE had none.
+    pub size_bytes: Option<u64>,
+    /// Content-Transfer-Encoding verbatim — drives decode at fetch time.
+    pub encoding: String,
+    /// True after the decoded payload durably landed under
+    /// `attachments/<folder_id>/<uid>/<part_index>`.
+    pub fetched: bool,
+}
+
 /// A stored rule plus its cumulative sync-time application health. The
 /// health fields are store-owned diagnostics and never enter `spec_json`.
 #[derive(Debug, Clone, PartialEq, Eq)]
