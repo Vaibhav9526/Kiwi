@@ -58,7 +58,7 @@ import type { PaletteAction } from "./components/palette";
 import { ShortcutsHelp } from "./components/shortcuts";
 import { ToastStack } from "./components/toasts";
 import { MailboxView, seedCompose } from "./views/mailbox";
-import { ComposeView } from "./views/compose";
+import { ComposeView, ComposeDockCard, registerComposeDock, requestCompose } from "./views/compose";
 import { SetupWizardView } from "./views/setup";
 import { SettingsView } from "./views/settings";
 import { SecurityCenterView } from "./views/security-center";
@@ -181,6 +181,72 @@ export default function App() {
   const [lockReason, setLockReason] = useState("Trust reduced — verify with your authenticator to unlock.");
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+
+  // T-343: floating compose docks. Each entry is one real ComposeView whose
+  // draft/autosave/send lifecycle is unchanged — the dock is chrome only.
+  // Minimized docks stay mounted-but-hidden (autosave is 1s-debounced; an
+  // unmount could drop the last keystrokes). At most one dock is expanded.
+  const [docks, setDocks] = useState<
+    { id: number; minimized: boolean; subject: string; flushRef: { current: (() => void) | null }; discardRef: { current: (() => void) | null } }[]
+  >([]);
+  const dockSeq = useRef(0);
+  const [dockAnnc, setDockAnnc] = useState("");
+  const openComposeDock = useCallback(() => {
+    setDocks((ds) => [...ds.map((d) => ({ ...d, minimized: true })), { id: ++dockSeq.current, minimized: false, subject: "", flushRef: { current: null }, discardRef: { current: null } }]);
+    setDockAnnc("Compose opened.");
+  }, []);
+  useEffect(() => registerComposeDock(openComposeDock), [openComposeDock]);
+  const minimizeDock = (id: number) => {
+    setDocks((ds) => ds.map((d) => (d.id === id ? { ...d, minimized: true } : d)));
+    setDockAnnc("Draft minimized — kept as a chip.");
+  };
+  const restoreDock = (id: number) => {
+    setDocks((ds) => ds.map((d) => ({ ...d, minimized: d.id !== id })));
+    setDockAnnc("Draft restored.");
+  };
+  const removeDock = (id: number) => setDocks((ds) => ds.filter((d) => d.id !== id));
+  const expandDock = (id: number) => {
+    const d = docks.find((x) => x.id === id);
+    d?.flushRef.current?.(); // sessionStorage handoff — page composer restores it
+    removeDock(id);
+    navigate({ name: "compose" });
+  };
+  // Orphaned dock drafts: exiting with a draft minimized leaves its
+  // `kiwi.draft.dock.<id>` key behind. On the next boot, sweep each orphan
+  // into its owning account's page-draft slot — but ONLY when that slot is
+  // empty (never clobber a newer draft), then drop the dock key.
+  useEffect(() => {
+    try {
+      for (const key of Object.keys(window.localStorage)) {
+        if (!key.startsWith("kiwi.draft.dock.")) continue;
+        const raw = window.localStorage.getItem(key);
+        window.localStorage.removeItem(key);
+        if (!raw) continue;
+        try {
+          const d = JSON.parse(raw) as { account?: unknown };
+          const acct = typeof d.account === "string" && d.account ? d.account : "default";
+          const slot = `kiwi.draft.${acct}`;
+          if (!window.localStorage.getItem(slot)) window.localStorage.setItem(slot, raw);
+        } catch {
+          // Malformed payload — dropped with the key.
+        }
+      }
+    } catch {
+      // Storage unavailable — leave every draft untouched.
+    }
+  }, []);
+  // Pointer-down outside an expanded dock minimizes it (never destroys).
+  useEffect(() => {
+    if (!docks.some((d) => !d.minimized)) return;
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t?.closest(".em-dock") || t?.closest(".em-dock-chips")) return;
+      setDocks((ds) => ds.map((d) => ({ ...d, minimized: true })));
+      setDockAnnc("Draft minimized — kept as a chip.");
+    };
+    document.addEventListener("pointerdown", onDown, true);
+    return () => document.removeEventListener("pointerdown", onDown, true);
+  }, [docks]);
 
   // UI prefs (accent/density) apply from storage on mount; data-theme is
   // applied by useTheme (above) — installed theme ids resolve via registry.
@@ -1264,7 +1330,7 @@ export default function App() {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "n") {
         if (!isTyping(e.target)) {
           e.preventDefault();
-          navigate({ name: "compose" });
+          requestCompose();
         }
         return;
       }
@@ -1350,7 +1416,7 @@ export default function App() {
 
   const paletteActions: PaletteAction[] = useMemo(() => {
     const list: PaletteAction[] = [
-      { id: "compose", label: "Compose new message", hint: "r", run: () => navigate({ name: "compose" }) },
+      { id: "compose", label: "Compose new message", hint: "r", run: requestCompose },
       {
         id: "search",
         label: "Focus message search",
@@ -1685,6 +1751,81 @@ export default function App() {
                 onNotify={notify}
               />
             </div>
+          </div>
+        )}
+        {/* T-343 floating compose docks — chrome over the real ComposeView.
+            Hidden (not unmounted) while the full-page composer is up so the
+            1s-debounced autosave can't drop keystrokes. */}
+        {docks.length > 0 && (
+          <div className={`em-dock-layer${docks.some((d) => !d.minimized) ? " has-open" : ""}`} hidden={route.name === "compose"}>
+            <span role="status" aria-live="polite" className="em-visually-hidden">
+              {dockAnnc}
+            </span>
+            {docks.map((d) => (
+              <div key={d.id} hidden={d.minimized}>
+                <ComposeDockCard
+                  subject={d.subject}
+                  focused={!d.minimized && route.name !== "compose"}
+                  onMinimize={() => minimizeDock(d.id)}
+                  onExpand={() => expandDock(d.id)}
+                >
+                  <ComposeView
+                    mode={mode}
+                    accounts={accountsRaw.map((a) => ({ id: a.id, email: a.email, displayName: a.displayName || a.email }))}
+                    onSent={() => {
+                      void refreshOutbox();
+                      void refreshStatus();
+                    }}
+                    onNotify={notify}
+                    dock={{
+                      hidden: d.minimized || route.name === "compose",
+                      draftKey: `kiwi.draft.dock.${d.id}`,
+                      // Same-ref return when unchanged — otherwise every App
+                      // render (new `dock` object) would re-report and loop.
+                      onSubject: (s) =>
+                        setDocks((ds) =>
+                          ds.some((x) => x.id === d.id && x.subject !== s)
+                            ? ds.map((x) => (x.id === d.id ? { ...x, subject: s } : x))
+                            : ds,
+                        ),
+                      onDone: () => removeDock(d.id),
+                      onMinimize: () => minimizeDock(d.id),
+                      onExpand: () => expandDock(d.id),
+                      flushRef: d.flushRef,
+                      discardRef: d.discardRef,
+                    }}
+                  />
+                </ComposeDockCard>
+              </div>
+            ))}
+            {docks.some((d) => d.minimized) && (
+              <div className="em-dock-chips" role="group" aria-label="Minimized drafts">
+                {docks
+                  .filter((d) => d.minimized)
+                  .map((d) => (
+                    <span key={d.id} className="em-dock-chip">
+                      <button
+                        type="button"
+                        className="em-dock-chip-label"
+                        onClick={() => restoreDock(d.id)}
+                        aria-label={`Draft: ${d.subject || "New message"} — restore`}
+                        title="Restore draft"
+                      >
+                        {d.subject || "New message"}
+                      </button>
+                      <button
+                        type="button"
+                        className="em-dock-chip-x"
+                        aria-label={`Discard draft${d.subject ? `: ${d.subject}` : ""}`}
+                        title="Discard draft"
+                        onClick={() => d.discardRef.current?.()}
+                      >
+                        <Icon name="close" size={10} />
+                      </button>
+                    </span>
+                  ))}
+              </div>
+            )}
           </div>
         )}
         {exportDlg && (

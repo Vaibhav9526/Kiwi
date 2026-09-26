@@ -325,7 +325,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_db8527c
 | T-340 | lock-gate coverage audit: classify every command, findings for ungated-by-omission | Agent 21 | open | `lib.rs`, `commands/`, `docs/audits/` | T-269 |
 | T-341 | conversation/thread mute: per-conversation flag, suppresses counts+notify, unmute restores | Agent 15b | open | `kiwi-mail/store`, `commands/`, `notify.rs` | |
 | T-342 | UI pass#2 (planner): disposable-inbox sidebar promo + density + radius tokens — LIVE | Agent 25 | in-progress | `chrome.tsx`, `tokens.css` | owner-directed |
-| T-343 | Gmail floating compose dock — LIVE (post-T-335) | Agent 24 | in-progress | `compose.tsx`, `App.tsx` | owner-directed |
+| T-343 | Gmail floating compose dock — docks/chips/minimize/expand/discard over real ComposeView; per-dock draft keys + expand handoff + orphan sweep; 26/26 smoke | Agent 24 | done | `compose.tsx`, `App.tsx`, `chrome.tsx`, `mailbox.tsx`, `contacts.tsx`, `shell.css`, `ui-smoke.mjs` | owner-directed |
 | T-344 | local gates script ps1+sh (mirrors CI, honest SKIP, surfaced 3 in-flight breakages) | Agent 26 | done |
 | T-345 | system tray: icon+unread tooltip, show/compose/quit menu, close-to-tray pref, honest degrade | Agent 20 | done (Lead-verified: 234 app + 255 mail green, tray tests incl. quit-guard/tooltip/pref matrix) | `src-tauri` setup, `tauri.conf`, `tray.rs` | |
 | T-346 | regenerate docs/architecture.svg to match as-built ARCHITECTURE.md | Agent 26 | done (ASCII-safe, render-verified; committed f991f27) | `docs/architecture.svg` | ARCHITECTURE rewrite |

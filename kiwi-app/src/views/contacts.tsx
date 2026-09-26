@@ -17,7 +17,7 @@ import type { CSSProperties } from "react";
 import type { ContactInput, ContactView } from "../kiwi";
 import { contactLabel, contactPrimaryEmail, parseContact } from "../kiwi";
 import { api } from "../ipc";
-import { navigate } from "../router";
+import { requestCompose } from "./compose";
 import { Icon } from "../components/icons/index";
 import {
   deleteLocal,
@@ -182,7 +182,7 @@ export function ContactsView({
     } catch {
       // storage denied — still navigate; the composer opens empty.
     }
-    navigate({ name: "compose" });
+    requestCompose();
   };
 
   const startEdit = () => {

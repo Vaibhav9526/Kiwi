@@ -28,6 +28,7 @@ import { api, isTauri } from "../ipc";
 import { loadPref, savePref } from "../prefs";
 import { loadLocalBook, saveLocalBook, upsertLocal } from "../contacts";
 import { navigate } from "../router";
+import { requestCompose } from "./compose";
 import { SecurityPill } from "../components/security";
 import { PaneSplitter } from "../components/chrome";
 import { ContextMenu } from "../components/contextmenu";
@@ -728,7 +729,7 @@ export function MailboxView(props: MailboxProps) {
                 else if (e.key === "Delete") {
                   e.preventDefault();
                   props.onBulkDelete([selected.id], isTrash, isTrash ? "Deleted permanently" : "Moved to Trash");
-                } else if (e.key === "r") navigate({ name: "compose" });
+                } else if (e.key === "r") requestCompose();
               }}
             >
               <DateGroup
@@ -1492,7 +1493,7 @@ export function seedCompose(mode: ComposeSeedMode, m: MessageEnvelope, body: Mes
   } catch {
     // storage denied — composer opens blank, nothing lost.
   }
-  navigate({ name: "compose" });
+  requestCompose(); // T-343: opens the floating dock (or #/compose as fallback)
 }
 
 function normMsgId(s: string | null | undefined): string {

@@ -14,6 +14,7 @@ import type { Severity, SnoozePreset, TrustState } from "../kiwi";
 import { AUDIT_CORRUPT_MESSAGE, severityGlyph, severityLabel } from "../kiwi";
 import { Icon, SEVERITY_ICON } from "./icons/index";
 import { navigate } from "../router";
+import { requestCompose } from "../views/compose";
 import { loadPref, savePref } from "../prefs";
 import { ContextMenu } from "./contextmenu";
 import { usePaneWidth } from "../state/panes";
@@ -204,7 +205,7 @@ function HamburgerMenu({
   const ref = useDismissable(open, () => setOpen(false));
   const entries: MenuEntry[] = [
     { section: "File" },
-    { label: "New message", hint: "Ctrl+N", run: () => navigate({ name: "compose" }) },
+    { label: "New message", hint: "Ctrl+N", run: requestCompose },
     { label: "Get new messages", hint: "F5", run: onSync },
     { label: "Add account…", run: () => navigate({ name: "setup" }) },
     { label: "Lock mailbox now", run: onLock },
@@ -393,9 +394,9 @@ export function TopBar(props: TopBarProps) {
           icon={<IconPlus size={13} />}
           label="New"
           primary
-          onClick={() => navigate({ name: "compose" })}
+          onClick={requestCompose}
           menu={[
-            { label: "New message", hint: "Ctrl+N", run: () => navigate({ name: "compose" }) },
+            { label: "New message", hint: "Ctrl+N", run: requestCompose },
             { label: "New contact", run: () => navigate({ name: "contacts" }) },
             { label: "New task", run: () => window.dispatchEvent(new CustomEvent("kiwi-agenda-new")) },
           ]}

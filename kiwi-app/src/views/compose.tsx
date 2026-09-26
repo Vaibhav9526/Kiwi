@@ -13,7 +13,7 @@
  * progress and the 25 MiB cap is enforced before the send IPC runs.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ClipboardEvent, DragEvent } from "react";
+import type { ClipboardEvent, DragEvent, ReactNode } from "react";
 import type { PolicyBannerVerdict, TemplateView } from "../kiwi";
 import type { ContactView } from "../kiwi";
 import { contactLabel, contactPrimaryEmail } from "../kiwi";
@@ -174,11 +174,131 @@ function RecipientInput({
   );
 }
 
+/**
+ * T-343: Gmail-style floating compose dock. The dock is pure chrome around
+ * the real ComposeView — draft autosave, seed handoffs, send/undo/outbox all
+ * stay identical. `#/compose` remains the full-page form (expand target +
+ * deep links); `requestCompose()` opens a dock when the app registered one,
+ * else falls back to the route (never loses the ability to compose).
+ *
+ * Minimized docks stay MOUNTED-but-hidden — the autosave is 1s-debounced so
+ * an unmount could drop sub-second keystrokes; hiding keeps React state (and
+ * Gmail's semantics) intact.
+ */
+export interface ComposeDockApi {
+  /** Dock is collapsed — the composer ignores Ctrl+Enter and pointer focus. */
+  hidden: boolean;
+  /** This dock's isolated autosave slot (`kiwi.draft.dock.<id>`). Per-dock
+   * keys are mandatory: the page slot is one-draft-per-account, so sharing
+   * it would let concurrent drafts (or a dock + the page composer)
+   * clobber each other's autosave. */
+  draftKey: string;
+  /** Live subject preview for the dock header/chip. */
+  onSubject: (subject: string) => void;
+  /** The draft finished (sent/queued/scheduled) or was discarded. */
+  onDone: () => void;
+  /** Escape / header chevron / header × — minimize, never destroy. */
+  onMinimize: () => void;
+  /** Open the same draft as the full-page composer (flushes autosave first). */
+  onExpand: () => void;
+  /** Assigned by the view: synchronous draft handoff (used by expand). */
+  flushRef: { current: (() => void) | null };
+  /** Assigned by the view: discard the draft + report done. */
+  discardRef: { current: (() => void) | null };
+}
+
+let composeDockOpener: (() => void) | null = null;
+/** App registers the real dock opener; unmount unregisters. */
+export function registerComposeDock(fn: () => void): () => void {
+  composeDockOpener = fn;
+  return () => {
+    if (composeDockOpener === fn) composeDockOpener = null;
+  };
+}
+/** Every compose entry point (reply/forward/new) goes through here. */
+export function requestCompose(): void {
+  if (composeDockOpener) composeDockOpener();
+  else navigate({ name: "compose" });
+}
+
+/** Dock card chrome — header with live subject + min/expand/close. */
+export function ComposeDockCard({
+  subject,
+  focused,
+  onMinimize,
+  onExpand,
+  children,
+}: {
+  subject: string;
+  /** Visible + topmost — focus lands in the To field on open AND on
+   *  chip-restore (the card stays mounted while minimized, so this must
+   *  be prop-driven, not a mount effect). */
+  focused: boolean;
+  onMinimize: () => void;
+  onExpand: () => void;
+  children: ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (focused) ref.current?.querySelector("input")?.focus();
+  }, [focused]);
+  return (
+    <div
+      ref={ref}
+      className="em-dock"
+      role="dialog"
+      aria-modal="false"
+      aria-label={subject ? `Compose message: ${subject}` : "Compose message"}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          onMinimize(); // never destroys — the draft survives as a chip
+        }
+      }}
+    >
+      <header className="em-dock-head">
+        <span className="em-dock-title" title={subject || "New message"}>
+          {subject || "New message"}
+        </span>
+        <button
+          type="button"
+          className="em-iconbtn"
+          aria-label="Minimize compose — draft stays as a chip"
+          title="Minimize (draft kept)"
+          onClick={onMinimize}
+        >
+          <Icon name="chevron-down" size={12} />
+        </button>
+        <button
+          type="button"
+          className="em-iconbtn"
+          aria-label="Expand compose to full page"
+          title="Open as full page"
+          onClick={onExpand}
+        >
+          <Icon name="external" size={12} />
+        </button>
+        <button
+          type="button"
+          className="em-iconbtn"
+          aria-label="Close compose — draft stays as a minimized chip"
+          title="Close (draft kept)"
+          onClick={onMinimize}
+        >
+          <Icon name="close" size={12} />
+        </button>
+      </header>
+      {children}
+    </div>
+  );
+}
+
 export function ComposeView({
   mode,
   accounts,
   onSent,
   onNotify,
+  dock,
 }: {
   mode: "live" | "demo";
   accounts: { id: string; email: string; displayName: string }[];
@@ -188,9 +308,22 @@ export function ComposeView({
     text: string,
     opts?: { action?: { label: string; run: () => void }; ttlMs?: number },
   ) => void;
+  /** T-343: present when mounted inside the floating dock. */
+  dock?: ComposeDockApi;
 }) {
   const [accountId, setAccountId] = useState(() => {
     try {
+      // T-343: a dock expand handoff carries its owning account — the page
+      // composer must mount under it or the draft fields would render with
+      // the wrong sender. The payload itself is consumed by the restore
+      // effect below (it stays in sessionStorage until then).
+      if (!dock) {
+        const ex = window.sessionStorage.getItem("kiwi.expandDraft");
+        if (ex) {
+          const d = JSON.parse(ex) as { account?: unknown };
+          if (typeof d.account === "string" && accounts.some((a) => a.id === d.account)) return d.account;
+        }
+      }
       const preferred = window.localStorage.getItem("kiwi.defaultAccount");
       if (preferred) {
         const want = JSON.parse(preferred) as string;
@@ -278,14 +411,45 @@ export function ComposeView({
 
   // Draft autosave (T-151): no draft command exists in kiwi.ipc/1, so drafts
   // persist to this device's localStorage only — never credentials, never
-  // attachments (b64 blobs would blow the quota). One draft per account.
-  const draftKey = `kiwi.draft.${accountId || "default"}`;
+  // attachments (b64 blobs would blow the quota). One draft per account on
+  // the page composer; docked composers get an isolated per-dock slot so
+  // concurrent drafts can never clobber each other (T-343).
+  const draftKey = dock?.draftKey ?? `kiwi.draft.${accountId || "default"}`;
 
   useEffect(() => {
     try {
+      // T-343 expand handoff: a dock's flush publishes the full draft as a
+      // one-shot sessionStorage payload. It REPLACES page state (it is the
+      // draft, not a merge) and suppresses the page-key read so a stale
+      // autosave under this account can't resurrect over it. The account
+      // was already adopted by the useState initializer above.
+      if (!dock) {
+        const ex = window.sessionStorage.getItem("kiwi.expandDraft");
+        if (ex) {
+          window.sessionStorage.removeItem("kiwi.expandDraft");
+          const d = JSON.parse(ex) as {
+            recipients?: unknown;
+            cc?: unknown;
+            subject?: unknown;
+            body?: unknown;
+            scheduled?: unknown;
+          };
+          setRecipients(Array.isArray(d.recipients) ? d.recipients.filter((r): r is string => typeof r === "string") : []);
+          setCcRecipients(Array.isArray(d.cc) ? d.cc.filter((r): r is string => typeof r === "string") : []);
+          setSubject(typeof d.subject === "string" ? d.subject : "");
+          setBody(typeof d.body === "string" ? d.body : "");
+          setScheduled(typeof d.scheduled === "string" ? d.scheduled : null);
+          setDraftNote("Draft restored (this device only).");
+          return;
+        }
+      }
       const raw = window.localStorage.getItem(draftKey);
       if (!raw) return;
-      const d = JSON.parse(raw) as { recipients?: unknown; cc?: unknown; subject?: unknown; body?: unknown; scheduled?: unknown };
+      const d = JSON.parse(raw) as { account?: unknown; recipients?: unknown; cc?: unknown; subject?: unknown; body?: unknown; scheduled?: unknown };
+      // Drafts written by dock autosaves carry their owning account — adopt
+      // it when valid (the orphan sweep files them under that account's
+      // slot, so this only fires for consistent payloads).
+      if (!dock && typeof d.account === "string" && accounts.some((a) => a.id === d.account)) setAccountId(d.account);
       if (Array.isArray(d.recipients)) setRecipients(d.recipients.filter((r): r is string => typeof r === "string"));
       if (Array.isArray(d.cc)) setCcRecipients(d.cc.filter((r): r is string => typeof r === "string"));
       if (typeof d.subject === "string") setSubject(d.subject);
@@ -329,7 +493,9 @@ export function ComposeView({
     const t = window.setTimeout(() => {
       if (recipients.length === 0 && ccRecipients.length === 0 && !subject && !body) return;
       try {
-        window.localStorage.setItem(draftKey, JSON.stringify({ recipients, cc: ccRecipients, subject, body, scheduled, at: Date.now() }));
+        // `account` rides along so an orphaned dock draft (app exit while
+        // minimized) can be swept back into the right account's slot.
+        window.localStorage.setItem(draftKey, JSON.stringify({ account: accountId, recipients, cc: ccRecipients, subject, body, scheduled, at: Date.now() }));
         setDraftNote(`Draft autosaved ${new Date().toLocaleTimeString()} (this device only, no attachments).`);
       } catch {
         setDraftNote("Draft autosave failed (storage full?) — copy your text before leaving.");
@@ -351,6 +517,51 @@ export function ComposeView({
     setScheduled(null);
     setDraftNote("Draft discarded.");
   };
+
+  // T-343 dock integration. The dock header/chip mirrors the live subject —
+  // reported through a ref-guard because the `dock` prop is a fresh object
+  // every App render: without the guard each render would re-report and
+  // setDocks would feed a render loop.
+  const dockSubject = useRef<string | null>(null);
+  useEffect(() => {
+    if (!dock || dockSubject.current === subject) return;
+    dockSubject.current = subject;
+    dock.onSubject(subject);
+  }, [dock, subject]);
+  // flushRef/discardRef are down-calls from the dock chrome — assigned in an
+  // effect (never mid-render) with no dep array so the closures always see
+  // the latest draft fields.
+  useEffect(() => {
+    if (!dock) return;
+    // Expand handoff: publish the WHOLE draft (incl. account — even an
+    // empty one, so a stale page-slot draft can't resurrect over it) as a
+    // one-shot sessionStorage payload, then release this dock's autosave
+    // slot. The page composer consumes it on mount (initializer + restore
+    // effect above) — byte-identical state, no shared-key write needed.
+    dock.flushRef.current = () => {
+      try {
+        window.sessionStorage.setItem(
+          "kiwi.expandDraft",
+          JSON.stringify({ account: accountId, recipients, cc: ccRecipients, subject, body, scheduled }),
+        );
+        window.localStorage.removeItem(draftKey);
+      } catch {
+        // storage denied — the expand navigation still happens; the draft
+        // simply doesn't follow, which the empty composer shows honestly.
+      }
+    };
+    dock.discardRef.current = () => {
+      clearDraft();
+      dock.onDone();
+    };
+  });
+  // Close the dock once the draft has actually finished its lifecycle —
+  // sent/queued/scheduled (grace window over), not merely "sending" (undo
+  // must stay reachable inside the dock while graceLeft counts down).
+  useEffect(() => {
+    if (!dock || graceLeft !== null) return;
+    if (sentNote === "Queued for dispatch." || sentNote === "Message sent." || (sentNote !== null && /^Scheduled for /.test(sentNote))) dock.onDone();
+  }, [dock, sentNote, graceLeft]);
 
   const allRecipients = useMemo(() => [...recipients, ...ccRecipients], [recipients, ccRecipients]);
   const demoResult = mode === "demo" ? demoEvaluate(allRecipients) : null;
@@ -392,8 +603,10 @@ export function ComposeView({
     };
   }, [mode, graceLeft, onSent, onNotify]);
 
-  // Ctrl+Enter sends.
+  // Ctrl+Enter sends. A minimized (hidden) dock composer must not fire —
+  // several docks share this window-level listener.
   useEffect(() => {
+    if (dock?.hidden) return;
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
         e.preventDefault();
@@ -403,7 +616,7 @@ export function ComposeView({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, accountId, recipients, ccRecipients, subject, body, scheduled, attachments, sending]);
+  }, [mode, accountId, recipients, ccRecipients, subject, body, scheduled, attachments, sending, dock?.hidden]);
 
   /** Add a picked/typed address to To (false) or Cc (true), de-duplicated. */
   const addAddress = (email: string, toCc: boolean) => {
@@ -713,7 +926,11 @@ export function ComposeView({
           <p>Drop files to attach</p>
         </div>
       )}
-      <h1>Compose {mode === "demo" && <small style={{ color: "var(--kiwi-text-secondary)" }}>(demo)</small>}</h1>
+      {!dock && (
+        <h1>
+          Compose {mode === "demo" && <small style={{ color: "var(--kiwi-text-secondary)" }}>(demo)</small>}
+        </h1>
+      )}
       {mode === "demo" && demoResult && demoResult.verdict !== "none" && (
         <PolicyBanner verdict={demoResult.verdict} offenders={demoResult.offenders} onRemove={removeAddress} />
       )}
@@ -950,6 +1167,20 @@ export function ComposeView({
         <button type="button" onClick={() => setShowSchedule((s) => !s)} aria-expanded={showSchedule}>
           Send later
         </button>
+        {dock && (
+          <button
+            type="button"
+            className="em-dock-discard"
+            aria-label="Discard draft"
+            title="Discard draft"
+            onClick={() => {
+              clearDraft();
+              dock.onDone();
+            }}
+          >
+            <Icon name="trash" size={12} />
+          </button>
+        )}
       </div>
       <p>
         <label>

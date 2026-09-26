@@ -616,6 +616,59 @@ async function runChecks(cdp, sid) {
     // the demo surface can only prove presence + honest gating.
     return `${items.length} folder items + account-head New folder${demoMode ? " — demo-disabled honestly" : ""}`;
   });
+
+  await flow("compose-dock", "floating dock opens/minimizes/restores/sends (T-343)", async () => {
+    await cdp.eval(sid, "window.location.hash = '#/mail'");
+    await waitFor(cdp, sid, `${qsa(".em-row")} > 0`, 5000);
+    // Ctrl+N is a real entry point (window-level keymap) → dock opens.
+    await cdp.eval(sid, "window.dispatchEvent(new KeyboardEvent('keydown',{key:'n',ctrlKey:true,bubbles:true}))");
+    if (!(await waitFor(cdp, sid, qs(".em-dock section[aria-label='Compose message']"), 5000)))
+      throw new Error("dock did not open on Ctrl+N");
+    const headBtns = await cdp.eval(sid, qsa(".em-dock-head .em-iconbtn"));
+    if (headBtns !== 3) throw new Error(`dock header should have 3 controls, got ${headBtns}`);
+    // Subject preview is live in the header.
+    await cdp.eval(sid, `(()=>{
+      const i=document.querySelector(".em-dock input#compose-subject")||[...document.querySelectorAll(".em-dock input")].find(x=>(x.closest("p")?.textContent||"").includes("Subject"));
+      const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set;
+      set.call(i,"Dock smoke subject"); i.dispatchEvent(new Event("input",{bubbles:true}));
+    })()`);
+    if (!(await waitFor(cdp, sid, `document.querySelector(".em-dock-title")?.textContent.includes("Dock smoke subject")`, 4000)))
+      throw new Error("dock header did not show live subject preview");
+    // Minimize → dock hidden + chip appears carrying the subject.
+    await cdp.eval(sid, "document.querySelector('.em-dock-head .em-iconbtn[aria-label^=Minimize]')?.click()");
+    if (!(await waitFor(cdp, sid, `!!document.querySelector(".em-dock-chip") && !!document.querySelector(".em-dock").closest("[hidden]")`, 4000)))
+      throw new Error("minimize did not collapse dock to a chip");
+    const chipText = await cdp.eval(sid, `document.querySelector(".em-dock-chip-label")?.textContent || ""`);
+    if (!chipText.includes("Dock smoke subject")) throw new Error(`chip missing subject preview (got "${chipText}")`);
+    // Escape on a field inside a restored dock also minimizes (never destroys).
+    await cdp.eval(sid, "document.querySelector('.em-dock-chip-label')?.click()");
+    if (!(await waitFor(cdp, sid, `!document.querySelector(".em-dock").closest("[hidden]")`, 4000)))
+      throw new Error("chip restore did not re-expand the dock");
+    await cdp.eval(sid, `document.querySelector(".em-dock input")?.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))`);
+    if (!(await waitFor(cdp, sid, `!!document.querySelector(".em-dock").closest("[hidden]")`, 4000)))
+      throw new Error("Escape did not minimize the dock");
+    // Restore → draft survived (subject still there) → send path.
+    await cdp.eval(sid, "document.querySelector('.em-dock-chip-label')?.click()");
+    if (!(await waitFor(cdp, sid, `!document.querySelector(".em-dock").closest("[hidden]")`, 4000)))
+      throw new Error("second restore failed");
+    const survived = await cdp.eval(sid, `document.querySelector(".em-dock input#compose-subject")?.value || [...document.querySelectorAll(".em-dock input")].find(x=>(x.closest("p")?.textContent||"").includes("Subject"))?.value || ""`);
+    if (!String(survived).includes("Dock smoke subject")) throw new Error("draft content lost across minimize/restore");
+    await cdp.eval(sid, `(()=>{
+      const i=document.querySelector(".em-dock input#compose-to")||[...document.querySelectorAll(".em-dock input")].find(x=>(x.closest("p")?.textContent||"").includes("To:"));
+      const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set;
+      set.call(i,"dock@example.test"); i.dispatchEvent(new Event("input",{bubbles:true}));
+      [...i.closest("p").querySelectorAll("button")].find(b=>b.textContent.trim()==="Add")?.click();
+    })()`);
+    if (!(await waitFor(cdp, sid, `document.querySelector(".em-dock p[aria-label='Recipients']")?.textContent.includes("dock@example.test")`, 4000)))
+      throw new Error("recipient chip never committed inside dock");
+    await cdp.eval(sid, `[...document.querySelectorAll(".em-dock .kiwi-btn-primary")].find(b=>b.textContent.includes("Send"))?.click()`);
+    if (!(await waitFor(cdp, sid, `document.body.textContent.includes("Demo: sending")`, 5000)))
+      throw new Error("dock send did not reach the demo path");
+    // Dock stays open during the undo grace; closes only on real finish.
+    if (!(await waitFor(cdp, sid, `!document.querySelector(".em-dock-layer")`, 16000)))
+      throw new Error("dock did not close after send completed");
+    return "open→min(chip+subject)→restore→Esc-min→send→auto-close";
+  });
 }
 
 // ----------------------------------------------------------------- main --

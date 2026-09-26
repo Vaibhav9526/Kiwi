@@ -861,3 +861,87 @@ then a per-account folder must render ZERO badges. **24/24 PASS.**
 **Found via test:** demo all-inboxes includes the sent fixture row too —
 `base = DEMO_MESSAGES` unscoped. Left as-is (harmless in demo; live
 loader scopes to real inboxes); noted here for honesty.
+
+## T-343 — Gmail floating compose dock (resumed 2026-09-26 after Orca restart)
+
+**Status:** done — `tsc --noEmit` clean, `vite build` green (94 modules),
+`ui-smoke` **26/26 PASS** on real Edge headless incl. the new `compose-dock`
+flow. Found+fixed three real defects left at stand-down (below).
+
+### Surface
+
+- `compose.tsx` — `ComposeDockApi`/`registerComposeDock`/`requestCompose`
+  module seam; `ComposeDockCard` chrome (live-subject header, minimize /
+  expand / close-as-minimize buttons, Esc inside fields minimizes); the real
+  `ComposeView` runs inside unchanged (`dock` prop = the only seam). Every
+  entry point routes through `requestCompose`: Ctrl+N, palette, +New,
+  hamburger, contacts "Write", mailbox `r` key, `seedCompose` (reply/
+  reply-all/forward keeps its `kiwi.replySeed` merge). `#/compose` stays the
+  full-page form = expand target + deep links.
+- `App.tsx` — `docks` state (open minimizes siblings — one expanded max),
+  `.em-dock-layer` fixed overlay (pointer-events:none, children opt in),
+  `.em-dock-chips` minimized-draft bar (restore / discard chips), outside
+  pointerdown minimizes, live-region announcements, orphan-draft sweep.
+- `shell.css` — `.em-dock*`/`em-visually-hidden` block; `z-index:45` sits
+  under popovers(50)/menus(60-70)/toasts(80)/dialogs(100).
+
+### Defects found on resume (the diff at stand-down was pre-verification)
+
+1. **Draft-key collision** — every dock shared `kiwi.draft.<accountId>` with
+   the page composer: two docks (or dock + hidden-layer-during-page-compose)
+   autosaved last-writer-wins onto one slot = draft loss. Fixed with
+   per-dock keys `kiwi.draft.dock.<id>` (`dock.draftKey`); the draft JSON
+   now carries `account` so recovery knows the owner.
+2. **Expand was account-blind + key-coupled** — flush wrote the DOCK's
+   account key while the page composer mounts under the DEFAULT account →
+   restored the wrong/stale draft or nothing. Replaced with a one-shot
+   `sessionStorage.kiwi.expandDraft` handoff (same idiom as `kiwi.replySeed`):
+   flush publishes {account, recipients, cc, subject, body, scheduled} even
+   when empty (so a stale page draft can't resurrect) + drops the dock key;
+   the page `useState` initializer adopts `account` and the restore effect
+   consumes the payload with replace semantics.
+3. **Render-loop risk** — `dock` prop is a fresh object each App render;
+   `useEffect([dock, subject])` → `onSubject` → `setDocks` (new array) →
+   loop. Guarded both sides: `dockSubject` ref-gate in ComposeView, same-ref
+   return in App's `onSubject`.
+4. `flushRef`/`discardRef` were assigned mid-render — moved to a dep-less
+   effect (fresh closures each render is the point).
+5. CSS: `.em-dock > section` needed `flex:1 1 auto; min-height:0` to scroll
+   inside the capped card; the chips-offset sibling selectors could never
+   match (chips follow per-dock WRAPPER divs, not `.em-dock`) → replaced by
+   `.em-dock-layer.has-open .em-dock-chips` (React-driven class).
+6. `ComposeDockCard` focus was mount-only — now a `focused` prop so
+   chip-restore refocuses the To field.
+7. Smoke: two `waitFor` exprs returned DOM elements → CDP `returnByValue`
+   "Object reference chain is too long" (same trap as T-323-aux) — `!!`.
+
+### Orphan recovery
+
+Exiting with drafts minimized orphans `kiwi.draft.dock.*` keys. App mount
+sweeps them into `kiwi.draft.<payload.account>` ONLY when that slot is empty
+(never clobbers a newer draft), then removes the orphan — crash-safe drafts,
+one-draft-per-account invariant preserved.
+
+### Verification
+
+- `npm run build` (tsc + vite) — green, 94 modules.
+- `npm run test:ui` — **26/26 PASS** incl. `compose-dock` flow: Ctrl+N opens
+  dock → live subject in header → minimize→chip keeps subject → restore →
+  Esc minimizes → draft survives → demo send → dock auto-closes after the
+  undo grace (onDone fires only on terminal sentNote, not "sending").
+- `cargo fmt --check` — one foreign file flagged (`commands/pair.rs`,
+  committed-but-unformatted; not mine, left alone). `cargo clippy -p
+  kiwi-app` — see run note below.
+
+### Honest limits
+
+- Tray "Compose" (T-345's uncommitted line) still navigates to `#/compose`
+  rather than a dock — deliberate non-edit of another agent's hunk; the
+  route fallback is correct behavior.
+- Opening a dock while ON `#/compose` mounts it behind the hidden layer —
+  it surfaces as a chip when you leave the page. Deliberate (a dock over
+  the full-page composer made no sense), not a gap.
+- Attachments in a dock draft are not autosaved (pre-existing localStorage
+  quota rule — unchanged).
+- A hidden dock keeps autosaving to its OWN key — intended crash
+  protection while minimized; can no longer touch the page draft.

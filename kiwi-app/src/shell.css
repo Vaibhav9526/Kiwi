@@ -2774,10 +2774,218 @@ pre.em-quote-region {
   line-height: 1.1;
   padding: 0 4px;
   border: 1px solid var(--kiwi-text-secondary, #666);
-  border-radius: 3px;
+  border-radius: var(--kiwi-radius-sm);
   max-width: 9em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   opacity: 0.85;
+}
+
+/* T-343: Gmail-style floating compose dock. Pure chrome — the composer
+   inside is the real ComposeView (same draft/send lifecycle). Radius uses
+   A25's T-342 global tokens when they land (--kiwi-radius-lg/large), with
+   the spec'd ~16px as fallback since those names aren't defined yet. */
+.em-dock-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none; /* children opt back in; clicks pass to the mail UI */
+  z-index: 45; /* above panes, below the modal composer/palette layers */
+}
+.em-dock-layer[hidden] {
+  display: none;
+}
+.em-dock {
+  position: absolute;
+  right: 1rem;
+  bottom: 0;
+  width: min(510px, calc(100vw - 2rem));
+  max-height: min(72vh, 640px);
+  display: flex;
+  flex-direction: column;
+  background: var(--kiwi-surface, #fff);
+  border: 1px solid var(--kiwi-border, #d7d7d7);
+  border-radius: var(--kiwi-radius-lg, var(--kiwi-radius-large, 16px)) var(--kiwi-radius-lg, var(--kiwi-radius-large, 16px)) 0 0;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28), 0 2px 8px rgba(0, 0, 0, 0.12);
+  pointer-events: auto;
+  overflow: hidden;
+}
+.em-dock-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0.4rem 0.5rem 0.4rem 0.85rem;
+  background: var(--kiwi-surface-2, #f3f3f3);
+  border-bottom: 1px solid var(--kiwi-border, #d7d7d7);
+}
+.em-dock-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.82rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.em-dock > section {
+  flex: 1 1 auto;
+  min-height: 0; /* required or the flex child overflows instead of scrolling */
+  overflow-y: auto;
+  padding: 0.6rem 0.85rem 0.85rem;
+  font-size: 0.85rem;
+}
+.em-dock > section textarea {
+  min-height: 9rem;
+}
+.em-dock-chips {
+  position: absolute;
+  right: 1rem; /* chips-only state: anchor at the edge */
+  bottom: 0;
+  display: flex;
+  flex-direction: row-reverse; /* newest chip closest to the dock */
+  gap: 0.4rem;
+  align-items: flex-end;
+  pointer-events: auto;
+}
+/* With a dock expanded, chips sit left of it. Class-driven (`.has-open`)
+   because a sibling selector can't see past the per-dock wrapper divs. */
+.em-dock-layer.has-open .em-dock-chips {
+  right: calc(1rem + min(510px, 100vw - 2rem) + 0.5rem);
+}
+.em-dock-chip {
+  display: inline-flex;
+  align-items: stretch;
+  max-width: 14rem;
+  background: var(--kiwi-surface, #fff);
+  border: 1px solid var(--kiwi-border, #d7d7d7);
+  border-radius: 8px 8px 0 0;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+}
+.em-dock-chip-label {
+  border: 0;
+  background: transparent;
+  padding: 0.45rem 0.2rem 0.45rem 0.7rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  max-width: 10rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  color: inherit;
+}
+.em-dock-chip-x {
+  border: 0;
+  background: transparent;
+  padding: 0.45rem 0.5rem;
+  cursor: pointer;
+  color: var(--kiwi-text-secondary, #666);
+  display: inline-flex;
+  align-items: center;
+}
+.em-dock-chip-x:hover {
+  color: var(--kiwi-danger, #b3261e);
+}
+.em-dock-discard {
+  margin-left: auto;
+  color: var(--kiwi-text-secondary, #666);
+}
+.em-dock-discard:hover {
+  color: var(--kiwi-danger, #b3261e);
+}
+.em-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---------- T-342 disposable-inbox promo (sidebar) + inbox view ---------- */
+
+/* Sidebar section — sits under the mailboxes (Mailspring userSection idiom):
+   one tree row + a quiet "+ New disposable" quick action aligned to the
+   indented row label. */
+.em-dispo {
+  margin-top: 6px;
+  padding-top: 4px;
+  border-top: 1px solid var(--em-pane-border);
+}
+.em-dispo-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 0 4px 2px;
+}
+.em-dispo-title {
+  font-size: var(--kiwi-ms-text-smaller);
+  font-weight: var(--kiwi-ms-weight-semibold);
+  color: var(--em-group-head);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.em-dispo-new {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+  padding: 1px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--kiwi-radius-sm);
+  background: transparent;
+  color: var(--em-text-dim);
+  font: inherit;
+  font-size: var(--kiwi-ms-text-smaller);
+  cursor: pointer;
+}
+.em-dispo-new:hover:not(:disabled) {
+  background: var(--em-hover);
+  color: var(--kiwi-ms-text);
+}
+
+/* The view's inbox idiom: summary list | reader, matching .em-rows rows. */
+.kiwi-toolbar-gap {
+  flex: 1;
+}
+.kiwi-dispo-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+.kiwi-dispo-split {
+  display: grid;
+  grid-template-columns: minmax(220px, 34%) minmax(0, 1fr);
+  gap: 0.7rem;
+  align-items: start;
+}
+.kiwi-dispo-list {
+  flex: none;
+  max-height: 62vh;
+  background: var(--kiwi-ms-list-bg, var(--kiwi-surface));
+  border: 1px solid var(--kiwi-ms-border, var(--kiwi-border-soft));
+  border-radius: var(--kiwi-radius-card);
+  padding: 4px;
+}
+.kiwi-dispo-row.is-active {
+  background: var(--em-select, var(--kiwi-ms-list-hover));
+}
+.kiwi-dispo-reader {
+  min-height: 12rem;
+  max-height: 62vh;
+  overflow-y: auto;
+  background: var(--kiwi-surface);
+  border: 1px solid var(--kiwi-border-soft);
+  border-radius: var(--kiwi-radius-card);
+  padding: 0.8rem 0.9rem;
+}
+@media (max-width: 720px) {
+  .kiwi-dispo-split {
+    grid-template-columns: 1fr;
+  }
 }
