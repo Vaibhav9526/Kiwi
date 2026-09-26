@@ -132,15 +132,25 @@ as PID `12912`; the new gate-watch loop runs as PID `9088` with
 - Pending work: rotate stale Lead terminal `term_c20c6737-…` → new Lead
   `term_db8527c7-eb71-4274-b416-61c91143a6cf` in both watcher loops,
   evidence-first gates, restart both loops, verify alive, DONE to Lead.
-- 2026-09-26 ~21:24 UTC+5:30 restart verified alive:
-  - `python -u watcher.py` — real PID `19288`
-    (`C:\Users\VAIBHAV\AppData\Local\Python\pythoncore-3.14-64\python.exe -u
-    watcher.py`); parent stub PID `2336` also present. `watcher_stdout.log`
-    advanced to 2048 bytes with a fresh all-clear cycle; `watcher_stderr.log`
-    empty (0 bytes). Both logs ignored (`*.log`) and untracked.
-  - `python -u tools/watcher/gate_watch.py --interval 600 --state-dir
+  - 2026-09-26 ~21:24 UTC+5:30 restart verified alive **(PID CORRECTION —
+    Lead dedup note, same evening):** the PIDs `19288`/`27292` recorded at
+    restart time were the pre-dedup shim-fork pair; Lead killed one side of
+    each pair during dedup and each collapsed. **Current live PIDs:
+    `watcher.py` real `12980` (WindowsApps shim `37324`); `gate_watch.py`
+    real `40476` (shim `32784`).** `state.json` writing normally
+    (`run_count` 17, all-pass `fmt/tsc/overlap/secrets=PASS`, last
+    `2026-09-26T15:57:37Z`). Handle rotation to `db8527c7` confirmed
+    correct — GATE-WATCH reports are reaching Lead. All-gates-green claim
+    verified independently by Lead.
+  - Original restart evidence (superseded PIDs struck):
+  - ~~`python -u watcher.py` — real PID `19288`~~ (superseded, see correction
+    above) — original launch verified one fresh all-clear cycle in
+    `watcher_stdout.log` (2048 bytes at restart, 2512 bytes at commit);
+    `watcher_stderr.log` empty (0 bytes). Both logs ignored (`*.log`) and
+    untracked.
+  - ~~`python -u tools/watcher/gate_watch.py --interval 600 --state-dir
     %LOCALAPPDATA%\KiwiMail\gate-watch-t249w` — real PID `27292`, stub
-    `3788`; prior cycle 14 closed all-pass
+    `3788`~~ (superseded, see correction above); prior cycle 14 closed all-pass
     (`fmt/tsc/overlap/secrets=PASS`, run_count 14); validation `--once
     --no-ready` cycle 15 all-pass, no Lead report (existing state.json
     preserved — `--once` writes only on code change; verified no diff).
