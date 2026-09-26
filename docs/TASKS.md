@@ -179,7 +179,7 @@ rebuild context. Lead handle is now term_c20c6737.
 | Planner | Devin | 621f9265 | plans |
 | Lead | Devin (SWE-2) | c20c6737 | orchestration + ledger |
 
-Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c6737.
+Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_db8527c7 (2026-09-26 incarnation; was term_c20c6737).
 | T-196 | Contract-drift audit: every contracts/*.md vs actual code → docs/audits/contract-drift-1.md | Agent 20 | open | `docs/`, read-only | — |
 | T-197 | License-compliance + secret scan (GPL boundary, secrets, dep licenses) → docs/audits/license-secret-scan-1.md | Agent 21 | open | repo-wide, read-only | — |
 | T-198 | copy_overlap.py gate tool (45-char verbatim scan, CI static-checks) | Agent 21 | open | `tests/tools/` | T-197 |

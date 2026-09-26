@@ -1,5 +1,16 @@
 # Fleet state snapshot — 2026-09-25 (end of day)
 
+> **2026-09-26 reincarnation map** — Orca restarted overnight; all handles
+> changed. New map (same tabIds): Lead `term_db8527c7-eb71-4274-b416-61c91143a6cf`
+> (was c20c6737 — DONE reports go here now); tab 56862f52: A11 `term_12563a6e-34be-4e77-838b-811733c7db3c`,
+> A15 `term_a1d8e868-b97d-461a-b658-ffb87007574a`; Planner `term_db51f8bd-2da8-4727-85e1-43c2eae34855`;
+> tab 306cfbb5: A21 `term_a8d60912-64fa-401f-bd96-e372224e395d`, Watcher
+> `term_4e8c5fef-44c6-4b3b-b094-ff4e323866df`; tab 777fdabc: A19 `term_52a4bf54-67a3-4b0c-a7d8-033d7bdd8896`,
+> A20 `term_5552620f-2067-4de6-9ca8-6b6b7574010a`; A24 `term_7ac4c1d7-6e47-472c-aaf9-f1f19f7c16cf`;
+> A25 `term_c759b0d4-46b1-4d08-b8c0-c155697feda4`; tab 0be21af7 opencodes: A18
+> `term_e7334e12-1e44-43c8-b799-ced01447cee0`, A23 `term_31c42553-4d51-4d29-9aa0-5689d33ea647`,
+> A12 `term_050f7c3e-7573-40fd-a299-25f1756cc30b`, spare MiMo `term_fd3ddea4-2c81-4744-b6e7-c201942d3429`.
+
 Snapshot taken by Lead before nightly stand-down. Use this + each agent's
 `agent-N-status.md` to restore context tomorrow. Orca worktree:
 `2743d5ab-01be-465b-b850-a39796172308::D:\Hackathon\PROJECTS\Kiwi Mail`
