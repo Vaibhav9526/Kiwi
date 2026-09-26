@@ -34,6 +34,7 @@ pub mod rules;
 pub mod sandbox;
 pub mod security;
 pub mod send;
+pub mod storage;
 pub mod system;
 pub mod templates;
 

@@ -1210,6 +1210,43 @@ Unknown id → `not-found`.
 `kiwi.forensics/2` report built from retained findings
 (`generatedFrom: "live"`, limitation noting live-observation scope).
 
+### `kiwi_storage_stats() → StorageStatsView` **[gated]** (T-330)
+
+Read-only measurement of local storage. Every field is a real measurement
+or an explicit `null` — `0` and `null` are different facts and renderers
+must keep them apart.
+
+```jsonc
+{ "dbBytes": 311296,             // real mail.db file length; null = no file
+  "messageCount": 12,            // COUNT(*) across all accounts/folders
+  "folderCount": 9,              // remote + local + system rows
+  "attachmentBytes": 1048576,    // persisted attachments/ payload tree;
+                                // null when unmeasurable — NOT the sum of
+                                // parts still inside stored bodies
+  "auditCount": 43,              // audit.jsonl records (a file, not a table)
+  "schemaVersion": 15,           // PRAGMA user_version
+  "integrityCheck": "ok" }       // SQLite's own PRAGMA integrity_check
+                                // result — ANY value other than "ok" is a
+                                // problem to surface, never a pass
+```
+
+### `kiwi_storage_compact() → StorageCompactView` **[gated]** (T-330)
+
+Rebuilds `mail.db` via `VACUUM` and returns the real file length measured
+immediately before and after. `after > before` is possible and honest — a
+rebuild can re-grow a file that had free tail pages.
+
+Refuses `sync-in-flight` (with `retryAfterMs`) while a live sync worker is
+in a writing state. Audited twice: `storage-compact-requested` BEFORE the
+rebuild (a mid-VACUUM crash still leaves the attempt in the log) and
+`storage-compacted` with `before=/after=` byte counts.
+
+```jsonc
+{ "beforeDbBytes": 311296, "afterDbBytes": 200704 }  // null when unmeasurable
+```
+
+Errors: `locked`, `sync-in-flight`, `internal`.
+
 ## 9. Commands — devices / org binding **[gated]**
 
 ### `kiwi_register_device(input: RegisterDeviceInput) → DeviceView` *(compat alias — §9d)*

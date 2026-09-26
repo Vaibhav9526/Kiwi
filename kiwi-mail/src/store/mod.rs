@@ -11,21 +11,23 @@
 
 use std::path::{Path, PathBuf};
 
-use rusqlite::Connection;
+use rusqlite::{Connection, params};
 
 use crate::attachrisk::AttachRiskEvidence;
 use crate::authrisk::AuthRisk;
 use crate::category::Category;
-use crate::error::Result;
+use crate::error::{MailError, Result};
 use crate::linkrisk::LinkRiskEvidence;
 use crate::rules::Rule;
 
 use schema::{DDL, SCHEMA_VERSION};
 
+mod diagnostics;
 mod outbox;
 mod queries;
 mod schema;
 
+pub use diagnostics::{CompactReport, StorageStats};
 pub use outbox::OutboxRow;
 
 /// Canonical junk flag (F13/T-212): the keyword stored in a message's
@@ -421,6 +423,12 @@ pub(crate) fn migrate_conn(conn: &Connection, root: &Path) -> Result<()> {
             if v < 14 {
                 ensure_rule_failure_columns(conn)?;
             }
+            // Pre-v17 database: local folder management is a store-owned
+            // concern. Existing rows are preserved; only canonical mailbox
+            // names are classified as system, all others remain remote.
+            if v < 17 {
+                ensure_folder_management_columns(conn)?;
+            }
             // Pre-v16 database: existing queued sends have no recorded
             // failure reason — NULL is the honest state (nothing failed
             // yet, or the reason predates the column and is unknowable).
@@ -428,6 +436,13 @@ pub(crate) fn migrate_conn(conn: &Connection, root: &Path) -> Result<()> {
                 ensure_outbox_error_column(conn)?;
             }
         }
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(account_id, parent_id)",
+        )?;
+        conn.execute_batch(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_folders_sibling_name
+             ON folders(account_id, COALESCE(parent_id, 0), name COLLATE NOCASE)",
+        )?;
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     }
     Ok(())
@@ -495,6 +510,61 @@ fn ensure_rule_failure_columns(conn: &Connection) -> Result<()> {
          ALTER TABLE rules ADD COLUMN last_error TEXT;
          ALTER TABLE rules ADD COLUMN last_failure_unix INTEGER",
     )?;
+    Ok(())
+}
+
+fn ensure_folder_management_columns(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare("PRAGMA table_info(folders)")?;
+    let cols = stmt
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if !cols.iter().any(|c| c == "parent_id") {
+        conn.execute_batch("ALTER TABLE folders ADD COLUMN parent_id INTEGER REFERENCES folders(id) ON DELETE RESTRICT")?;
+    }
+    if !cols.iter().any(|c| c == "origin") {
+        conn.execute_batch(
+            "ALTER TABLE folders ADD COLUMN origin TEXT NOT NULL DEFAULT 'remote'
+             CHECK (origin IN ('remote', 'local', 'system'))",
+        )?;
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(account_id, parent_id)",
+    )?;
+    rebuild_folders_for_v17(conn)?;
+    Ok(())
+}
+
+fn rebuild_folders_for_v17(conn: &Connection) -> Result<()> {
+    // The old table's UNIQUE(account_id,name) is account-wide. Rebuild once
+    // to the requested per-parent case-insensitive identity while preserving
+    // ids (messages and all sibling tables reference them).
+    conn.execute_batch("PRAGMA foreign_keys = OFF")?;
+    conn.execute_batch(
+        "CREATE TABLE folders_v17 (
+             id           INTEGER PRIMARY KEY,
+             account_id   TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+             parent_id    INTEGER REFERENCES folders_v17(id) ON DELETE RESTRICT,
+             name         TEXT NOT NULL,
+             origin       TEXT NOT NULL CHECK (origin IN ('remote','local','system')),
+             uid_validity INTEGER,
+             uid_next     INTEGER,
+             highest_uid  INTEGER NOT NULL DEFAULT 0
+         );
+         INSERT INTO folders_v17
+             (id, account_id, parent_id, name, origin, uid_validity, uid_next, highest_uid)
+         SELECT id, account_id, parent_id, name, origin,
+                uid_validity, uid_next, highest_uid
+           FROM folders;
+         DROP TABLE folders;
+         ALTER TABLE folders_v17 RENAME TO folders;
+         PRAGMA foreign_keys = ON",
+    )?;
+    for name in SYSTEM_FOLDER_NAMES {
+        conn.execute(
+            "UPDATE folders SET origin = 'system' WHERE LOWER(name) = ?1",
+            [name.to_ascii_lowercase()],
+        )?;
+    }
     Ok(())
 }
 
@@ -2106,5 +2176,99 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn local_folder_crud_validates_ownership_and_fails_closed() {
+        let s = MailStore::open_memory().unwrap();
+        seed_account(&s, "a1");
+        seed_account(&s, "a2");
+        let inbox = s.ensure_folder("a1", "INBOX").unwrap();
+        let remote = s.ensure_folder("a1", "Projects/Remote").unwrap();
+        assert_eq!(
+            s.folder_meta(inbox).unwrap().unwrap().origin,
+            FolderOrigin::System
+        );
+        assert_eq!(
+            s.folder_meta(remote).unwrap().unwrap().origin,
+            FolderOrigin::Remote
+        );
+
+        let parent = s.create_local_folder("a1", None, "Local").unwrap();
+        assert_eq!(parent.origin, FolderOrigin::Local);
+        let child = s
+            .create_local_folder("a1", Some(parent.id), "Child")
+            .unwrap();
+        assert_eq!(child.parent_id, Some(parent.id));
+        for bad in ["", "  ", ".", "..", "a/b", "a\\b", "Trash"] {
+            assert!(s.create_local_folder("a1", None, bad).is_err(), "{bad:?}");
+        }
+        assert!(
+            s.create_local_folder("a1", Some(parent.id), "cHiLd")
+                .is_err()
+        );
+        assert!(
+            s.create_local_folder("a2", Some(parent.id), "Other")
+                .is_err()
+        );
+        assert!(
+            s.create_local_folder("a1", Some(inbox), "System child")
+                .is_err()
+        );
+        assert_eq!(
+            s.rename_local_folder(child.id, "Renamed").unwrap().name,
+            "Renamed"
+        );
+        assert!(s.rename_local_folder(child.id, "Trash").is_err());
+        assert!(s.rename_local_folder(remote, "Nope").is_err());
+        assert!(s.rename_local_folder(inbox, "Nope").is_err());
+        assert!(s.delete_local_folder(parent.id).is_err());
+        s.upsert_message(child.id, &meta(1), 0).unwrap();
+        assert!(s.delete_local_folder(child.id).is_err());
+        assert!(s.delete_local_folder(inbox).is_err());
+        assert!(s.delete_local_folder(remote).is_err());
+        s.delete_messages(child.id, &[1]).unwrap();
+        assert!(s.delete_local_folder(child.id).unwrap());
+        assert!(s.delete_local_folder(parent.id).unwrap());
+    }
+
+    #[test]
+    fn v16_to_v17_preserves_folders_and_classifies_origins() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE accounts (account_id TEXT PRIMARY KEY, display_name TEXT NOT NULL,
+                                    email TEXT NOT NULL, config_json TEXT NOT NULL);
+             CREATE TABLE folders (id INTEGER PRIMARY KEY,
+                                   account_id TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+                                   name TEXT NOT NULL, uid_validity INTEGER, uid_next INTEGER,
+                                   highest_uid INTEGER NOT NULL DEFAULT 0, UNIQUE(account_id, name));
+             CREATE TABLE messages (id INTEGER PRIMARY KEY,
+                                    folder_id INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+                                    uid INTEGER NOT NULL, message_id TEXT, subject TEXT, from_addr TEXT,
+                                    to_addrs TEXT, date_unix INTEGER, size INTEGER, flags TEXT NOT NULL DEFAULT '',
+                                    has_attachments INTEGER NOT NULL DEFAULT 0, snippet TEXT, body_path TEXT,
+                                    fetched_at INTEGER NOT NULL, UNIQUE(folder_id, uid));
+             INSERT INTO accounts VALUES ('a1', 'A', 'a@x.test', '{}');
+             INSERT INTO folders (account_id, name) VALUES ('a1','INBOX'),('a1','Archive'),('a1','Project');
+             PRAGMA user_version = 16;",
+        ).unwrap();
+        let root = std::env::temp_dir().join(format!("kiwi-folder-v17-{}", std::process::id()));
+        migrate_conn(&conn, &root).unwrap();
+        let rows: Vec<(String, String)> = conn
+            .prepare("SELECT name, origin FROM folders ORDER BY name")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("Archive".into(), "system".into()),
+                ("INBOX".into(), "system".into()),
+                ("Project".into(), "remote".into()),
+            ]
+        );
     }
 }

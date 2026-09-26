@@ -23,6 +23,7 @@ pub mod prefs;
 pub mod rules;
 pub mod security;
 pub mod send;
+pub mod storage;
 pub mod system;
 pub mod templates;
 
@@ -38,6 +39,7 @@ pub use prefs::*;
 pub use rules::*;
 pub use security::*;
 pub use send::*;
+pub use storage::*;
 pub use system::*;
 pub use templates::*;
 

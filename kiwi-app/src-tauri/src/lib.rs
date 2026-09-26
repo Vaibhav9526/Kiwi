@@ -43,6 +43,7 @@ use commands::rules::*;
 use commands::sandbox::*;
 use commands::security::*;
 use commands::send::*;
+use commands::storage::*;
 use commands::system::*;
 use commands::templates::*;
 
@@ -156,6 +157,9 @@ pub fn run() {
             kiwi_schedule_send,
             kiwi_list_outbox,
             kiwi_flush_outbox,
+            // storage diagnostics (gated — T-330: measured db size/health + VACUUM)
+            kiwi_storage_stats,
+            kiwi_storage_compact,
             // security data (gated)
             kiwi_security_findings,
             kiwi_security_events,

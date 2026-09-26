@@ -5,7 +5,7 @@ use serde::Serialize;
 use kiwi_mail::attachrisk::{AttachRisk, AttachRiskReason};
 use kiwi_mail::authrisk::AuthRisk;
 use kiwi_mail::linkrisk::{LinkRisk, LinkRiskReason};
-use kiwi_mail::store::{FolderMeta, FolderStats, MessageMeta};
+use kiwi_mail::store::{FolderMeta, FolderOrigin, FolderStats, MessageMeta};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -13,7 +13,9 @@ pub struct FolderView {
     /// Mail-store row id — the `folderId` argument for other commands.
     pub id: i64,
     pub account_id: String,
+    pub parent_id: Option<i64>,
     pub name: String,
+    pub origin: &'static str,
     pub uid_validity: Option<u64>,
     pub uid_next: Option<u64>,
     pub highest_uid: u64,
@@ -285,7 +287,13 @@ impl FolderView {
         Self {
             id: f.id,
             account_id: f.account_id.clone(),
+            parent_id: f.parent_id,
             name: f.name.clone(),
+            origin: match f.origin {
+                FolderOrigin::Remote => "remote",
+                FolderOrigin::Local => "local",
+                FolderOrigin::System => "system",
+            },
             uid_validity: f.uid_validity,
             uid_next: f.uid_next,
             highest_uid: f.highest_uid,

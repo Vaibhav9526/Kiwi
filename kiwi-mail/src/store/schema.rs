@@ -13,11 +13,16 @@ CREATE TABLE IF NOT EXISTS accounts (
 CREATE TABLE IF NOT EXISTS folders (
     id           INTEGER PRIMARY KEY,
     account_id   TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+    parent_id    INTEGER REFERENCES folders(id) ON DELETE RESTRICT,
     name         TEXT NOT NULL,
+    -- T-319: remote = server/sync-owned, local = user-managed, system =
+    -- canonical mailbox. Smart views are not rows and are non-deletable by
+    -- construction.
+    origin       TEXT NOT NULL DEFAULT 'remote'
+                 CHECK (origin IN ('remote', 'local', 'system')),
     uid_validity INTEGER,
     uid_next     INTEGER,
-    highest_uid  INTEGER NOT NULL DEFAULT 0,
-    UNIQUE (account_id, name)
+    highest_uid  INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS messages (
     id              INTEGER PRIMARY KEY,
