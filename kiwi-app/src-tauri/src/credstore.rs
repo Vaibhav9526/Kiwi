@@ -45,7 +45,20 @@ impl CredentialStore for OsCredentialStore {
     }
 
     fn set(&self, key: &str, secret: &str) -> Result<()> {
-        Self::entry(key)?.set_password(secret).map_err(cred_err)
+        let entry = Self::entry(key)?;
+        entry.set_password(secret).map_err(cred_err)?;
+        // T-351: verify the write actually persisted — a backend that accepts
+        // then drops the secret (feature-less keyring resolves to an
+        // in-memory mock) must fail loudly here instead of surfacing later as
+        // "stored credential is missing" at auth time.
+        match entry.get_password() {
+            Ok(back) if back == secret => Ok(()),
+            Ok(_) => Err(cred_err(keyring::Error::Invalid(
+                "read-back mismatch".into(),
+                "credential read-back differs from what was written".into(),
+            ))),
+            Err(e) => Err(cred_err(e)),
+        }
     }
 
     fn delete(&self, key: &str) -> Result<()> {

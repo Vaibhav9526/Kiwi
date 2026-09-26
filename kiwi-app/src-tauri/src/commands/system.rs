@@ -39,6 +39,7 @@ pub(crate) async fn app_info(state: &AppState) -> CmdResult<AppInfoView> {
         account_count: index.account_ids.len(),
         sessions_observed,
         tray_available: state.tray_live.load(std::sync::atomic::Ordering::Relaxed),
+        dev_plaintext: kiwi_core::dev::dev_plaintext_enabled(),
     })
 }
 
@@ -62,6 +63,40 @@ pub async fn kiwi_lock(state: State<'_, Arc<AppState>>) -> CmdResult<SecuritySta
         .lock()
         .await
         .record("lock", "manual/administrative lock via IPC", now_unix())?;
+    Ok(status_view(state).await)
+}
+
+/// `kiwi_dev_unlock({})` — DEV SEAM under `KIWI_DEV_PLAINTEXT=1`. Without a
+/// paired authenticator a locked endpoint is unrecoverable; this clears
+/// `Locked` without a signature so local fixture development is not bricked.
+/// Exempt from the lock gate — unlocking while locked is its entire point.
+/// Absent the env var it fails closed (`unsupported-event`); the call is
+/// audited either way it resolves, and the status bar carries a persistent
+/// DEV chip while the flag is set (THREAT-MODEL RR-12).
+#[tauri::command]
+pub async fn kiwi_dev_unlock(state: State<'_, Arc<AppState>>) -> CmdResult<SecurityStatusView> {
+    dev_unlock_impl(state.inner()).await
+}
+
+pub(crate) async fn dev_unlock_impl(state: &AppState) -> CmdResult<SecurityStatusView> {
+    if !kiwi_core::dev::dev_plaintext_enabled() {
+        return Err(IpcError::new(
+            "unsupported-event",
+            "kiwi_dev_unlock exists only under KIWI_DEV_PLAINTEXT=1",
+        ));
+    }
+    let outcome = state
+        .trust
+        .lock()
+        .await
+        .attempt_unlock(&state.policy, true)
+        .map(|s| format!("dev-unlock ok → {s:?}"))
+        .unwrap_or_else(|e| format!("dev-unlock refused: {e:?}"));
+    state
+        .audit
+        .lock()
+        .await
+        .record("dev-unlock", &outcome, now_unix())?;
     Ok(status_view(state).await)
 }
 
@@ -165,6 +200,20 @@ mod tests {
             let s = status_view(&state).await;
             assert!(s.locked);
             assert_eq!(s.state, "locked");
+        });
+    }
+
+    #[test]
+    fn dev_unlock_refuses_without_env_flag() {
+        // KIWI_DEV_PLAINTEXT is unset in the test env — the seam must fail
+        // closed even on a genuinely locked endpoint.
+        assert!(!kiwi_core::dev::dev_plaintext_enabled());
+        let state = test_state();
+        futures_block(async {
+            state.trust.lock().await.force_lock();
+            let err = dev_unlock_impl(&state).await.unwrap_err();
+            assert_eq!(err.code, "unsupported-event");
+            assert!(status_view(&state).await.locked);
         });
     }
 

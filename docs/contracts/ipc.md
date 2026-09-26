@@ -52,17 +52,26 @@ fails with `code: "locked"`. Exempt commands — the renderer must always be
 able to drive the lock UI — are marked **[exempt]** below:
 
 - `kiwi_ping`, `kiwi_app_info`, `kiwi_security_status`, `kiwi_lock`,
+  `kiwi_dev_unlock` (env-gated dev seam — see below),
   `kiwi_request_challenge`, `kiwi_submit_challenge`, `unlock_challenge`,
   `kiwi_collect_endpoint_signals` (signals feed trust even while locked).
-- `kiwi_confirm_quit` (T-345) — the renderer's half of the tray Quit
-  flow: exiting a locked app leaks nothing, and locking must never trap
-  the process (§9c).
+- `kiwi_audit_integrity` (T-331) — returns only a chain verdict
+  (`ok|corrupt|unknown` + boolean): no rows, counts, paths, or hashes. The audit
+  **row reader** `kiwi_audit_events` stays gated.
 - `pair_begin` / `pair_status` are exempt **only while a backend-owned
   pairing flow is active** (§9d.7); outside it they are gated like the rest.
 
 Everything else — accounts, folders, messages, sync, send/outbox, sandbox
-open, findings, events, session detail, report, devices, org binding — is
-**gated**.
+open, findings, events, session detail, report, devices, org binding, contacts,
+prefs, rules, templates, integrations, storage diagnostics — is **gated**. Note
+`kiwi_prefs_get/set/list` are gated in full: there is no prefs exemption
+subset.
+
+**This list is enforced, not documentation.** `commands/lock_matrix.rs`
+(T-340) parses the real `invoke_handler!` list from `lib.rs` and fails the
+build for any registered command that is neither gated nor present in its
+`LOCK_EXEMPT` table — so the default is *gated* and an exemption has to be
+written down. Full audit: `docs/audits/lockgate-coverage-1.md`.
 
 Lock/unlock semantics come from `kiwi-core::TrustMachine` (sticky `Locked`;
 unlock requires an authenticator-verified challenge when
@@ -125,6 +134,13 @@ Current trust/lock verdict (recomputed from live signals).
 
 ### `kiwi_lock() → SecurityStatusView`
 Administrative lock — audited. Idempotent while locked.
+
+### `kiwi_dev_unlock() → SecurityStatusView` *(exempt — dev seam, T-350/T-352)*
+Clears `Locked` **without** an authenticator signature. Exists only while
+`KIWI_DEV_PLAINTEXT=1` is set in the backend environment — otherwise it
+fails closed with `unsupported-event`. Exempt from the lock gate because
+unlocking a locked endpoint is its sole purpose. Audited on every call
+(`dev-unlock` row). See THREAT-MODEL RR-12; never shipped as a default.
 
 ### `kiwi_request_challenge(deviceId, event) → ChallengeView` *(compat alias — §9d)*
 Compatibility alias over `PairEngine::issue_challenge` — the canonical

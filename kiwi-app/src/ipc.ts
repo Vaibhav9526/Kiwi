@@ -215,6 +215,15 @@ export const api = {
     return call<SecurityStatusView>("kiwi_lock");
   },
   /**
+   * DEV SEAM (KIWI_DEV_PLAINTEXT=1): clears a Locked state without an
+   * authenticator signature so fixture development is not bricked while
+   * mobile pairing is scaffold-only. `unsupported-event` without the env;
+   * audited; exempt from the lock gate.
+   */
+  devUnlock(): Promise<SecurityStatusView> {
+    return call<SecurityStatusView>("kiwi_dev_unlock");
+  },
+  /**
    * T-345: confirmed quit — the exit half of `kiwi://confirm-quit`.
    * Exempt: quitting a locked app leaks nothing.
    */

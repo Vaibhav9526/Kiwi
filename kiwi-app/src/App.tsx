@@ -1688,6 +1688,9 @@ export default function App() {
             )}
             {foldersError && <span> · folders: {foldersError}</span>}
             {demo && <span> · demo mode — run the Tauri backend for live data</span>}
+            {appInfo?.devPlaintext && (
+              <span className="dev-plaintext-chip"> · DEV — plaintext allowed (loopback)</span>
+            )}
             <button type="button" onClick={() => navigate({ name: "setup" })}>
               Add account
             </button>
@@ -2067,6 +2070,19 @@ export default function App() {
 
       {trust.locked && (
         <LockOverlay
+          onDevUnlock={
+            !demo && appInfo?.devPlaintext
+              ? () => {
+                  void (async () => {
+                    try {
+                      setTrust(toTrustState(await api.devUnlock()));
+                    } catch (e) {
+                      setLockReason(e instanceof Error ? e.message : String(e));
+                    }
+                  })();
+                }
+              : undefined
+          }
           reason={demo ? `${lockReason} (Demo: auto-approves.)` : lockReason}
           busy={verifying}
           trustLines={[

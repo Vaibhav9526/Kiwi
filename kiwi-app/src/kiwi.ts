@@ -170,6 +170,11 @@ export interface AppInfoView {
    * inert and settings must say so rather than let the toggle pretend.
    */
   trayAvailable?: boolean;
+  /**
+   * KIWI_DEV_PLAINTEXT=1 is set: loopback plaintext auth/transport tolerated
+   * for mail fixtures. Rendered as a visible DEV chip; never defaults on.
+   */
+  devPlaintext?: boolean;
 }
 
 export interface SignalView {

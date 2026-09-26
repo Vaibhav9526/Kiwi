@@ -105,6 +105,10 @@ pub struct AppInfoView {
     /// with no tray surface; the close-to-tray pref is then inert and the
     /// settings UI must say so rather than pretend the toggle works.
     pub tray_available: bool,
+    /// `KIWI_DEV_PLAINTEXT=1` is set — loopback plaintext auth/transport is
+    /// tolerated for mail fixtures. Always visible in the UI when on; never
+    /// defaults on. See THREAT-MODEL "dev plaintext fixture mode".
+    pub dev_plaintext: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]

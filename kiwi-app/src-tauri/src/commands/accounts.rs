@@ -539,7 +539,12 @@ async fn probe(
             let mut client = try_step!(
                 "smtp-handshake",
                 "EHLO ok".to_string(),
-                SmtpClient::connect(transport, kiwi_mail::smtp::SmtpConfig::default())
+                SmtpClient::connect(transport, {
+                    let mut c = kiwi_mail::smtp::SmtpConfig::default();
+                    // KIWI_DEV_PLAINTEXT fixture seam — loopback hosts only.
+                    c.allow_plaintext_auth = kiwi_core::dev::plaintext_fixture_for(host);
+                    c
+                })
             );
             let offered = client.ehlo_info().map(|e| e.has_starttls());
             let auth_succeeded = match (auth, secret) {
@@ -587,7 +592,12 @@ async fn probe(
             let mut client = try_step!(
                 "imap-handshake",
                 "greeting + CAPABILITY ok".to_string(),
-                ImapClient::connect(transport)
+                ImapClient::connect_with(transport, {
+                    let mut c = kiwi_mail::imap::ImapConfig::default();
+                    // KIWI_DEV_PLAINTEXT fixture seam — loopback hosts only.
+                    c.allow_plaintext_auth = kiwi_core::dev::plaintext_fixture_for(host);
+                    c
+                })
             );
             let offered = Some(client.has_capability("STARTTLS"));
             let auth_succeeded = match (auth, secret) {
@@ -642,7 +652,12 @@ async fn probe(
             let mut client = try_step!(
                 "pop3-handshake",
                 "greeting + CAPA ok".to_string(),
-                Pop3Client::connect(transport, kiwi_mail::pop3::Pop3Config::default())
+                Pop3Client::connect(transport, {
+                    let mut c = kiwi_mail::pop3::Pop3Config::default();
+                    // KIWI_DEV_PLAINTEXT fixture seam — loopback hosts only.
+                    c.allow_plaintext_auth = kiwi_core::dev::plaintext_fixture_for(host);
+                    c
+                })
             );
             let offered = Some(client.has_capa("STLS"));
             let auth_succeeded = match (auth, secret) {

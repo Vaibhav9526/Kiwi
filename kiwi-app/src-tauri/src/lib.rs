@@ -98,6 +98,7 @@ pub fn run() {
             kiwi_app_info,
             kiwi_security_status,
             kiwi_lock,
+            kiwi_dev_unlock,
             tray::kiwi_confirm_quit,
             kiwi_request_challenge,
             kiwi_submit_challenge,

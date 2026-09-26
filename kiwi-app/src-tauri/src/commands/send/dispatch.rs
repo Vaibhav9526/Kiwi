@@ -307,9 +307,14 @@ async fn transmit(
     )
     .await
     .map_err(IpcError::from)?;
-    let mut client = SmtpClient::connect(t, SmtpConfig::default())
-        .await
-        .map_err(IpcError::from)?;
+    let mut client = SmtpClient::connect(t, {
+        let mut c = SmtpConfig::default();
+        // KIWI_DEV_PLAINTEXT fixture seam — loopback hosts only.
+        c.allow_plaintext_auth = kiwi_core::dev::plaintext_fixture_for(&acct.outgoing.server.host);
+        c
+    })
+    .await
+    .map_err(IpcError::from)?;
     if let Some(secret) = secret {
         let auth = match acct.outgoing.auth {
             kiwi_mail::account::AuthRef::XOAuth2 { .. } => SmtpAuth::XOAuth2 {

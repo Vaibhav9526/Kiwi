@@ -2417,6 +2417,16 @@ summary:focus-visible {
   user-select: none;
 }
 
+/* KIWI_DEV_PLAINTEXT fixture-mode chip — always visible while the env is set. */
+.dev-plaintext-chip {
+  font-weight: 600;
+  color: var(--kiwi-warning);
+  background: var(--kiwi-warning-bg);
+  border: 1px solid var(--kiwi-warning-border);
+  border-radius: var(--kiwi-radius-sm, 4px);
+  padding: 0 6px;
+}
+
 .em-status-icons {
   flex: none;
   display: inline-flex;

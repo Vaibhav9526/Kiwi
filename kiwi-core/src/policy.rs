@@ -61,6 +61,13 @@ impl TrustPolicy {
     /// Every signal carries an `evidence_ref`; callers attach the real
     /// evidence/finding id when persisting.
     pub fn session_signals(&self, s: &SecuritySession) -> Vec<TrustSignal> {
+        self.session_signals_ex(s, crate::dev::plaintext_fixture_for(&s.server_host))
+    }
+
+    /// `session_signals` with the dev-plaintext-loopback exemption decided by
+    /// the caller — tests pass `dev_fixture` explicitly so the policy outcome
+    /// never depends on process env.
+    pub fn session_signals_ex(&self, s: &SecuritySession, dev_fixture: bool) -> Vec<TrustSignal> {
         let mut out = Vec::new();
         let mut push = |kind: SignalKind, severity: SignalSeverity, penalty: u32| {
             out.push(TrustSignal {
@@ -72,6 +79,13 @@ impl TrustPolicy {
         };
 
         match s.transport {
+            TransportSecurity::Plaintext if dev_fixture => {
+                // KIWI_DEV_PLAINTEXT + loopback host: the plaintext session is
+                // still recorded as evidence but does not lock. The downgrade
+                // cascade does not apply — a fixture server without TLS is the
+                // declared shape, not a suspicious omission.
+                push(SignalKind::PlaintextTransport, SignalSeverity::Info, 0);
+            }
             TransportSecurity::Plaintext => {
                 push(SignalKind::PlaintextTransport, SignalSeverity::High, 45);
                 if s.starttls_offered == Some(true) && !s.starttls_used {
@@ -128,7 +142,12 @@ impl TrustPolicy {
             AuthMechanism::Plain | AuthMechanism::Login | AuthMechanism::CramMd5
         );
         if credentialed_mech && s.transport == TransportSecurity::Plaintext {
-            push(SignalKind::WeakAuthMechanism, SignalSeverity::High, 40);
+            if dev_fixture {
+                // Declared fixture auth — evidence kept, no penalty.
+                push(SignalKind::WeakAuthMechanism, SignalSeverity::Info, 0);
+            } else {
+                push(SignalKind::WeakAuthMechanism, SignalSeverity::High, 40);
+            }
         }
 
         out
@@ -175,6 +194,47 @@ mod tests {
     fn clean_tls13_session_yields_no_signals() {
         let s = base_session();
         assert!(TrustPolicy::default().session_signals(&s).is_empty());
+    }
+
+    #[test]
+    fn loopback_dev_fixture_records_evidence_without_lock_cascade() {
+        let mut s = base_session();
+        s.transport = TransportSecurity::Plaintext;
+        s.tls_version = None;
+        s.cipher_suite = None;
+        s.cert_chain = None;
+        s.server_host = "127.0.0.1".into();
+        s.auth_mechanism = AuthMechanism::Login;
+        // Dev-exempt: signal kept as Info evidence; no High/Critical cascade.
+        let sigs = TrustPolicy::default().session_signals_ex(&s, true);
+        let pt = sigs
+            .iter()
+            .find(|x| x.kind == SignalKind::PlaintextTransport)
+            .expect("plaintext signal still recorded");
+        assert_eq!(pt.severity, SignalSeverity::Info);
+        assert_eq!(pt.penalty, 0);
+        assert!(
+            !sigs
+                .iter()
+                .any(|x| x.kind == SignalKind::StartTlsDowngradeSuspected)
+        );
+        assert!(
+            sigs.iter()
+                .all(|x| x.severity == SignalSeverity::Info && x.penalty == 0)
+        );
+        // Not exempt: identical session keeps the locking cascade.
+        let sigs = TrustPolicy::default().session_signals_ex(&s, false);
+        let pt = sigs
+            .iter()
+            .find(|x| x.kind == SignalKind::PlaintextTransport)
+            .unwrap();
+        assert_eq!(pt.severity, SignalSeverity::High);
+        assert_eq!(pt.penalty, 45);
+        assert!(
+            sigs.iter()
+                .any(|x| x.kind == SignalKind::WeakAuthMechanism
+                    && x.severity == SignalSeverity::High)
+        );
     }
 
     #[test]

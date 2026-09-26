@@ -209,6 +209,7 @@ export function LockOverlay({
   live,
   onVerify,
   onRetry,
+  onDevUnlock,
 }: {
   reason: string;
   busy: boolean;
@@ -224,6 +225,12 @@ export function LockOverlay({
   live: boolean;
   onVerify: () => void;
   onRetry: () => void;
+  /**
+   * DEV SEAM (KIWI_DEV_PLAINTEXT=1): present ⇒ render a clearly-labeled
+   * dev-unlock action for fixture development while mobile pairing is
+   * scaffold-only. Absent ⇒ no such affordance exists.
+   */
+  onDevUnlock?: () => void;
 }) {
   const verifyRef = useRef<HTMLButtonElement>(null);
   useEffect(() => verifyRef.current?.focus(), []);
@@ -285,7 +292,25 @@ export function LockOverlay({
           <button type="button" className="ms-btn" onClick={onRetry} disabled={busy}>
             Retry trust check
           </button>
+          {onDevUnlock && (
+            <button
+              type="button"
+              className="ms-btn dev-plaintext-chip"
+              onClick={onDevUnlock}
+              disabled={busy}
+              title="KIWI_DEV_PLAINTEXT=1 is set — bypasses authenticator approval. Development fixtures only; audited."
+            >
+              DEV — unlock without authenticator
+            </button>
+          )}
         </div>
+        {onDevUnlock && (
+          <p style={{ marginTop: "0.5rem" }}>
+            <small style={{ color: "var(--kiwi-warning)" }}>
+              KIWI_DEV_PLAINTEXT is set — this endpoint is running in dev fixture mode (loopback plaintext allowed).
+            </small>
+          </p>
+        )}
       </div>
     </div>
   );
