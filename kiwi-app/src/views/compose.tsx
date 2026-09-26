@@ -931,7 +931,7 @@ export function ComposeView({
   };
 
   return (
-    <section aria-label="Compose message" style={{ maxWidth: "46rem", position: "relative" }} {...dragHandlers}>
+    <section aria-label="Compose message" style={{ maxWidth: "46rem", position: "relative", overflowX: "clip" }} {...dragHandlers}>
       {dragOver && (
         <div className="em-drop-veil" role="status">
           <Icon name="file" size={28} />

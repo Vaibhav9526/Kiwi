@@ -887,3 +887,85 @@ additive check; A26 browser-gate foreign).
   palette-empty block.
 - **Risk:** live-mode `+ New`/lifecycle exercised only via unit tests
   (demo smoke asserts gating); provider flows need a live backend run.
+
+## UI-sweep — global bug sweep (in progress, Planner dispatch 2026-09-26d)
+
+**Status:** in-progress — claimed before editing. Lead saturated; dispatched by Planner.
+
+**Scope:** click through EVERY view — mail, compose dock, contacts,
+settings (all tabs), disposable inbox, security center, integrations,
+rules, filters, templates — capture alignment/overflow/dead-controls/
+missing-labels-or-icons/contrast/broken-empty-states, write findings
+here FIRST, then fix top-severity. Frontend CSS/TSX only — no backend.
+Gate: kiwi-app tsc clean.
+
+**Method:** CDP sweep script (`kiwi-app/scripts/ui-sweep.mjs`, sibling of
+ui-smoke.mjs) drives Edge over every route + every settings tab +
+palette/shortcuts/dock overlays; per view collects console errors,
+horizontal-overflow offenders, unnamed interactive controls, zero-size
+widgets, computed-style contrast misses, and a screenshot into
+artifacts/ui-sweep/. Screenshots eyeballed before fixing.
+
+**File claims:** TBD after findings land — will list each file before
+editing. Likely candidates: shell.css / theme.css / offending views.
+Foreign in-flight noted: A24 T-357/358/359 (compose/nav/mailbox ports),
+A20 T-348 blocklist UI, Lead T-350-352 dev-unlock/tray seams — my fixes
+must not sweep those hunks.
+
+**Findings:** (populated after the sweep run)
+
+**Findings (sweep run, Edge 1440×900, artifacts/ui-sweep/ 25 shots + sweep-report.json):**
+
+VERIFIED defects (screenshot or DOM-evidenced):
+- **S1. setup.tsx — missing spaces in hero copy** (visible: "Get startedwith us", "security.Complete these steps") — JSX text-collapse bugs on the first-run screen. HIGH (user-facing copy).
+- **S2. Compose `section` overflows 14px horizontally** (scrollWidth>clientWidth, no scroll allowed) — inner row pokes past the modal. MED.
+- **S3. Enabled toolbar labels at 3.07:1** (`.em-tool-label` rgb(138,145,156) — Reply/Forward/etc. confirmed NOT inside disabled buttons after the disabled-aware audit) — fails WCAG AA on the main action bar. HIGH.
+- **S4. `--em-text-faint` (≈2.6:1) used on content text** — "(4 of 5)" count, agenda times, menu hints/section heads, demo microcopy. Decorative-use token on informative text. HIGH.
+- **S5. `.em-row-acct` account badge orange ≈1.94:1** — worst measured contrast in the app. HIGH.
+- **S6. Link/action blue ≈3.3–4.1:1** (`.em-linkbtn`, `.em-add-task`, `.em-fmt` on light) — under AA. MED.
+- **S7. `--em-text-dim` ≈4.08:1 on snippets/dates** — marginal fail. MED.
+- **S8. Warn text ≈4.48:1** (`9a6206` on warn bg: security Warning pill, disposable PUBLIC notice, backend-unavailable banner) — marginal. LOW-MED.
+- **S9. Settings h2/h3 group labels ≈4.48:1** (`6a7280`) — marginal. LOW.
+- **S10. Contacts detail pane empty state is bare text** ("Select a contact — or create one.") — inconsistent with the kiwi-empty idiom. LOW.
+- **S11. Bare-text empties** — settings-general "No accounts yet." + settings-plugins "No plugins installed." — LOW.
+
+FALSE POSITIVES (audit artifact, verified via screenshot):
+- setup hero white-on-white: hero is a gradient/photo panel — background-image not visible to computed-background walks. Text is legible.
+- settings-appearance "14 unnamed inputs": label-wrapped radios — named correctly.
+- ctx "Snooze" 3.18:1 — disabled item (demo); exempt.
+- compose `#compose-body` unnamed: resolved — label-wrapped.
+
+NOT EXERCISED: compose dock (nav-away doesn't dock — needs the minimize control; dock smoke path is T-343's check), live mode (demo only in browser).
+
+**Fix plan (top severity):** S1 setup copy; S3 toolbar label token; S4 text-faint usages that carry information → --em-text-dim; S5 account badge → darker ink or tinted-pill treatment; S6 link blue → existing darker --em-link; S7 dim token nudge; S8/S9 marginal nudges; S10 contacts empty state; S2 compose overflow if the offender is identifiable.
+
+**Correction (evidence-first):** S1 setup "missing spaces" = FALSE POSITIVE — `<br/>` renders correctly (verified in setup.png); textContent concatenation artifact. S3 toolbar labels = FALSE POSITIVE — live probe confirms labels sit inside `button[disabled]` (disabled styling via `--kiwi-text-disabled`, WCAG-exempt). S10 contacts empty pane = FALSE POSITIVE — already a `.kiwi-empty` w/ icon (contacts.tsx:691). S2 compose overflow = benign negative-margin bleed by design (`em-compose-fields` edge-bleed inside padded modal; no visual clip) — will harden with `overflow-x: clip` to prevent horizontal scrollbar.
+
+**File claims (A25 sweep fixes — staged surgically, foreign hunks excluded):**
+- `kiwi-app/src/shell.css` — token bumps at `[data-shell=mailspring]` light+dark blocks (~1132/1170); warning-text swaps at `.ms-policy-strip.warn`, `.em-outbox-*`, `.em-security-demo`; `.ms-composer-modal` overflow-x.
+- `kiwi-app/src/views/mailbox.tsx` — `.em-row-acct` inline style (acct hue kept on border, text darkened toward theme text via color-mix).
+- `kiwi-app/src/themes/stock/light/theme.css` + `light-orange/theme.css` — `--kiwi-warning` → darker (4.47→~5.4).
+- `kiwi-app/scripts/ui-sweep.mjs` — audit hardening (`.is-disabled`, `[aria-disabled]`, label-wrapped controls, gradient-bg awareness).
+- `kiwi-app/scripts/ui-probe.mjs` — NEW tiny CDP probe helper (kept: fleet can reuse for DOM forensics).
+
+NOT fixing (recorded for Planner): settings bare `<small>` empties (honest inline hints inside cards — idiom would be overkill); dark-theme cat-pill/link palette (audit ran light only — separate dark sweep warranted); compose dock interaction untested via nav-away (dock needs minimize control — covered by T-343 smoke).
+
+**FIXES LANDED (worktree):**
+- `shell.css` `[data-shell=mailspring]` light: `--em-text-dim` #69707c→#5a616e, `--em-text-faint` #98a0ab→#667080, `--em-group-head` #6a7280→#5a6470, `--em-link` #3b82c4→#3370b8, `--em-cat-news`→#2e68a8, `--em-cat-personal`→#9a5b00, `--em-cat-logs`→#27712b; dark: `--em-text-faint` #5e5c72→#84829a (was ~2.9:1 on dark pane).
+- `shell.css`: `--kiwi-ms-warning` (fill/status orange) no longer used as TEXT — `.ms-policy-strip.warn`, `.em-outbox-sending/.em-outbox-retry`, `.em-security-demo` now use `--kiwi-warning` ink (border keeps the status hue). `.em-iconbtn.is-active` blends link 78% toward ink (clears AA on select tint). `.ms-composer-modal` gets `overflow-x: clip` (negative-margin field bleed can't summon h-scrollbar).
+- `mailbox.tsx` `.em-row-acct`: avatar tint stays on border; label text = `color-mix(tint 55%, --kiwi-ms-text)` — theme-adaptive AA.
+- `light/theme.css` + `light/manifest.json`: `--kiwi-ms-text-muted` #7d8794→#6b7480, `--kiwi-warning` #9a6206→#8a5605; `light-orange/theme.css`: same warning fix; `mailspring-tokens.css`: base muted #8a94a0→#6b7480, dark muted #5e5c72→#84829a.
+- `compose.tsx`: `overflowX: "clip"` on compose section.
+- `ui-sweep.mjs` hardened: disabled-context skip (`[disabled]`/`aria-disabled`/`.is-disabled`/`:disabled` ancestors), gradient-bg skip (counted, not flagged), `overflow-x:clip` exempt in overflow audit. NEW `ui-probe.mjs` — minimal CDP eval helper.
+
+**RE-SWEEP (post-fix):** 25 stops — all clean EXCEPT: settings-general/plugins bare `<small>` "No accounts yet."/"No plugins installed." (ACCEPTED — inline card hints, kiwi-empty idiom would be overkill) and `section.ms-pref-section` 18px x-overflow on Shortcuts/About (FOREIGN — `src/ms/ms-preferences.css` in-flight, unstyled child ~18px; cosmetic, overflow:hidden clips; owner=A24's port).
+
+**FOREIGN RESOLVED MID-SWEEP:** search view giant-ellipse/squeeze = `section.em-search` colliding with header `.em-search` pill styles — fixed in worktree by foreign rename to `em-search-view` (search.tsx + shell.css:3796); verified clean in re-run.
+
+**GATES:** `npx vite build` ✓ · `ui-smoke.mjs` 27/27 PASS ✓ · `npx tsc --noEmit`: **0 errors in all touched/shipped files**; workspace-wide tsc RED on foreign in-flight `src/ms/{drop-zone,outline-view,outline-view-item}.tsx` — comment blocks contain literal `data-*/` sequences that early-terminate `/* */` comments (72 parse errors). NOT mine — owner is the Mailspring-port author (A24 T-35x); flagged for Lead.
+
+**SURGICAL STAGE — FINAL STATE:** committed hunks = shell.css (7 sweep hunks only — composer's `overflow-x:clip`, 3× `--kiwi-warning` text swaps, light-token bumps, cat-pill fg tuning, `.em-iconbtn.is-active` blend, dark faint bump), compose.tsx (`overflowX:"clip"` only), mailspring-tokens.css (2 muted bumps), light/light-orange theme warning+dark-muted, light manifest muted bump, `ui-sweep.mjs` + `ui-probe.mjs` (new tooling), this status file.
+- `mailbox.tsx` NOT committed: mid-sweep T-335 refactor relocated `.em-row-acct` into untracked `src/ms/ms-thread-row.tsx` — my color-mix badge fix was carried into that file intact (comment `A25 UI-sweep` preserved @117-125); owner lands it.
+- Foreign preserved in worktree: mailbox.tsx T-335 rewrite, A24 `src/ms/*` port (still churning — untracked), ms-pref-section overflow, all `src-tauri/*`.
+
+**GATES (final):** `ui-smoke` 27/27 PASS · `vite build` ✓ · `tsc --noEmit`: **0 errors outside foreign `src/ms/`** — red remainder = ms-mail-important-icon, ms-thread-list-columns, ms-thread-list-participants, tokenizing-text-field (active port churn; signature shifted from earlier parse errors → owner still mid-landing). Gate satisfied for A25 scope: my files typecheck clean.

@@ -608,6 +608,9 @@
   width: min(760px, 100%);
   max-height: calc(100vh - 220px);
   overflow: auto;
+  /* Field rows bleed into the padding by design (negative-margin hairlines);
+     clip the x-axis so that bleed can never summon a horizontal scrollbar. */
+  overflow-x: clip;
   padding: 16px 18px;
 }
 
@@ -915,7 +918,7 @@
 }
 
 .ms-policy-strip.warn {
-  color: var(--kiwi-ms-warning);
+  color: var(--kiwi-warning);
   border-color: var(--kiwi-ms-warning);
   background: color-mix(in srgb, var(--kiwi-ms-warning) 8%, var(--kiwi-ms-surface));
 }
@@ -1117,25 +1120,28 @@
   --em-select-focus: #c9e3f8;
   --em-unread-dot: #3b82c4;
   --em-sender-blue: #2f6fb0;
-  --em-link: #3b82c4;
+  --em-link: #3370b8;
   --em-orange: var(--accent, #f5a623);
   --em-orange-hover: var(--accent-hover, #e5960f);
   --em-orange-ink: var(--accent-ink, #4a3200);
   --em-hover: #eef1f5;
-  --em-text-dim: #69707c;
-  --em-text-faint: #98a0ab;
-  --em-group-head: #6a7280;
+  /* A25 UI-sweep: dim/faint bumped to clear WCAG AA 4.5:1 on pane surfaces —
+     faint was decorative-minted but is used on informative text (counts,
+     dates, hints, agenda times). Keep the text > dim > faint hierarchy. */
+  --em-text-dim: #5a616e;
+  --em-text-faint: #667080;
+  --em-group-head: #5a6470;
   --em-avatar-text: #ffffff;
   --em-card-bg: #ffffff;
   --em-menu-bg: #ffffff;
   --em-tab-line: #e1e5ea;
   --em-star: #f5a623;
-  /* category pills (T-201 hooks) */
-  --em-cat-news: #2f6fb0;
+  /* category pills (T-201 hooks) — fg tokens tuned for AA on their bg tints */
+  --em-cat-news: #2e68a8;
   --em-cat-news-bg: #e2effb;
-  --em-cat-personal: #b4690a;
+  --em-cat-personal: #9a5b00;
   --em-cat-personal-bg: #fdeacc;
-  --em-cat-logs: #2e7d32;
+  --em-cat-logs: #27712b;
   --em-cat-logs-bg: #e2f2e4;
   --em-cat-social: #6d4fc2;
   --em-cat-social-bg: #ece6fa;
@@ -1161,7 +1167,7 @@
   --em-orange-ink: var(--accent-ink, #1c1204);
   --em-hover: #1d1d26;
   --em-text-dim: #a9a7bd;
-  --em-text-faint: #5e5c72;
+  --em-text-faint: #84829a;
   --em-group-head: #8a8899;
   --em-avatar-text: #ffffff;
   --em-card-bg: #17171f;
@@ -1488,7 +1494,9 @@ span.em-tool-primary {
 }
 
 .em-iconbtn.is-active {
-  color: var(--em-link);
+  /* A25 UI-sweep: --em-link on --em-select tint ≈4.1:1 — blend toward ink
+     so the active marker stays blue but clears AA on its tinted chip. */
+  color: color-mix(in srgb, var(--em-link) 78%, var(--kiwi-ms-text));
   background: var(--em-select);
 }
 
@@ -2303,7 +2311,7 @@ span.em-tool-primary {
 .em-outbox-sending,
 .em-outbox-retry {
   border-color: var(--kiwi-ms-warning);
-  color: var(--kiwi-ms-warning);
+  color: var(--kiwi-warning);
   background: color-mix(in srgb, var(--kiwi-ms-warning) 10%, var(--kiwi-ms-surface));
 }
 
@@ -2456,7 +2464,7 @@ summary:focus-visible {
 }
 
 .em-security-demo {
-  color: var(--kiwi-ms-warning);
+  color: var(--kiwi-warning);
   border: 1px solid var(--kiwi-ms-warning);
   border-radius: var(--kiwi-radius-sm);
   padding: 0 3px;
