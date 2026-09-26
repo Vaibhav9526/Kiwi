@@ -1,46 +1,100 @@
 /**
- * KIWI Authenticator app root (T-136 scaffold).
+ * KIWI Authenticator app root (T-194).
  *
- * Two screens, local state navigation:
- *   Pairing           — scan/enter QR payload → validated device identity
- *   PendingApprovals  — challenge list → approve/deny → ChallengeQueue
+ * Four screens, local-state navigation:
+ *   Pairing     — QR payload -> keystore keypair -> hello -> activation challenge -> active identity
+ *   Approvals   — pull/paste challenges -> ordered gates -> approve/deny -> queue -> history
+ *   Devices     — public facts of the paired device + forget (key destroyed)
+ *   History     — local decision log (approve / deny / expired + delivery)
  *
- * Deliberately minimal: real QR camera ingest, push channel, and keystore
- * wiring are Phase 4 (docs/contracts/authenticator.md §3.2, §5). This shell
- * exists so the protocol modules have a host and the UX gates (§6.1) have a
- * surface to be reviewed against.
+ * Environment wiring lives HERE and nowhere else (SECURITY.md rules 4, 7):
+ * - `mock` (default): in-process mock desktop + soft-HSM test keystore, so
+ *   every screen is exercisable end to end. Persistently bannered — mock
+ *   signatures are non-cryptographic, nothing in this mode authorizes.
+ * - `fail-closed`: unavailable keystore, offline transport, rejecting link —
+ *   the posture a signed build must keep until Phase 4 wires the real
+ *   wss/TLS transport (contract §3.2) and the platform keystore (§5).
+ *
+ * `tests/isolation/mock-isolation.test.ts` enforces that screens and core
+ * modules never import `src/mock/**` — they receive this environment.
  */
 import React, { useCallback, useMemo, useState } from 'react';
 import { SafeAreaView, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 
+import {
+  createApprovalBundle,
+  createFailClosedEnvironment,
+  type EnvironmentMode,
+} from './environment';
+import { createMockEnvironment } from './mock';
+import { SystemClock } from './protocol/replay';
 import { PairingScreen, type PairedIdentity } from './screens/PairingScreen';
 import { PendingApprovalsScreen } from './screens/PendingApprovalsScreen';
+import { DevicesScreen } from './screens/DevicesScreen';
+import { HistoryScreen } from './screens/HistoryScreen';
 
-export type ScreenName = 'pairing' | 'approvals';
+export type ScreenName = 'pairing' | 'approvals' | 'devices' | 'history';
+
+const TABS: { name: ScreenName; label: string }[] = [
+  { name: 'pairing', label: 'Pairing' },
+  { name: 'approvals', label: 'Approvals' },
+  { name: 'devices', label: 'Devices' },
+  { name: 'history', label: 'History' },
+];
 
 export function App(): React.JSX.Element {
   const [screen, setScreen] = useState<ScreenName>('pairing');
+  const [mode, setMode] = useState<EnvironmentMode>('mock');
   const [identity, setIdentity] = useState<PairedIdentity | null>(null);
 
-  const onPaired = useCallback((id: PairedIdentity) => {
-    setIdentity(id);
+  const environment = useMemo(() => {
+    // Fresh clock per mode: switching environments resets all local state.
+    const clock = new SystemClock();
+    return mode === 'mock' ? createMockEnvironment(clock) : createFailClosedEnvironment(clock);
+  }, [mode]);
+  const bundle = useMemo(() => createApprovalBundle(environment), [environment]);
+
+  const onPaired = useCallback((paired: PairedIdentity) => {
+    setIdentity(paired);
     setScreen('approvals');
   }, []);
 
-  const tabs = useMemo(
-    () =>
-      [
-        { name: 'pairing' as const, label: 'Pairing' },
-        { name: 'approvals' as const, label: 'Approvals' },
-      ].slice(),
-    [],
-  );
+  const onToggleMode = useCallback(() => {
+    setMode((m) => (m === 'mock' ? 'fail-closed' : 'mock'));
+    setIdentity(null);
+    setScreen('pairing');
+  }, []);
+
+  const onForget = useCallback(() => {
+    if (identity !== null) {
+      // Best effort: destroying the key is what makes approvals fail closed.
+      environment.keystore.deleteKey(identity.keystoreRef).catch(() => undefined);
+      bundle.queue.clear();
+    }
+    setIdentity(null);
+    setScreen('pairing');
+  }, [bundle, environment, identity]);
 
   return (
     <SafeAreaView style={styles.root}>
-      <Text style={styles.title}>KIWI Authenticator</Text>
+      <View style={styles.headerRow}>
+        <Text style={styles.title}>KIWI Authenticator</Text>
+        <TouchableOpacity
+          style={[styles.modeBtn, mode === 'mock' ? styles.modeMock : styles.modeFail]}
+          onPress={onToggleMode}
+          accessibilityRole="button"
+          accessibilityLabel="Toggle environment mode"
+        >
+          <Text style={styles.modeText}>{mode === 'mock' ? 'MOCK (dev)' : 'FAIL-CLOSED'}</Text>
+        </TouchableOpacity>
+      </View>
+      <Text style={mode === 'mock' ? styles.bannerMock : styles.bannerFail}>
+        {mode === 'mock'
+          ? 'MOCK TRANSPORT — demo only. No desktop is contacted, mock signatures are non-cryptographic, nothing here authorizes anything.'
+          : 'FAIL-CLOSED — platform keystore and live pairing transport land in Phase 4; every action here refuses.'}
+      </Text>
       <View style={styles.tabs}>
-        {tabs.map((t) => (
+        {TABS.map((t) => (
           <TouchableOpacity
             key={t.name}
             style={[styles.tab, screen === t.name && styles.tabActive]}
@@ -54,14 +108,23 @@ export function App(): React.JSX.Element {
       </View>
       <ScrollView contentContainerStyle={styles.body}>
         {screen === 'pairing' ? (
-          <PairingScreen onPaired={onPaired} />
+          <PairingScreen
+            environment={environment}
+            bundle={bundle}
+            identity={identity}
+            onPaired={onPaired}
+          />
+        ) : screen === 'approvals' ? (
+          <PendingApprovalsScreen environment={environment} bundle={bundle} identity={identity} />
+        ) : screen === 'devices' ? (
+          <DevicesScreen environment={environment} bundle={bundle} identity={identity} onForget={onForget} />
         ) : (
-          <PendingApprovalsScreen identity={identity} />
+          <HistoryScreen bundle={bundle} />
         )}
       </ScrollView>
       <Text style={styles.footer}>
-        Scaffold only — pairing transport + platform keystore land in Phase 4
-        (docs/contracts/authenticator.md).
+        Scaffold (T-194) — contract docs/contracts/authenticator.md; transport + platform keystore in
+        Phase 4.
       </Text>
     </SafeAreaView>
   );
@@ -69,16 +132,23 @@ export function App(): React.JSX.Element {
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: '#101418' },
-  title: { color: '#e8edf2', fontSize: 20, fontWeight: '700', padding: 16 },
-  tabs: { flexDirection: 'row', paddingHorizontal: 16, gap: 8 },
+  headerRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingTop: 16 },
+  title: { color: '#e8edf2', fontSize: 20, fontWeight: '700', flex: 1 },
+  modeBtn: { borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6 },
+  modeMock: { backgroundColor: '#7a5a1e' },
+  modeFail: { backgroundColor: '#2c3945' },
+  modeText: { color: '#ffffff', fontSize: 11, fontWeight: '700' },
+  bannerMock: { color: '#e0a34a', fontSize: 11, paddingHorizontal: 16, paddingTop: 8 },
+  bannerFail: { color: '#7a8a99', fontSize: 11, paddingHorizontal: 16, paddingTop: 8 },
+  tabs: { flexDirection: 'row', paddingHorizontal: 16, paddingTop: 10, gap: 8 },
   tab: {
-    paddingHorizontal: 14,
+    paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 8,
     backgroundColor: '#1c232b',
   },
   tabActive: { backgroundColor: '#2c7a4b' },
-  tabText: { color: '#e8edf2', fontSize: 14 },
+  tabText: { color: '#e8edf2', fontSize: 13 },
   body: { padding: 16 },
   footer: { color: '#7a8a99', fontSize: 11, padding: 12, textAlign: 'center' },
 });

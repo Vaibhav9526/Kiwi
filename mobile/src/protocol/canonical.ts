@@ -16,6 +16,7 @@
  */
 import { eventFromTag, eventTag, CHALLENGE_EVENTS } from './event';
 import { isRecord, assertBoundedString, assertIntInRange, assertBase64 } from './validate';
+import { utf8Encode, base64DecodeStrict, u32be, i64be } from './bytes';
 import { SCHEMA_VERSION } from './types';
 import type { ChallengeData, ChallengeResponseData, Decision } from './types';
 
@@ -24,12 +25,18 @@ const NONCE_BYTES = 32;
 const ED25519_SIG_BYTES = 64;
 const MAX_FIELD_BYTES = 4096;
 
+/**
+ * Total raw-size cap before JSON.parse (AUTH-14 / T270-04): every field is
+ * already individually bounded, but the container itself must be too —
+ * a multi-megabyte "challenge" is rejected before parsing, and parse errors
+ * are fixed strings that never echo untrusted text (SECURITY.md rule 9).
+ */
+export const MAX_CHALLENGE_JSON_CHARS = 4096;
+
 function pushField(bytes: number[], field: string): void {
-  const encoded = Buffer.from(field, 'utf8');
+  const encoded = utf8Encode(field);
   if (encoded.length > MAX_FIELD_BYTES) {throw new Error(`field exceeds ${MAX_FIELD_BYTES} bytes`);}
-  const len = Buffer.alloc(4);
-  len.writeUInt32BE(encoded.length, 0);
-  bytes.push(...len, ...encoded);
+  bytes.push(...u32be(encoded.length), ...encoded);
 }
 
 export interface CanonicalChallengeFields {
@@ -54,11 +61,7 @@ export function canonicalChallengeBytes(fields: CanonicalChallengeFields): Uint8
   pushField(bytes, fields.sessionId);
   bytes.push(eventTag(fields.event));
   bytes.push(...fields.nonce);
-  const issued = Buffer.alloc(8);
-  issued.writeBigInt64BE(BigInt(fields.issuedUnix), 0);
-  const expires = Buffer.alloc(8);
-  expires.writeBigInt64BE(BigInt(fields.expiresUnix), 0);
-  bytes.push(...issued, ...expires);
+  bytes.push(...i64be(fields.issuedUnix), ...i64be(fields.expiresUnix));
   return new Uint8Array(bytes);
 }
 
@@ -70,7 +73,16 @@ export function canonicalChallengeBytes(fields: CanonicalChallengeFields): Uint8
 export function parseChallengeData(raw: unknown): ChallengeData {
   if (!isRecord(raw)) {throw new Error('challenge must be a JSON object');}
   const v = raw.schema_version;
-  if (v !== SCHEMA_VERSION) {throw new Error(`unsupported schema_version ${String(v)}`);}
+  if (v !== SCHEMA_VERSION) {
+    // AUTH-14: never interpolate untrusted text — only a safe integer can be
+    // echoed (its rendering is bounded by construction); anything else gets
+    // a fixed message.
+    throw new Error(
+      typeof v === 'number' && Number.isSafeInteger(v)
+        ? `unsupported schema_version ${v}`
+        : 'unsupported schema_version',
+    );
+  }
   const challengeId = assertBoundedString(raw.challenge_id, 'challenge_id', 1, 128);
   const deviceId = assertBoundedString(raw.device_id, 'device_id', 1, 128);
   const sessionId = assertBoundedString(raw.session_id, 'session_id', 1, 128);
@@ -80,6 +92,17 @@ export function parseChallengeData(raw: unknown): ChallengeData {
   // CHALLENGE_EVENTS is rejected here (unknown-field rule still holds).
   const event = CHALLENGE_EVENTS.find((e) => e === eventRaw);
   if (event === undefined) {throw new Error('unknown challenge event');}
+  // AUTH-16 / contract §4.2: the session id form is bound to the event.
+  // unlock / device-pairing authorize a session (boot-<...>); recovery /
+  // elevated-action authorize a narrower transaction (x-tx:<txn>). A
+  // mismatch is fail-closed — the signed bytes would otherwise bless an id
+  // shape the desktop never issues for that event.
+  const wantsSession = event === 'unlock' || event === 'device-pairing';
+  const hasSessionForm = sessionId.startsWith('boot-');
+  const hasTransactionForm = sessionId.startsWith('x-tx:');
+  if (wantsSession ? !hasSessionForm : !hasTransactionForm) {
+    throw new Error('session_id does not match the challenge event');
+  }
   const nonceB64 = assertBase64(raw.nonce_b64, 'nonce_b64', NONCE_BYTES);
   // Exact-length check: base64 validation alone allows padded shorter
   // payloads — the nonce MUST decode to exactly 32 bytes (§4.2).
@@ -99,13 +122,36 @@ export function parseChallengeData(raw: unknown): ChallengeData {
   };
 }
 
+/**
+ * Bounded string entry point: caps the raw container (AUTH-14) before the
+ * first parse, then runs the strict {@link parseChallengeData} path. Fixed
+ * error messages only — the raw text is never echoed (rule 6).
+ */
+export function parseChallengeJson(raw: string): ChallengeData {
+  if (typeof raw !== 'string' || raw.length === 0 || raw.length > MAX_CHALLENGE_JSON_CHARS) {
+    throw new Error(`challenge must be 1..${MAX_CHALLENGE_JSON_CHARS} chars`);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error('challenge is not valid JSON');
+  }
+  return parseChallengeData(parsed);
+}
+
 /** Decode base64 (already validated) into exact bytes. */
 export function decodeB64(b64: string, expectedBytes: number, field: string): Uint8Array {
-  const buf = Buffer.from(b64, 'base64');
-  if (buf.length !== expectedBytes) {
+  let bytes: Uint8Array;
+  try {
+    bytes = base64DecodeStrict(b64);
+  } catch {
+    throw new Error(`${field} is not canonical base64`);
+  }
+  if (bytes.length !== expectedBytes) {
     throw new Error(`${field} must decode to exactly ${expectedBytes} bytes`);
   }
-  return new Uint8Array(buf);
+  return bytes;
 }
 
 /** Build the typed fields for {@link canonicalChallengeBytes} from parsed data. */

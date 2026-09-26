@@ -1,92 +1,172 @@
 /**
- * Pairing screen (T-136 contract §3).
+ * Pairing screen (T-194; contract §3, §3.2, §6.1).
  *
- * Scaffold flow: paste the QR payload JSON (camera ingest is Phase 4) →
- * `parseQrPayload` validates it fail-closed → generate the keystore keypair
- * → show the derived registration facts that Phase 4 will POST over the
- * pinned pairing channel (`kiwi-pairing-hello`).
+ * Flow: load/paste the pairing QR payload -> strict §3.1 validation
+ * (type, version, ticket charset, 5-minute maximum, canonical 32-byte
+ * desktop key) -> platform keystore keypair -> `kiwi-pairing-hello` over
+ * the configured link -> desktop-assigned device id (Pending) -> review
+ * the issued `device-pairing` challenge through the SAME ordered gate
+ * service the Approvals tab uses -> approve -> delivered -> activation.
  *
- * SECURITY.md rule 9: the pasted string is attacker-controlled; every field
- * is validated/bounded before display, and the raw string is never logged.
+ * Fail-closed rules honored here:
+ * - a keystore refusal stops pairing BEFORE any identity exists
+ *   (T270-08: no fabricated "paired" state);
+ * - identity is only reported upward once the desktop reports `active`;
+ * - the raw QR string is never logged or echoed (rule 6).
  */
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { Alert, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
 import { parseQrPayload, safeDeviceLabel, isQrPayloadCurrent } from '../protocol/qr';
-import { UnavailableKeystore, KeystoreError } from '../keystore/keystore';
+import { EVENT_PHRASES } from '../protocol/approval';
+import { KeystoreError } from '../keystore/keystore';
+import type { PairingRegistered } from '../transport/link';
+import type { ApprovalBundle, Environment } from '../environment';
+import type { PairedIdentity } from '../protocol/types';
 
-export interface PairedIdentity {
-  deviceId: string;
-  deviceLabel: string;
-  desktopEndpoint: string;
+export type { PairedIdentity };
+
+interface PairingScreenProps {
+  environment: Environment;
+  bundle: ApprovalBundle;
+  identity: PairedIdentity | null;
+  onPaired: (identity: PairedIdentity) => void;
 }
 
-/** Phase 4 will assign the real device id from the pairing-registered reply. */
-const SCAFFOLD_DEVICE_ID_PREFIX = 'dev-scaffold-';
+function bounded(err: unknown, fallback: string): string {
+  const msg = err instanceof Error ? err.message : fallback;
+  return msg.length > 160 ? `${msg.slice(0, 160)}…` : msg;
+}
 
-export function PairingScreen(props: {
-  onPaired?: (identity: PairedIdentity) => void;
-}): React.JSX.Element {
+export function PairingScreen(props: PairingScreenProps): React.JSX.Element {
+  const { environment, bundle, identity, onPaired } = props;
   const [qrText, setQrText] = useState('');
-  const [status, setStatus] = useState<string>('Paste a pairing QR payload to begin.');
-  const [pairedLabel, setPairedLabel] = useState<string | null>(null);
-  const keystore = useMemo(() => new UnavailableKeystore(), []);
+  const [status, setStatus] = useState('Paste a pairing QR payload, or load the mock desktop code.');
+  const [busy, setBusy] = useState(false);
+
+  const onDemoQr = useCallback(() => {
+    const demo = environment.demoQr;
+    if (demo === undefined) {
+      setStatus('Demo QR generation only exists in mock mode — paste a payload here.');
+      return;
+    }
+    setQrText(demo('Mock phone'));
+    setStatus('Mock desktop QR loaded — tap Validate & pair to run the full §3.2 flow.');
+  }, [environment]);
 
   const onPair = useCallback(async () => {
-    // Bounded local clock — scaffold uses wall clock; Phase 4 keeps the
-    // same independent-check semantics (contract §6.1 step 2).
-    const nowUnix = Math.floor(Date.now() / 1000);
+    if (busy) {return;}
+    setBusy(true);
     try {
-      const payload = parseQrPayload(qrText, nowUnix);
+      const nowUnix = environment.clock.nowUnix();
+      const payload = parseQrPayload(qrText, nowUnix); // §3.1 gates, incl. 5-min max + canonical key
       if (!isQrPayloadCurrent(payload, nowUnix)) {
-        setStatus('Pairing QR expired — generate a new one on the desktop.');
+        setStatus('Pairing QR is not yet valid (issued in the future) — regenerate it.');
         return;
       }
-      // Scaffold: key generation is fail-closed until the native keystore
-      // module lands (contract §5). Surface the honest error.
+
+      // Keystore first: without a signer there is no identity at all.
+      let keystoreRef: string;
+      let publicKeyB64: string;
       try {
-        await keystore.generateKey(`kiwi-auth-${payload.pairing_ticket.slice(0, 8)}`);
-        setStatus('Keystore unexpectedly available — re-run review (Phase 4).');
-        return;
+        const handle = await environment.keystore.generateKey(
+          `kiwi-auth-${payload.pairing_ticket.slice(0, 12)}`,
+        );
+        keystoreRef = handle.keystoreRef;
+        publicKeyB64 = handle.publicKeyB64;
       } catch (err) {
-        const expected =
-          err instanceof KeystoreError &&
-          (err.code === 'not-implemented' || err.code === 'keystore-unavailable');
-        if (!expected) {
-          // Any other keystore failure must stop pairing (fail closed).
-          setStatus('Keystore error — pairing aborted.');
-          return;
-        }
+        const expected = err instanceof KeystoreError;
+        setStatus(
+          expected
+            ? 'Platform keystore unavailable — pairing stopped before any identity was created (fail closed).'
+            : `Keystore error — pairing aborted: ${bounded(err, 'keystore failure')}`,
+        );
+        return;
       }
-      const label = safeDeviceLabel(payload.device_label);
-      const identity: PairedIdentity = {
-        // Scaffold id; Phase 4 replaces it with the desktop-assigned id.
-        deviceId: `${SCAFFOLD_DEVICE_ID_PREFIX}${payload.pairing_ticket.slice(0, 8)}`,
-        deviceLabel: label,
+
+      // §3.2 step 1/2: hello -> desktop-assigned id (Pending).
+      let registered: PairingRegistered;
+      try {
+        registered = await environment.link.hello({
+          type: 'kiwi-pairing-hello',
+          pairing_ticket: payload.pairing_ticket,
+          device_label: safeDeviceLabel(payload.device_label),
+          device_public_key_b64: publicKeyB64,
+          keystore_ref: keystoreRef,
+        });
+      } catch (err) {
+        setStatus(`Pairing channel rejected the hello: ${bounded(err, 'link failure')}`);
+        return;
+      }
+
+      const provisional: PairedIdentity = {
+        deviceId: registered.device_id,
+        deviceLabel: safeDeviceLabel(payload.device_label),
         desktopEndpoint: payload.desktop_endpoint,
+        desktopKeyB64: payload.desktop_public_key_b64,
+        keystoreRef,
+        publicKeyB64,
+        pairedUnix: nowUnix,
       };
-      setPairedLabel(label);
+
+      // §3.2 step 3: sign the device-pairing challenge through the ordered
+      // gates (parse -> clock -> binding -> replay), then deliver it.
+      const pending = await environment.link.pullChallenges(registered.device_id);
+      const activation = pending.find((c) => c.event === 'device-pairing');
+      if (activation === undefined) {
+        setStatus(`Registered (${registered.device_id}) but no activation challenge arrived.`);
+        return;
+      }
+      const review = bundle.service.review(JSON.stringify(activation), provisional);
+      if (!review.ok) {
+        setStatus(`Activation blocked by gate "${review.reason}": ${review.message}`);
+        return;
+      }
+      const decided = await bundle.service.decide(review.reviewed, provisional, 'approve');
+      if (!decided.ok) {
+        setStatus(`Activation signing failed: ${decided.message}`);
+        return;
+      }
+      const flushed = await bundle.service.flush();
+      const statusNow = await environment.link.deviceStatus(registered.device_id);
+      if (statusNow !== 'active') {
+        setStatus(
+          flushed.offline.length > 0
+            ? `Registered (${registered.device_id}) — activation response queued, device still pending.`
+            : `Registered (${registered.device_id}) — activation not confirmed yet.`,
+        );
+        return;
+      }
       setStatus(
-        `Validated pairing for "${label}" → ${payload.desktop_endpoint}.\n` +
-          'Scaffold stops here: the pinned pairing channel (Phase 4) would ' +
-          'now send kiwi-pairing-hello and activate the device.',
+        `Paired and active: ${registered.device_id} — event "${EVENT_PHRASES['device-pairing']}" approved.`,
       );
-      props.onPaired?.(identity);
+      onPaired(provisional);
     } catch (err) {
-      // Bounded, non-echoing error surface (rule 6: no raw payload in logs).
-      const msg = err instanceof Error ? err.message : 'invalid QR payload';
-      setStatus(`Rejected QR: ${msg}`);
-      Alert.alert('Invalid pairing QR', 'The scanned payload failed validation.');
+      setStatus(`Rejected: ${bounded(err, 'invalid pairing input')}`);
+      Alert.alert('Pairing failed', 'The pairing input was rejected. Check the payload and retry.');
+    } finally {
+      setBusy(false);
     }
-  }, [qrText, keystore, props]);
+  }, [busy, bundle, environment, onPaired, qrText]);
 
   return (
     <View>
       <Text style={styles.h2}>Pair with desktop</Text>
       <Text style={styles.p}>
-        On the desktop, open Settings → Devices → “Pair authenticator”, then
-        paste the QR payload below.
+        On the desktop open Settings → Devices → Pair authenticator and scan the QR. In this
+        scaffold you can paste the payload, or load the mock desktop&apos;s code below.
       </Text>
+      <View style={styles.row}>
+        <TouchableOpacity
+          style={[styles.button, styles.demoBtn]}
+          onPress={onDemoQr}
+          disabled={busy}
+          accessibilityRole="button"
+          accessibilityLabel="Load mock desktop pairing QR"
+        >
+          <Text style={styles.buttonText}>Load mock QR</Text>
+        </TouchableOpacity>
+      </View>
       <TextInput
         style={styles.input}
         multiline
@@ -98,11 +178,16 @@ export function PairingScreen(props: {
         autoCapitalize="none"
         autoCorrect={false}
       />
-      <TouchableOpacity style={styles.button} onPress={onPair} accessibilityRole="button">
-        <Text style={styles.buttonText}>Validate & pair</Text>
+      <TouchableOpacity
+        style={[styles.button, busy ? styles.buttonDisabled : styles.primaryBtn]}
+        onPress={onPair}
+        disabled={busy}
+        accessibilityRole="button"
+      >
+        <Text style={styles.buttonText}>{busy ? 'Working…' : 'Validate & pair'}</Text>
       </TouchableOpacity>
-      {pairedLabel !== null && (
-        <Text style={styles.ok}>Paired (scaffold): {pairedLabel}</Text>
+      {identity !== null && (
+        <Text style={styles.ok}>Active device: {identity.deviceLabel} ({identity.deviceId})</Text>
       )}
       <Text style={styles.status}>{status}</Text>
     </View>
@@ -112,6 +197,7 @@ export function PairingScreen(props: {
 const styles = StyleSheet.create({
   h2: { color: '#e8edf2', fontSize: 17, fontWeight: '600', marginBottom: 8 },
   p: { color: '#aebccb', fontSize: 13, marginBottom: 12 },
+  row: { flexDirection: 'row', gap: 8, marginBottom: 8 },
   input: {
     minHeight: 90,
     borderColor: '#2c3945',
@@ -122,8 +208,11 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     fontSize: 12,
   },
-  button: { backgroundColor: '#2c7a4b', borderRadius: 8, padding: 12, alignItems: 'center' },
-  buttonText: { color: '#ffffff', fontWeight: '600' },
+  button: { borderRadius: 8, padding: 12, alignItems: 'center' },
+  demoBtn: { backgroundColor: '#2c3945', flex: 1 },
+  primaryBtn: { backgroundColor: '#2c7a4b' },
+  buttonDisabled: { opacity: 0.4 },
+  buttonText: { color: '#ffffff', fontWeight: '600', fontSize: 13 },
   ok: { color: '#6fd29a', marginTop: 12, fontSize: 13 },
   status: { color: '#aebccb', marginTop: 8, fontSize: 12 },
 });

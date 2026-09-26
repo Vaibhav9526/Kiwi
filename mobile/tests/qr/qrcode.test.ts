@@ -64,7 +64,7 @@ describe('encodeQrMatrix vs independent reference (python-qrcode, all masks)', (
       }
       const forced = encodeQrMatrix(vector.text, { ecLevel: vector.ecLevel, mask: auto.mask });
       expect(rowsOf(forced)).toEqual(rowsOf(auto));
-     	expect(minPenalty).toBeLessThan(Number.POSITIVE_INFINITY);
+      expect(minPenalty).toBeLessThan(Number.POSITIVE_INFINITY);
     }
   });
 });

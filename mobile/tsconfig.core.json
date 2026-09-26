@@ -7,9 +7,14 @@
     "src/protocol/**/*.ts",
     "src/keystore/keystore.ts",
     "src/transport/transport.ts",
+    "src/transport/link.ts",
+    "src/environment.ts",
+    "src/mock/**/*.ts",
     "tests/protocol/**/*.ts",
     "tests/keystore/**/*.ts",
     "tests/helpers/**/*.ts",
+    "tests/mock/**/*.ts",
+    "tests/isolation/**/*.ts",
     "vitest.config.ts"
   ]
 }

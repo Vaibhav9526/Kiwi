@@ -13,9 +13,22 @@ export interface LedgerEntry {
   decision: 'approve' | 'deny' | 'expired';
 }
 
+/** Why a `record` call did (or did not) land — duplicate ≠ capacity (T270-05). */
+export type RecordResult = 'recorded' | 'duplicate' | 'full';
+
 export interface LedgerClock {
   nowUnix(): number;
 }
+
+/** Wall clock for the app (live, never frozen — AUTH-7). */
+export class SystemClock implements LedgerClock {
+  nowUnix(): number {
+    return Math.floor(Date.now() / 1000);
+  }
+}
+
+/** Contract §4.3: answered-challenge entries are pruned after one hour. */
+export const LEDGER_PRUNE_SECS = 3600;
 
 export class ReplayLedger {
   private readonly entries = new Map<string, LedgerEntry>();
@@ -24,15 +37,26 @@ export class ReplayLedger {
 
   /** Has this challenge already been answered (approve or deny)? */
   isConsumed(challengeId: string): boolean {
+    this.prune(LEDGER_PRUNE_SECS); // AUTH-12: the policy is wired, not aspirational
     return this.entries.has(challengeId);
   }
 
-  /** Record the first answer; returns false if already answered or the ledger is full. */
-  record(challengeId: string, decision: LedgerEntry['decision']): boolean {
-    if (this.entries.has(challengeId)) {return false;}
-    if (this.entries.size >= ReplayLedger.MAX_ENTRIES) {return false;} // bounded (§4.3)
+  /**
+   * Record the first answer (approve, deny, or local `expired` — AUTH-11).
+   * Distinguishes "already answered" from "ledger at capacity" so the UI can
+   * tell replay suppression from a storage-bound failure.
+   */
+  record(challengeId: string, decision: LedgerEntry['decision']): RecordResult {
+    this.prune(LEDGER_PRUNE_SECS); // prune before capacity checks so old entries cannot evict new ones
+    if (this.entries.has(challengeId)) {return 'duplicate';}
+    if (this.entries.size >= ReplayLedger.MAX_ENTRIES) {return 'full';} // bounded (§4.3)
     this.entries.set(challengeId, { challengeId, consumedUnix: this.clock.nowUnix(), decision });
-    return true;
+    return 'recorded';
+  }
+
+  /** Read-only snapshot of the retained entries (newest last). */
+  entriesSnapshot(): LedgerEntry[] {
+    return [...this.entries.values()];
   }
 
   /** True when the challenge is past expiry and not yet consumed. */
