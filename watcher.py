@@ -52,7 +52,7 @@ def test_true_idle(pv):
     return prompt and not active
 
 
-LeadTerminal = 'term_c20c6737-9b80-4911-bcd2-38aa5113e4d7'
+LeadTerminal = 'term_db8527c7-eb71-4274-b416-61c91143a6cf'
 ExcludedPrefixes = (LeadTerminal, 'term_621f9265', 'term_30e63397')
 
 Workers = [
