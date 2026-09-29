@@ -342,6 +342,9 @@ async fn imap_live(state: &AppState, acct: &MailAccount, emit: &Emit) -> CmdResu
                 .await;
             }
         }
+        // T-329: one OS ding per folder per pass, suppression rules in
+        // notify::decide (mute pref, junk/trash folders, rate limit).
+        crate::notify::maybe_notify(state, &acct.account_id, name, folder_id, &before).await;
         total_new += report.new_messages;
         total_flags += report.flag_updates;
         total_expunged += report.expunged;
@@ -473,6 +476,8 @@ async fn imap_live(state: &AppState, acct: &MailAccount, emit: &Emit) -> CmdResu
                 .await;
             }
         }
+        // T-329: IDLE-arrived mail dings once per push burst.
+        crate::notify::maybe_notify(state, &acct.account_id, IDLE_FOLDER, inbox_id, &before).await;
         crate::tray::refresh_tooltip(state).await;
         if let Some(ep) = &endpoint {
             emit_received(state, ep, acct, received, tls_label, security_status).await;

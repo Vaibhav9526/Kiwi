@@ -1,0 +1,111 @@
+/* Ported from Mailspring `app/src/components/drop-zone.tsx` — verbatim
+ * logic; one seam: `DropZoneProps` gains an index signature so host code can
+ * pass data-X/aria-X hooks through `otherProps` onto the div (upstream relied
+ * on loose prop typing). */
+import React from 'react';
+import _ from 'underscore';
+
+interface DropZoneProps {
+  id?: string;
+  className?: string;
+  style?: React.CSSProperties;
+  onClick?: (e: React.MouseEvent<HTMLDivElement>) => void;
+  onDoubleClick?: (e: React.MouseEvent<HTMLDivElement>) => void;
+  shouldAcceptDrop: (e: React.DragEvent<HTMLDivElement>) => boolean;
+  onDrop: (e: React.DragEvent<HTMLDivElement>) => void;
+  onDragStateChange: (state: { isDropping: boolean }) => void;
+  children?: React.ReactNode;
+  /* Extra props (data-*, aria-*, onContextMenu…) spread onto the div. */
+  [key: string]: unknown;
+}
+
+export class DropZone extends React.Component<DropZoneProps> {
+  static ownPropKeys = ['shouldAcceptDrop', 'onDrop', 'onDragStateChange'];
+
+  _dragCounter = 0;
+
+  static defaultProps = {
+    onDragOver: () => {},
+  };
+
+  // We maintain a "dragCounter" because dragEnter and dragLeave events *stack*
+  // when the user moves the item in and out of DOM elements inside of our container.
+  // It's really awful and everyone hates it.
+
+  // Alternative solution *maybe* is to set pointer-events:none; during drag.
+
+  _onDragEnter = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!this.props.shouldAcceptDrop(e)) {
+      return;
+    }
+    this._dragCounter += 1;
+    if (this._dragCounter === 1 && this.props.onDragStateChange) {
+      this.props.onDragStateChange({ isDropping: true });
+    }
+    e.stopPropagation();
+    return;
+  };
+
+  _onDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!this.props.shouldAcceptDrop(e)) {
+      return;
+    }
+    this._dragCounter -= 1;
+    if (this._dragCounter === 0 && this.props.onDragStateChange) {
+      this.props.onDragStateChange({ isDropping: false });
+    }
+    e.stopPropagation();
+    return;
+  };
+
+  _onDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    if (!this.props.shouldAcceptDrop(e)) {
+      return;
+    }
+    if (this.props.onDragStateChange) {
+      this.props.onDragStateChange({ isDropping: false });
+    }
+    this._dragCounter = 0;
+    this.props.onDrop(e);
+    e.stopPropagation();
+    return;
+  };
+
+  render() {
+    const otherProps = _.omit(this.props, DropZone.ownPropKeys);
+    return (
+      <div
+        {...otherProps}
+        onDragOver={(event) => {
+          // Drags that start inside the Slate editor (moving an inline image, say)
+          // are Slate's to manage - it sets the drop effect and shows a caret, and
+          // preventing the default here would hide it. Anything we've said we'll
+          // accept still needs preventDefault, even over the editor: a
+          // contenteditable refuses drags it has no way to insert - like a dragged
+          // thread, which carries only our own dataTransfer types - so without it
+          // no drop event ever fires in the middle of the composer.
+          if (
+            event.target instanceof HTMLElement &&
+            event.target.closest('[data-slate-editor]') &&
+            !this.props.shouldAcceptDrop(event)
+          ) {
+            return;
+          }
+          const allowed = event.dataTransfer.effectAllowed;
+          if (allowed && allowed !== 'all' && allowed !== 'uninitialized') {
+            // Only set dropEffect if it's a valid value (not 'all' or 'uninitialized')
+            event.dataTransfer.dropEffect = allowed as 'copy' | 'move' | 'link' | 'none';
+          } else {
+            event.dataTransfer.dropEffect = 'copy';
+          }
+          event.preventDefault();
+        }}
+        onDragEnter={this._onDragEnter}
+        onDragLeave={this._onDragLeave}
+        onDrop={this._onDrop}
+      >
+        {this.props.children}
+      </div>
+    );
+  }
+}

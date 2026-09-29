@@ -1,6 +1,337 @@
 # Agent 21 — Status Log
 
 
+## 2026-09-25 — T-340 lock-gate coverage audit (enumerated, not remembered)
+
+**Status:** COMPLETE. All **106** registered Tauri commands enumerated and
+classified: **95 gated**, **2 flow-scoped via `pair_gate`**, **9 exempt**,
+**0 ungated-by-omission**. Deliverable: `docs/audits/lockgate-coverage-1.md`.
+
+**The real finding is not "0 hits" — it's that 0 was luck.** The only record of
+which commands were exempt was prose: the group comments above each block in
+`lib.rs` (`// accounts (gated)`) plus per-function doc comments. Nothing
+enforced it. A new command added under the wrong header would be
+indistinguishable from a gated one and *no test would fail*. So the clean count
+was a fact about today, not a guarantee about tomorrow — and the brief's framing
+("systematic verification the codebase is due for") is right for exactly that
+reason.
+
+**Fix: the matrix is now a build-time invariant.** `commands/lock_matrix.rs`
+(a `#[cfg(test)]` module, 4 tests) parses the *real* `invoke_handler!` list out
+of `lib.rs`, resolves each command's body by brace matching across `src/`,
+follows one level of `*_impl` delegation, and fails listing every command that
+is neither gated nor on an explicit `LOCK_EXEMPT` table. **The default is now
+"gated"** and the exemption list is the only way to skip it — the T-269
+`pair_gate` pattern generalised from two commands to the whole surface. Three
+supporting tests stop the list rotting: no dead entries (a renamed command's
+stale exemption silently keeps the default "gated" while reviewers think it's
+covered), every exemption must carry a real written reason, and
+`the_gate_runs_before_the_command_does_any_work` — because a gate that runs
+*after* the work is a gate that does not gate, which a "does it call `gate()`?"
+grep can never catch.
+
+**The most dangerous hypothesis I tested, and it does not hold.**
+`kiwi_collect_endpoint_signals` is exempt *and* mutates trust state
+(`refresh_trust`), persists evidence, and writes an audit row — so the obvious
+attack is "spam it to launder a lock away". It doesn't work: `Locked` is sticky
+in `TrustMachine::evaluate` on every path (`kiwi-core/src/trust.rs:145-157`),
+and only `attempt_unlock` — reached solely through a verified challenge — can
+leave it. Verified by reading the state machine, not assumed.
+
+**A finding I had to retract, and why I'm keeping it in the doc.** I first
+drafted LG-4 as "`ipc.md` §2 lists 6 exemptions, the code has 9 — the doc is
+stale." Re-reading `ipc.md:60-64` before filing, that was **wrong**: §2 already
+names `unlock_challenge` and the `pair_begin`/`pair_status` flow exemption. The
+only genuinely missing entry was **my own** T-331 `kiwi_audit_integrity` — a new
+exempt command I documented in §8 but forgot to add to §2. That is the omission
+mode in miniature. Filing the wrong version would have "fixed" correct docs and
+buried the real, smaller gap, so the audit records the correction explicitly.
+
+**Also: prefs are fully gated.** The brief speculated about a "prefs subset"
+exemption — no such subset exists. All three of `kiwi_prefs_get/set/list` call
+`gate()`. The stricter choice is already in place.
+
+**Fix 2 (the stray lint I flagged last task):**
+`kiwi-mail/src/store/diagnostics.rs` tripped `clippy::doc_lazy_continuation` —
+a doc bullet with a lazy continuation, failing the workspace `-D warnings` gate.
+Reflowed the bullet; no content change. (A15's T-330 file; the lint was theirs,
+the edit mechanical and confined to the doc text.)
+
+**Fix 3:** `ipc.md` §2 now lists `kiwi_audit_integrity`, states that prefs are
+gated in full (no subset), and points at `lock_matrix.rs` as the enforcement.
+
+Files: new `kiwi-app/src-tauri/src/commands/lock_matrix.rs`, `commands/mod.rs`
+(`#[cfg(test)] mod lock_matrix;`), `kiwi-mail/src/store/diagnostics.rs` (doc
+reflow), `docs/audits/lockgate-coverage-1.md`, `docs/contracts/ipc.md` §2, this
+log.
+
+Verification: `lock_matrix` 4/4 green (3 passing on first run, the 4th caught a
+real parser bug — it was counting the `invoke_handler![` line itself as a
+command, which is exactly the kind of silent parse failure that would have made
+this audit decorative). Full `kiwi-app` lib, clippy `-D warnings`, and
+`cargo fmt --check` re-run at handoff. **Note:** the shared tree was heavily
+contended this session — `notify.rs`, `commands/thread.rs`,
+`kiwi-mail/src/threading.rs` and `store/mod.rs` were mid-edit by other agents
+and repeatedly broke the build; none are my files, and the suite re-ran green
+once they settled.
+
+
+## 2026-09-25 — T-331 audit corruption surfaced to the user (was invisible)
+
+**Status:** COMPLETE. The backend already failed closed with `audit-corrupt` —
+and **no renderer handled it**, so a tampered or truncated `audit.jsonl` was
+indistinguishable from an empty audit panel. The user was never told.
+
+**Took option (3), the cheap dedicated probe, alongside the piggyback.**
+`kiwi_audit_integrity() → {state: ok|corrupt|unknown, auditOk: true|false|null}`.
+`AuditLog::integrity()` re-walks the same records `open()` does but **reports**
+instead of throwing, so corruption becomes a renderable *state* rather than a
+swallowed error. It crosses no row content — only a verdict — so it is
+**ungated** (the row reader stays lock-gated). Piggybacking alone would have left
+the cheap path dependent on a command that also returns trust/session/signals.
+
+**`auditOk` on `SecurityStatusView` too, backend-owned.** The brief offered one
+or the other; both are cheap because they share the same verifier. The strip
+needs it without a second round trip, and a tri-state boolean is a poor fit for
+an otherwise-masked status payload. `null` = not checked, and it renders as
+**nothing** — absence, never a reassuring tick. `corrupt` is `Some(false)`: a
+real answer, not absence.
+
+**Honest-absent is load-bearing in three places.** (a) `unknown` is a real,
+reachable verdict (unreadable file) that is deliberately *not* `ok`; (b) an
+absent log is `ok` (nothing to tamper with — the file is created on first
+write), not `unknown`; (c) a non-boolean `auditOk` in the renderer degrades to
+`null` rather than being coerced truthy — `if (raw.auditOk)` would have turned
+`"no"` and `0` into a false corruption claim.
+
+**Corruption renders as a persistent security state, never a toast.** The audit
+view shows a `role="alert"` banner reading exactly *"audit log failed integrity
+verification — possible corruption or tampering"*, and the rows beneath it are
+**withheld** — a table of tampered evidence is worse than no table. The strip
+shows a persistent danger pill beside the trust chip (also while locked). No
+"clear the log" affordance anywhere: the log is the only record of what the app
+did.
+
+**For A25 (loose UI coordination, unpolished by design):** the strip pill is
+deliberately minimal (glyph + "unverified" + tooltip) and the banner reuses
+`kiwi-banner error` rather than introducing a new styled component. Both are
+plain seams to restyle.
+
+**Tests.** Rust: `integrity_reports_ok_corrupt_and_unknown_honestly` (absent→ok,
+good chain→ok, tampered→corrupt *and* `open` still fails closed, junk line→
+corrupt, and a **pruned/re-anchored** log→ok so the probe never cries wolf about
+our own T-327 sweep), `integrity_unknown_is_honest_absence`, plus a
+command-level `audit_integrity_reports_ok_and_corrupt` asserting the tri-state
+*and* that `status_view.audit_ok` follows a tamper. TSX: 6 tests — corrupt →
+persistent banner + no row table, probe-alone detection before any rows are read,
+verified → silent, never-checked/garbage → no pill.
+
+Files: `kiwi-app/src-tauri/src/audit.rs` (`AuditIntegrity`, `integrity()`),
+`commands/security.rs` (`kiwi_audit_integrity`), `commands/mod.rs` (`status_view`
+`auditOk`), `types/system.rs`, `lib.rs` (registration), `kiwi.ts`, `ipc.ts`,
+`components/chrome.tsx` (strip pill), `views/security-center.tsx` (banner +
+withhold), new `src/audit-integrity.test.tsx`, `docs/contracts/ipc.md` §8.
+
+Verification: `audit::tests` 21/21 (18 prior + 3 new); kiwi-app lib green;
+`audit-integrity.test.tsx` 6/6; `npx tsc --noEmit` clean; clippy/fmt re-run at
+handoff. **Note:** `cargo` was transiently red mid-session from *other* agents'
+in-flight work (`notify.rs`, `commands/storage.rs`, `e2e.rs` — T-329 / T-330 /
+e2e); none of those are my files, and the suite re-ran green once they landed.
+
+
+
+## 2026-09-25 — T-327 audit-log retention (bounded, self-auditing)
+
+**Status:** COMPLETE. `audit.jsonl` no longer grows without bound. Bounded
+retention sweep with the deletion visible in the very log it trims.
+
+**The constraint that shaped the design.** `audit.jsonl` is not just a table —
+it is a **hash chain** verified from `"genesis"` on every `AuditLog::open`. So
+the obvious "delete the first N lines" would have made every subsequent app
+launch report `audit-corrupt`. The sweep therefore **re-anchors**: retained
+rows are re-linked from a new anchor and renumbered, so the rewritten file
+verifies end-to-end. A regression test asserts reopen-clean *and* that a further
+append still chains. Deleting evidence without breaking the evidence chain is
+the whole point of this task.
+
+**Trigger: app open, and only that.** A timer would race concurrent `record`
+calls; sweeping after every write would rewrite the file per event. `AppState::open`
+runs the sweep single-threaded before any command can write, and a sweep failure
+**surfaces** — retention that silently stops is worse than none.
+
+**Two bounds, both must be exceeded.** A row is dropped only if it is older than
+`retentionDays` **and** outside the newest `keepLast`. The count floor is a
+backstop against a runaway event rate; a row recent by *either* measure lives.
+
+**The sweep audits itself.** An `audit-pruned` row is written as the new genesis
+anchor, so deletion is visible in the log it trims. Its detail is counts only —
+`pruned=`, `kept=`, both policy values, and a 12-char short form of the prior
+chain head (correlate with a prior export; never row content).
+
+**Fail honest.** An unparseable log, or one above the 100 000-row sweep bound,
+is left untouched and the error surfaces — the sweep never rewrites evidence it
+did not read. Write is atomic (`.kiwi-part` + rename).
+
+**Security-critical events are NOT exempt — documented as such.** The record
+schema has no per-row criticality marker, so `revoke`/`lock`/`pair`/`auth-fail`
+rows age out like any other. Per the brief's own fallback ("else document that
+retention is indiscriminate-by-age and cap is generous"), the defaults are set
+generously for it: **400 days / newest 20 000 rows**. Marking critical rows and
+exempting them is future work, not silently claimed.
+
+**Prefs, not new IPC.** The existing `kiwi_prefs_*` store is the mechanism, so
+T-327 adds **no new command**: `kiwi.audit.retentionDays` (default 400, band
+30–3650) and `kiwi.audit.keepLast` (default 20000, band 1 000–1 000 000), global
+scope. Clamped on read; an out-of-band value (negative, non-integral) falls back
+to the **conservative** bound, so a hostile pref can never *loosen* retention.
+
+**Coordination with A15's T-324 (in-flight, same table).** T-324 landed
+`kiwi_audit_events` + `read_recent` while I worked. I did **not** duplicate the
+command or registration (verified: exactly one of each). My `prune` lives
+alongside their `read_recent` in the same `AuditLog`, both over the one
+`audit.jsonl`. I also deferred to their ratified projection rule: `actor` /
+`subjectId` stay explicit nulls (the JSONL has no such columns) — my first draft
+synthesized `actor: "system"`, which would have violated "never synthesized",
+so I removed it. The agreed schema is now recorded in ipc.md §8 (command row +
+the T-327 retention block).
+
+Files: `kiwi-app/src-tauri/src/audit.rs` (policy, prune, read_recent projection,
+6 tests), `kiwi-app/src-tauri/src/state.rs` (open-time sweep + prefs resolver),
+`docs/contracts/ipc.md` (§8 retention block), this log.
+
+Verification: kiwi-app **203/203** green (`audit::tests` 18/18 incl. 4 new:
+prune-keeps-newest + chain-still-verifies, sweep-audited-counts-only,
+keep_last backstop, corrupt-log-refused-not-rewritten; plus
+policy_clamps_untrusted_prefs and T-324's read_recent paging); clippy
+`-D warnings` clean; `cargo fmt --check` clean; `npx tsc --noEmit` clean; scoped
+`git diff --check` clean.
+
+## 2026-09-25 — T-320 forensic report FILE export (self-verifying artifact)
+
+
+## 2026-09-25 — T-320 forensic report FILE export (self-verifying artifact)
+
+**Status:** COMPLETE. `kiwi_forensics_export(sessionId, destPath)` saves one
+session's deterministic `kiwi.forensics/2` report to disk wrapped in a
+**self-verifying integrity envelope**. The report previously only ever reached
+the renderer; nothing persisted it, so the "tamper-evident-export" line was
+unbacked. This is that line, closed.
+
+**Integrity envelope — the design decision worth Lead attention.** Rather than
+bolt a digest onto the app side, the envelope lives in `kiwi_forensics` next to
+the canonical bytes (`report::ExportEnvelope`, `kiwi.forensics-export/1`), so
+the writer and the verifier share one definition of "canonical". The artifact
+carries SHA-256 of the report's own canonical bytes plus the engine versions
+those bytes were produced under. A reader detects tampering with **no external
+trust store** — re-serialize `report`, hash, compare.
+
+**Why the digest covers the payload only.** The envelope is derived metadata and
+never mutates the report, so the embedded bytes are exactly what
+`Report::to_json` renders and the payload still round-trips through the existing
+`Report::from_json` unchanged — that's the verify-by-construction the brief
+asked for. `generatedAtUnix` is deliberately excluded from the digest: a clock
+is not a content fact, and including it would make the digest change on every
+re-export of identical evidence. `ruleCatalogVersion`/`scoringModelVersion` are
+carried so a verifier can tell "modified" from "different engine".
+
+**`verify_bytes` is a verdict, never a panic** (the project's fail-closed
+discipline): `Valid` (digest + length match) | `DigestMismatch` (parsed, payload
+modified after export) | `Unrecognized` (not an envelope, wrong version, or not
+UTF-8). Tested against non-UTF-8, a bare Report, and a bumped `envelopeVersion`.
+
+**Command posture** (mirrors the T-316 mbox export): atomic temp+rename so a
+crash never leaves a truncated artifact; fail-closed destination (existing dir,
+a real file name, never inside the app data dir — cannot overwrite mail.db, the
+audit log, or a body); 32 MiB artifact cap; audited `forensics-exported` as
+session id + finding count + bytes + digest only (never path/subjects). Unknown
+`sessionId` → `not-found`, never an empty report that would read as a clean bill
+of health.
+
+Files: `kiwi-forensics/src/report/mod.rs`, `kiwi-forensics/Cargo.toml` (added
+the already-pinned workspace `sha2`; justification noted inline re the crate's
+minimal-dep policy), `kiwi-app/src-tauri/src/commands/security.rs`,
+`kiwi-app/src-tauri/src/types/security.rs`, `kiwi-app/src-tauri/src/lib.rs`
+(registered), `kiwi-app/src/kiwi.ts`, `kiwi-app/src/ipc.ts`,
+`docs/contracts/ipc.md` (new §8 row with the verify procedure).
+
+Verification: kiwi-forensics **all targets green** (105 lib + 8/5/9/3/1/1
+integration suites); kiwi-app **184/184** green (incl. 3 new export tests:
+self-verifying artifact + parser round-trip, refuse-unknown-session/bad-dest/
+app-data-dir, overwrite-at-same-path); clippy `-D warnings` clean for both
+crates; `cargo fmt --check` clean; `npx tsc --noEmit` clean; `npx vitest run`
+32/32.
+
+## 2026-09-25 — T-260 security-session enum cleanup (orphaned, re-verified)
+
+
+## 2026-09-25 — T-260 security-session enum cleanup (orphaned, re-verified)
+
+**Status:** COMPLETE. The premise that T-269's rewrite may have already fixed the
+enum drift was checked first, per the brief — and it had **not**. One real
+drift remained (the audit's **SS-2**); everything else verified correct.
+
+**The finding.** `contract-drift-1.md` had already reduced this contract to a
+single enum-spelling defect: *"all spellings verified correct except SS-2"*.
+I re-verified all 11 enum maps against HEAD (protocol, transport, tls_version,
+key_exchange_group, chain_validation, auth_mechanism, source, signal_kind ×19,
+severity, trust_state, required_action) — 10 of 11 match the contract exactly.
+`SessionSource::ThunderbirdHook` still serialized as `live-client` while
+`security-session.md` §2 said `thunderbird-hook`.
+
+**Ruling direction — contract, not code.** `observe.rs:196` already carried the
+comment *"Live client observation (contract field name predates the pivot)"*,
+and KIWI pivoted to a standalone client. Emitting `thunderbird-hook` would be a
+**false provenance claim** on a session observation, and the contract's own §2
+calls provenance "never guessed". So the contract is amended to `live-client`,
+not the code reverted. Recorded as the SS-2 ruling in the drift register
+(`FINDINGS.md`), per its maintenance rule — status changed only with current
+code/test/contract evidence, not because the task closed.
+
+**Also clarified (SS-4).** §1's "unknown enum values ignored, not fatal" was
+vague about *where* that holds. It now names the real mechanism: kiwi-core has
+no serde derives, so there is no derived `Deserialize` that could reject a
+variant; `SecuritySession` is never parsed from the wire. Renderer enum input
+is `String` + explicit `invalid-input` parsers (fail closed); output comes from
+typed core enums, so a future variant is a **compile error at the mapper**.
+SS-4 stays `open` for T-194 (codification), not claimed fixed by a doc edit.
+
+**Durable value — the drift can't silently return.** The audit read each mapper
+once by eye; that is exactly how SS-2 survived. Added `types::tests` in
+`kiwi-app` pinning **every** security-session spelling (protocol, transport,
+tls_version ×6, source ×3, auth_mechanism ×13, signal_kind ×19, severity ×5,
+trust_state ×3, required_action ×5, kex ×10, chain_validation ×6) plus
+challenge-event round-trip and fail-closed rejection. A spelling change is now
+a failing test, not a contract divergence found by a future audit.
+
+**Renderer side (unknown-output safe-render).** `api.sessionDetail` returned an
+untyped `Record<string, unknown>`, so the frontend had *no* enum contract to
+drift — nothing to reconcile. Added `SecuritySessionView` + the session-view
+token unions to `kiwi.ts` and `parseSecuritySession`, which normalizes an
+unrecognized token to its honest unknown form (never echoed verbatim, never a
+confident-looking substitute) and returns `null` for a non-session envelope.
+`SecurityCenterView` now renders a typed view and says so when the detail is
+malformed rather than silently showing nothing.
+
+Files: `kiwi-app/src-tauri/src/types/{mod,security}.rs`, `kiwi-app/src/kiwi.ts`,
+`kiwi-app/src/ipc.ts`, `kiwi-app/src/views/security-center.tsx`,
+`kiwi-app/src/security-session.test.ts` (new),
+`docs/contracts/security-session.md`, `docs/contracts/ipc.md`,
+`docs/audits/FINDINGS.md`.
+
+Verification: kiwi-core **33/33** green, clippy `-D warnings` clean. kiwi-app
+**176/176** green including the 4 new `types::tests` (verified before T-316's
+in-flight file landed), clippy `-D warnings` clean for kiwi-app+kiwi-core,
+`cargo fmt --check` clean, scoped `git diff --check` clean, `npx tsc --noEmit`
+clean, `npx vitest run` **32/32** (5 new parser tests).
+
+**Known blocker (not T-260):** `cargo test -p kiwi-app` currently fails to
+compile inside `kiwi-app/src-tauri/src/commands/export.rs` (untracked) and
+`kiwi-mail/src/mbox.rs` (modified) — T-316's mbox-export work in flight, a
+`dyn FnMut` Send bound plus a `u64`/`i64` mismatch at `export.rs:413`. Neither
+file is mine and neither is referenced by T-260. Flagged rather than patched.
+
+## 2026-09-25 — T-300 sandbox-pending IPC gap closed
+
 
 ## 2026-09-25 — T-300 sandbox-pending IPC gap closed
 

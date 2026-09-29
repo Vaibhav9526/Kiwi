@@ -19,10 +19,9 @@
  * rows (avatar, unread dot, bold sender, category pill, snippet).
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import type { CSSProperties, MouseEvent as ReactMouseEvent } from "react";
 import type { AttachRiskView, FindingInfo, FolderView, MessageBodyView, MessageEnvelope, MessagePatch, MessageSourceView, OutboxItem, RenderedBodyView, SearchHit, Severity, SnoozePreset, UnsubscribeInfo } from "../kiwi";
 import { severityLabel } from "../kiwi";
-import type { MessageCategory } from "../kiwi";
 import { listen } from "@tauri-apps/api/event";
 import { api, isTauri } from "../ipc";
 import { loadPref, savePref } from "../prefs";
@@ -38,11 +37,9 @@ import { buildThreads, displaySubject } from "../threading";
 import type { Thread } from "../threading";
 import {
   IconArchive,
-  IconCheck,
   IconChevronDown,
   IconChevronRight,
   IconChevronUp,
-  IconClose,
   IconFilter,
   IconMail,
   IconOutbox,
@@ -52,8 +49,15 @@ import {
   IconReply,
   IconReplyAll,
   IconStar,
-  IconTrash,
 } from "../components/shell-icons";
+// Mailspring thread-list row port (skin port — KIWI keeps its list
+// container, selection, pick and date-group machinery; the row item layer
+// is Mailspring's ListTabularItem + narrow `Item` column verbatim).
+import { ListTabularRows } from "../ms/ms-list-tabular";
+import { KIWI_ROW_COLUMNS, MS_ROW_HEIGHT, msRowEntry } from "../ms/ms-thread-row";
+import type { MsRowEntry, MsRowViewCtx } from "../ms/ms-thread-row";
+import { setThreadListPerspective } from "../ms/ms-thread";
+import type { MsThread } from "../ms/ms-thread";
 
 /** Short timestamp for rows: time today, "Day m/d" otherwise. */
 function formatDateShort(iso: string): string {
@@ -93,15 +97,6 @@ function avatarTint(seed: string): string {
   for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) | 0;
   return AVATAR_TINTS[Math.abs(h) % AVATAR_TINTS.length];
 }
-
-/** T-201 category → eM-style colored pill (News=blue/Personal=orange/Logs=green). */
-const CATEGORY_PILL: Record<MessageCategory, { label: string; cls: string } | null> = {
-  primary: { label: "Personal", cls: "em-cat-personal" },
-  newsletters: { label: "News", cls: "em-cat-news" },
-  social: { label: "Social", cls: "em-cat-social" },
-  notifications: { label: "Logs", cls: "em-cat-logs" },
-  other: { label: "Other", cls: "em-cat-other" },
-};
 
 export interface MailboxProps {
   folder: string;
@@ -210,6 +205,9 @@ export function MailboxView(props: MailboxProps) {
   // Bulk selection (T-162): explicit id list + range anchor. Cleared on
   // folder/tab change (ids are folder-scoped) and after move actions.
   const [picked, setPicked] = useState<string[]>([]);
+  // Two-step row delete (was per-RowShell; now the ported rows are
+  // memoized ListTabularItems, so the armed id is hoisted here).
+  const [armedDel, setArmedDel] = useState<string | null>(null);
   const anchorRef = useRef<string | null>(null);
   const headingRef = useRef<HTMLHeadingElement | null>(null);
   const selectAllRef = useRef<HTMLInputElement | null>(null);
@@ -220,6 +218,7 @@ export function MailboxView(props: MailboxProps) {
   const listW = usePaneWidth("kiwi.pane.list", 320, 280, 600);
   useEffect(() => {
     setPicked([]);
+    setArmedDel(null);
     anchorRef.current = null;
   }, [folder, catTab]);
 
@@ -375,6 +374,25 @@ export function MailboxView(props: MailboxProps) {
   // activity first. Thread rows carry the count badge; the reader stacks
   // the thread's messages as cards.
   const threads = useMemo(() => buildThreads(filtered), [filtered]);
+
+  // Mailspring seam: the ported row components read the focused
+  // perspective for sent/inbox timestamp choice and quick-action gating —
+  // publish KIWI's current folder view here (per folder/account set).
+  useEffect(() => {
+    const accountIds = [...new Set(allMessages.map((m) => m.accountId))];
+    setThreadListPerspective({
+      isSent: () => folder === "sent",
+      isInbox: () => folder === "inbox" || folder === "all-inboxes",
+      accountIds,
+      // Row quick actions stay visible everywhere (the trash action arms
+      // the KIWI two-step delete; archive runs onArchive) — same as the
+      // pre-port row buttons.
+      canArchiveThreads: () => true,
+      canMoveThreadsTo: () => true,
+      categories: () => [],
+      name: folderLabel,
+    });
+  }, [folder, folderLabel, allMessages]);
   const [threadMode, setThreadMode] = useState(() => loadPref("kiwi.threadMode", "threads"));
   useEffect(() => savePref("kiwi.threadMode", threadMode), [threadMode]);
   const [groupsOpen, setGroupsOpen] = useState<Record<string, boolean>>({});
@@ -699,7 +717,7 @@ export function MailboxView(props: MailboxProps) {
               </div>
             )}
             <div
-              className="em-rows"
+              className="em-rows thread-list"
               ref={rowsRef}
               role="listbox"
               aria-label="Messages. j/k or arrows move, Enter opens the reader, s stars, e archives, Delete deletes, r replies, u toggles read. Ctrl-click toggles selection, Shift-click range-selects."
@@ -738,12 +756,16 @@ export function MailboxView(props: MailboxProps) {
                 open={groupsOpen["today"] ?? true}
                 onToggle={() => setGroupsOpen((m) => ({ ...m, today: !(m["today"] ?? true) }))}
                 folder={folder}
+                draftsView={folder === "drafts"}
                 currentId={selected?.id}
                 picked={picked}
+                armedDelId={armedDel}
                 onTogglePick={togglePick}
                 onToggleStar={props.onToggleStar}
                 onArchive={(id) => props.onArchive(id, true)}
                 onDelete={(id) => props.onBulkDelete([id], false, "Deleted message")}
+                onArmTrash={setArmedDel}
+                onDisarmTrash={() => setArmedDel(null)}
                 onRowContext={openRowMenu}
               />
               <DateGroup
@@ -752,12 +774,16 @@ export function MailboxView(props: MailboxProps) {
                 open={groupsOpen["older"] ?? true}
                 onToggle={() => setGroupsOpen((m) => ({ ...m, older: !(m["older"] ?? true) }))}
                 folder={folder}
+                draftsView={folder === "drafts"}
                 currentId={selected?.id}
                 picked={picked}
+                armedDelId={armedDel}
                 onTogglePick={togglePick}
                 onToggleStar={props.onToggleStar}
                 onArchive={(id) => props.onArchive(id, true)}
                 onDelete={(id) => props.onBulkDelete([id], false, "Deleted message")}
+                onArmTrash={setArmedDel}
+                onDisarmTrash={() => setArmedDel(null)}
                 onRowContext={openRowMenu}
               />
             </div>
@@ -931,12 +957,16 @@ function DateGroup({
   open,
   onToggle,
   folder,
+  draftsView,
   currentId,
   picked,
+  armedDelId,
   onTogglePick,
   onToggleStar,
   onArchive,
   onDelete,
+  onArmTrash,
+  onDisarmTrash,
   onRowContext,
 }: {
   label: string;
@@ -944,15 +974,65 @@ function DateGroup({
   open: boolean;
   onToggle: () => void;
   folder: string;
+  draftsView: boolean;
   currentId?: string;
   picked: string[];
+  armedDelId: string | null;
   onTogglePick: (id: string, range: boolean) => void;
   onToggleStar: (id: string) => void;
   onArchive: (id: string) => void;
   onDelete: (id: string) => void;
+  onArmTrash: (rowId: string) => void;
+  onDisarmTrash: () => void;
   onRowContext: (e: ReactMouseEvent, ids: string[]) => void;
 }) {
   if (rows.length === 0) return null;
+  // View context for the ported row layer — KIWI callbacks/state stamped
+  // onto each MsThread's `__kiwi` seam by msRowEntry.
+  const ctx: MsRowViewCtx = {
+    folder,
+    draftsView,
+    currentId,
+    picked,
+    armedDelId,
+    onTogglePick,
+    onToggleStar,
+    onArchive,
+    onDelete,
+    onArmTrash,
+    onDisarmTrash,
+    onRowContext,
+    // T-335: aggregate views (folder key has no `acct:id` colon shape)
+    // tag each row with its OWN account — merged rows stay truthful.
+    acctTagFor: (entry) => {
+      if (folder.includes(":")) return undefined;
+      if (entry.kind === "msg") {
+        return { label: entry.m.accountEmail, color: avatarTint(entry.m.accountEmail) };
+      }
+      const accts = [...new Set(entry.t.messages.map((m) => m.accountId))];
+      const emails = [...new Set(entry.t.messages.map((m) => m.accountEmail))];
+      return accts.length === 1
+        ? { label: emails[0], color: avatarTint(emails[0]) }
+        : { label: `${accts.length} accounts`, color: "var(--kiwi-text-secondary, #666)" };
+    },
+    avatarFor: (seed) => ({
+      initial: senderName(seed).slice(0, 1).toUpperCase() || "?",
+      color: avatarTint(seed),
+    }),
+  };
+  const rendered = open
+    ? rows.flatMap((r, idx) => {
+        const entry: MsRowEntry | null =
+          r.kind === "msg" && r.m
+            ? { kind: "msg", m: r.m }
+            : r.kind === "thread" && r.t
+              ? { kind: "thread", t: r.t }
+              : null;
+        if (!entry) return [];
+        const { item, itemProps } = msRowEntry(entry, ctx);
+        return [{ item, idx, itemProps }];
+      })
+    : [];
   return (
     <div className="em-date-group">
       <button type="button" className="em-group-head" aria-expanded={open} onClick={onToggle}>
@@ -961,38 +1041,32 @@ function DateGroup({
         </span>
         {label}
       </button>
-      {open &&
-        rows.map((r) =>
-          r.kind === "msg" && r.m ? (
-            <MessageRow
-              key={r.m.id}
-              m={r.m}
-              folder={folder}
-              currentId={currentId}
-              isPicked={picked.includes(r.m.id)}
-              dragIds={picked.includes(r.m.id) ? picked : [r.m.id]}
-              dragSubject={r.m.subject}
-              onTogglePick={onTogglePick}
-              onToggleStar={onToggleStar}
-              onArchive={onArchive}
-              onDelete={onDelete}
-              onContextMenu={(e) => onRowContext(e, [r.m!.id])}
-            />
-          ) : r.t ? (
-            <ThreadRow
-              key={r.t.key}
-              thread={r.t}
-              folder={folder}
-              currentId={currentId}
-              picked={picked}
-              onTogglePick={onTogglePick}
-              onToggleStar={onToggleStar}
-              onArchive={onArchive}
-              onDelete={onDelete}
-              onContextMenu={(e) => onRowContext(e, r.t!.messages.map((m) => m.id))}
-            />
-          ) : null,
-        )}
+      {open && (
+        <ListTabularRows
+          rows={rendered}
+          columns={KIWI_ROW_COLUMNS}
+          itemHeight={MS_ROW_HEIGHT}
+          innerStyles={{
+            height: rendered.length * MS_ROW_HEIGHT,
+            backgroundSize: `100% ${MS_ROW_HEIGHT}px`,
+          }}
+          onClick={(item: MsThread, e: ReactMouseEvent) => {
+            const k = item.__kiwi;
+            if (e.ctrlKey || e.metaKey) {
+              e.preventDefault();
+              k.onPick(false);
+              return;
+            }
+            if (e.shiftKey) {
+              e.preventDefault();
+              k.onPick(true);
+              return;
+            }
+            if ((e.target as HTMLElement).closest("button,input")) return;
+            navigate({ name: "mail", folder, messageId: k.navId });
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -1067,388 +1141,6 @@ function SearchHitRow({ hit }: { hit: SearchHit }) {
   );
 }
 
-function RowShell({
-  id,
-  selected,
-  unread,
-  folder,
-  navId,
-  sender,
-  date,
-  subject,
-  count,
-  hasAttachments,
-  category,
-  snippet,
-  checkbox,
-  onPick,
-  onToggleStar,
-  starred,
-  onArchive,
-  onDelete,
-  onCtxMenu,
-  dragIds,
-  dragSubject,
-  acctTag,
-  label,
-}: {
-  id: string;
-  selected: boolean;
-  unread: boolean;
-  folder: string;
-  navId: string;
-  sender: string;
-  date: string;
-  subject: string;
-  count: number;
-  hasAttachments: boolean;
-  category: MessageCategory;
-  snippet: string;
-  checkbox: ReactNode;
-  starred: boolean;
-  onPick: (id: string, range: boolean) => void;
-  onToggleStar: (id: string) => void;
-  onArchive: (id: string) => void;
-  onDelete: (id: string) => void;
-  onCtxMenu?: (e: ReactMouseEvent) => void;
-  /** T-317: envelope ids this row drags (the picked set when the row is
-   *  part of it, else just itself). Present → the row is draggable and a
-   *  folder-tree drop routes to kiwi_move_messages via onMoveToFolder. */
-  dragIds?: string[];
-  dragSubject?: string;
-  /** T-335: owning-account chip shown on aggregate views (All Inboxes,
-   *  smart rows) — the row's OWN account, so bulk/ctx actions stay
-   *  account-correct. Absent on per-account folders (context is obvious). */
-  acctTag?: { label: string; color: string };
-  label: string;
-}) {
-  const [confirmDel, setConfirmDel] = useState(false);
-  useEffect(() => setConfirmDel(false), [id]);
-  const pill = CATEGORY_PILL[category ?? "primary"];
-  return (
-    <article
-      id={id}
-      role="option"
-      draggable={!!dragIds}
-      onDragStart={
-        dragIds
-          ? (e) => {
-              e.dataTransfer.setData("application/x-kiwi-messages", JSON.stringify({ ids: dragIds }));
-              // Dragover can't read getData — the source folder rides in a
-              // TYPE token so drop targets can deny same-folder drops.
-              const srcKey = dragIds[0]?.split(":").slice(0, 2).join("_").toLowerCase();
-              if (srcKey) e.dataTransfer.setData(`application/x-kiwi-src-${srcKey}`, "1");
-              e.dataTransfer.setData("text/plain", `${dragIds.length} message(s): ${dragSubject ?? ""}`);
-              e.dataTransfer.effectAllowed = "move";
-              e.currentTarget.classList.add("em-dragging");
-            }
-          : undefined
-      }
-      onDragEnd={dragIds ? (e) => e.currentTarget.classList.remove("em-dragging") : undefined}
-      className={`em-row${unread ? " is-unread" : ""}${selected ? " is-selected" : ""}`}
-      aria-selected={selected}
-      aria-label={label}
-      onClick={(e) => {
-        if (e.ctrlKey || e.metaKey) {
-          e.preventDefault();
-          onPick(navId, false);
-          return;
-        }
-        if (e.shiftKey) {
-          e.preventDefault();
-          onPick(navId, true);
-          return;
-        }
-        if ((e.target as HTMLElement).closest("button,input")) return;
-        navigate({ name: "mail", folder, messageId: navId });
-      }}
-      onContextMenu={(e) => {
-        // Row-level menu (T-299): suppress the browser menu, let the
-        // handler decide targets. Buttons/inputs keep native behavior.
-        if ((e.target as HTMLElement).closest("button,input")) return;
-        onCtxMenu?.(e);
-      }}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") navigate({ name: "mail", folder, messageId: navId });
-      }}
-      tabIndex={0}
-    >
-      <span className={`em-dot${unread ? " is-unread" : ""}`} aria-hidden="true" />
-      {checkbox}
-      <span className="em-avatar" aria-hidden="true" style={{ background: avatarTint(sender) }}>
-        {senderName(sender).slice(0, 1).toUpperCase() || "?"}
-      </span>
-      <span className="em-row-text">
-        <span className="em-row-line em-row-top">
-          <span className="em-row-sender" title={sender}>
-            {sender}
-          </span>
-          <time className="em-row-date" title={date}>
-            {formatDateShort(date)}
-          </time>
-        </span>
-        <span className="em-row-line">
-          <span className="em-row-subject" title={subject}>
-            {subject}
-          </span>
-          <span className="em-row-marks">
-            {acctTag && (
-              <span
-                className="em-row-acct"
-                title={`Account: ${acctTag.label}`}
-                aria-label={`Account ${acctTag.label}`}
-                style={{ borderColor: acctTag.color, color: acctTag.color }}
-              >
-                {acctTag.label}
-              </span>
-            )}
-            {hasAttachments && (
-              <span title="Has attachments" aria-label="Has attachments">
-                <IconPaperclip size={11} />
-              </span>
-            )}
-            {count > 1 && (
-              <span className="em-thread-badge" title={`${count} messages in this conversation`} aria-label={`${count} messages`}>
-                {count}
-                <IconChevronDown size={9} />
-              </span>
-            )}
-          </span>
-        </span>
-        <span className="em-row-line em-row-sub">
-          {pill && (
-            <span className={`em-cat-pill ${pill.cls}`} aria-label={`Category: ${pill.label}`}>
-              {pill.label}
-            </span>
-          )}
-          <span className="em-row-snippet" title={snippet}>
-            {snippet}
-          </span>
-        </span>
-      </span>
-      <span className="em-quick" role="toolbar" aria-label={`Quick actions for: ${subject}`}>
-        <button
-          type="button"
-          className={`em-iconbtn${starred ? " is-starred" : ""}`}
-          aria-pressed={starred}
-          aria-label={starred ? `Unstar message: ${subject}` : `Star message: ${subject}`}
-          title={starred ? "Unstar (s)" : "Star (s)"}
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleStar(id);
-          }}
-        >
-          <IconStar size={13} />
-        </button>
-        <button
-          type="button"
-          className="em-iconbtn"
-          onClick={(e) => {
-            e.stopPropagation();
-            onArchive(id);
-          }}
-          title="Archive (e)"
-          aria-label={`Archive message: ${subject}`}
-        >
-          <IconArchive size={13} />
-        </button>
-        {confirmDel ? (
-          <>
-            <button
-              type="button"
-              className="em-iconbtn"
-              onClick={(e) => {
-                e.stopPropagation();
-                setConfirmDel(false);
-                onDelete(id);
-              }}
-              title="Confirm delete"
-              aria-label={`Confirm delete: ${subject}`}
-            >
-              <IconCheck size={13} />
-            </button>
-            <button
-              type="button"
-              className="em-iconbtn"
-              onClick={(e) => {
-                e.stopPropagation();
-                setConfirmDel(false);
-              }}
-              title="Keep message"
-              aria-label="Keep message"
-            >
-              <IconClose size={11} />
-            </button>
-          </>
-        ) : (
-          <button
-            type="button"
-            className="em-iconbtn"
-            onClick={(e) => {
-              e.stopPropagation();
-              setConfirmDel(true);
-            }}
-            title="Delete…"
-            aria-label={`Delete message: ${subject}`}
-          >
-            <IconTrash size={13} />
-          </button>
-        )}
-      </span>
-    </article>
-  );
-}
-
-function MessageRow({
-  m,
-  folder,
-  currentId,
-  isPicked,
-  dragIds,
-  dragSubject,
-  onTogglePick,
-  onToggleStar,
-  onArchive,
-  onDelete,
-  onContextMenu,
-}: {
-  m: MessageEnvelope;
-  folder: string;
-  currentId?: string;
-  isPicked: boolean;
-  dragIds?: string[];
-  dragSubject?: string;
-  onTogglePick: (id: string, range: boolean) => void;
-  onToggleStar: (id: string) => void;
-  onArchive: (id: string) => void;
-  onDelete: (id: string) => void;
-  onContextMenu: (e: ReactMouseEvent) => void;
-}) {
-  return (
-    <RowShell
-      id={m.id}
-      navId={m.id}
-      selected={m.id === currentId}
-      unread={m.unread}
-      folder={folder}
-      sender={m.from}
-      date={m.date}
-      subject={m.subject}
-      count={1}
-      hasAttachments={m.hasAttachments}
-      category={m.category ?? "primary"}
-      snippet={m.snippet}
-      starred={m.starred}
-      onPick={onTogglePick}
-      onToggleStar={onToggleStar}
-      onArchive={onArchive}
-      onDelete={onDelete}
-      onCtxMenu={onContextMenu}
-      dragIds={dragIds}
-      dragSubject={dragSubject}
-      // T-335: aggregate views (folder key has no `acct:id` colon shape)
-      // tag each row with its OWN account — merged rows stay truthful.
-      acctTag={!folder.includes(":") ? { label: m.accountEmail, color: avatarTint(m.accountEmail) } : undefined}
-      label={`${m.unread ? "Unread" : "Read"} from ${m.from}: ${m.subject}. Account trust ${severityLabel(m.trust)}.${isPicked ? " Selected for bulk actions." : ""}`}
-      checkbox={
-        <input
-          type="checkbox"
-          className="em-row-check"
-          data-checked={isPicked}
-          checked={isPicked}
-          onClick={(e) => e.stopPropagation()}
-          onChange={(e) => {
-            e.stopPropagation();
-            onTogglePick(m.id, e.nativeEvent instanceof MouseEvent && e.nativeEvent.shiftKey);
-          }}
-          aria-label={`Select message from ${m.from}: ${m.subject}`}
-        />
-      }
-    />
-  );
-}
-
-function ThreadRow({
-  thread,
-  folder,
-  currentId,
-  picked,
-  onTogglePick,
-  onToggleStar,
-  onArchive,
-  onDelete,
-  onContextMenu,
-}: {
-  thread: Thread;
-  folder: string;
-  currentId?: string;
-  picked: string[];
-  onTogglePick: (id: string, range: boolean) => void;
-  onToggleStar: (id: string) => void;
-  onArchive: (id: string) => void;
-  onDelete: (id: string) => void;
-  onContextMenu: (e: ReactMouseEvent) => void;
-}) {
-  const newest = thread.messages[thread.messages.length - 1];
-  const allPicked = thread.messages.every((m) => picked.includes(m.id));
-  const ids = thread.messages.map((m) => m.id);
-  const toggleAll = () => {
-    // Thread pick = every member id (bulk actions act on the whole thread).
-    for (const id of ids) {
-      if (allPicked === !picked.includes(id)) onTogglePick(id, false);
-    }
-  };
-  return (
-    <RowShell
-      id={`thread-${thread.key.replace(/\W/g, "-")}`}
-      navId={newest.id}
-      selected={thread.messages.some((m) => m.id === currentId)}
-      unread={thread.unreadCount > 0}
-      folder={folder}
-      sender={thread.participants.slice(0, 3).join(", ") + (thread.participants.length > 3 ? ` +${thread.participants.length - 3}` : "")}
-      date={thread.latestDate}
-      subject={thread.subject}
-      count={thread.messages.length}
-      hasAttachments={thread.messages.some((m) => m.hasAttachments)}
-      category={newest.category ?? "primary"}
-      snippet={newest.snippet}
-      starred={thread.starredAny}
-      onPick={(_id, _range) => toggleAll()}
-      onToggleStar={() => onToggleStar(newest.id)}
-      onArchive={() => onArchive(newest.id)}
-      onDelete={() => onDelete(newest.id)}
-      onCtxMenu={onContextMenu}
-      dragIds={thread.messages.some((m) => picked.includes(m.id)) ? picked : thread.messages.map((m) => m.id)}
-      dragSubject={thread.subject}
-      acctTag={
-        !folder.includes(":")
-          ? (() => {
-              const accts = [...new Set(thread.messages.map((m) => m.accountId))];
-              const emails = [...new Set(thread.messages.map((m) => m.accountEmail))];
-              return accts.length === 1
-                ? { label: emails[0], color: avatarTint(emails[0]) }
-                : { label: `${accts.length} accounts`, color: "var(--kiwi-text-secondary, #666)" };
-            })()
-          : undefined
-      }
-      label={`Conversation: ${thread.subject}. ${thread.messages.length} messages, ${thread.unreadCount} unread.${allPicked ? " Selected for bulk actions." : ""}`}
-      checkbox={
-        <input
-          type="checkbox"
-          className="em-row-check"
-          data-checked={allPicked}
-          checked={allPicked}
-          onClick={(e) => e.stopPropagation()}
-          onChange={(e) => {
-            e.stopPropagation();
-            toggleAll();
-          }}
-          aria-label={`Select all ${thread.messages.length} messages in conversation ${thread.subject}`}
-        />
-      }
-    />
-  );
-}
 
 /* ---------------- reader: stacked message cards ---------------- */
 

@@ -521,4 +521,45 @@ impl PairEngine {
         }
         Ok(())
     }
+
+    /// Validate a `decision:"deny"` response (contract §6.3). A deny is an
+    /// explicit user decision that confers **no authorization**: it carries
+    /// no signature, so this performs the same read-only chain as
+    /// `verify_response` minus the signature check — challenge exists →
+    /// linked device exists and not revoked → unexpired → unconsumed →
+    /// binding fields match — and NEVER consumes the challenge (the user
+    /// may still approve while it is valid). The IPC layer audits the
+    /// outcome as `challenge-denied` / `challenge-verification-failed`;
+    /// a deny for an unknown/expired/consumed/mismatched challenge is a
+    /// failed response, not a recorded denial.
+    pub fn deny_response(&mut self, resp: &ChallengeResponse, now: i64) -> Result<()> {
+        check_field("challenge_id", &resp.challenge_id, MAX_ID_LEN)?;
+        check_field("device_id", &resp.device_id, MAX_ID_LEN)?;
+        check_field("session_id", &resp.session_id, MAX_SESSION_LEN)?;
+        let row = self
+            .store
+            .get_challenge(&resp.challenge_id)?
+            .ok_or(ChallengeError::UnknownChallenge)?;
+        let dev = self
+            .store
+            .get_device(&row.device_id)?
+            .ok_or_else(|| PairError::DeviceNotFound(row.device_id.clone()))?;
+        if dev.status == "revoked" {
+            return Err(PairError::DeviceRevoked(row.device_id));
+        }
+        if now >= row.expires_unix {
+            return Err(ChallengeError::Expired.into());
+        }
+        if row.consumed {
+            return Err(ChallengeError::AlreadyConsumed.into());
+        }
+        let event = event_from_name(&row.event).ok_or(ChallengeError::BindingMismatch)?;
+        if row.device_id != resp.device_id
+            || row.session_id != resp.session_id
+            || event != resp.event
+        {
+            return Err(ChallengeError::BindingMismatch.into());
+        }
+        Ok(())
+    }
 }

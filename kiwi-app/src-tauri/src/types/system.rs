@@ -43,6 +43,11 @@ pub struct SecurityStatusView {
     /// Count of connection observations behind this verdict.
     pub sessions_observed: u64,
     pub device_id: String,
+    /// T-331: local audit-chain integrity, backend-owned. `null` = not yet
+    /// verified in this process (honest absence — never "fine"). The security
+    /// strip shows this without the renderer opening the audit view.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub audit_ok: Option<bool>,
 }
 
 /// ipc.md §9d.4 `PairChallengeView` — `nonceB64` is the ONLY nonce field
@@ -89,7 +94,13 @@ pub struct ChallengeResponseInput {
     /// "unlock" | "device-pairing" | "recovery" | "elevated-action".
     pub event: String,
     /// Base64-encoded device signature over the challenge canonical bytes.
+    /// May be empty ONLY for `decision:"deny"` (authenticator.md §6.3).
     pub signature_b64: String,
+    /// `"approve"` | `"deny"` — absent means approve (the pre-T-282 wire).
+    /// Deny is an explicit user decision: audited `challenge-denied`,
+    /// confers no authorization, never consumes the challenge.
+    #[serde(default)]
+    pub decision: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -48,20 +48,20 @@ provenance, not remediation assignments.
 | FOR-12 | L | Confidence sort order is undocumented and differs from the stated ordering. | `contract-drift-1.md:158` | T-245 | fixed |
 | FOR-I | I | Large undocumented forensics public API surface. | `contract-drift-1.md:224` | T-245/contract owner | open |
 | AUTH-1 | H | Challenge verification failures and pairing outcomes are not fully audited. Ownership: `submit_challenge` failure audits belong to A11's T-269 (pair-engine landing) — in-flight, pair code untouched by T-272 per Lead direction. | `contract-drift-1.md:69` | T-188/T-194; A11/T-269 in-flight | open |
-| AUTH-2 | M | Mobile deny responses do not carry the documented decision field and can look like invalid signatures. | `contract-drift-1.md:104` | T-194/T-188 | open |
-| AUTH-4 | M | Mobile authenticator public-key pin checks prefix/length but not key encoding/size. | `contract-drift-1.md:105` | T-194/T-188 | open |
+| AUTH-2 | M | Mobile deny responses do not carry the documented decision field and can look like invalid signatures. Both halves landed: T-194 mobile `buildChallengeResponseData` always emits `decision`, T-282 desktop `ChallengeResponseInput.decision` consumes it (deny audited, no consume); wire casing integration remains tracked by AUTH-3. | `contract-drift-1.md:104`; `mobile/src/protocol/canonical.ts:175-194`; `kiwi-app/src-tauri/src/types/system.rs:88-103`; `agent-26-status.md:64-92` | T-194/T-188 | fixed |
+| AUTH-4 | M | Mobile authenticator public-key pin checks prefix/length but not key encoding/size. QR pin now requires `ed25519:` + canonical padded std Base64 decoding to exactly 32 bytes and re-encoding byte-for-byte; mock hello enforces the plain-32-byte device key rule. | `contract-drift-1.md:105`; `mobile/src/protocol/qr.ts:53-73`; `mobile/src/mock/mock-desktop.ts:103-112`; `agent-26-status.md:64-92` | T-194/T-188 | fixed (mobile side) |
 | AUTH-5 | M | QR endpoint accepts plaintext transport despite TLS requirement. | `contract-drift-1.md:106` | T-194/T-188 | open |
-| AUTH-6 | M | Approval screen skips binding in the identity-null case and does not re-gate expiry on tap. | `contract-drift-1.md:107` | T-194 | open |
-| AUTH-7 | M | Approval screen freezes its clock at mount, making expiry/throttle checks stale. | `contract-drift-1.md:108` | T-194 | open |
-| AUTH-8 | M | Challenge queue has no expiry/TTL eviction despite contract wording. | `contract-drift-1.md:109` | T-194 | open |
-| AUTH-9 | M | Test-only soft HSM is functional behind a ceremonial gate. | `contract-drift-1.md:110` | T-194 | open |
-| AUTH-10 | L | QR validity does not enforce the documented five-minute maximum. | `contract-drift-1.md:191` | T-194 | open |
-| AUTH-11 | L | Expired local ledger decision is supported but never recorded. | `contract-drift-1.md:192` | T-194 | open |
-| AUTH-12 | L | Replay ledger pruning is not wired to the documented one-hour policy. | `contract-drift-1.md:193` | T-194 | open |
-| AUTH-13 | L | Authenticator status lacks documented desktop label/transaction fields. | `contract-drift-1.md:194` | T-194 | open |
-| AUTH-14 | L | Untrusted schema version is interpolated into unbounded parse-error text. | `contract-drift-1.md:195` | T-194 | open |
-| AUTH-15 | L | Mobile app registration name differs from documented authenticator name. | `contract-drift-1.md:196` | T-194 | open |
-| AUTH-16 | L | Test fixture session-id form conflicts with reserved `x-tx:` recovery semantics. | `contract-drift-1.md:197` | T-194 | open |
+| AUTH-6 | M | Approval screen skips binding in the identity-null case and does not re-gate expiry on tap. Binding gate is now mandatory at review AND tap; no-identity disables the whole screen. | `contract-drift-1.md:107`; `mobile/src/protocol/approval.ts:140-165`; `mobile/tests/protocol/approval.test.ts`; `agent-26-status.md:64-92` | T-194 | fixed |
+| AUTH-7 | M | Approval screen freezes its clock at mount, making expiry/throttle checks stale. Service reads the injected live clock at review and at tap; the screen tick only keeps the displayed countdown honest. | `contract-drift-1.md:108`; `mobile/src/protocol/approval.ts:144-148`; `mobile/src/screens/PendingApprovalsScreen.tsx:52-55`; `agent-26-status.md:64-92` | T-194 | fixed |
+| AUTH-8 | M | Challenge queue has no expiry/TTL eviction despite contract wording. Deny entries now expire after the 300 s deny TTL and surface as `dropped`; backlog and completed-id guard are bounded (64/256). | `contract-drift-1.md:109`; `mobile/src/protocol/queue.ts:7,57-59`; `mobile/tests/protocol/queue.test.ts`; `agent-26-status.md:64-92` | T-194 | fixed |
+| AUTH-9 | M | Test-only soft HSM is functional behind a ceremonial gate. Gate is now enforced: only `src/mock` and tests construct it (isolation test over the src graph), the header states reachability honestly, and it is wired only into the bannered mock mode; no protocol/screen module imports it. | `contract-drift-1.md:110`; `mobile/src/keystore/soft-hsm.ts:1-18`; `mobile/tests/isolation/mock-isolation.test.ts`; `agent-26-status.md:64-92` | T-194 | fixed |
+| AUTH-10 | L | QR validity does not enforce the documented five-minute maximum. Parser now rejects `expires - issued > 300` and any already-expired ticket, whatever the producer claims. | `contract-drift-1.md:191`; `mobile/src/protocol/qr.ts:16-17,84-90`; `agent-26-status.md:64-92` | T-194 | fixed |
+| AUTH-11 | L | Expired local ledger decision is supported but never recorded. Expiry at review or tap now records `expired` in the ledger and the decision history (never `deny`), deduped by challenge id. | `contract-drift-1.md:192`; `mobile/src/protocol/approval.ts:145-147,168-178`; `mobile/tests/protocol/approval.test.ts`; `agent-26-status.md:64-92` | T-194 | fixed |
+| AUTH-12 | L | Replay ledger pruning is not wired to the documented one-hour policy. `LEDGER_PRUNE_SECS = 3600` runs on every `record()` before capacity checks and on `isConsumed()` paths — the policy is wired, not aspirational. | `contract-drift-1.md:193`; `mobile/src/protocol/replay.ts:30-40,45-52`; `mobile/tests/protocol/replay.test.ts`; `agent-26-status.md:64-92` | T-194 | fixed |
+| AUTH-13 | L | Authenticator status lacks documented desktop label/transaction fields. T-194 now shows issued + expiry times, session/transaction id and desktop endpoint; the desktop-label field does not exist in either payload — contract-data gap for the contract owner. | `contract-drift-1.md:194`; `mobile/src/screens/PendingApprovalsScreen.tsx:170-172,236-241`; `agent-26-status.md:64-92` | T-194 | open (label = contract gap) |
+| AUTH-14 | L | Untrusted schema version is interpolated into unbounded parse-error text. Parse entry caps the raw container at 4096 chars, throws fixed messages only (raw text never echoed), and all UI-surfaced errors pass a 200-char bound. | `contract-drift-1.md:195`; `mobile/src/protocol/canonical.ts:126-133`; `mobile/src/protocol/approval.ts:73-76`; `agent-26-status.md:64-92` | T-194 | fixed |
+| AUTH-15 | L | Mobile app registration name differs from documented authenticator name. Root now registers under `displayName` "KIWI Authenticator" (authenticator.md §7 scaffold map); `name` stays the RN package identifier. | `contract-drift-1.md:196`; `mobile/index.js:1-8`; `agent-26-status.md:64-92` | T-194 | fixed |
+| AUTH-16 | L | Test fixture session-id form conflicts with reserved `x-tx:` recovery semantics. Production parse now enforces session/event grammar (`boot-<...>` for unlock/device-pairing, `x-tx:<txn>` for recovery/elevated-action) and the fixture is `boot-test-0001`. | `contract-drift-1.md:197`; `mobile/src/protocol/canonical.ts:95-105`; `mobile/tests/helpers/protocol.ts`; `agent-26-status.md:64-92` | T-194 | fixed |
 | AUTH-I | I | Phase-4 pairing/keystore/live transport surfaces remain intentionally unimplemented. | `contract-drift-1.md:229` | T-194 | open |
 | SS-1 | H | Locked trust evaluation could report no required action. | `contract-drift-1.md:70`; `agent-20-status.md:182-195` | T-239 | fixed |
 | SS-2 | M | `ThunderbirdHook` serialized as `live-client`, not documented `thunderbird-hook`. | `contract-drift-1.md:128`; T-260 re-verified at HEAD | T-260 | fixed (contract amended to `live-client`: KIWI is a standalone client, so a live observation has no Thunderbird hook behind it; spelling pinned by `types::tests`) |
@@ -245,10 +245,19 @@ IPC-16, FOR-1..9 (incl. 6, 11, 12), MAUTH-2, MAUTH-3, UIS-5, UIS-6.
   `analyze_capture` (capture) and `kiwi_security_report` (live, auth
   only — `SecuritySession` lacks resumption/unknown-transport state) via
   shared `report::session_limitation_codes`; §8 documents conditions.
-- **AUTH-1** — still no `challenge-denied`/`verification-failed`/
-  `device-paired` audit rows in `commands/system.rs` (grep-verified).
-  Owned by A11's T-269 (pair-engine landing, in-flight); T-272 did not
-  touch pair code per Lead direction.
+- **AUTH-1** — *resolved T-282* (A11): `submit_challenge_impl`
+  (commands/pair.rs) now audits `challenge-approved` + `device-paired` on
+  success (rows land before the bound post-action — evidence-before-
+  effect), `challenge-denied` on an attributable deny (no consume, no
+  authorization), and `challenge-verification-failed err=<ChallengeError
+  name>` on every failed engine response — including late-response
+  `err=Expired`; silent timeouts write no row (§6.3/ADR-013 R7 wording
+  reconciled). `PairEngine::deny_response` added. IPC `decision` field
+  landed (AUTH-2's desktop half — mobile deny UX/transport remains
+  Phase-4); `recovery`/`elevated-action` now refuse `unsupported-event`
+  before verification so a capability is never consumed for an
+  un-runnable action (closes T270-02's consume-then-fail). Evidence:
+  5 new tests in `commands/pair.rs`.
 - **UIS-13/14/17** — wrappers landed T-272 (IPC-15); the UI surfaces
   consuming them remain with the UIS owners.
 - **UIS-21** — `kiwi.ts` still reads `id`/`tsUnix` event keys.

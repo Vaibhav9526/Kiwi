@@ -9,14 +9,23 @@
  * All glyphs are stub stroke icons — TODO(icon) swap to components/icons (T-268).
  */
 import { useEffect, useRef, useState } from "react";
-import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import type {
+  CSSProperties,
+  DragEvent as ReactDragEvent,
+  KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent,
+  ReactNode,
+} from "react";
 import type { Severity, SnoozePreset, TrustState } from "../kiwi";
 import { AUDIT_CORRUPT_MESSAGE, severityGlyph, severityLabel } from "../kiwi";
-import { Icon, SEVERITY_ICON } from "./icons/index";
+import { Icon, SEVERITY_ICON, type IconName } from "./icons/index";
 import { navigate } from "../router";
 import { requestCompose } from "../views/compose";
 import { loadPref, savePref } from "../prefs";
 import { ContextMenu } from "./contextmenu";
+import { OutlineView, type IOutlineViewItem } from "../ms/outline-view";
+import OutlineViewItem from "../ms/outline-view-item";
+import "../ms/ms-outline.css";
 import { usePaneWidth } from "../state/panes";
 import { useTheme } from "../themes";
 import {
@@ -28,31 +37,22 @@ import {
   IconCollapseRight,
   IconCommand,
   IconContacts,
-  IconDrafts,
   IconFlag,
-  IconFolder,
   IconForward,
   IconHelp,
-  IconInbox,
-  IconJunk,
   IconLock,
   IconMail,
   IconMenu,
   IconMore,
-  IconOutbox,
   IconPlus,
   IconRefresh,
   IconReply,
   IconReplyAll,
   IconSearch,
-  IconSent,
   IconSettings,
   IconSnooze,
-  IconStar,
   IconTasks,
   IconTrash,
-  IconUnread,
-  IconUnreplied,
   IconUser,
 } from "./shell-icons";
 
@@ -342,7 +342,7 @@ export function TopBar(props: TopBarProps) {
   ];
   return (
     <header className="em-chrome">
-      <div className="em-titlebar">
+      <div className="em-titlebar" data-tauri-drag-region>
         <HamburgerMenu onSync={onSync} onLock={props.onLock} onOpenShortcuts={props.onOpenShortcuts} />
         <div className="em-search" role="search">
           <IconSearch size={13} className="em-search-icon" />
@@ -512,116 +512,31 @@ export type FolderOp =
    *  row itself stays) — list→kiwi_delete_messages loop, no new IPC. */
   | { kind: "empty"; accountId: string; folderId: number };
 
-const SMART_ICONS: Record<string, (p: { size?: number }) => ReactNode> = {
-  "all-inboxes": (p) => <IconInbox {...p} />,
-  outbox: (p) => <IconOutbox {...p} />,
-  sent: (p) => <IconSent {...p} />,
-  trash: (p) => <IconTrash {...p} />,
-  drafts: (p) => <IconDrafts {...p} />,
-  junk: (p) => <IconJunk {...p} />,
-  unread: (p) => <IconUnread {...p} />,
-  flagged: (p) => <IconFlag {...p} />,
-  unreplied: (p) => <IconUnreplied {...p} />,
-  snoozed: (p) => <IconSnooze {...p} />,
+/** Smart-folder id → Icon registry name — the ported OutlineViewItem resolves
+ *  icons by name through the RetinaImg→Icon adapter. */
+const SMART_ICON_NAMES: Record<string, IconName> = {
+  "all-inboxes": "inbox",
+  outbox: "outbox",
+  sent: "send",
+  trash: "trash",
+  drafts: "compose",
+  junk: "blocked",
+  unread: "mail-open",
+  flagged: "flag",
+  unreplied: "unreplied",
+  snoozed: "snooze",
 };
 
-/** Folder-name → outline icon (live folders arrive as free names). */
-function folderIcon(label: string): ReactNode {
-  if (/inbox/i.test(label)) return <IconInbox size={13} />;
-  if (/sent/i.test(label)) return <IconSent size={13} />;
-  if (/trash|deleted|bin/i.test(label)) return <IconTrash size={13} />;
-  if (/draft/i.test(label)) return <IconDrafts size={13} />;
-  if (/junk|spam/i.test(label)) return <IconJunk size={13} />;
-  if (/archive/i.test(label)) return <IconArchive size={13} />;
-  if (/outbox/i.test(label)) return <IconOutbox size={13} />;
-  return <IconFolder size={13} />;
-}
-
-function FolderRow({
-  id,
-  label,
-  count,
-  icon,
-  active,
-  indent,
-  onContextMenu,
-  onOpen,
-  dropTarget,
-}: {
-  id: string;
-  label: string;
-  count: number;
-  icon: ReactNode;
-  active: boolean;
-  indent?: boolean;
-  onContextMenu?: (e: ReactMouseEvent) => void;
-  /** T-342: override the default mail-folder navigation (disposable inbox
-   *  and other non-folder rows route elsewhere). */
-  onOpen?: () => void;
-  /** T-317: real drop target — only set on real account folders (never on
-   *  smart views/outbox, which have no folderId to move INTO). The source
-   *  folder's id rides inside a dataTransfer TYPE (getData is unreadable
-   *  during dragover), so same-folder denial is honest at hover time. */
-  dropTarget?: { folderKey: string; onDropIds: (ids: string[]) => void };
-}) {
-  const [dropState, setDropState] = useState<"over" | "denied" | null>(null);
-  const srcToken = dropTarget ? `application/x-kiwi-src-${dropTarget.folderKey.replace(/:/g, "_").toLowerCase()}` : "";
-  return (
-    <button
-      type="button"
-      role="treeitem"
-      className={`em-tree-item${dropState === "over" ? " em-drop-target" : ""}${dropState === "denied" ? " em-drop-denied" : ""}`}
-      aria-selected={active}
-      aria-dropeffect={dropState === "over" ? "move" : dropState === "denied" ? "none" : undefined}
-      data-folder-key={dropTarget?.folderKey}
-      aria-label={`${label}${count > 0 ? `, ${count} unread` : ""}`}
-      onClick={onOpen ?? (() => navigate({ name: "mail", folder: id }))}
-      onContextMenu={onContextMenu}
-      onDragOver={
-        dropTarget
-          ? (e) => {
-              if (!e.dataTransfer.types.includes("application/x-kiwi-messages")) return;
-              e.preventDefault(); // a real message drag — drop is permissible
-              const same = e.dataTransfer.types.includes(srcToken);
-              e.dataTransfer.dropEffect = same ? "none" : "move";
-              setDropState(same ? "denied" : "over");
-            }
-          : undefined
-      }
-      onDragLeave={dropTarget ? () => setDropState(null) : undefined}
-      onDrop={
-        dropTarget
-          ? (e) => {
-              setDropState(null);
-              const raw = e.dataTransfer.getData("application/x-kiwi-messages");
-              if (!raw) return;
-              e.preventDefault();
-              try {
-                const { ids } = JSON.parse(raw) as { ids?: string[] };
-                if (!Array.isArray(ids) || ids.length === 0) return;
-                // Honest no-op when every dragged id already lives here.
-                const dstKey = dropTarget.folderKey.toLowerCase();
-                const movable = ids.filter((i) => i.split(":").slice(0, 2).join(":").toLowerCase() !== dstKey);
-                if (movable.length > 0) dropTarget.onDropIds(movable);
-              } catch {
-                // Malformed payload — not a kiwi drag; ignore.
-              }
-            }
-          : undefined
-      }
-    >
-      {indent && <span className="em-tree-indent" aria-hidden="true" />}
-      <span className="em-tree-icon" aria-hidden="true">
-        {icon}
-      </span>
-      <span className="em-tree-label">{label}</span>
-      {count > 0 && (
-        <span className="em-tree-count" aria-hidden="true">
-          {count}
-        </span>
-      )}
-    </button>
-  );
+/** Folder-name → Icon registry name (live folders arrive as free names). */
+function folderIconName(label: string): IconName {
+  if (/inbox/i.test(label)) return "inbox";
+  if (/sent/i.test(label)) return "send";
+  if (/trash|deleted|bin/i.test(label)) return "trash";
+  if (/draft/i.test(label)) return "compose";
+  if (/junk|spam/i.test(label)) return "blocked";
+  if (/archive/i.test(label)) return "archive";
+  if (/outbox/i.test(label)) return "outbox";
+  return "folder";
 }
 
 export function FolderPane({
@@ -736,31 +651,163 @@ export function FolderPane({
     }
     setDlg(null);
   };
+
+  /* T-358: the rows are the ported Mailspring outline-view chain. The kiwi
+   * drag protocol below is verbatim from the old FolderRow — the source
+   * folder's key rides inside a dataTransfer TYPE (getData is unreadable
+   * during dragover), so same-folder denial is honest at hover time. */
+  const srcToken = (folderKey: string) =>
+    `application/x-kiwi-src-${folderKey.replace(/:/g, "_").toLowerCase()}`;
+  const hasMessageDrag = (e: ReactDragEvent) => e.dataTransfer.types.includes("application/x-kiwi-messages");
+  const canCtx = !!(onMarkAllRead || onExportMbox || onFolderOp);
+
+  /** Collapse bookkeeping shared by section heads and nested folders —
+   *  `open` is keyed by account id (sections) or folder key (items). */
+  const toggleKey = (key: string) => setOpen((m) => ({ ...m, [key]: !(m[key] ?? true) }));
+
+  /** Section heads toggle on click (the old head-button behavior) while the
+   *  ported "Show/Hide" collapse-button keeps its own activation — the guard
+   *  keeps a collapse-button click from double-toggling through the head. */
+  const headToggleProps = (toggle: () => void, expanded: boolean) => ({
+    role: "button" as const,
+    tabIndex: 0,
+    "aria-expanded": expanded,
+    onClick: (e: ReactMouseEvent<HTMLDivElement>) => {
+      if ((e.target as HTMLElement).closest(".collapse-button, .add-item-button")) return;
+      toggle();
+    },
+    onKeyDown: (e: ReactKeyboardEvent<HTMLDivElement>) => {
+      if ((e.target as HTMLElement).closest(".collapse-button, .add-item-button")) return;
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        toggle();
+      }
+    },
+  });
+
+  /** FolderSection.items is a flat list — rebuild the real tree on
+   *  parentId→folderId so nested local folders render inside their parent's
+   *  .item-children group (orphans stay at the root level). */
+  const folderItems = (s: FolderSection): IOutlineViewItem[] => {
+    const numericIds = new Set(s.items.map((f) => f.folderId).filter((id): id is number => id != null));
+    const childrenOf = new Map<number, FolderSection["items"]>();
+    const roots: FolderSection["items"] = [];
+    for (const f of s.items) {
+      if (f.parentId != null && numericIds.has(f.parentId)) {
+        const list = childrenOf.get(f.parentId) ?? [];
+        list.push(f);
+        childrenOf.set(f.parentId, list);
+      } else {
+        roots.push(f);
+      }
+    }
+    const toItem = (f: FolderSection["items"][number]): IOutlineViewItem => {
+      const selected = activeFolder === f.id;
+      return {
+        id: f.id,
+        name: f.label,
+        iconName: folderIconName(f.label),
+        className: "em-tree-item",
+        children: (f.folderId != null ? (childrenOf.get(f.folderId) ?? []) : []).map(toItem),
+        count: f.unread,
+        selected,
+        collapsed: !(open[f.id] ?? true),
+        onCollapseToggled: (item) => toggleKey(item.id as string),
+        onSelect: () => navigate({ name: "mail", folder: f.id }),
+        shouldAcceptDrop: onDropMessages
+          ? (_item: IOutlineViewItem, e: ReactDragEvent) =>
+              hasMessageDrag(e) && !e.dataTransfer.types.includes(srcToken(f.id))
+          : undefined,
+        shouldDenyDrop: onDropMessages
+          ? (_item: IOutlineViewItem, e: ReactDragEvent) =>
+              hasMessageDrag(e) && e.dataTransfer.types.includes(srcToken(f.id))
+          : undefined,
+        onDrop: onDropMessages
+          ? (_item: IOutlineViewItem, e: ReactDragEvent) => {
+              const raw = e.dataTransfer.getData("application/x-kiwi-messages");
+              if (!raw) return;
+              e.preventDefault();
+              try {
+                const { ids } = JSON.parse(raw) as { ids?: string[] };
+                if (!Array.isArray(ids) || ids.length === 0) return;
+                // Honest no-op when every dragged id already lives here.
+                const dstKey = f.id.toLowerCase();
+                const movable = ids.filter(
+                  (i) => i.split(":").slice(0, 2).join(":").toLowerCase() !== dstKey,
+                );
+                if (movable.length > 0) onDropMessages(movable, f.id);
+              } catch {
+                // Malformed payload — not a kiwi drag; ignore.
+              }
+            }
+          : undefined,
+        onContextMenu: canCtx
+          ? (_item: IOutlineViewItem, e: MouseEvent | ReactMouseEvent) => {
+              e.preventDefault();
+              setCtx({
+                x: e.clientX,
+                y: e.clientY,
+                id: f.id,
+                label: f.label,
+                unread: f.unread,
+                folderId: f.folderId,
+                origin: f.origin,
+                parentId: f.parentId,
+                exists: f.exists,
+                hasChildren: s.items.some((i) => i.parentId != null && i.parentId === f.folderId),
+              });
+            }
+          : undefined,
+        rowAttrs: {
+          "aria-selected": selected ? "true" : "false",
+          "aria-label": `${f.label}${f.unread > 0 ? `, ${f.unread} unread` : ""}`,
+          "data-folder-key": onDropMessages ? f.id : undefined,
+        },
+      };
+    };
+    return roots.map(toItem);
+  };
+
+  const smartItems: IOutlineViewItem[] = smartFolders.map((f) => {
+    const selected = activeFolder === f.id;
+    const count = f.id === "outbox" ? outboxCount : (smartUnread[f.id] ?? 0);
+    return {
+      id: f.id,
+      name: f.label,
+      iconName: SMART_ICON_NAMES[f.id] ?? "folder",
+      className: "em-tree-item",
+      children: [],
+      count,
+      selected,
+      onSelect: () => navigate({ name: "mail", folder: f.id }),
+      rowAttrs: {
+        "aria-selected": selected ? "true" : "false",
+        "aria-label": `${f.label}${count > 0 ? `, ${count} unread` : ""}`,
+      },
+    };
+  });
+
   return (
     <nav className="em-folders" aria-label="Accounts and folders">
       <h1 className="em-pane-title">Mail</h1>
-      <button type="button" className="em-group-head" aria-expanded={favOpen} onClick={() => setFavOpen((o) => !o)}>
-        <span className={`em-disclosure${favOpen ? " is-open" : ""}`} aria-hidden="true">
-          <IconChevronRight size={11} />
-        </span>
-        <IconStar size={13} />
-        Favorites
-      </button>
-      {favOpen && (
-        <div role="tree" aria-label="Favorites" className="em-group">
-          {smartFolders.map((f) => (
-            <FolderRow
-              key={f.id}
-              id={f.id}
-              label={f.label}
-              icon={(SMART_ICONS[f.id] ?? (() => <IconFolder size={13} />))({ size: 13 })}
-              count={f.id === "outbox" ? outboxCount : (smartUnread[f.id] ?? 0)}
-              active={activeFolder === f.id}
-              indent
-            />
-          ))}
-        </div>
-      )}
+      <OutlineView
+        title="Favorites"
+        collapsed={!favOpen}
+        onCollapseToggled={() => setFavOpen((o) => !o)}
+        headingProps={{
+          className: "em-group-head em-fav-head",
+          ...headToggleProps(() => setFavOpen((o) => !o), favOpen),
+        }}
+        headingContent={
+          <>
+            <span className={`em-disclosure${favOpen ? " is-open" : ""}`} aria-hidden="true">
+              <IconChevronRight size={11} />
+            </span>
+            <Icon name="star" size={13} className="em-fav-star" />
+          </>
+        }
+        items={smartItems}
+      />
       {foldersError && (
         <p className="em-folders-error" role="alert">
           <Icon name="alert-triangle" size={11} /> <small>{foldersError}</small>
@@ -774,73 +821,43 @@ export function FolderPane({
           </button>
         </div>
       )}
-      <div role="tree" aria-label="Accounts" className="em-accounts">
+      <div className="em-accounts" role="group" aria-label="Accounts">
         {accountSections.map((s) => {
           const expanded = open[s.id] ?? true;
           return (
             <div key={s.id} className="em-account-group">
-              <button
-                type="button"
-                className="em-group-head em-account-head"
-                aria-expanded={expanded}
-                onClick={() => setOpen((m) => ({ ...m, [s.id]: !expanded }))}
-                onContextMenu={
-                  onFolderOp
+              <OutlineView
+                title={s.email}
+                collapsed={!expanded}
+                onCollapseToggled={() => toggleKey(s.id)}
+                headingProps={{
+                  className: "em-group-head em-account-head",
+                  title: s.muted ? `${s.email} (muted — unread excluded from counts)` : s.email,
+                  onContextMenu: onFolderOp
                     ? (e) => {
                         e.preventDefault();
                         setAcctCtx({ x: e.clientX, y: e.clientY, accountId: s.id, email: s.email });
                       }
-                    : undefined
+                    : undefined,
+                  ...headToggleProps(() => toggleKey(s.id), expanded),
+                }}
+                headingContent={
+                  <>
+                    <span className={`em-disclosure${expanded ? " is-open" : ""}`} aria-hidden="true">
+                      <IconChevronRight size={11} />
+                    </span>
+                    <span className="em-avatar" aria-hidden="true" style={{ background: s.color }}>
+                      {(s.displayName || s.email || "?").slice(0, 1).toUpperCase()}
+                    </span>
+                    {s.unread > 0 && (
+                      <span className="em-tree-count" aria-hidden="true">
+                        {s.unread}
+                      </span>
+                    )}
+                  </>
                 }
-                title={s.muted ? `${s.email} (muted — unread excluded from counts)` : s.email}
-              >
-                <span className={`em-disclosure${expanded ? " is-open" : ""}`} aria-hidden="true">
-                  <IconChevronRight size={11} />
-                </span>
-                <span className="em-avatar" aria-hidden="true" style={{ background: s.color }}>
-                  {(s.displayName || s.email || "?").slice(0, 1).toUpperCase()}
-                </span>
-                <span className="em-tree-label">{s.email}</span>
-                {s.unread > 0 && (
-                  <span className="em-tree-count" aria-hidden="true">
-                    {s.unread}
-                  </span>
-                )}
-              </button>
-              {expanded &&
-                s.items.map((f) => (
-                  <FolderRow
-                    key={f.id}
-                    id={f.id}
-                    label={f.label}
-                    icon={folderIcon(f.label)}
-                    count={f.unread}
-                    active={activeFolder === f.id}
-                    indent
-                    dropTarget={
-                      onDropMessages ? { folderKey: f.id, onDropIds: (ids) => onDropMessages(ids, f.id) } : undefined
-                    }
-                    onContextMenu={
-                      onMarkAllRead || onExportMbox || onFolderOp
-                        ? (e) => {
-                            e.preventDefault();
-                            setCtx({
-                              x: e.clientX,
-                              y: e.clientY,
-                              id: f.id,
-                              label: f.label,
-                              unread: f.unread,
-                              folderId: f.folderId,
-                              origin: f.origin,
-                              parentId: f.parentId,
-                              exists: f.exists,
-                              hasChildren: s.items.some((i) => i.parentId != null && i.parentId === f.folderId),
-                            });
-                          }
-                        : undefined
-                    }
-                  />
-                ))}
+                items={folderItems(s)}
+              />
             </div>
           );
         })}
@@ -868,14 +885,22 @@ export function FolderPane({
             </button>
           </div>
           <div role="tree" aria-label="Disposable inbox" className="em-group">
-            <FolderRow
-              id="disposable"
-              label="Disposable Inbox"
-              icon={<Icon name="clock" size={13} />}
-              count={disposable.unread}
-              active={disposable.active}
-              onOpen={() => navigate({ name: "disposable" })}
-              indent
+            <OutlineViewItem
+              isFirst={!disposable.active}
+              item={{
+                id: "disposable",
+                name: "Disposable Inbox",
+                iconName: "clock",
+                className: "em-tree-item",
+                children: [],
+                count: disposable.unread,
+                selected: disposable.active,
+                onSelect: () => navigate({ name: "disposable" }),
+                rowAttrs: {
+                  "aria-selected": disposable.active ? "true" : "false",
+                  "aria-label": `Disposable Inbox${disposable.unread > 0 ? `, ${disposable.unread} unread` : ""}`,
+                },
+              }}
             />
           </div>
         </div>

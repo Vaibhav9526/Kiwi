@@ -386,6 +386,84 @@ impl MailStore {
             > 0)
     }
 
+    /// Rename a remote/system folder row after the server ACKed `RENAME`
+    /// (T-328). Local rows refuse — they have their own validated path.
+    /// Inferiors follow the server (RFC 3501 §6.3.5 renames them): every
+    /// flat row named `old<sep>…` moves under `new<sep>…`. Returns every
+    /// renamed meta (target first) so name caches can be refreshed.
+    pub fn rename_remote_folder(
+        &self,
+        folder_id: i64,
+        new_name: &str,
+        sep: &str,
+    ) -> Result<Vec<FolderMeta>> {
+        let folder = self
+            .folder_meta(folder_id)?
+            .ok_or_else(|| MailError::InvalidInput("unknown folder".into()))?;
+        if folder.origin == FolderOrigin::Local {
+            return Err(MailError::PolicyRejected(
+                "local folders are renamed through the local path".into(),
+            ));
+        }
+        let duplicate: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM folders
+             WHERE account_id = ?1 AND parent_id IS NULL
+               AND name = ?2 COLLATE NOCASE AND id <> ?3",
+            params![folder.account_id, new_name, folder_id],
+            |r| r.get(0),
+        )?;
+        if duplicate > 0 {
+            return Err(MailError::InvalidInput("folder name already exists".into()));
+        }
+        let prefix = format!("{}{sep}", folder.name);
+        let children: Vec<(i64, String)> = self
+            .list_folders(&folder.account_id)?
+            .into_iter()
+            .filter(|f| f.name.starts_with(&prefix))
+            .map(|f| (f.id, format!("{new_name}{sep}{}", &f.name[prefix.len()..])))
+            .collect();
+        // One transaction: a crash between the target UPDATE and the
+        // inferior rewrites must not leave a half-renamed mirror.
+        let tx = self.conn.unchecked_transaction()?;
+        let mut renamed = Vec::with_capacity(children.len() + 1);
+        for (id, name) in std::iter::once((folder_id, new_name.to_string())).chain(children) {
+            tx.execute(
+                "UPDATE folders SET name = ?2 WHERE id = ?1",
+                params![id, name],
+            )?;
+            renamed.push(tx.query_row(
+                "SELECT id, account_id, parent_id, name, origin, uid_validity,
+                        uid_next, highest_uid
+                 FROM folders WHERE id = ?1",
+                params![id],
+                map_folder_row,
+            )?);
+        }
+        tx.commit()?;
+        Ok(renamed)
+    }
+
+    /// Delete a remote/system folder row after the server ACKed `DELETE`
+    /// (T-328). `clear_folder_messages` drops its messages, evidence rows,
+    /// rule watermarks and payload dirs; inferiors survive — they are flat
+    /// rows and the server keeps them (RFC 3501 §6.3.4). Local rows
+    /// refuse: they have their own empty-leaf path.
+    pub fn delete_remote_folder(&self, folder_id: i64) -> Result<bool> {
+        let folder = self
+            .folder_meta(folder_id)?
+            .ok_or_else(|| MailError::InvalidInput("unknown folder".into()))?;
+        if folder.origin == FolderOrigin::Local {
+            return Err(MailError::PolicyRejected(
+                "local folders are deleted through the local path".into(),
+            ));
+        }
+        self.clear_folder_messages(folder_id)?;
+        Ok(self
+            .conn
+            .execute("DELETE FROM folders WHERE id = ?1", params![folder_id])?
+            > 0)
+    }
+
     /// Record the server's folder state after a SELECT/STATUS.
     pub fn set_folder_sync_state(
         &self,

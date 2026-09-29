@@ -832,7 +832,7 @@ pub(crate) async fn connect_imap(state: &AppState, acct: &MailAccount) -> CmdRes
     )
     .await
     .map_err(IpcError::from)?;
-    let secret = resolve_secret(state, &acct.incoming.auth)?;
+    let secret = resolve_secret(state, &acct.incoming.auth).await?;
     if let Some(secret) = secret {
         let auth = match acct.incoming.auth {
             AuthRef::XOAuth2 { .. } => ImapAuth::XOAuth2 {
@@ -1021,6 +1021,9 @@ async fn imap_sync(
                 capture_thread_headers(state, &mut client, folder_id, &new_uids).await;
             }
         }
+        // T-329: one OS notification per synced folder, suppressed by the
+        // mute pref / junk-trash folders / the per-folder rate limit.
+        crate::notify::maybe_notify(state, &acct.account_id, name, folder_id, &before_uids).await;
         reports.push(SyncReportView {
             protocol: "imap".into(),
             folder: name.clone(),
@@ -1106,7 +1109,7 @@ pub(crate) async fn pop3_sync(
     )
     .await
     .map_err(IpcError::from)?;
-    if let Some(secret) = resolve_secret(state, &acct.incoming.auth)? {
+    if let Some(secret) = resolve_secret(state, &acct.incoming.auth).await? {
         let auth = match acct.incoming.auth {
             AuthRef::Apop { .. } => Pop3Auth::Apop {
                 user: acct.incoming.username.clone(),
@@ -1120,7 +1123,7 @@ pub(crate) async fn pop3_sync(
         client.authenticate(&auth).await.map_err(IpcError::from)?;
     }
     let endpoint = crate::bridge::resolve_endpoint(state).await;
-    let (report, folder_id, mut received) = {
+    let (report, folder_id, mut received, before) = {
         let store = state.store.lock().await;
         let folder_id = store.ensure_folder(&acct.account_id, "INBOX")?;
         let before: std::collections::BTreeSet<u64> =
@@ -1147,13 +1150,15 @@ pub(crate) async fn pop3_sync(
             drop(store);
             collect_received(state, folder_id, &before, &mut received).await?;
         }
-        (r, folder_id, received)
+        (r, folder_id, received, before)
     };
     {
         let mut index = state.index.lock().await;
         index.remember_folder(&acct.account_id, folder_id, "INBOX");
         index.save(&state.data_dir)?;
     }
+    // T-329: POP3 downloads are new unseen mail in INBOX by construction.
+    crate::notify::maybe_notify(state, &acct.account_id, "INBOX", folder_id, &before).await;
     // T-345: the tray tooltip tracks the same arrival.
     crate::tray::refresh_tooltip(state).await;
     let facts = observe::facts_of(client.transport());

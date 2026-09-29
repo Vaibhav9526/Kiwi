@@ -17,8 +17,10 @@ mod discovery_net;
 #[cfg(test)]
 mod e2e;
 mod error;
+mod notify;
 mod observe;
 mod pairing_listen;
+mod send_consent;
 mod signals;
 mod state;
 mod syncer;
@@ -32,6 +34,9 @@ use commands::autoconfig::*;
 use commands::contacts::*;
 use commands::devices::*;
 use commands::endpoint::*;
+use commands::export::*;
+use commands::folders::*;
+use commands::import::*;
 use commands::integrations::*;
 use commands::link::kiwi_link_click;
 use commands::mail::*;
@@ -54,6 +59,7 @@ pub const IPC_CONTRACT_VERSION: &str = "kiwi.ipc/1";
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             // Data dir: app_data_dir when resolvable, else a temp dir (dev).
             let dir = match app.path().app_data_dir() {
@@ -62,6 +68,10 @@ pub fn run() {
             };
             let state = state::AppState::open(dir)
                 .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
+            // T-329: the OS-notification sink for sync-time new-mail dings.
+            *state.notifier.lock().unwrap() = Some(std::sync::Arc::new(notify::TauriNotifier(
+                app.handle().clone(),
+            )));
             // T-345: the system tray — icon + menu (Show/Hide, Compose,
             // Quit) + the tooltip sink. `install` returning false means the
             // platform has no tray surface: `tray_live` stays false, X keeps
@@ -126,6 +136,9 @@ pub fn run() {
             kiwi_oauth2_status,
             // mail read (gated)
             kiwi_list_folders,
+            kiwi_folder_create,
+            kiwi_folder_rename,
+            kiwi_folder_delete,
             kiwi_list_messages,
             kiwi_search_messages,
             kiwi_get_message,
@@ -133,10 +146,13 @@ pub fn run() {
             kiwi_sync_account,
             kiwi_sync_status,
             kiwi_set_pop3_policy,
+            kiwi_import_mbox,
+            kiwi_mailbox_export_mbox,
             // message actions (gated)
             kiwi_update_message,
             kiwi_delete_messages,
             kiwi_move_messages,
+            kiwi_copy_messages,
             kiwi_download_attachment,
             kiwi_render_body,
             kiwi_set_remote_content,
@@ -167,9 +183,14 @@ pub fn run() {
             // security data (gated)
             kiwi_security_findings,
             kiwi_security_events,
+            kiwi_audit_events,
+            // audit integrity (ungated — see commands/security.rs)
+            kiwi_audit_integrity,
             kiwi_finding_detail,
             kiwi_session_detail,
             kiwi_security_report,
+            // forensic report file export (gated — T-320, self-verifying)
+            kiwi_forensics_export,
             // devices + org binding (gated)
             kiwi_register_device,
             kiwi_list_devices,

@@ -32,9 +32,10 @@ fn public_inbox_notice() -> &'static str {
 /// is a single-use anti-replay capability verified backend-side — it is not
 /// evidence of a human decision, and the copy must not claim otherwise.
 pub const DELIVERABILITY_CONSENT_NOTICE: &str = "Sending the test message transmits it through a \
-     third-party service (email-spam-tester.com) via your configured relay. The backend's \
-     single-use token is a replay guard for this one send, not proof of your approval — send only \
-     when you intend the message to leave your relay.";
+     third-party service (email-spam-tester.com) via your configured relay. Before it is queued, \
+     KIWI asks for approval in an operating-system confirmation dialog that the app window cannot \
+     forge or suppress. The checkbox in the app only acknowledges this notice — it is not the \
+     approval.";
 
 // ---------------------------------------------------------------------------
 // Temp mail

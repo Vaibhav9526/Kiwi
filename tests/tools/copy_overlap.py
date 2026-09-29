@@ -71,9 +71,11 @@ SOURCE_SUFFIXES = {
 }
 
 # Trees that are never our authorship and must not be scanned.
+# `vendor/` joins `reference/` as the ui-migration checkout of upstream
+# source we port from — it holds third-party authorship, not ours.
 SKIP_DIR_PARTS = {
-    "reference", "source", "node_modules", "target", ".git", "obj-precise",
-    "dist", "artifacts", "__pycache__",
+    "reference", "vendor", "source", "node_modules", "target", ".git",
+    "obj-precise", "dist", "artifacts", "__pycache__",
 }
 
 # Reference trees scanned by CHECK B when they exist.
@@ -92,6 +94,16 @@ MIN_FILE_BYTES = 200
 # The scanner has to contain the forbidden markers as data, so it excludes
 # itself from CHECK A.
 SELF_RELPATH = "tests/tools/copy_overlap.py"
+
+# Directories of intentionally verbatim ported code, exempt from CHECK B
+# only (CHECK A markers still apply). Each entry requires a recorded
+# license decision in docs/DECISIONS.md.
+#   kiwi-app/src/ms/ — Mailspring component ports for the ui-migration.
+#   Project owner holds a license/rights grant from the Mailspring author
+#   permitting verbatim reuse (recorded under the ui-migration decision).
+PORTED_EXEMPT_PREFIXES = (
+    "kiwi-app/src/ms/",
+)
 
 
 # --------------------------------------------------------------------------
@@ -323,11 +335,15 @@ def check_b(root: Path, ref_dirs: tuple, min_len: int, max_shown: int):
         "boilerplate": 0,
         "substantive": 0,
         "longest_run": 0,
+        "ported_exempt": 0,
     }
     longest = 0
     for f in our_files:
         text = read_text(f)
         if text is None:
+            continue
+        if rel(root, f).startswith(PORTED_EXEMPT_PREFIXES):
+            stats["ported_exempt"] += 1
             continue
         run_len = 0
         run_lines: list = []
@@ -413,6 +429,7 @@ def main() -> int:
         f"ref_lines>={min_len}={stats['ref_lines']} our_files={stats['our_files']} "
         f"shared={stats['shared']} boilerplate={stats['boilerplate']} "
         f"substantive={stats['substantive']} longest_run={stats['longest_run']}"
+        f" ported_exempt_files={stats['ported_exempt']}"
     )
     for f in findings_b[:max_shown]:
         print(f"  HIT {f}")

@@ -90,6 +90,7 @@ function toEnvelope(
     folderId,
     uid: m.uid,
     from: m.fromAddr || "(unknown)",
+    toAddrs: m.toAddrs ?? null,
     subject: m.subject || "(no subject)",
     date: unixToIso(m.dateUnix),
     unread: ov?.unread ?? !flags.includes("\\Seen"),

@@ -1,0 +1,310 @@
+/* Ported from Mailspring `app/static/style/components/outline-view.less` +
+ * `components/disclosure-triangle.less` (+ the .account-sidebar fragment).
+ * LESS vars map onto the --ms-* bridge tokens (mailspring-tokens.css) — flat
+ * fills only; the KIWI drop affordances (em-drop-target/em-drop-denied) and
+ * em-tree-* hooks already live in shell.css on the same elements.
+ */
+
+.outline-view {
+  order: 1;
+}
+
+.outline-view section {
+  margin-bottom: var(--ms-padding-base-vertical);
+}
+
+.outline-view .item-children {
+  padding-left: var(--ms-padding-base-horizontal);
+  margin-bottom: 0;
+}
+
+.outline-view .heading {
+  display: flex;
+  align-items: center;
+  cursor: default;
+  color: var(--ms-text-color-very-subtle);
+  font-weight: var(--ms-font-weight-semi-bold);
+  font-size: calc(var(--ms-font-size-small) * 0.9);
+  padding-left: var(--ms-padding-small-horizontal);
+  padding-top: var(--ms-padding-small-horizontal);
+  padding-right: var(--ms-padding-xs-horizontal);
+  letter-spacing: -0.2px;
+}
+
+.outline-view .heading span.text {
+  text-overflow: ellipsis;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.outline-view .heading .add-item-button {
+  margin-left: var(--ms-padding-small-horizontal);
+  margin-right: var(--ms-padding-small-horizontal);
+  cursor: pointer;
+  color: var(--ms-text-color-very-subtle);
+  display: none;
+}
+
+.outline-view .heading .collapse-button {
+  cursor: pointer;
+  display: none;
+  min-width: 30px;
+  margin-left: auto;
+  margin-right: 8px;
+}
+
+.outline-view:hover .heading .collapse-button,
+.outline-view:hover .heading .add-item-button,
+.outline-view .heading:focus-within .collapse-button,
+.outline-view .heading:focus-within .add-item-button {
+  display: inherit;
+}
+
+/* KIWI seam: heading chips (account unread count) ride the heading row. */
+.outline-view .heading .em-tree-count {
+  margin-left: auto;
+  order: 2;
+}
+.outline-view .heading .collapse-button {
+  order: 3;
+}
+.outline-view .heading .add-item-button {
+  order: 3;
+}
+
+.outline-view .item-container {
+  display: flex;
+}
+
+.outline-view .item-container.dropping {
+  background-color: color-mix(in srgb, var(--ms-source-list-bg) 80%, #ffffff);
+}
+
+.outline-view .item-container.dropping .item {
+  color: var(--ms-source-list-active-color);
+}
+
+.outline-view .item-container.dropping .item .content-mask {
+  color: var(--ms-source-list-active-color);
+}
+
+.outline-view .item {
+  color: var(--ms-text-color-subtle);
+  flex: 1;
+  display: flex;
+  align-items: center;
+  font-size: var(--ms-font-size-base);
+  font-weight: 400;
+  padding-right: var(--ms-spacing-standard);
+  line-height: var(--ms-line-height-large);
+  clear: both;
+  height: 27px;
+  /* The overflow needs to be `hidden` in order for the name to flex
+     fit within the contained space. */
+  overflow: hidden;
+}
+
+.outline-view .item .content-mask {
+  color: var(--ms-text-color-subtle);
+  vertical-align: text-bottom;
+}
+
+.outline-view .item .icon {
+  flex-shrink: 0;
+  padding-right: calc(var(--ms-padding-small-horizontal) * 0.85);
+  order: 1;
+  display: inline-flex;
+}
+
+.outline-view .item .name {
+  order: 2;
+  overflow: hidden;
+  line-height: var(--ms-line-height-small);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.outline-view .item .item-count-box {
+  order: 3;
+  flex-shrink: 0;
+  font-weight: var(--ms-font-weight-semi-bold);
+  color: color-mix(in srgb, var(--ms-text-color-subtle) 60%, transparent);
+  margin-left: calc(var(--ms-padding-small-horizontal) * 0.8);
+  box-shadow:
+    0 0.5px 0 color-mix(in srgb, var(--ms-text-color-subtle) 60%, transparent),
+    0 -0.5px 0 color-mix(in srgb, var(--ms-text-color-subtle) 60%, transparent),
+    0.5px 0 0 color-mix(in srgb, var(--ms-text-color-subtle) 60%, transparent),
+    -0.5px 0 0 color-mix(in srgb, var(--ms-text-color-subtle) 60%, transparent);
+}
+
+.outline-view .item .item-count-box.alt-count {
+  color: var(--ms-source-list-active-bg);
+  background: var(--ms-source-list-active-color);
+  box-shadow: none;
+}
+
+.outline-view .item .item-count-box.archive,
+.outline-view .item .item-count-box.all,
+.outline-view .item .item-count-box.spam {
+  display: none;
+}
+
+.outline-view .item .item-action-button {
+  order: 4;
+  flex-shrink: 0;
+  margin-left: auto;
+  cursor: pointer;
+  font-size: calc(var(--ms-font-size-base) * 0.5);
+  letter-spacing: 1px;
+  line-height: 18px;
+  width: 18px;
+  text-align: center;
+  border-radius: 3px;
+  color: var(--ms-text-color-very-subtle);
+  display: none;
+}
+
+.outline-view .item .item-action-button:hover {
+  color: var(--ms-text-color-subtle);
+  background: color-mix(in srgb, var(--ms-text-color-subtle) 15%, transparent);
+}
+
+.outline-view .item.selected {
+  background: var(--em-select);
+  color: var(--kiwi-ms-text);
+}
+
+.outline-view .item.selected .name {
+  font-weight: var(--kiwi-ms-weight-semibold);
+}
+
+.outline-view .item.selected .content-mask {
+  color: var(--kiwi-ms-text);
+}
+
+.outline-view .item.selected .item-action-button {
+  color: color-mix(in srgb, var(--kiwi-ms-text) 70%, transparent);
+}
+
+.outline-view .item.selected .item-action-button:hover {
+  color: var(--kiwi-ms-text);
+  background: color-mix(in srgb, var(--kiwi-ms-text) 15%, transparent);
+}
+
+.outline-view .item.dropping {
+  background-color: color-mix(in srgb, var(--ms-source-list-bg) 80%, #ffffff);
+  color: var(--ms-source-list-active-color);
+}
+
+.outline-view .item.dropping .content-mask {
+  color: var(--ms-source-list-active-color);
+}
+
+.outline-view .item.editing {
+  align-items: center;
+}
+
+.outline-view .item.editing .item-input {
+  order: 2;
+  font-size: var(--ms-font-size-small);
+  margin-left: calc(var(--ms-padding-small-horizontal) * 0.3);
+  height: 22px;
+  padding-left: 0;
+  text-indent: calc(var(--ms-padding-small-horizontal) * 0.55);
+  width: 85%;
+}
+
+.outline-view .item:hover {
+  cursor: default;
+}
+
+.outline-view .item:hover .item-action-button,
+.outline-view .item:focus-within .item-action-button {
+  display: block;
+}
+
+/* disclosure-triangle.less */
+
+.disclosure-triangle {
+  flex-shrink: 0;
+  padding: 7px;
+  padding-top: 10px;
+  width: 20px;
+  visibility: hidden;
+  box-sizing: content-box;
+}
+
+.disclosure-triangle div {
+  transform: rotate(90deg);
+  transition: transform 90ms linear;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 7px solid var(--ms-text-color-very-subtle);
+}
+
+.disclosure-triangle.visible {
+  visibility: visible;
+}
+
+.disclosure-triangle.collapsed div {
+  transform: rotate(0deg);
+}
+
+/* ---------- KIWI wiring layer (not upstream) ----------
+ * FolderPane carries its em-* hooks on the ported elements: `.em-tree-item`
+ * rides on `.item`, `em-group-head`/`em-account-head` on `.heading`, and the
+ * disclosure/avatar/star arrive via `headingContent`. Keep the shell's
+ * colors/type on the vendor geometry. */
+
+.outline-view .item.em-tree-item {
+  color: var(--kiwi-ms-text);
+  font-size: var(--kiwi-ms-text-small);
+  cursor: pointer;
+  border-radius: var(--kiwi-ms-radius-base);
+}
+
+.outline-view .item.em-tree-item:hover {
+  background: var(--em-hover);
+}
+
+.outline-view .item.em-tree-item.selected:hover {
+  background: var(--em-select);
+}
+
+.outline-view .heading.em-group-head {
+  gap: 5px;
+  padding: 4px;
+  font-size: var(--kiwi-ms-text-small);
+  font-weight: var(--kiwi-ms-weight-semibold);
+  color: var(--em-group-head);
+  cursor: pointer;
+  border-radius: var(--kiwi-ms-radius-base);
+}
+
+.outline-view .heading.em-group-head:hover {
+  color: var(--kiwi-ms-text);
+}
+
+.outline-view .heading.em-account-head {
+  margin-top: 6px;
+  font-weight: var(--kiwi-ms-weight-normal);
+  color: var(--kiwi-ms-text);
+}
+
+/* headingContent lands after .text in DOM order — flex order restores the
+   disclosure → avatar/star → label → count → collapse-button layout. */
+.outline-view .heading.em-group-head .em-disclosure {
+  order: -3;
+}
+
+.outline-view .heading.em-group-head .em-avatar,
+.outline-view .heading.em-group-head .em-fav-star {
+  order: -2;
+  flex-shrink: 0;
+}
+
+/* Nested folder rows indent once more past the disclosure column so child
+   folders read clearly under their parent. */
+.outline-view .item-children .disclosure-triangle {
+  padding-left: 11px;
+}

@@ -139,14 +139,14 @@ pub(crate) async fn tempmail_create_impl(
             // candidate: retire it, then hand the caller the original
             // failure. The previous session (if any) stays usable.
             let forgotten = gm.forget_me().await.is_ok();
-            let _ = state.audit.lock().await.record(
+            state.audit.lock().await.record(
                 "tempmail-create-failed",
                 &format!(
                     "candidate abandoned: {e}; remote forget {}",
                     if forgotten { "ok" } else { "failed" }
                 ),
                 now_unix(),
-            );
+            )?;
             return Err(e);
         }
     };
@@ -163,14 +163,14 @@ pub(crate) async fn tempmail_create_impl(
         // replacement, and must not be silent.
         let ok = old.forget_me().await.is_ok();
         old_forgotten = Some(ok);
-        let _ = state.audit.lock().await.record(
+        state.audit.lock().await.record(
             "tempmail-replaced",
             &format!(
                 "previous session retired: remote forget {}",
                 if ok { "ok" } else { "failed" }
             ),
             now_unix(),
-        );
+        )?;
     }
     drop(slot);
     state.audit.lock().await.record(
@@ -550,12 +550,14 @@ pub(crate) async fn deliverability_send_impl(
             Ok(r) => r,
             Err(e) => {
                 // The capability is spent; the enqueue is not. Record why and
-                // surface the original failure — `enqueued` stays false.
-                let _ = state.audit.lock().await.record(
+                // surface the original failure — `enqueued` stays false. A
+                // failure record that cannot be written is itself surfaced:
+                // evidence is never silently dropped.
+                state.audit.lock().await.record(
                     "deliverability-send-failed",
                     &format!("{test_id}: {} — {} (not enqueued)", e.code, e.message),
                     now_unix(),
-                );
+                )?;
                 return Err(e);
             }
         };

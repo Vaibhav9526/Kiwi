@@ -25,24 +25,33 @@ hold no state outside memory and expose no provider internals.
    to another host).
 2. **No credential persistence.** Session material (PHPSESSID, `sid_token`,
    test slugs) lives in `Mutex` memory only. Nothing writes to disk, OS
-   keystore, SQLite, or the mail store. `Drop`/process end = gone.
-3. **Secrets never logged.** `TestSlug` Debug/Display print `[redacted]`;
-   `GuerrillaMail`/`EmailSpamTester` Debug redact session state. Transport
-   errors are classified (`TransportKind`) and the provider's own error text
-   — which embeds the request URL, which for email-spam-tester contains the
-   slug — is **dropped**, never propagated.
+   keystore, SQLite, or the mail store. Secret-bearing buffers are zeroized
+   on drop; `Drop`/process end = gone.
+3. **Secrets never logged.** `TestSlug` Debug/Display print `[redacted]` and
+   `TestSlug`/`TestReservation` implement no serde traits; `TempAddress`,
+   `HttpRequest`, `HttpResponse`, and provider Debug redact session state,
+   tokens, cookies, bodies, and URL queries. Transport errors are classified
+   (`TransportKind`) and the provider's own error text — which embeds the
+   request URL, which for email-spam-tester contains the slug — is
+   **dropped**, never propagated.
 4. **Disposable inboxes are PUBLIC.** See §3. Consumers must display
    `tempmail::PUBLIC_INBOX_NOTICE` before enabling the feature.
 5. **Untrusted input.** All provider responses are capped before parse
    (`ReqwestClient::body_cap`, enforced while streaming), parsed through
    `serde_json`, unknown fields ignored, unknown enum spellings preserved
-   (`CheckStatus::Other`, `AnalysisStatus::Other`) — never fatal.
+   (`CheckStatus::Other`, `AnalysisStatus::Other`) — never fatal. A
+   top-level provider `error` envelope is rejected **before** every success
+   parse, so an in-band failure can never surface as success. Unknown auth
+   statuses/categories and client-side check truncation are fail-closed
+   (§4.3).
 6. **Deterministic core.** No floats cross the boundary (scores are
    milli-unit integers), no wall-clock reads inside the crate, no RNG.
    Polling loops/timers belong to the caller — the crate provides
    single-shot calls only.
 7. **No plaintext downgrade metadata games.** A provider returning an error
    payload surfaces `ProviderRejected`/`Malformed`, never a fake success.
+   Every success parser rejects a top-level `error` envelope first, and
+   success bodies are shape-checked (`forget_me` must be exactly `true`).
 
 ## 2. Transport seam (`http`)
 
@@ -53,10 +62,18 @@ HttpClient (async trait)         — request(HttpRequest) -> HttpResponse
   │   redirect policy = none. timeout 30 s. body cap enforced while
   │   streaming (default 1 MiB, per-provider override).
   └─ ScriptedHttp                — ordered recorded transport for tests:
-      each Step asserts method + URL fragments + required headers +
-      exact body before answering the recorded response. Exhaustion
-      is asserted at test end.
+      each Step asserts method + exact URL/path + exact query set +
+      required/forbidden headers + exact body before answering the
+      recorded response. `assert_exhausted` asserts no step is unused.
 ```
+
+The HTTPS-only, no-redirect, and streaming-cap guarantees are the
+contract of `ReqwestClient` and of trusted production wiring that uses it.
+`HttpClient` is a public injection seam: an arbitrary injected
+implementation is trusted code (proxy/Tor/test transports) and must enforce
+its own guarantees; the trait name does not imply them. Production provider
+base URLs are backend-owned constants, so a renderer cannot select a
+destination through this seam.
 
 `HttpResponse.headers` preserves duplicates (`Set-Cookie` rotation).
 `HttpResponse::json()` parses the capped body — a cap-truncated body fails
@@ -82,9 +99,11 @@ copy constant is `tempmail::PUBLIC_INBOX_NOTICE`.
   Sent as `Cookie: PHPSESSID=<v>` on every subsequent request.
 - `sid_token` (returned by `get_email_address`) is echoed as a query param
   when present.
-- The API demands the caller's `ip` + `agent`. We send constants —
-  `ip=127.0.0.1`, `agent=<caller string, ≤160>` — never the user's real
-  IP/UA.
+- The API demands the caller's `ip` + `agent`. KIWI sends constants —
+  `ip=127.0.0.1`, `agent=<caller string, ≤160>`. It does not place the
+  user's real IP address or user-agent in those parameters; the provider and
+  the network path still observe the connection's source address and
+  transport metadata.
 
 ### 3.2 Method → wire map
 
@@ -94,7 +113,7 @@ copy constant is `tempmail::PUBLIC_INBOX_NOTICE`.
 | `set_email_user` | `POST …?f=set_email_user&email_user=<p>` | `local_part` `[A-Za-z0-9._-]{1,64}`, no leading/trailing/double dot — else `Malformed("email_user")`; switches the session address and resets the poll cursor |
 | `check_email` | `GET …?f=check_email&seq=<last_seq>` | `seq` = highest numeric `mail_id` seen; returns ≤20 `list` items; requires session (`NoSession` otherwise); echoed `email` field resyncs `address` |
 | `fetch_email` | `GET …?f=fetch_email&email_id=<digits>` | `mail_id` must be `^[0-9]{1,32}$` — else `Malformed` **before** request; session-owned mail only |
-| `forget_me` | `POST …?f=forget_me&email_addr=<addr>` | clears local address/cursor/created; PHPSESSID survives (session persists server-side per API) |
+| `forget_me` | `POST …?f=forget_me&email_addr=<addr>` | exact success body is `true` (surrounding ASCII whitespace allowed); a JSON error envelope is `ProviderRejected`, any other JSON is `Malformed("forget_me")`; clears local address/cursor/created on success only, so a failed cleanup can be retried |
 | `extend` | `POST …?f=extend` | `{expired, affected, email_timestamp}` → `ExtendOutcome`; server caps at +1h once (2h max) |
 
 All calls carry `Accept: application/json`. Status mapping: 2xx → parse;
@@ -121,13 +140,18 @@ Header values are CTL-stripped before interpolation (CR/LF injection guard).
 Result ≤ `MAX_RFC822`. **It is not the original wire message** — it is an
 untrusted-content container for KIWI's existing sanitized render path
 (T-146). Any claim of "raw source fidelity" would be false — do not add one.
+Because the destination is a public inbox, temp-mail HTML is rendered
+**display-only**: remote resources are stripped and anchors/hrefs are removed
+entirely, so no message-borne link can navigate the app or webview.
 
 ### 3.5 Expiry semantics
 
 Address dies 60 min after `email_timestamp` (one `extend` → +1h, max 2h);
 session idles out ~18 min (any call refreshes). The crate reads no clock —
 callers compute `3600 - (now - created_unix)` for countdown display. GM
-rate limits are unpublished — callers must poll politely (≥10 s suggested).
+rate limits are unpublished — callers must poll politely (the app polls every
+15 s, single-flighted, stops on terminal states, and honours a `Retry-After`
+cooldown with a 30 s floor after a provider 429).
 
 ## 4. `DeliverabilityTester` — email-spam-tester
 
@@ -150,10 +174,14 @@ rate limits are unpublished — callers must poll politely (≥10 s suggested).
 
 `slug` is a **capability secret** — bearer of it can poll/read the report.
 - Type `TestSlug`: `Debug`/`Display` → `[redacted]`; `as_str()` is
-  `pub(crate)`; `Serialize` exists only to cross the IPC boundary to the
-  orchestrating caller — never persist to DB/audit/logs.
+  `pub(crate)`; `TestSlug` and `TestReservation` implement **no** serde
+  traits and are never persisted to DB/audit/logs.
 - Slug travels in the URL path → transport errors drop the URL (invariant 3).
 - Slug is percent-encoded into the path segment (`encode_param`).
+- Any provider-supplied report or citation URL that contains the slug
+  (raw or percent-encoded, in path, query, or fragment) is treated as a
+  bearer capability and dropped. Until the provider contract proves such a
+  URL is public/shareable, "slug never crosses IPC" wins.
 
 ### 4.3 Report model
 
@@ -161,8 +189,10 @@ rate limits are unpublished — callers must poll politely (≥10 s suggested).
 DeliverabilityReport {
   score_ours_milli:   Option<u64>,   // 0–100 ×1000; null→None (incomplete)
   score_compat_milli: Option<u64>,   // classic 0–10 ×1000
-  complete: bool,                    // false ⇒ score is optimistic
-  report_url: Option<String>,        // human page — show this, not JSON
+  complete: bool,                    // provider's own flag, verbatim
+  checks_truncated: bool,            // client kept only the first MAX_CHECKS
+  report_url: Option<String>,        // https, no userinfo/fragment, bounded,
+                                     // omitted when it carries the slug
   subscores: BTreeMap<String,u64>,   // wire `subscores`/`scores` (milli) —
                                      // today: auth, infra_spam, content,
                                      // compliance; unknown keys preserved
@@ -171,55 +201,76 @@ DeliverabilityReport {
 }
 CheckEvidence { id, category_raw, status, title, summary, citations[] }
 CitedSource { kind /* standards|receiver|… */, title, url }
+AuthGate { Clear | Blocked{failed_ids} | Incomplete{gap} }
 ```
 
 - `tallies` is **computed**, never trusted from wire — keyed by lowercased
   raw category; `CheckCategory::parse` buckets
   `auth|infra_spam|content|compliance` (+`Other`). New categories/statuses
   land in `Other` buckets — parse never fails on new data.
-- `auth_failures()` = `category==auth && status==fail` — the recommended
-  hard gate (content can score while DKIM signs the wrong domain).
+- `auth_gate()` is the **only** decision procedure. It is fail-closed:
+  `Clear` requires at least one auth check, no unknown auth status, no
+  unknown category, and no client-side truncation. `Blocked` names the exact
+  failed auth ids. `Incomplete` names the gap (`no-auth-checks`,
+  `unknown-auth-status`, `unknown-category`, `truncated-checks`). A caller
+  must never infer a pass from `authFailureIds` being empty.
+- `checks_truncated` is client-side truth. Provider `complete: true` never
+  cancels it; only `complete && !checks_truncated` means the evidence set is
+  whole.
 - `check.status`: `pass|warn|fail|skip` (`skip` = N/A, neutral).
-- Citations flatten `citations.<kind>[]` preserving `kind`; RFC/receiver
-  links are evidence for humans — UI should link them, never fetch them.
+- Citations flatten `citations.<kind>[]` preserving `kind`. RFC/receiver
+  links are evidence for humans: validate scheme/length, render **copy-only**
+  text by default, never fetch them, and never turn provider-supplied data
+  into a navigable anchor.
 
 ### 4.4 Privacy/flow notes
 
 - The test message itself transits the provider's server — that's the
-  service's purpose; **user must opt in per-run** (consent surface is the
-  caller's job; the crate never initiates sends).
+  service's purpose. **Sending to an integration-managed address requires a
+  native confirmation the renderer cannot forge or suppress** (see
+  ipc.md §9e). The crate never initiates sends; the caller owns the gate.
 - Reservation address domain is provider-assigned — never hardcode it.
 - Address is single-use: one message, then closed. Re-send needs a new
-  reservation.
+  reservation. The app enqueues it as a durable **single-attempt** dispatch
+  class: an ambiguous relay outcome is never automatically retried into the
+  same address, including after a restart.
 
 ## 5. Error taxonomy (`IntegrationError`)
 
 | Variant | Meaning | Carries |
 |---|---|---|
 | `Transport{kind}` | connect/timeout/decode/other | kind only — **no URL** |
-| `Http{status}` | unmapped non-2xx | status |
-| `RateLimited{retry_after_ms}` | 429 | server hint ≤1h |
+| `Http{status}` | unmapped status, including a never-followed 3xx | status |
+| `RateLimited{retry_after_ms}` | HTTP **429** | server hint ≤1h, else `None` |
 | `Expired` | 410 | — |
 | `NotFound` | 404 | — |
 | `AnalysisFailed` | `analysis_status=failed` | — |
-| `Malformed(&'static str)` | schema violation | field *name* only |
+| `Malformed(&'static str)` | schema violation or a body that is not the operation's documented success shape | field *name* / op only |
 | `BodyTooLarge` | cap exceeded | — |
 | `InsecureUrl` | non-https refused | — |
 | `NoSession` | op needs live session | — |
-| `ProviderRejected(&'static str)` | in-band error payload | static tag only |
+| `ProviderRejected(&'static str)` | in-band `error` envelope or rejected op | static tag only |
+| `LiveRefused` | `::live()` without the env opt-in, or under CI | — |
 
 ## 6. Test posture
 
 - **No live calls anywhere in the test suite.** `ScriptedHttp` replays
   recorded exchanges (fixtures under `kiwi-integrations/tests/fixtures/`,
-  synthetic data only — SECURITY.md §4) and asserts request shape.
-- Live path exists (`::live()` constructors) but is exercised only by
-  explicit future e2e runs behind an env gate, never CI.
-- `cargo test -p kiwi-integrations` → 30 tests (26 unit + 4 integration
+  synthetic data only — SECURITY.md §4) and asserts request shape. The app's
+  default test state installs a transport that **rejects every request**, so
+  a test can only reach a provider by injecting a fixture.
+- The `::live()` convenience constructors are gated: they require
+  `KIWI_INTEGRATIONS_LIVE=1` and refuse unconditionally when `CI` is set.
+  They exist for an explicitly opted-in canary run, never for CI or the
+  default test suite. `ReqwestClient::new` and the provider `new()`
+  constructors stay available as the trusted low-level adapters.
+- `cargo test -p kiwi-integrations` → 82 tests (71 unit + 11 integration
   flows): cookie rotation, seq cursor, entity decoding, CRLF-injection
-  stripping, RFC822 synthesis, session lifecycle, status mapping
-  (202/404/410/429/failed), milli-score parse, tallies derivation,
-  `auth_failures`, slug redaction, non-HTTPS refusal, error taxonomy.
+  stripping, RFC822 synthesis, session lifecycle, exact `forget_me`/`extend`
+  shapes, in-band `error` rejection on every operation, status mapping
+  (202/404/410/429/failed), milli-score parse, tallies derivation, fail-closed
+  auth gate, over-cap truncation, slug/URL redaction, non-HTTPS refusal,
+  exact request matching, live-gate refusal, and error taxonomy.
 
 ## 7. Non-goals
 

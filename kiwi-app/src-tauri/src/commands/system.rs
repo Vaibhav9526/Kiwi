@@ -244,6 +244,7 @@ mod tests {
                     session_id: chal.session_id.clone(),
                     event: "device-pairing".into(),
                     signature_b64: base64::engine::general_purpose::STANDARD.encode(sig.to_bytes()),
+                    decision: None,
                 },
             )
             .await;
@@ -264,6 +265,7 @@ mod tests {
                     session_id: chal.session_id,
                     event: "unlock".into(),
                     signature_b64: base64::engine::general_purpose::STANDARD.encode(sig.to_bytes()),
+                    decision: None,
                 },
             )
             .await
@@ -293,6 +295,7 @@ mod tests {
                     session_id: chal.session_id.clone(),
                     event: "device-pairing".into(),
                     signature_b64: base64::engine::general_purpose::STANDARD.encode([0u8; 64]),
+                    decision: None,
                 },
             )
             .await;
@@ -311,6 +314,7 @@ mod tests {
                     session_id: chal.session_id,
                     event: "device-pairing".into(),
                     signature_b64: base64::engine::general_purpose::STANDARD.encode(sig.to_bytes()),
+                    decision: None,
                 },
             )
             .await;

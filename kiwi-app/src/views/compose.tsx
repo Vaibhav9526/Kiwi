@@ -81,6 +81,7 @@ function RecipientInput({
   onChange,
   onPick,
   book,
+  hideLabel,
 }: {
   id: string;
   label: string;
@@ -88,6 +89,8 @@ function RecipientInput({
   onChange: (v: string) => void;
   onPick: (email: string) => void;
   book: ContactView[];
+  /** Field-row layout supplies its own label cell — render input-only. */
+  hideLabel?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
@@ -95,11 +98,12 @@ function RecipientInput({
   useEffect(() => setActive(0), [value]);
   const shown = open && sugg.length > 0;
   return (
-    <span style={{ position: "relative", display: "inline-block" }}>
-      <label htmlFor={id}>{label}: </label>
+    <span className="em-field-input-wrap" style={{ position: "relative", display: "inline-block", flex: 1, minWidth: "10rem" }}>
+      {!hideLabel && <label htmlFor={id}>{label}: </label>}
       <input
         id={id}
         type="text"
+        aria-label={hideLabel ? label : undefined}
         value={value}
         onChange={(e) => {
           onChange(e.target.value);
@@ -115,9 +119,9 @@ function RecipientInput({
           } else if (e.key === "ArrowUp" && sugg.length > 0) {
             e.preventDefault();
             setActive((a) => (a - 1 + sugg.length) % sugg.length);
-          } else if (e.key === "Enter") {
+          } else if (e.key === "Enter" || e.key === ",") {
             e.preventDefault();
-            if (shown && sugg[active]) {
+            if (shown && sugg[active] && e.key === "Enter") {
               const hit = sugg[active];
               onPick(contactPrimaryEmail(hit) || contactLabel(hit));
             } else {
@@ -342,6 +346,8 @@ export function ComposeView({
   const [body, setBody] = useState("");
   const [recipients, setRecipients] = useState<string[]>([]);
   const [ccRecipients, setCcRecipients] = useState<string[]>([]);
+  const [ccOpen, setCcOpen] = useState(false);
+  const showCc = ccOpen || ccRecipients.length > 0;
   // T-302: plugin-registered composer actions (composer-action capability).
   const pluginActions = useComposerActions();
   const [book, setBook] = useState<ContactView[]>([]);
@@ -671,6 +677,16 @@ export function ComposeView({
     setSentNote(null);
     setSendError(null);
     setBanner(null);
+    // Gmail semantics: half-typed recipient text commits on Send rather than
+    // being silently dropped or producing a spurious "no recipients" error.
+    const toList = to.trim() ? [...recipients, to.trim()] : recipients;
+    const ccList = cc.trim() ? [...ccRecipients, cc.trim()] : ccRecipients;
+    if (toList !== recipients || ccList !== ccRecipients) {
+      setRecipients(toList);
+      setCcRecipients(ccList);
+      setTo("");
+      setCc("");
+    }
     // Sending consumes the autosaved draft (fields stay for undo).
     try {
       window.localStorage.removeItem(draftKey);
@@ -692,7 +708,7 @@ export function ComposeView({
       setSendError("Choose a sending account first.");
       return;
     }
-    if (recipients.length === 0 && ccRecipients.length === 0) {
+    if (toList.length === 0 && ccList.length === 0) {
       setSendError("Add at least one recipient (To or Cc).");
       return;
     }
@@ -719,8 +735,8 @@ export function ComposeView({
       const receipt = await api.sendMessage(
         accountId,
         {
-          to: recipients,
-          cc: ccRecipients,
+          to: toList,
+          cc: ccList,
           bcc: [],
           subject,
           text: sendText,
@@ -748,11 +764,11 @@ export function ComposeView({
     } catch (e) {
       setSending(false);
       if (e instanceof IpcError && e.code === "policy-blocked") {
-        setBanner({ verdict: "block", offenders: recipients });
+        setBanner({ verdict: "block", offenders: toList });
         setSendError(`Policy blocked this send: ${e.message}`);
         onNotify("error", `Policy blocked this send: ${e.message}`);
       } else if (e instanceof IpcError && e.code === "policy-unavailable") {
-        setBanner({ verdict: "warn", offenders: recipients });
+        setBanner({ verdict: "warn", offenders: toList });
         setSendError(`Policy service unreachable — the server held the send (fail-closed): ${e.message}`);
         onNotify("warn", "Policy service unreachable — the server held the send (fail-closed).");
       } else {
@@ -949,74 +965,116 @@ export function ComposeView({
       {banner && (
         <PolicyBanner verdict={banner.verdict} offenders={banner.offenders} onRemove={removeAddress} />
       )}
-      {mode === "live" && accounts.length > 0 && (
-        <p>
-          <label>
-            From:{" "}
-            <select value={accountId} onChange={(e) => setAccountId(e.target.value)} aria-label="Sending account">
+      {/* Gmail-style field rows: hairline-separated, prefix label cell,
+          chips inline in the To row, borderless inputs, Cc link reveals the
+          Cc row (no Bcc — the send payload has none). */}
+      <div className="em-compose-fields">
+        {mode === "live" && accounts.length > 0 && (
+          <div className="em-field">
+            <span className="em-field-label">
+              <label htmlFor="compose-from">From</label>
+            </span>
+            <select
+              id="compose-from"
+              className="em-field-input"
+              value={accountId}
+              onChange={(e) => setAccountId(e.target.value)}
+              aria-label="Sending account"
+            >
               {accounts.map((a) => (
                 <option key={a.id} value={a.id}>
                   {a.displayName} &lt;{a.email}&gt;
                 </option>
               ))}
             </select>
-          </label>
-        </p>
-      )}
-      <p>
-        <RecipientInput
-          id="compose-to"
-          label="To"
-          value={to}
-          onChange={setTo}
-          onPick={(email) => addAddress(email, false)}
-          book={book}
-        />{" "}
-        <button type="button" onClick={() => addAddress(to, false)}>
-          Add
-        </button>
-      </p>
-      <p>
-        <RecipientInput
-          id="compose-cc"
-          label="Cc"
-          value={cc}
-          onChange={setCc}
-          onPick={(email) => addAddress(email, true)}
-          book={book}
-        />{" "}
-        <button type="button" onClick={() => addAddress(cc, true)}>
-          Add
-        </button>{" "}
-        <small style={{ color: "var(--kiwi-text-secondary)" }}>
-          Contacts: {bookSource === "server" ? "address book" : "demo book (localStorage fixture)"}.
-        </small>
-      </p>
-      <p aria-label="Recipients">
-        {recipients.map((r) => (
-          <span key={`to-${r}`} className="kiwi-pill unknown" style={{ marginRight: "0.3rem" }}>
-            To: {r}{" "}
-            <button type="button" onClick={() => removeAddress(r)} aria-label={`Remove ${r}`}>
-              <Icon name="close" size={10} />
-            </button>
-          </span>
-        ))}
-        {ccRecipients.map((r) => (
-          <span key={`cc-${r}`} className="kiwi-pill unknown" style={{ marginRight: "0.3rem" }}>
-            Cc: {r}{" "}
-            <button type="button" onClick={() => removeAddress(r)} aria-label={`Remove ${r}`}>
-              <Icon name="close" size={10} />
-            </button>
-          </span>
-        ))}
-        {recipients.length === 0 && ccRecipients.length === 0 && (
-          <small style={{ color: "var(--kiwi-text-secondary)" }}>No recipients yet.</small>
+          </div>
         )}
-      </p>
+        <div className="em-field">
+          <span className="em-field-label">
+            <label htmlFor="compose-to">To</label>
+          </span>
+          <p aria-label="Recipients" className="em-field-chips">
+            {recipients.map((r) => (
+              <span key={`to-${r}`} className="em-addr-chip">
+                To: {r}
+                <button type="button" onClick={() => removeAddress(r)} aria-label={`Remove ${r}`}>
+                  <Icon name="close" size={10} />
+                </button>
+              </span>
+            ))}
+            {ccRecipients.map((r) => (
+              <span key={`cc-${r}`} className="em-addr-chip">
+                Cc: {r}
+                <button type="button" onClick={() => removeAddress(r)} aria-label={`Remove ${r}`}>
+                  <Icon name="close" size={10} />
+                </button>
+              </span>
+            ))}
+          </p>
+          <RecipientInput
+            id="compose-to"
+            label="To"
+            hideLabel
+            value={to}
+            onChange={setTo}
+            onPick={(email) => addAddress(email, false)}
+            book={book}
+          />
+          <button type="button" className="em-field-add" onClick={() => addAddress(to, false)}>
+            Add
+          </button>
+          {!showCc && (
+            <button
+              type="button"
+              className="em-field-link"
+              onClick={() => setCcOpen(true)}
+              aria-label="Add Cc recipients"
+            >
+              Cc
+            </button>
+          )}
+        </div>
+        {showCc && (
+          <div className="em-field">
+            <span className="em-field-label">
+              <label htmlFor="compose-cc">Cc</label>
+            </span>
+            <RecipientInput
+              id="compose-cc"
+              label="Cc"
+              hideLabel
+              value={cc}
+              onChange={setCc}
+              onPick={(email) => addAddress(email, true)}
+              book={book}
+            />
+            <button type="button" className="em-field-add" onClick={() => addAddress(cc, true)}>
+              Add
+            </button>
+            <button type="button" className="em-field-link" onClick={() => setCcOpen(false)} aria-label="Hide Cc">
+              ×
+            </button>
+          </div>
+        )}
+        <div className="em-field">
+          <span className="em-field-label">
+            <label htmlFor="compose-subject">Subject</label>
+          </span>
+          <input
+            id="compose-subject"
+            className="em-field-input"
+            type="text"
+            value={subject}
+            onChange={(e) => setSubject(e.target.value)}
+            aria-label="Subject"
+          />
+        </div>
+      </div>
       <p>
-        <label>
-          Subject: <input type="text" value={subject} onChange={(e) => setSubject(e.target.value)} style={{ width: "70%" }} />
-        </label>
+        <small style={{ color: "var(--kiwi-text-secondary)" }}>
+          Contacts: {bookSource === "server" ? "address book" : "demo book (localStorage fixture)"} — Enter or a
+          comma commits an address.
+        </small>
       </p>
       <p>
         <label>

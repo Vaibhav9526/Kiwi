@@ -58,6 +58,19 @@ pub struct MoveResultView {
     pub uid_map: std::collections::BTreeMap<u64, u64>,
 }
 
+/// `kiwi_copy_messages` result (T-325) — same shape as a move: `uidMap`
+/// maps each copied src uid to its fresh local uid in `dst`. The copies
+/// are local-only rows, never a server-side copy.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopyResultView {
+    pub src_folder_id: i64,
+    pub dst_folder_id: i64,
+    pub copied: u64,
+    /// src uid → dst uid (fresh local uid).
+    pub uid_map: std::collections::BTreeMap<u64, u64>,
+}
+
 /// Result of `kiwi_download_attachment` — what was written where.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

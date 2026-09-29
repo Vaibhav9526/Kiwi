@@ -1,0 +1,142 @@
+/* Mailspring Taiga — port of vendor ui-taiga (internal_packages/ui-taiga).
+ * White surfaces everywhere (background-secondary and panel/toolbar are
+ * plain white in the source), muted taiga gray-blue text, sky-blue
+ * #5dade1 selection. Flat fills — the source explicitly disables the
+ * background gradient. */
+
+:root[data-theme="mailspring-taiga"],
+[data-theme="mailspring-taiga"] {
+  color-scheme: light;
+
+  /* ---- canonical palette ---- */
+  --accent: #5dade1;
+  --accent-hover: #4a9fd8;
+  --accent-ink: #ffffff;
+  --selection: #e2f0fa;
+
+  /* ---- mailspring tokens ---- */
+  --kiwi-ms-bg: #fdfdfd;
+  --kiwi-ms-surface: #ffffff;
+  --kiwi-ms-surface-2: #ffffff; /* @background-secondary: @white */
+  --kiwi-ms-surface-3: #eceef1;
+  --kiwi-ms-sidebar: #ffffff; /* @panel-background-color: @white */
+  --kiwi-ms-toolbar: #ffffff; /* @toolbar-background-color: @white */
+  --kiwi-ms-list-bg: #ffffff;
+  --kiwi-ms-list-border: #dddddd;
+  --kiwi-ms-list-hover: #f2f2f2;
+  --kiwi-ms-text: #697278; /* @taiga-dark */
+  --kiwi-ms-text-heading: #434648;
+  --kiwi-ms-text-secondary: #9fa5a8; /* lighten(@taiga-dark, 20%) */
+  --kiwi-ms-text-muted: #8b9296; /* @taiga-light */
+  --kiwi-ms-link: #419bf9;
+  --kiwi-ms-accent: #8b9296; /* @accent-primary: @taiga-light */
+  --kiwi-ms-accent-active: #71757a; /* accent 20% darker */
+  --kiwi-ms-accent-emphasis: #5dade1; /* @taiga-accent */
+  --kiwi-ms-primary: #5dade1;
+  --kiwi-ms-primary-text: #ffffff;
+  --kiwi-ms-icon-muted: #919191;
+  --kiwi-ms-border: #e6e6e6;
+  --kiwi-ms-border-strong: #cfcfcf;
+  --kiwi-ms-divider: #e6e6e6;
+  --kiwi-ms-hairline: rgba(35, 31, 32, 0.1);
+  --kiwi-ms-info: #3187e1;
+  --kiwi-ms-success: #5cb346;
+  --kiwi-ms-warning: #f0ad4e;
+  --kiwi-ms-danger: #d9534f;
+  --kiwi-ms-toast-info: #009ec4;
+  --kiwi-ms-toast-success: #00ac6f;
+  --kiwi-ms-toast-warning: #ff4800;
+  --kiwi-ms-toast-error: #ca2541;
+  --kiwi-ms-toast-pending: #b4babd;
+  --kiwi-ms-shadow-color: rgba(0, 0, 0, 0.15);
+  --kiwi-ms-shadow-standard: 0 1px 4px 0 rgba(0, 0, 0, 0.15);
+  --kiwi-ms-shadow-raised: 0 2px 8px 0 rgba(0, 0, 0, 0.16);
+  --kiwi-ms-shadow-popover: 0 2px 10px rgba(0, 0, 0, 0.18);
+  --kiwi-ms-shadow-modal: 0 12px 40px rgba(0, 0, 0, 0.24);
+  --kiwi-ms-focus-glow: 0 0 0 3px rgba(93, 173, 225, 0.25);
+  /* Muted gray selection tint — accent-primary is taiga-light, not blue. */
+  --kiwi-ms-select-tint: #eceded;
+  --kiwi-ms-select-border: #b8babc;
+  --kiwi-ms-select-solid: #71757a;
+
+  /* ---- --ms-* contract vars ui-taiga redefined ---- */
+  --ms-background-secondary: #ffffff;
+  --ms-btn-default-bg-color: #ffffff; /* @btn-default-bg-color: @white */
+  --ms-btn-default-text-color: #8b9296; /* @btn-default-text-color: @taiga-light */
+
+  /* ---- legacy kiwi tokens ---- */
+  --kiwi-bg: #fdfdfd;
+  --kiwi-surface: #ffffff;
+  --kiwi-sidebar: #ffffff;
+  --kiwi-card: #ffffff;
+  --kiwi-input: #ffffff;
+  --kiwi-border: #e6e6e6;
+  --kiwi-border-soft: #ededed;
+  --kiwi-text: #697278;
+  --kiwi-text-secondary: #9fa5a8;
+  --kiwi-text-disabled: #b3b9bc;
+  --kiwi-brand: #5dade1;
+  --kiwi-brand-hover: #4a9fd8;
+  --kiwi-brand-ink: #2b6f9e;
+  --kiwi-focus: #4a9fd8;
+  --kiwi-focus-ring: rgba(93, 173, 225, 0.25);
+  --kiwi-secure: #5cb346;
+  --kiwi-secure-bg: #e8f5e5;
+  --kiwi-secure-border: rgba(92, 179, 70, 0.45);
+  --kiwi-warning: #d89b3e;
+  --kiwi-warning-bg: #fcf3dd;
+  --kiwi-warning-border: rgba(240, 173, 78, 0.5);
+  --kiwi-danger: #d9534f;
+  --kiwi-danger-bg: #fae9e8;
+  --kiwi-danger-border: rgba(217, 83, 79, 0.45);
+  --kiwi-unknown: #8b9296;
+  --kiwi-unknown-bg: #eceef1;
+  --kiwi-unknown-border: rgba(139, 146, 150, 0.4);
+  --kiwi-lock: #d89b3e;
+  --kiwi-lock-bg: #fcf3dd;
+  --kiwi-hover-bg: rgba(93, 173, 225, 0.07);
+  --kiwi-shadow: 0 4px 20px rgba(35, 31, 32, 0.12);
+  --kiwi-shimmer: rgba(105, 114, 120, 0.07);
+
+  /* ---- pane tokens ---- */
+  --em-pane-border: #e6e6e6;
+  --em-hairline: #ededed;
+  --em-pane-bg: #ffffff;
+  --em-pane-alt: #fdfdfd;
+  --em-pane-titlebar: #fbfbfb;
+  --em-toolbar-bg: #ffffff;
+  --em-select: #eceded;
+  --em-select-border: #b8babc;
+  --em-select-focus: #e2e2e2;
+  --em-unread-dot: #5dade1;
+  --em-sender-blue: #4a9fd8;
+  --em-link: #419bf9;
+  --em-hover: #f2f2f2;
+  --em-text-dim: #697278;
+  --em-text-faint: #8b9296;
+  --em-group-head: #8b9296;
+  --em-avatar-text: #ffffff;
+  --em-card-bg: #ffffff;
+  --em-menu-bg: #ffffff;
+  --em-tab-line: #e6e6e6;
+  --em-star: #f5a623;
+  --em-cat-news: #5dade1;
+  --em-cat-news-bg: #e2f0fa;
+  --em-cat-personal: #d89b3e;
+  --em-cat-personal-bg: #fcf3dd;
+  --em-cat-logs: #5cb346;
+  --em-cat-logs-bg: #e8f5e5;
+  --em-cat-social: #6d4fc2;
+  --em-cat-social-bg: #ece6fa;
+  --em-cat-other: #8b9296;
+  --em-cat-other-bg: #eceef1;
+}
+
+/* ui-taiga sidebar.less: selected sidebar items take a flat taiga-accent
+ * fill with white text (not the gray list-selection tint). */
+:root[data-theme="mailspring-taiga"] .ms-tree-item[aria-selected="true"],
+:root[data-theme="mailspring-taiga"] .em-tree-item[aria-selected="true"] {
+  background: #5dade1;
+  border-color: transparent;
+  color: #ffffff;
+}

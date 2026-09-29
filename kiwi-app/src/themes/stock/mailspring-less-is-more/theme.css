@@ -1,0 +1,136 @@
+/* Mailspring Less Is More — port of vendor ui-less-is-more
+ * (internal_packages/ui-less-is-more). Minimalist all-white surfaces,
+ * slate #566c75 text, #fafafa highlight in place of a colored selection
+ * tint, #ddd dividers. The source is mostly structural CSS; the palette
+ * portion is reproduced here (padding/density work stays out of scope). */
+
+:root[data-theme="mailspring-less-is-more"],
+[data-theme="mailspring-less-is-more"] {
+  color-scheme: light;
+
+  /* ---- canonical palette ---- */
+  --accent: #419bf9;
+  --accent-hover: #3187e1;
+  --accent-ink: #ffffff;
+  --selection: #fafafa;
+
+  /* ---- mailspring tokens ---- */
+  --kiwi-ms-bg: #ffffff; /* @less-background */
+  --kiwi-ms-surface: #ffffff;
+  --kiwi-ms-surface-2: #fafafa; /* @less-highlight */
+  --kiwi-ms-surface-3: #eceef1;
+  --kiwi-ms-sidebar: #ffffff;
+  --kiwi-ms-toolbar: #ffffff;
+  --kiwi-ms-list-bg: #ffffff;
+  --kiwi-ms-list-border: #dddddd; /* @less-divider */
+  --kiwi-ms-list-hover: #fafafa;
+  --kiwi-ms-text: #566c75; /* @less-text */
+  --kiwi-ms-text-heading: #3e515a;
+  --kiwi-ms-text-secondary: #899fa8; /* @sidebar-text: lighten(@less-text,20%) */
+  --kiwi-ms-text-muted: #aebac0;
+  --kiwi-ms-link: #419bf9;
+  --kiwi-ms-accent: #419bf9;
+  --kiwi-ms-accent-active: #3187e1;
+  --kiwi-ms-accent-emphasis: #5b90fb;
+  --kiwi-ms-primary: #419bf9;
+  --kiwi-ms-primary-text: #ffffff;
+  --kiwi-ms-icon-muted: #899fa8;
+  --kiwi-ms-border: #dddddd;
+  --kiwi-ms-border-strong: #c6c6c6;
+  --kiwi-ms-divider: #dddddd;
+  --kiwi-ms-hairline: rgba(0, 0, 0, 0.08);
+  --kiwi-ms-info: #3187e1;
+  --kiwi-ms-success: #5cb346;
+  --kiwi-ms-warning: #f0ad4e;
+  --kiwi-ms-danger: #ff5f56; /* @close / @invalid */
+  --kiwi-ms-toast-info: #009ec4;
+  --kiwi-ms-toast-success: #00ac6f;
+  --kiwi-ms-toast-warning: #ff4800;
+  --kiwi-ms-toast-error: #ff5f56;
+  --kiwi-ms-toast-pending: #b4babd;
+  --kiwi-ms-swipe-danger: #ff5f56;
+  --kiwi-ms-swipe-snooze: #fbd852;
+  --kiwi-ms-swipe-archive: #8dd07d;
+  --kiwi-ms-shadow-color: rgba(0, 0, 0, 0.12);
+  --kiwi-ms-shadow-standard: 0 1px 4px 0 rgba(0, 0, 0, 0.12);
+  --kiwi-ms-shadow-raised: 0 2px 8px 0 rgba(0, 0, 0, 0.13);
+  --kiwi-ms-shadow-popover: 0 2px 10px rgba(0, 0, 0, 0.15);
+  --kiwi-ms-shadow-modal: 0 12px 40px rgba(0, 0, 0, 0.22);
+  --kiwi-ms-focus-glow: 0 0 0 3px rgba(65, 155, 249, 0.25);
+  /* Selected/hover rows are the flat @less-highlight fill; selected text
+   * deepens to darken(@less-text, 50%) — see --ms-list-selected-color. */
+  --kiwi-ms-select-tint: #fafafa;
+  --kiwi-ms-select-border: #dddddd;
+  --kiwi-ms-select-solid: #3187e1;
+
+  /* ---- --ms-* contract vars ui-less-is-more redefined ---- */
+  --ms-list-selected-color: #2b363a; /* darken(@less-text, 50%) */
+  --ms-toolbar-background-color: #ffffff;
+
+  /* ---- legacy kiwi tokens ---- */
+  --kiwi-bg: #ffffff;
+  --kiwi-surface: #ffffff;
+  --kiwi-sidebar: #ffffff;
+  --kiwi-card: #ffffff;
+  --kiwi-input: #ffffff;
+  --kiwi-border: #dddddd;
+  --kiwi-border-soft: #e6e6e6;
+  --kiwi-text: #566c75;
+  --kiwi-text-secondary: #899fa8;
+  --kiwi-text-disabled: #aebac0;
+  --kiwi-brand: #419bf9;
+  --kiwi-brand-hover: #3187e1;
+  --kiwi-brand-ink: #1d5fa8;
+  --kiwi-focus: #3187e1;
+  --kiwi-focus-ring: rgba(65, 155, 249, 0.25);
+  --kiwi-secure: #5cb346;
+  --kiwi-secure-bg: #e8f5e5;
+  --kiwi-secure-border: rgba(92, 179, 70, 0.45);
+  --kiwi-warning: #d89b3e;
+  --kiwi-warning-bg: #fcf3dd;
+  --kiwi-warning-border: rgba(240, 173, 78, 0.5);
+  --kiwi-danger: #ff5f56;
+  --kiwi-danger-bg: #ffecea;
+  --kiwi-danger-border: rgba(255, 95, 86, 0.45);
+  --kiwi-unknown: #899fa8;
+  --kiwi-unknown-bg: #eceef1;
+  --kiwi-unknown-border: rgba(137, 159, 168, 0.4);
+  --kiwi-lock: #d89b3e;
+  --kiwi-lock-bg: #fcf3dd;
+  --kiwi-hover-bg: #fafafa;
+  --kiwi-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
+  --kiwi-shimmer: rgba(86, 108, 117, 0.06);
+
+  /* ---- pane tokens ---- */
+  --em-pane-border: #dddddd;
+  --em-hairline: #e6e6e6;
+  --em-pane-bg: #ffffff;
+  --em-pane-alt: #fafafa;
+  --em-pane-titlebar: #ffffff;
+  --em-toolbar-bg: #ffffff;
+  --em-select: #fafafa;
+  --em-select-border: #dddddd;
+  --em-select-focus: #f2f2f2;
+  --em-unread-dot: #419bf9;
+  --em-sender-blue: #3187e1;
+  --em-link: #419bf9;
+  --em-hover: #fafafa;
+  --em-text-dim: #566c75;
+  --em-text-faint: #aebac0;
+  --em-group-head: #899fa8;
+  --em-avatar-text: #ffffff;
+  --em-card-bg: #ffffff;
+  --em-menu-bg: #ffffff;
+  --em-tab-line: #dddddd;
+  --em-star: #f5a623;
+  --em-cat-news: #3187e1;
+  --em-cat-news-bg: #e2effb;
+  --em-cat-personal: #d89b3e;
+  --em-cat-personal-bg: #fcf3dd;
+  --em-cat-logs: #5cb346;
+  --em-cat-logs-bg: #e8f5e5;
+  --em-cat-social: #6d4fc2;
+  --em-cat-social-bg: #ece6fa;
+  --em-cat-other: #899fa8;
+  --em-cat-other-bg: #eceef1;
+}

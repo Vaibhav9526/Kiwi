@@ -106,6 +106,33 @@ async fn client_id_for(state: &AppState, provider_id: &str) -> CmdResult<String>
     ))
 }
 
+/// Optional client secret for providers that issue one to installed-app
+/// clients (new Google Desktop clients require it at the token endpoint).
+/// Same resolution order as `client_id_for` but never an error — absent
+/// means the field simply isn't posted (the pre-2024 Google posture).
+async fn client_secret_for(state: &AppState, provider_id: &str) -> Option<String> {
+    let env_key = format!(
+        "KIWI_OAUTH2_{}_CLIENT_SECRET",
+        provider_id.to_ascii_uppercase()
+    );
+    if let Ok(v) = std::env::var(&env_key) {
+        let v = v.trim().to_string();
+        if !v.is_empty() {
+            return Some(v);
+        }
+    }
+    let key = crate::state::pref_key(None, &format!("oauth2.{provider_id}.clientSecret"));
+    state
+        .index
+        .lock()
+        .await
+        .prefs
+        .get(&key)
+        .and_then(|v| v.as_str().map(str::to_string))
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
 /// `OAuthError` → IPC `(code, message)`. Codes are contract-stable;
 /// messages are already secret-free by construction.
 fn oauth_code(e: &OAuthError) -> (&'static str, String) {
@@ -196,7 +223,10 @@ pub(crate) async fn oauth2_begin_impl(
     }
 
     let client_id = client_id_for(state, &provider_id).await?;
-    let config = ProviderConfig::by_id(&provider_id, &client_id).map_err(oauth_ipc_err)?;
+    let mut config = ProviderConfig::by_id(&provider_id, &client_id).map_err(oauth_ipc_err)?;
+    if let Some(secret) = client_secret_for(state, &provider_id).await {
+        config = config.with_client_secret(&secret);
+    }
     let flow = OAuthClient::new(config.clone());
     let http = SharedTransport(state.integrations_http.clone());
     let now = now_unix();
@@ -631,13 +661,55 @@ pub(crate) async fn oauth2_status_impl(
 
 /// Split `oauth2/<provider>/<email>` — the credential-key form
 /// `kiwi-autoconfig::oauth2::credential_key` emits.
-fn parse_oauth2_key(key: &str) -> Option<(&str, &str)> {
+pub(crate) fn parse_oauth2_key(key: &str) -> Option<(&str, &str)> {
     let rest = key.strip_prefix("oauth2/")?;
     let (provider, email) = rest.split_once('/')?;
     if provider.is_empty() || email.is_empty() {
         return None;
     }
     Some((provider, email))
+}
+
+// ---------------------------------------------------------------------------
+// Grant consume (resolve_secret seam, commands/mod.rs)
+// ---------------------------------------------------------------------------
+
+/// Resolve a usable bearer token for an `oauth2/<provider>/<email>` grant:
+/// rebuilds the provider config (client id + optional client secret), then
+/// `ensure_fresh` — loads the stored `TokenSet`, refreshes when inside the
+/// expiry skew, persists any rotated refresh token — and returns the
+/// access token. `Err(oauth2-reauth)` when no grant exists; transport
+/// failures surface as connect-failed so the caller's retry stays honest.
+pub(crate) async fn resolve_oauth2_token(
+    state: &AppState,
+    provider_id: &str,
+    email: &str,
+) -> CmdResult<zeroize::Zeroizing<String>> {
+    let client_id = client_id_for(state, provider_id).await?;
+    let mut config = ProviderConfig::by_id(provider_id, &client_id).map_err(oauth_ipc_err)?;
+    if let Some(secret) = client_secret_for(state, provider_id).await {
+        config = config.with_client_secret(&secret);
+    }
+    let flow = OAuthClient::new(config);
+    let http = SharedTransport(state.integrations_http.clone());
+    let tokens = oauth2::ensure_fresh(
+        &http,
+        &flow,
+        state.credentials.as_ref(),
+        email,
+        now_unix(),
+    )
+    .await
+    .map_err(oauth_ipc_err)?
+    .ok_or_else(|| {
+        IpcError::new(
+            "oauth2-reauth",
+            "no stored oauth2 grant — re-authorize the account",
+        )
+    })?;
+    Ok(zeroize::Zeroizing::new(
+        tokens.access_token().to_string(),
+    ))
 }
 
 // ---------------------------------------------------------------------------

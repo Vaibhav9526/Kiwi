@@ -1,0 +1,1103 @@
+// Ported from Mailspring app/src/components/tokenizing-text-field.tsx
+// Seams: 'mailspring-exports' -> './ms-exports'; 'mailspring-component-kit'
+// Menu -> './menu'; 'retina-img'/'key-commands-region' -> './retina-img' (kit
+// Icon-registry adapter — 'composer-caret.png' resolves to the 'chevron-down'
+// icon via its NAME_ALIASES) / './key-commands-region' (ported sibling); '@electron/remote' Menu/MenuItem
+// popup -> kit remote.Menu + MenuItem via './ms-exports' (DOM popup needs
+// explicit coords — Electron's popup({}) opens at the native cursor, so the
+// last pointer position is tracked at module scope); Utils.convertToModel ->
+// Contact rehydration (KIWI has no DatabaseObjectRegistry/__cls — Contact is
+// the only token type wired into this field).
+// Strict-TS (vendor ran a non-strict tsconfig): `| null` unions on state and
+// findDOMNode/`.at()` results, `!` where defaultProps guarantee a prop,
+// `tokens`/`className`/`tokenClassNames` required in Props (defaultProps keep
+// them optional for callers), Token's `onEdited` prop params retyped to match
+// the positional call (item, editedText).
+import classNames from 'classnames';
+import _ from 'underscore';
+
+import React from 'react';
+import ReactDOM from 'react-dom';
+import { localized, Utils, RegExpUtils, Contact, remote, MenuItem } from './ms-exports';
+import { Menu } from './menu';
+
+import { RetinaImg } from './retina-img';
+import { KeyCommandsRegion } from './key-commands-region';
+
+// KIWI seam: `remote.Menu.popup()` in Electron opens at the native cursor
+// position; the kit DOM Menu needs explicit x/y. Token actions are always
+// mouse-invoked (the `.action` caret button), so the last mousedown position
+// is the cursor position at popup time.
+let _lastPointer = { x: 0, y: 0 };
+if (typeof document !== 'undefined') {
+  document.addEventListener(
+    'mousedown',
+    (e) => {
+      _lastPointer = { x: e.clientX, y: e.clientY };
+    },
+    true
+  );
+}
+
+type SizeToFitInputProps = {
+  value?: string;
+};
+
+class SizeToFitInput extends React.Component<
+  SizeToFitInputProps & React.HTMLProps<HTMLInputElement>
+> {
+  state = {};
+
+  componentDidMount() {
+    this._sizeToFit();
+  }
+
+  componentDidUpdate() {
+    this._sizeToFit();
+  }
+
+  get inputEl() {
+    return ReactDOM.findDOMNode(this.refs.input) as HTMLInputElement;
+  }
+
+  _sizeToFit() {
+    if (this.props.value!.length === 0) {
+      return;
+    }
+    // Measure the width of the text in the input and
+    // resize the input field to fit.
+    const measureEl = ReactDOM.findDOMNode(this.refs.measure) as HTMLElement;
+    measureEl.innerText = this.inputEl.value;
+    measureEl.style.top = `${this.inputEl.offsetTop}px`;
+    measureEl.style.left = `${this.inputEl.offsetLeft}px`;
+    // The 10px comes from the 7.5px left padding and 2.5px more of
+    // breathing room.
+    this.inputEl.style.width = `${measureEl.offsetWidth + 10}px`;
+  }
+
+  select() {
+    this.inputEl.select();
+  }
+
+  selectionRange() {
+    return {
+      start: this.inputEl.selectionStart,
+      end: this.inputEl.selectionEnd,
+    };
+  }
+
+  focus(args?: FocusOptions) {
+    this.inputEl.focus(args);
+  }
+
+  render() {
+    return (
+      <span>
+        <span ref="measure" style={{ visibility: 'hidden', position: 'absolute' }} />
+        <input ref="input" type="text" style={{ width: 1 }} {...this.props} />
+      </span>
+    );
+  }
+}
+
+interface TokenState {
+  editing: string | null;
+  dragging: boolean;
+}
+
+// strict-TS seam: the vendor calls `item.toString()` on tokens (aria-label,
+// text/plain drag payload, editing-input seed) under a tsconfig where an
+// unconstrained generic still resolved Object#toString. Satisfied by Contact,
+// ContactGroup and every object type — the caller contract is unchanged.
+interface TokenProps<T extends { toString(): string }> {
+  className: string;
+  selected: boolean;
+  valid: boolean;
+  item: T;
+  onClick: (event: any, item: T) => void;
+  onDragStart: (event: any, item: T) => void;
+  // strict-TS seam: vendor typed these params (event, item) but the call site
+  // passes (item, editedText) — names corrected, positions unchanged.
+  onEdited?: (item: T, value: any) => void;
+  onAction?: ((item: T) => void) | null;
+  disabled?: boolean;
+  onEditMotion?: (item: T) => void;
+  // strict-TS seam: React 18 types no longer inject implicit `children` into
+  // React.Component<P>; the vendor relied on the pre-18 declaration.
+  children?: React.ReactNode;
+}
+
+class Token<T extends { toString(): string }> extends React.Component<
+  TokenProps<T>,
+  TokenState
+> {
+  static displayName = 'Token';
+
+  static defaultProps = {
+    className: '',
+  };
+
+  state: TokenState = {
+    editing: null,
+    dragging: false,
+  };
+
+  shouldComponentUpdate(nextProps: TokenProps<T>, nextState: TokenState) {
+    return (
+      nextProps.selected !== this.props.selected ||
+      nextProps.valid !== this.props.valid ||
+      nextProps.item !== this.props.item ||
+      nextProps.disabled !== this.props.disabled ||
+      nextState.editing !== this.state.editing ||
+      nextState.dragging !== this.state.dragging
+    );
+  }
+
+  componentDidUpdate(_prevProps: TokenProps<T>, prevState: TokenState) {
+    if (this.state.editing !== null && prevState.editing === null) {
+      (this.refs.input as SizeToFitInput).select();
+    }
+  }
+
+  _renderEditing() {
+    return (
+      <SizeToFitInput
+        ref="input"
+        className="token-editing-input"
+        spellCheck={false}
+        value={this.state.editing !== null ? this.state.editing : this.props.item.toString()}
+        onKeyDown={this._onEditKeydown}
+        onBlur={this._onEditFinished}
+        onChange={(event) => this.setState({ editing: event.currentTarget.value })}
+      />
+    );
+  }
+
+  _renderViewing() {
+    const classes = classNames({
+      token: true,
+      disabled: this.props.disabled,
+      dragging: this.state.dragging,
+      invalid: !this.props.valid,
+      selected: this.props.selected,
+    });
+
+    let actionButton = null;
+    if (this.props.onAction && !this.props.disabled) {
+      actionButton = (
+        <button type="button" className="action" onClick={this._onAction} tabIndex={-1}>
+          <RetinaImg mode={RetinaImg.Mode.ContentIsMask} name="composer-caret.png" />
+        </button>
+      );
+    }
+
+    return (
+      <div
+        role="option"
+        aria-selected={this.props.selected}
+        aria-label={this.props.item ? this.props.item.toString() : undefined}
+        className={`${classes} ${this.props.className}`}
+        onDragStart={this._onDragStart}
+        onDragEnd={this._onDragEnd}
+        draggable={!this.props.disabled}
+        onDoubleClick={this._onDoubleClick}
+        onClick={this._onClick}
+      >
+        {actionButton}
+        {this.props.children}
+      </div>
+    );
+  }
+
+  _onDragStart = (event: React.DragEvent<HTMLDivElement>) => {
+    if (this.props.disabled) return;
+    this.props.onDragStart(event, this.props.item);
+    this.setState({ dragging: true });
+  };
+
+  _onDragEnd = () => {
+    if (this.props.disabled) return;
+    this.setState({ dragging: false });
+  };
+
+  _onClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (this.props.disabled) return;
+    this.props.onClick(event, this.props.item);
+  };
+
+  _onDoubleClick = () => {
+    if (this.props.disabled) return;
+    if (this.props.onEditMotion) {
+      this.props.onEditMotion(this.props.item);
+    }
+    if (this.props.onEdited) {
+      this.setState({ editing: this.props.item.toString() });
+    }
+  };
+
+  _onEditKeydown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (this.props.disabled) return;
+    if (event.key === 'Enter' && this.props.selected && this.props.onEditMotion) {
+      this.props.onEditMotion(this.props.item);
+    }
+    if (['Escape', 'Enter'].includes(event.key)) {
+      this._onEditFinished();
+    }
+  };
+
+  _onEditFinished = () => {
+    if (this.props.disabled) return;
+    if (this.props.onEdited) {
+      this.props.onEdited(this.props.item, this.state.editing);
+    }
+    this.setState({ editing: null });
+  };
+
+  _onAction = (event: React.MouseEvent<HTMLButtonElement>) => {
+    if (this.props.disabled) return;
+    this.props.onAction!(this.props.item);
+    event.preventDefault();
+  };
+
+  render() {
+    return this.state.editing !== null ? this._renderEditing() : this._renderViewing();
+  }
+}
+
+export type TokenizingTextFieldProps<T extends { toString(): string }> = {
+  // strict-TS seam: `className`, `tokens` and `tokenClassNames` are `?`
+  // optional in the vendor file but always provided by defaultProps and read
+  // unconditionally inside the class — declared required here; defaultProps
+  // still make them optional for JSX callers.
+  className: string;
+
+  disabled?: boolean;
+
+  placeholder?: React.ReactNode;
+
+  /**
+   * An array of current tokens. A token is usually an object type like a `Contact`.
+   * The set of tokens is stored as a prop instead of `state`, so when the set of
+   * tokens needs to change it is the parent's responsibility to make that change.
+   */
+  tokens: T[];
+
+  /**
+   * The maximum number of tokens allowed. When null (the default) an unlimited
+   * number of tokens may be given.
+   */
+  maxTokens?: number;
+
+  /** A string to pre-fill the input with when the tokens are empty. */
+  defaultValue?: string;
+
+  /**
+   * Given an object used for tokens, returns a unique id (key) for that object.
+   * Necessary for React to assign each of the subitems a unique key.
+   */
+  tokenKey: (token: T) => any;
+
+  /**
+   * Given a token, returns true if the token is valid and false otherwise. Useful
+   * if your implementation of onAdd allows invalid tokens to be added to the field
+   * (e.g. malformed email addresses). Optional.
+   */
+  tokenIsValid?: (token: T) => any;
+
+  /**
+   * What each token looks like. Passed an object and should return React elements
+   * to display that individual token.
+   */
+  tokenRenderer: (props: { token: T }) => any;
+
+  tokenClassNames: (token: T) => any;
+
+  /**
+   * Provides a list of possible options given the current input. Takes the current
+   * input as a value and should return an array of candidate objects (same type as
+   * are passed to the `tokens` prop). May return tokens directly or a Promise that
+   * resolves with the requested tokens.
+   */
+  onRequestCompletions: (...args: any[]) => T[] | Promise<T[]>;
+
+  /**
+   * What each suggestion looks like. Passed through to the Menu component's
+   * `itemContent` prop. See components/menu for more info.
+   */
+  completionNode: (...args: any[]) => any;
+
+  /**
+   * Called when we're ready to add whatever it is we're completing. Either passed
+   * an array of objects (the same ones used to render tokens), OR passed the string
+   * currently in the input field (the string case happens on paste and blur). It
+   * doesn't need to return anything but is generally responsible for mutating the
+   * parent's state in a way that eventually updates this component's `tokens` prop.
+   */
+  onAdd: (...args: any[]) => any;
+
+  /**
+   * Fired when the user tries to submit a query with a break character (tab, comma,
+   * semicolon, etc). Lets the caller determine how to best deal with available
+   * options. If not implemented we pick the first available option in the completions.
+   */
+  onInputTrySubmit?: (...args: any[]) => any;
+
+  /**
+   * If implemented, lets the caller determine when to cut a token based on the
+   * current input value and the current keydown.
+   */
+  shouldBreakOnKeydown?: (...args: any[]) => any;
+
+  /**
+   * Called when we remove a token. Passed an array of objects (the same ones used
+   * to render tokens). It doesn't need to return anything but is generally
+   * responsible for mutating the parent's state in a way that eventually updates
+   * this component's `tokens` prop.
+   */
+  onRemove: (...args: any[]) => any;
+
+  /**
+   * Called when an existing token is double-clicked and edited. Do not provide this
+   * method if you want to disable editing. Passed a token index and the new text
+   * typed in that location. It doesn't need to return anything but is generally
+   * responsible for mutating the parent's state in a way that eventually updates
+   * this component's `tokens` prop.
+   */
+  onEdit?: (...args: any[]) => any;
+
+  /**
+   * Slightly different than onEdit — onEditMotion fires if the user does an
+   * editing-like action on a Token (double clicking, etc). Useful when you don't
+   * want the text of the tokens themselves to be editable but want to perform some
+   * action when the tokens are double clicked.
+   */
+  onEditMotion?: (...args: any[]) => any;
+
+  /** Called when we remove and there's nothing left to remove. */
+  onEmptied?: (...args: any[]) => any;
+
+  /** Called when the secondary action of the token gets invoked. */
+  onTokenAction?: ((...args: any[]) => any) | false;
+
+  /** Called when the input is focused. */
+  onFocus?: (...args: any[]) => any;
+
+  /** A prompt used in the head of the menu. */
+  label?: string;
+
+  tabIndex?: number;
+};
+type TokenizingTextFieldState<T extends { toString(): string }> = {
+  inputValue: string;
+  focus: boolean;
+  completions: T[];
+  selectedKeys: string[];
+  activeDescendantId: string | null;
+};
+
+/*
+Public: The TokenizingTextField component displays a list of options as you type and converts them into stylable tokens.
+
+It wraps the Menu component, which takes care of the typing and keyboard
+interactions.
+
+See documentation on the propTypes for usage info.
+
+Section: Component Kit
+*/
+export class TokenizingTextField<T extends { toString(): string }> extends React.Component<
+  TokenizingTextFieldProps<T>,
+  TokenizingTextFieldState<T>
+> {
+  static displayName = 'TokenizingTextField';
+
+  static containerRequired = false;
+
+  static Token = Token;
+
+  static defaultProps = {
+    tokens: [],
+    className: '',
+    defaultValue: '',
+    tokenClassNames: () => '',
+  };
+
+  _mounted = false;
+  private _inputId = `tokenizing-field-${Utils.generateTempId()}`;
+
+  constructor(props: TokenizingTextFieldProps<T>) {
+    super(props);
+    this.state = {
+      focus: false,
+      inputValue: props.defaultValue || '',
+      completions: [],
+      selectedKeys: [],
+      activeDescendantId: null,
+    };
+  }
+
+  componentDidMount() {
+    this._mounted = true;
+    if (this.props.tokens.length === 0) {
+      if (this.state.inputValue && this.state.inputValue.length > 0) {
+        this._refreshCompletions(this.state.inputValue);
+      }
+    }
+  }
+
+  componentDidUpdate(prevProps: TokenizingTextFieldProps<T>) {
+    if (
+      prevProps.tokens.length === 0 &&
+      this.props.tokens.length === 0 &&
+      this.state.inputValue.length === 0
+    ) {
+      if (prevProps.defaultValue !== this.props.defaultValue) {
+        const newDefaultValue = this.props.defaultValue || '';
+        this.setState({ inputValue: newDefaultValue });
+        if (newDefaultValue.length > 0) {
+          this._refreshCompletions(newDefaultValue);
+        }
+      }
+    }
+  }
+
+  componentWillUnmount() {
+    this._mounted = false;
+  }
+
+  // Maintaining Input State
+
+  _onClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    // Don't focus if the focus is already on an input within our field,
+    // like an editable token's input
+    if (
+      event.target instanceof HTMLElement &&
+      event.target.tagName === 'INPUT' &&
+      (ReactDOM.findDOMNode(this) as Element).contains(event.target)
+    ) {
+      this.setState({ selectedKeys: [] });
+      return;
+    }
+
+    // Clicking a token is handled by _onClickToken which manages selectedKeys.
+    // For clicks on empty space, clear the token selection.
+    const isTokenClick = event.target instanceof HTMLElement && event.target.closest('.token');
+    if (!isTokenClick) {
+      this.setState({ selectedKeys: [] });
+    }
+
+    // We will focus on the field when they type the first character,
+    // but the input may contain a ton of items and interacting with the field
+    // shouldn't scroll to the bottom of it.
+    this.focus({ preventScroll: true });
+  };
+
+  _onDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    if (!event.dataTransfer.types.includes('mailspring-token-items')) {
+      return;
+    }
+
+    const data = event.dataTransfer.getData('mailspring-token-items');
+    this._onAddItemsFromJSON(data);
+  };
+
+  _onAddItemsFromJSON = (json: string) => {
+    let items: T[] | null = null;
+
+    try {
+      // KIWI seam: vendor mapped through `Utils.convertToModel`, which
+      // rehydrates JSON via `__cls` and the DatabaseObjectRegistry. KIWI has
+      // no model registry and Contact is the only token type wired into this
+      // field, so rehydrate each record as a Contact (required for
+      // `instanceof Contact` checks downstream in ParticipantsTextField).
+      items = JSON.parse(json).map((o: any) => new Contact(o) as unknown as T);
+    } catch (err) {
+      console.error(err);
+      items = null;
+    }
+
+    if (items) {
+      this._addTokens(items);
+    }
+  };
+
+  _onInputFocused = (
+    _e: React.FocusEvent<HTMLInputElement>,
+    { noCompletions }: { noCompletions?: boolean } = {}
+  ) => {
+    this.setState({ focus: true });
+    if (this.props.onFocus) {
+      this.props.onFocus();
+    }
+    if (!noCompletions) {
+      this._refreshCompletions();
+    }
+  };
+
+  _onInputKeydown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (['Backspace', 'Delete'].includes(event.key)) {
+      this._removeTokens(this._selectedTokens());
+    } else if (['Escape'].includes(event.key)) {
+      this._refreshCompletions('', { clear: true });
+    } else if (['Tab', 'Enter'].includes(event.key)) {
+      this._onInputTrySubmit(event);
+    } else if (['ArrowLeft', 'ArrowRight'].includes(event.key)) {
+      const delta = event.key === 'ArrowLeft' ? -1 : 1;
+      const { start } = (this.refs.input as SizeToFitInput).selectionRange();
+
+      // with tokens selected, arrow keys manipulate the selection
+      if (this.state.selectedKeys.length > 0) {
+        this._onShiftSelection(delta, event);
+        event.preventDefault();
+        // without tokens selected, left arrow key at position 0 selects item
+      } else if (delta === -1 && start === 0) {
+        this._onShiftSelection(delta, event);
+        event.preventDefault();
+      }
+    }
+
+    if (this.props.shouldBreakOnKeydown) {
+      if (this.props.shouldBreakOnKeydown(event)) {
+        event.preventDefault();
+        this._onInputTrySubmit(event);
+      }
+    } else if (event.key === ',') {
+      // comma
+      event.preventDefault();
+      this._onInputTrySubmit(event);
+    }
+  };
+
+  _onSelectAll = () => {
+    const { tokens, tokenKey } = this.props;
+    this.setState({ selectedKeys: tokens.map((t) => tokenKey(t)) });
+  };
+
+  _onSelectNone = () => {
+    this.setState({ selectedKeys: [] });
+  };
+
+  _onShiftSelection = (delta: number, event: React.KeyboardEvent<HTMLInputElement>) => {
+    const multiselectModifierPresent = event.shiftKey || event.metaKey;
+    const { tokenKey, tokens } = this.props;
+    const { selectedKeys } = this.state;
+
+    if (!tokens.length) return;
+
+    // select the last token on left arrow press if no tokens are selected
+    if (selectedKeys.length === 0) {
+      if (delta === -1) {
+        const key = tokenKey(tokens.at(-1)!);
+        this.setState({ selectedKeys: [key] });
+      }
+      return;
+    }
+
+    const headKey = selectedKeys.at(-1);
+    const headIdx = tokens.map((t) => tokenKey(t)).indexOf(headKey);
+    const nextToken = tokens[headIdx + delta];
+
+    if (multiselectModifierPresent) {
+      if (!nextToken) {
+        return;
+      }
+      const nextKey = tokenKey(nextToken);
+      const beneathHeadKey = selectedKeys[selectedKeys.length - 2];
+
+      if (nextKey === beneathHeadKey) {
+        // If the user is "walking back" their selection, deselect the head item
+        // Ex: Shift+Left, Shift+Right undoes prev. Shift+left.
+        this.setState({
+          selectedKeys: selectedKeys.filter((t) => t !== headKey),
+        });
+      } else {
+        // If the user is expanding their selection, always filter then add to
+        // ensure the last item in the array is the most recently selected.
+        this.setState({
+          selectedKeys: selectedKeys.filter((t) => t !== nextKey).concat([nextKey]),
+        });
+      }
+    } else {
+      this.setState({
+        selectedKeys: nextToken ? [tokenKey(nextToken)] : [],
+      });
+    }
+  };
+
+  _onInputTrySubmit = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if ((this.state.inputValue || '').trim().length === 0) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+
+    const { inputValue, completions } = this.state;
+
+    // default behavior
+    let token = null;
+    if (completions.length > 0) {
+      token = (this.refs.completions as Menu).getSelectedItem() || completions[0];
+    }
+
+    // allow our container to override behavior
+    if (this.props.onInputTrySubmit) {
+      token = this.props.onInputTrySubmit(inputValue, completions, token);
+      if (typeof token === 'string') {
+        this._addInputValue(token, { skipNameLookup: true });
+        return;
+      }
+    }
+
+    if (token) {
+      this._addToken(token);
+    } else {
+      this._addInputValue();
+    }
+  };
+
+  _onInputChanged = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const val = event.target.value.trimLeft();
+    this.setState({
+      selectedKeys: [],
+      inputValue: val,
+    });
+
+    this._refreshCompletions(val);
+  };
+
+  _onInputBlurred = (event: React.FocusEvent<HTMLInputElement>) => {
+    // Not having a relatedTarget can happen when the whole app blurs. When
+    // this happens we want to leave the field as-is
+    if (!event.relatedTarget) {
+      return;
+    }
+
+    if (event.relatedTarget === ReactDOM.findDOMNode(this)) {
+      return;
+    }
+
+    this._addInputValue();
+    this._refreshCompletions('', { clear: true });
+    this.setState({
+      selectedKeys: [],
+      focus: false,
+    });
+  };
+
+  _clearInput() {
+    this.setState({ inputValue: '' });
+    this._refreshCompletions('', { clear: true });
+  }
+
+  focus(args?: FocusOptions) {
+    (this.refs.input as SizeToFitInput).focus(args);
+  }
+
+  // Managing Tokens
+
+  _addInputValue = (input = this.state.inputValue, options: { skipNameLookup?: boolean } = {}) => {
+    if (this._atMaxTokens()) {
+      return;
+    }
+    if (input.length === 0) {
+      return;
+    }
+    this.props.onAdd(input, options);
+    this._clearInput();
+  };
+
+  _onClickToken = (event: React.MouseEvent<HTMLDivElement>, token: T) => {
+    const { tokenKey, tokens } = this.props;
+    let { selectedKeys } = this.state;
+
+    if (event.shiftKey) {
+      // Expand selection from the currently selected item to the one the user
+      // has clicked. We must walk the items in order so selectedKeys is
+      // an ordered list.
+      let headKey = selectedKeys.at(-1);
+      let headIdx = tokens.map((t) => tokenKey(t)).indexOf(headKey);
+      const clickedIdx = tokens.indexOf(token);
+
+      if (clickedIdx === -1 || clickedIdx === headIdx) {
+        return;
+      }
+
+      const step = Math.max(-1, Math.min(1, clickedIdx - headIdx));
+
+      do {
+        headIdx += step;
+        headKey = tokenKey(tokens[headIdx]);
+        // strict-TS seam: `headKey` is `string | undefined` from `at(-1)` but
+        // is unconditionally reassigned above before this concat — `!` is the
+        // honest narrow (vendor pushed `undefined` for an empty selection too).
+        // eslint-disable-next-line
+        selectedKeys = selectedKeys.filter((t) => t !== headKey).concat([headKey!]);
+      } while (headIdx !== clickedIdx);
+    } else if (event.metaKey) {
+      // Expand the selection to include the clicked item, without selecting
+      // the items in between. If the item is already selected, deselect it.
+      const key = tokenKey(token);
+      if (selectedKeys.includes(key)) {
+        selectedKeys = selectedKeys.filter((t) => t !== key);
+      } else {
+        selectedKeys = selectedKeys.concat([key]);
+      }
+    } else {
+      // Clear the selection and select just the new token
+      selectedKeys = [tokenKey(token)];
+    }
+
+    this.setState({ selectedKeys });
+  };
+
+  _onDragToken = (event: React.DragEvent<HTMLDivElement>, token: T) => {
+    let tokens = this._selectedTokens();
+    if (tokens.length === 0) {
+      tokens = [token];
+    }
+    const json = JSON.stringify(tokens);
+    event.dataTransfer.setData('mailspring-token-items', json);
+    event.dataTransfer.setData('text/plain', tokens.map((t) => t.toString()).join(', '));
+    event.dataTransfer.dropEffect = 'move';
+    event.dataTransfer.effectAllowed = 'move';
+  };
+
+  _selectedTokens() {
+    return this.props.tokens.filter((t) =>
+      this.state.selectedKeys.includes(this.props.tokenKey(t))
+    );
+  }
+
+  _addToken = (token: T) => {
+    if (!token) {
+      return;
+    }
+    this._addTokens([token]);
+  };
+
+  _addTokens = (tokens: T[]) => {
+    this.props.onAdd(tokens);
+    // It's possible for `_addTokens` to be fired by the menu
+    // asynchronously. When the tokenizing text field is in a popover it's
+    // possible for it to be unmounted before the add tokens fires.
+    if (this._mounted) {
+      this._clearInput();
+      this.focus();
+    }
+  };
+
+  _removeTokens = (tokensToDelete: T[]) => {
+    const { inputValue, selectedKeys } = this.state;
+    const { onEmptied, onRemove, tokens, tokenKey } = this.props;
+
+    if (inputValue.trim().length === 0 && tokens.length === 0 && onEmptied) {
+      onEmptied();
+    }
+
+    if (tokensToDelete.length) {
+      const tokensToDeleteKeys = tokensToDelete.map((t) => tokenKey(t));
+      onRemove(tokensToDelete);
+      this.setState({
+        selectedKeys: selectedKeys.filter((k) => !tokensToDeleteKeys.includes(k)),
+      });
+    } else {
+      const lastToken = tokens.at(-1);
+      if (lastToken) {
+        const lastTokenKey = tokenKey(lastToken);
+        this.setState({
+          selectedKeys: selectedKeys.filter((k) => k !== lastTokenKey).concat([lastTokenKey]),
+        });
+      }
+    }
+  };
+
+  _showDefaultTokenMenu = (token: T) => {
+    // KIWI seam: '@electron/remote' Menu/MenuItem -> kit remote.Menu/MenuItem
+    // (DOM context menu). Electron's popup({}) opens at the cursor; the kit
+    // popup needs coordinates — _lastPointer is the position of the click
+    // that opened this menu.
+    const menu = new remote.Menu();
+    menu.items.push(
+      new MenuItem({
+        click: () => this._removeTokens([token]),
+        label: localized('Remove'),
+      })
+    );
+
+    if (this.props.onEditMotion) {
+      menu.items.push(
+        new MenuItem({
+          label: localized('Edit'),
+          click: () => this.props.onEditMotion!(token),
+        })
+      );
+    }
+    menu.popup({ x: _lastPointer.x, y: _lastPointer.y });
+  };
+
+  // Copy and Paste
+
+  _onCut = (event: React.ClipboardEvent<HTMLDivElement>) => {
+    if (this.state.selectedKeys.length) {
+      this._onAttachToClipboard(event);
+      // clear the tokens which were selected
+      this._removeTokens(this._selectedTokens());
+      // clear the text in the input if some was selected
+      document.execCommand('delete');
+    }
+  };
+
+  _onCopy = (event: React.ClipboardEvent<HTMLDivElement>) => {
+    if (this.state.selectedKeys.length) {
+      this._onAttachToClipboard(event);
+      event.preventDefault();
+    }
+  };
+
+  _onAttachToClipboard = (event: React.ClipboardEvent<HTMLDivElement>) => {
+    const text = this.state.selectedKeys.join(', ');
+    if (event.clipboardData) {
+      const json = JSON.stringify(this._selectedTokens());
+      event.clipboardData.setData('text/plain', text);
+      event.clipboardData.setData('mailspring-token-items', json);
+
+      // strict-TS seam: DOM selectionStart/End are `number | null`; they are
+      // never null for type="text" inputs, so narrow once.
+      const range = (this.refs.input as SizeToFitInput).selectionRange() as {
+        start: number;
+        end: number;
+      };
+      if (range.end > 0) {
+        const inputSelection = this.state.inputValue.substr(range.start, range.end - range.start);
+        event.clipboardData.setData('mailspring-token-input', inputSelection);
+      } else {
+        event.clipboardData.setData('mailspring-token-input', 'null');
+      }
+    }
+    event.preventDefault();
+  };
+
+  _onPaste = (event: React.ClipboardEvent<HTMLDivElement>) => {
+    const json = event.clipboardData.getData('mailspring-token-items');
+    const inputValue = event.clipboardData.getData('mailspring-token-input');
+    if (json) {
+      this._onAddItemsFromJSON(json);
+      if (inputValue && inputValue !== 'null') {
+        this.setState({ inputValue });
+      }
+      event.preventDefault();
+      return;
+    }
+
+    const text = event.clipboardData.getData('text/plain');
+    if (text) {
+      const newInputValue = this.state.inputValue + text;
+      if (RegExpUtils.emailRegex().test(newInputValue)) {
+        this._addInputValue(newInputValue, { skipNameLookup: true });
+        event.preventDefault();
+      } else {
+        this._refreshCompletions(newInputValue);
+      }
+    }
+  };
+
+  // Managing Suggestions
+
+  // Asks `this.props.onRequestCompletions` for new completions given the
+  // current inputValue. Since `onRequestCompletions` can be asynchronous,
+  // this function will handle calling `setState` on `completions` when
+  // `onRequestCompletions` returns.
+  _refreshCompletions = (val = this.state.inputValue, { clear }: { clear?: boolean } = {}) => {
+    const usedKeys = this.props.tokens.map(this.props.tokenKey);
+    const removeUsedTokens = (tokens: T[]) => {
+      return tokens.filter((t) => !usedKeys.includes(this.props.tokenKey(t)));
+    };
+
+    const tokensOrPromise = this.props.onRequestCompletions(val, { clear });
+
+    if (_.isArray(tokensOrPromise)) {
+      this.setState({ completions: removeUsedTokens(tokensOrPromise) });
+    } else if (tokensOrPromise instanceof Promise) {
+      tokensOrPromise.then((tokens) => {
+        if (!this._mounted) {
+          return;
+        }
+        this.setState({ completions: removeUsedTokens(tokens) });
+      });
+    } else {
+      console.warn(
+        'onRequestCompletions returned an invalid type. It must return an Array of tokens or a Promise that resolves to an array of tokens'
+      );
+      this.setState({ completions: [] });
+    }
+  };
+
+  // Rendering
+
+  _completionsId() {
+    return `${this._inputId}-completions`;
+  }
+
+  _valueDescriptionId() {
+    return `${this._inputId}-value`;
+  }
+
+  _onActiveDescendantChange = (id: string | null) => {
+    this.setState({ activeDescendantId: id });
+  };
+
+  _inputComponent() {
+    const hasCompletions = this.state.completions.length > 0;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const props: any = {
+      onCopy: this._onCopy,
+      onCut: this._onCut,
+      onPaste: this._onPaste,
+      onKeyDown: this._onInputKeydown,
+      onBlur: this._onInputBlurred,
+      onFocus: this._onInputFocused,
+      onChange: this._onInputChanged,
+      disabled: this.props.disabled,
+      tabIndex: this.props.tabIndex || 0,
+      value: this.state.inputValue,
+      className: '',
+      role: 'combobox',
+      'aria-expanded': hasCompletions,
+      'aria-haspopup': 'listbox',
+      'aria-autocomplete': 'list',
+      'aria-controls': this._completionsId(),
+      'aria-label': this.props.label || undefined,
+      'aria-describedby': this._valueDescriptionId(),
+      'aria-activedescendant': this.state.activeDescendantId || undefined,
+    };
+
+    // If we can't accept additional tokens, override the events that would
+    // enable additional items to be inserted
+    if (this._atMaxTokens()) {
+      props.className = 'noop-input';
+      props.onFocus = (e: React.FocusEvent<HTMLInputElement>) =>
+        this._onInputFocused(e, { noCompletions: true });
+      props.onPaste = () => 'noop-input';
+      props.onChange = () => 'noop';
+      props.value = '';
+    }
+    return <SizeToFitInput ref="input" id={this._inputId} spellCheck={false} {...props} />;
+  }
+
+  _atMaxTokens() {
+    const { tokens, maxTokens } = this.props;
+    return !maxTokens ? false : tokens.length >= maxTokens;
+  }
+
+  _fieldComponents() {
+    const {
+      tokens,
+      tokenKey,
+      tokenIsValid,
+      tokenRenderer,
+      tokenClassNames,
+      onTokenAction,
+      onEdit,
+    } = this.props;
+
+    return tokens.map((item) => {
+      const key = tokenKey(item);
+      const valid = tokenIsValid ? tokenIsValid(item) : true;
+
+      const TokenRenderer = tokenRenderer;
+      const onAction = onTokenAction === false ? null : onTokenAction || this._showDefaultTokenMenu;
+
+      return (
+        <Token
+          className={tokenClassNames(item)}
+          item={item}
+          key={key}
+          valid={valid}
+          disabled={this.props.disabled}
+          selected={this.state.selectedKeys.includes(key)}
+          onDragStart={this._onDragToken}
+          onClick={this._onClickToken}
+          onEditMotion={this.props.onEditMotion}
+          onEdited={onEdit}
+          onAction={onAction}
+        >
+          <TokenRenderer token={item} />
+        </Token>
+      );
+    });
+  }
+
+  _fieldComponent() {
+    const fieldClasses = classNames({
+      'tokenizing-field-input': true,
+      'at-max-tokens': this._atMaxTokens(),
+    });
+    // Build a screen-reader-only description of current token values so that
+    // when the user focuses the input, the AT announces what is already in the field.
+    const tokenDescription = this.props.tokens.map((t) => t.toString()).join(', ');
+    return (
+      <KeyCommandsRegion
+        key="field-component"
+        ref="field-drop-target"
+        localHandlers={{
+          'core:select-all': this._onSelectAll,
+        }}
+        className="tokenizing-field-wrap"
+        onClick={this._onClick}
+        onDrop={this._onDrop}
+      >
+        {this.props.label && (
+          <label htmlFor={this._inputId} className="tokenizing-field-label">
+            {`${this.props.label}:`}
+          </label>
+        )}
+        {/* Visually hidden span read by screen readers via aria-describedby on the input.
+            Describes the current token values so the field doesn't appear empty. */}
+        <span
+          id={this._valueDescriptionId()}
+          style={{ position: 'absolute', left: -9999, width: 1, height: 1, overflow: 'hidden' }}
+        >
+          {tokenDescription}
+        </span>
+        <div className={fieldClasses}>
+          {this.state.inputValue.length > 0 ||
+          this.props.placeholder === undefined ||
+          this.props.tokens.length > 0 ? (
+            false
+          ) : (
+            <div className="placeholder">{this.props.placeholder}</div>
+          )}
+          {this._fieldComponents()}
+          {this._inputComponent()}
+        </div>
+      </KeyCommandsRegion>
+    );
+  }
+
+  render() {
+    const classes = classNames({
+      [this.props.className]: true,
+      'tokenizing-field': true,
+      disabled: this.props.disabled,
+      focused: this.state.focus,
+      empty: (this.state.inputValue || '').trim().length === 0,
+    });
+
+    return (
+      <Menu
+        className={classes}
+        ref="completions"
+        items={this.state.completions}
+        itemKey={(item) => item.id}
+        itemContext={{ inputValue: this.state.inputValue }}
+        itemContent={this.props.completionNode}
+        headerComponents={[this._fieldComponent()]}
+        onFocus={this._onInputFocused}
+        onBlur={this._onInputBlurred}
+        onSelect={this._addToken}
+        onActiveDescendantChange={this._onActiveDescendantChange}
+        listboxId={this._completionsId()}
+      />
+    );
+  }
+}

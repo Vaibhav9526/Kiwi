@@ -1116,6 +1116,144 @@ mod tests {
     }
 
     #[test]
+    fn copy_messages_remaps_uids_and_leaves_source() {
+        let store = MailStore::open_memory().unwrap();
+        seed_account(&store, "a1");
+        let src = store.ensure_folder("a1", "INBOX").unwrap();
+        let dst = store.ensure_folder("a1", "Local Keep").unwrap();
+        store.upsert_message(src, &meta(101), 100).unwrap();
+        store.upsert_message(src, &meta(102), 100).unwrap();
+        store.upsert_message(src, &meta(103), 100).unwrap();
+        store.upsert_message(dst, &meta(9), 100).unwrap(); // occupied uid
+        let src_body = store.store_body(src, 102, b"Subject: m\r\n\r\nb").unwrap();
+        store.store_attachment(src, 102, 0, b"payload").unwrap();
+        store
+            .update_flags(src, 102, &["\\Seen".into(), "\\Flagged".into()])
+            .unwrap();
+
+        // Fresh local uids in dst (max was 9): 101→10, 102→11; absent skipped.
+        let copied = store.copy_messages(src, dst, &[101, 102, 999]).unwrap();
+        assert_eq!(copied, vec![(101, 10), (102, 11)]);
+        // Source untouched: rows + payload remain.
+        assert_eq!(store.folder_uids(src).unwrap(), vec![101, 102, 103]);
+        assert!(src_body.exists());
+        assert_eq!(store.folder_uids(dst).unwrap(), vec![9, 10, 11]);
+        // Payload duplicated — both copies exist with identical bytes.
+        let dst_body = store.body_file(dst, 11).unwrap().unwrap();
+        assert!(dst_body.exists());
+        assert_eq!(
+            std::fs::read(&dst_body).unwrap(),
+            std::fs::read(&src_body).unwrap()
+        );
+        assert!(
+            store
+                .root
+                .join("attachments")
+                .join(dst.to_string())
+                .join("11")
+                .join("0")
+                .exists()
+        );
+        assert!(
+            store
+                .root
+                .join("attachments")
+                .join(src.to_string())
+                .join("102")
+                .join("0")
+                .exists(),
+            "src attachment dir must survive a copy"
+        );
+        // Envelope + flags preserved on the copy.
+        let m = store
+            .list_messages(dst, 10)
+            .unwrap()
+            .into_iter()
+            .find(|m| m.uid == 11)
+            .unwrap();
+        assert_eq!(m.subject.as_deref(), Some("s"));
+        assert_eq!(m.flags, vec!["\\Seen", "\\Flagged"]);
+    }
+
+    #[test]
+    fn copy_messages_carries_risk_and_auth_not_snooze() {
+        let store = MailStore::open_memory().unwrap();
+        seed_account(&store, "a1");
+        let src = store.ensure_folder("a1", "INBOX").unwrap();
+        let dst = store.ensure_folder("a1", "Local Keep").unwrap();
+        store.upsert_message(src, &meta(50), 100).unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO message_attachment_risk (folder_id, uid, risk, reasons_json)
+                 VALUES (?1, ?2, 'noted', '[]')",
+                params![src, 50],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO message_auth (folder_id, uid, spf, auth_risk)
+             VALUES (?1, ?2, 'pass', 'clean')",
+                params![src, 50],
+            )
+            .unwrap();
+        store.set_snooze(src, &[50], 9999, 100).unwrap();
+
+        let copied = store.copy_messages(src, dst, &[50]).unwrap();
+        let (_, dst_uid) = copied[0];
+        // Evidence follows the copy.
+        let risk: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM message_attachment_risk
+                 WHERE folder_id = ?1 AND uid = ?2",
+                params![dst, dst_uid as i64],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(risk, 1);
+        let auth: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM message_auth WHERE folder_id = ?1 AND uid = ?2",
+                params![dst, dst_uid as i64],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(auth, 1);
+        // Source keeps its own evidence rows too.
+        let src_risk: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM message_attachment_risk
+                 WHERE folder_id = ?1 AND uid = 50",
+                params![src],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(src_risk, 1);
+        // Snooze does NOT carry — the copy isn't parked.
+        let dst_parked: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM snoozed WHERE folder_id = ?1 AND uid = ?2",
+                params![dst, dst_uid as i64],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let src_parked: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM snoozed WHERE folder_id = ?1 AND uid = 50",
+                params![src],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!((dst_parked, src_parked), (0, 1));
+    }
+
+    #[test]
     fn delete_messages_removes_body_file() {
         let store = MailStore::open_memory().unwrap();
         seed_account(&store, "a1");
@@ -1960,6 +2098,7 @@ mod tests {
                 r.get(0)
             })
             .unwrap();
+
         assert_eq!(rows, 0, "no historical risk is fabricated");
     }
 

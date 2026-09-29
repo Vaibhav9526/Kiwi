@@ -628,7 +628,14 @@
 
 /* ---------- tabbed preferences (Mailspring pattern: left rail + cards) ---------- */
 
+/* .ms-prefs is the plain max-width container other views (Security Center)
+ * reuse; the rail+content split lives on .ms-prefs-layout so reusers keep
+ * their original flow layout. */
 .ms-prefs {
+  max-width: 900px;
+}
+
+.ms-prefs-layout {
   display: flex;
   gap: 24px;
   max-width: 1100px;
@@ -1586,6 +1593,129 @@ span.em-tool-primary {
 .em-compose-footer .em-menu {
   top: auto;
   bottom: calc(100% + 5px);
+}
+
+/* Gmail-style header fields: hairline-separated rows, muted label cell,
+   chips inline, borderless inputs — the card reads as one surface, not a
+   stack of boxed form controls. */
+.em-compose-fields {
+  margin: 0 -0.85rem 0.4rem;
+  border-top: 1px solid var(--em-hairline, rgba(0, 0, 0, 0.06));
+}
+.em-field {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 0.85rem;
+  border-bottom: 1px solid var(--em-hairline, rgba(0, 0, 0, 0.06));
+}
+.em-field-label {
+  flex: 0 0 52px;
+  font-size: 12px;
+  color: var(--kiwi-ms-text-secondary, #5f6368);
+}
+.em-field-label label {
+  cursor: text;
+}
+.em-field-input,
+.em-field input[type="text"],
+.em-field select {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 7px 0;
+  font: inherit;
+  color: inherit;
+  outline: none;
+  box-shadow: none;
+}
+.em-field input[type="text"]:focus,
+.em-field select:focus {
+  box-shadow: none;
+  border-color: transparent;
+}
+.em-field-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+  margin: 0;
+  min-width: 0;
+}
+.em-addr-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 4px 1px 8px;
+  border-radius: 12px;
+  background: var(--em-surface-2, #f1f3f4);
+  border: 1px solid var(--em-hairline, rgba(0, 0, 0, 0.06));
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.em-addr-chip button {
+  border: 0;
+  background: transparent;
+  padding: 0 2px;
+  cursor: pointer;
+  color: var(--kiwi-ms-text-secondary, #5f6368);
+  display: inline-flex;
+  align-items: center;
+  border-radius: 50%;
+}
+.em-addr-chip button:hover {
+  color: var(--kiwi-danger, #b3261e);
+}
+.em-field-add {
+  border: 0;
+  background: transparent;
+  padding: 4px 6px;
+  font-size: 12px;
+  color: var(--kiwi-ms-text-secondary, #5f6368);
+  cursor: pointer;
+  border-radius: 4px;
+}
+.em-field-add:hover {
+  background: var(--em-surface-2, #f1f3f4);
+  color: inherit;
+}
+.em-field-link {
+  border: 0;
+  background: transparent;
+  padding: 4px 6px;
+  font-size: 12px;
+  color: var(--kiwi-ms-text-secondary, #5f6368);
+  cursor: pointer;
+  border-radius: 4px;
+  margin-left: auto;
+}
+.em-field-link:hover {
+  background: var(--em-surface-2, #f1f3f4);
+  color: inherit;
+}
+.em-field-input-wrap {
+  position: relative;
+  min-width: 10rem;
+}
+.em-field-input-wrap input {
+  width: 100%;
+}
+/* Suggestion popover inside a field row anchors under the input. */
+.em-field-input-wrap ul[role="listbox"] {
+  min-width: 16rem;
+}
+
+/* Disposable inbox: single comfortable column, not a spread form. */
+.kiwi-dispo {
+  max-width: 640px;
+}
+.kiwi-dispo .kiwi-empty input {
+  min-width: 12rem;
 }
 
 .em-iconbtn.is-starred,
@@ -3203,6 +3333,273 @@ pre.em-quote-region {
 }
 .kiwi-palette-empty svg {
   opacity: 0.55;
+}
+
+/* ---------- provider quick-pick cards (setup step 0) ---------- */
+/* Gmail/eM-style branded entry: card = icon mark + name + subtitle. */
+
+.em-provider-cards {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.em-provider-card {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  column-gap: 10px;
+  align-items: center;
+  text-align: left;
+  padding: 12px 14px;
+  background: var(--kiwi-ms-surface, var(--kiwi-surface));
+  border: 1px solid var(--kiwi-ms-border, var(--kiwi-border));
+  border-radius: var(--kiwi-radius-card, 12px);
+  cursor: pointer;
+}
+
+.em-provider-card:hover:not(:disabled) {
+  border-color: var(--accent, var(--kiwi-ms-accent));
+  background: var(--em-hover, var(--kiwi-hover-bg));
+}
+
+.em-provider-card[aria-pressed="true"] {
+  border-color: var(--accent, var(--kiwi-ms-accent));
+  box-shadow: inset 2px 0 0 var(--accent, var(--kiwi-ms-accent));
+}
+
+.em-provider-mark {
+  grid-row: 1 / 3;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--kiwi-radius-md, 8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 1.05rem;
+}
+
+.em-provider-google {
+  background: #fff;
+  border: 1px solid #e2e5ea;
+  color: #4285f4;
+}
+
+.em-provider-microsoft {
+  background: #fff;
+  border: 1px solid #e2e5ea;
+}
+
+[data-theme="dark"] .em-provider-google,
+[data-theme="dark"] .em-provider-microsoft {
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.em-provider-name {
+  font-weight: 600;
+  color: var(--kiwi-ms-text, var(--kiwi-text));
+}
+
+.em-provider-sub {
+  font-size: var(--kiwi-ms-text-small, 0.8rem);
+  color: var(--em-text-dim, var(--kiwi-text-secondary));
+  font-weight: 400;
+}
+
+/* ---------- onboarding split card (add-account wizard) ---------- */
+/* OnlyPipe-pattern: gradient+grain hero left, form body right. */
+
+.em-setup {
+  display: flex;
+  justify-content: center;
+  padding: 28px 20px;
+}
+
+.em-setup-card {
+  display: grid;
+  grid-template-columns: 340px minmax(0, 1fr);
+  width: min(980px, 100%);
+  min-height: 560px;
+  border-radius: var(--kiwi-radius-large, 16px);
+  overflow: hidden;
+  border: 1px solid var(--em-pane-border, rgba(0, 0, 0, 0.08));
+  box-shadow: 0 24px 64px rgba(30, 20, 4, 0.22), 0 4px 16px rgba(30, 20, 4, 0.1);
+}
+
+/* Hero: layered warm gradient + film grain (SVG turbulence, no asset). */
+.em-setup-hero {
+  position: relative;
+  background:
+    radial-gradient(130% 90% at 20% 8%, rgba(255, 214, 140, 0.55), transparent 55%),
+    radial-gradient(120% 100% at 85% 15%, rgba(229, 128, 204, 0.35), transparent 60%),
+    radial-gradient(150% 120% at 50% 105%, rgba(122, 40, 6, 0.55), transparent 65%),
+    linear-gradient(160deg, #3d2404 0%, #7a3c06 38%, #a4508b 78%, #3d1650 100%);
+  color: #fff;
+}
+
+.em-setup-hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+  opacity: 0.16;
+  mix-blend-mode: overlay;
+  pointer-events: none;
+}
+
+.em-setup-hero-inner {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 40px 34px;
+}
+
+.em-setup-logo {
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  font-size: 0.95rem;
+  opacity: 0.92;
+  margin-bottom: auto;
+}
+
+.em-setup-title {
+  font-size: 1.9rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  margin: 0 0 10px;
+}
+
+.em-setup-sub {
+  font-size: 0.85rem;
+  line-height: 1.5;
+  opacity: 0.82;
+  margin: 0 0 30px;
+}
+
+.em-setup-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.em-setup-steps li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.78);
+  background: rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(6px);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.em-setup-steps li.is-active {
+  background: rgba(255, 255, 255, 0.92);
+  color: #2b1a05;
+  font-weight: 700;
+}
+
+.em-setup-steps li.is-done {
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.em-setup-num {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.16);
+  flex: none;
+}
+
+.em-setup-steps li.is-active .em-setup-num {
+  background: #2b1a05;
+  color: #ffd68c;
+}
+
+/* Form body */
+.em-setup-body {
+  padding: 34px 38px;
+  background: var(--kiwi-surface, #fffdf7);
+  min-width: 0;
+}
+
+.em-setup-body-title {
+  margin: 0 0 18px;
+  font-size: 1.35rem;
+  letter-spacing: -0.01em;
+}
+
+.em-setup-or {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 14px 0;
+  color: var(--kiwi-text-secondary, #8d8672);
+  font-size: 0.78rem;
+}
+
+.em-setup-or::before,
+.em-setup-or::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--em-hairline, var(--kiwi-border-soft, #e8e1cf));
+}
+
+/* Wizard body rows breathe a little more inside the card. */
+.em-setup-body p {
+  margin: 0 0 12px;
+}
+
+.em-setup-body input[type="email"],
+.em-setup-body input[type="text"],
+.em-setup-body input[type="password"],
+.em-setup-body select {
+  border-radius: var(--kiwi-radius-md, 8px);
+  padding: 9px 12px;
+}
+
+@media (max-width: 720px) {
+  .em-setup-card { grid-template-columns: 1fr; }
+  .em-setup-hero-inner { padding: 26px 24px; }
+  .em-setup-logo { margin-bottom: 20px; }
+  .em-setup-title { font-size: 1.4rem; }
+}
+
+/* Easy sign-in: stacked labels, full-width inputs (matches the hero card). */
+.em-setup-body .em-quickform > p > label {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--kiwi-ms-text-secondary, var(--kiwi-text-secondary));
+}
+.em-setup-body .em-quickform > p > label input,
+.em-setup-body .em-quickform > p > label select {
+  display: block;
+  width: 100%;
+  margin-top: 5px;
+  font-weight: 400;
+  color: var(--kiwi-text);
+}
+.em-setup-body .em-provider-cards .em-provider-card {
+  padding: 10px 14px;
 }
 
 /* ---------- professional polish: shared pane primitive ----------------

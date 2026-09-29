@@ -1,0 +1,391 @@
+/* ms-threadlist.css — tokenized port of Mailspring's list-item styling.
+   Sources:
+     vendor/mailspring/app/static/style/list-tabular.less
+     vendor/mailspring/app/internal_packages/thread-list/stylesheets/thread-list.less
+   Adapted seams:
+     - LESS vars/mixins → KIWI --ms-* / --kiwi-* tokens (flat fills, hairlines).
+     - RetinaImg icon assets → mask-image data-URIs (alpha-only SVG masks,
+       painted with token colors — same technique as ContentIsMask).
+     - Absolute row positioning per vendor metrics (top = idx * itemHeight);
+       `.em-row` keeps its own skin from theme.css, these rules only add the
+       Mailspring column/icon layout inside it. */
+
+:root {
+  --ms-icon-star: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M12 2.5l2.9 6.6 6.9.6-5.2 4.6 1.6 6.8-6.2-3.6-6.2 3.6 1.6-6.8-5.2-4.6 6.9-.6z'/></svg>");
+  --ms-icon-star-hover: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='none' stroke='black' stroke-width='1.6' d='M12 4l2.4 5.5 6 .5-4.6 4 1.4 5.9-5.2-3.1-5.2 3.1 1.4-5.9-4.6-4 6-.5z'/></svg>");
+  --ms-icon-unread: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><circle cx='12' cy='12' r='5.5'/></svg>");
+  --ms-icon-replied: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round' d='M9 10l-5 5 5 5'/><path fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' d='M4 15h9a7 7 0 007-7V6'/></svg>");
+  --ms-icon-forwarded: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round' d='M15 10l5 5-5 5'/><path fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' d='M20 15h-9a7 7 0 00-7-7V6'/></svg>");
+  --ms-icon-pencil: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M4 20h4l10.5-10.5a2.1 2.1 0 000-3l-1-1a2.1 2.1 0 00-3 0L4 16z'/></svg>");
+  --ms-icon-attachment: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round' d='M21.4 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.2-9.19a4 4 0 015.65 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48'/></svg>");
+  --ms-icon-archive: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round' d='M3 4.5h18v4H3zM5.5 8.5h13V19a1 1 0 01-1 1h-11a1 1 0 01-1-1zM10 12.5h4'/></svg>");
+  --ms-icon-trash: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round' d='M4 7h16M9.5 7V5a1.5 1.5 0 011.5-1.5h2A1.5 1.5 0 0114.5 5v2M6.5 7l.9 13h9.2l.9-13'/></svg>");
+}
+
+/* ---------- list-rows host (vendor: .list-rows inside .scroll-region) ---------- */
+
+.em-rows .list-rows {
+  position: relative;
+}
+
+.swipe {
+  height: 100%;
+}
+
+/* ---------- .list-item (port of .list-item base + thread-list row) ---------- */
+
+.em-rows .list-item {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  cursor: pointer;
+}
+
+/* ---------- columns ---------- */
+
+.em-rows .list-item .list-column {
+  flex-shrink: 0;
+  margin-right: 8px;
+  padding: 6px 0;
+  box-sizing: border-box;
+}
+
+.em-rows .list-item .list-column-Pick {
+  width: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.em-rows .list-item .list-column-Avatar {
+  width: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.em-rows .list-item .list-column-Item {
+  flex-grow: 1;
+  flex-shrink: 1;
+  min-width: 0;
+  margin-right: 0;
+}
+
+.em-rows .list-item .list-column-Marks {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 3px;
+  min-width: 24px;
+}
+
+/* Overlay column: zero-width anchor; .em-quick is positioned over the row. */
+.em-rows .list-item .list-column-Quick {
+  width: 0;
+  margin-right: 0;
+  padding: 0;
+  overflow: visible;
+}
+
+.em-row-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* ---------- participants / timestamp (vendor lines 37-76) ---------- */
+
+.thread-list .participants {
+  font-size: var(--ms-text-base);
+  font-weight: 400;
+  min-height: 21px;
+  display: inline-block;
+  overflow: hidden;
+}
+
+.thread-list .participants .unread-true,
+.thread-list.draft-list .participants .draft-true {
+  font-weight: 600;
+}
+
+.thread-list .timestamp {
+  font-size: var(--ms-text-small);
+  color: var(--ms-text-color-subtle);
+  font-weight: 400;
+  position: absolute;
+  right: 0;
+  top: 4px;
+}
+
+.thread-list .participants-wrapper {
+  position: relative;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+}
+
+.thread-list .thread-icon-pencil,
+.thread-list .thread-icon-attachment {
+  display: inline-block;
+  flex-shrink: 0;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  background-color: var(--ms-text-color-subtle);
+  vertical-align: top;
+  margin-right: 8px;
+  margin-top: 6px;
+  height: 15px;
+  width: 15px;
+}
+
+.thread-list .thread-icon-pencil {
+  -webkit-mask-image: var(--ms-icon-pencil);
+  mask-image: var(--ms-icon-pencil);
+}
+
+.thread-list .thread-icon-attachment {
+  -webkit-mask-image: var(--ms-icon-attachment);
+  mask-image: var(--ms-icon-attachment);
+}
+
+.thread-list .subject {
+  font-size: var(--ms-text-base);
+  color: var(--ms-text-color-subtle);
+  font-weight: 400;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  min-height: 20px;
+}
+
+.thread-list .subject .emoji {
+  padding: 0;
+  margin: 0 2px;
+  font-size: 1.25em;
+  vertical-align: text-bottom;
+}
+
+/* unread subject emphasis — vendor .unread:not(.jarring) .subject */
+.thread-list .list-item.unread .subject {
+  color: var(--kiwi-ms-text);
+  font-weight: 600;
+}
+
+.thread-list .snippet-and-labels {
+  font-size: var(--ms-text-small);
+  font-weight: 400;
+  height: 20px;
+  line-height: 19px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: flex;
+}
+
+.thread-list .snippet-and-labels .snippet {
+  color: var(--ms-text-color-subtle);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-list .snippet-and-labels .mail-label {
+  padding: 0 7.5px;
+  margin-right: 6px;
+  box-shadow: 0 0.5px 0 var(--ms-border-subtle), 0 -0.5px 0 var(--ms-border-subtle),
+    0.5px 0 0 var(--ms-border-subtle), -0.5px 0 0 var(--ms-border-subtle);
+  border-radius: 3px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.thread-list .snippet-and-labels .mail-label.em-pill {
+  font-weight: 600;
+}
+
+/* ---------- icons column (vendor lines 35-36 + thread-icon styles) ---------- */
+
+.thread-list .list-item .thread-info-column {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.thread-list .icons-column {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  margin: 6px 8px 0 8px;
+}
+
+.thread-list .list-item .thread-icon {
+  height: 14px;
+  width: 14px;
+  display: inline-block;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  background-color: var(--ms-text-color-subtle);
+}
+
+.thread-list .list-item .thread-icon-attachment {
+  height: 15px;
+  width: 15px;
+}
+
+.thread-list .list-item .thread-icon-star {
+  -webkit-mask-image: var(--ms-icon-star);
+  mask-image: var(--ms-icon-star);
+  background-color: var(--ms-component-accent);
+}
+
+.thread-list .list-item .thread-icon-star-on-hover {
+  -webkit-mask-image: var(--ms-icon-star-hover);
+  mask-image: var(--ms-icon-star-hover);
+  background-color: var(--ms-text-color-subtle);
+}
+
+.thread-list .list-item .thread-icon-unread {
+  -webkit-mask-image: var(--ms-icon-unread);
+  mask-image: var(--ms-icon-unread);
+  background-color: var(--ms-component-accent);
+}
+
+.thread-list .list-item .thread-icon-replied {
+  -webkit-mask-image: var(--ms-icon-replied);
+  mask-image: var(--ms-icon-replied);
+}
+
+.thread-list .list-item .thread-icon-forwarded {
+  -webkit-mask-image: var(--ms-icon-forwarded);
+  mask-image: var(--ms-icon-forwarded);
+}
+
+.thread-list .list-item .thread-icon-none {
+  -webkit-mask-image: var(--ms-icon-pencil);
+  mask-image: var(--ms-icon-pencil);
+}
+
+/* Compact actions row (vendor: narrow-mode star stacked with quick actions) */
+.thread-list .icons-column .inner {
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ---------- hover quick actions (vendor: .hover-actions on narrow + c5) ---------- */
+
+.thread-list .list-item .em-quick {
+  display: none;
+}
+
+.thread-list .list-item:hover .em-quick,
+.thread-list .list-item:focus-within .em-quick {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  position: absolute;
+  right: 8px;
+  top: 0;
+  height: 100%;
+  z-index: 2;
+  background: var(--ms-list-bg);
+  border-radius: var(--kiwi-radius);
+  padding-left: 6px;
+}
+
+.thread-list .list-item.is-selected .em-quick {
+  background: var(--ms-list-selected-bg);
+}
+
+/* Ported quick-action buttons — .btn.action.action-{archive,trash} */
+.thread-list .btn.action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: var(--kiwi-radius);
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+}
+
+.thread-list .btn.action::before {
+  content: "";
+  display: block;
+  width: 14px;
+  height: 14px;
+  background-color: var(--ms-text-color-subtle);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+}
+
+.thread-list .btn.action:hover::before {
+  background-color: var(--kiwi-ms-text);
+}
+
+.thread-list .btn.action-archive::before {
+  -webkit-mask-image: var(--ms-icon-archive);
+  mask-image: var(--ms-icon-archive);
+}
+
+.thread-list .btn.action-trash::before {
+  -webkit-mask-image: var(--ms-icon-trash);
+  mask-image: var(--ms-icon-trash);
+}
+
+.thread-injected-quick-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* ---------- injected column / important icon ---------- */
+
+.thread-injected-message-labels,
+.thread-injected-participants {
+  overflow: hidden;
+}
+
+.thread-list .mail-important-icon {
+  padding: 0;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  height: 20px;
+  width: 20px;
+}
+
+.thread-list .mail-important-icon.active .em-mark {
+  border-color: var(--ms-component-accent);
+}
+
+/* ---------- account color bar (vendor account-color-bar.less) ---------- */
+
+.account-color-bar {
+  box-shadow: inset 0 0 0.5px var(--ms-border-subtle);
+}

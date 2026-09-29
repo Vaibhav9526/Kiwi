@@ -371,7 +371,8 @@ pub struct MessageSourceView {
 }
 
 /// One per-message failure inside an mbox import — the ordinal in the file
-/// plus a bounded reason. Never a whole-message body or a filename.
+/// plus a bounded reason. `index: 0` marks a file-level note (leading junk
+/// before the first separator). Never a body fragment or a filename.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MboxImportIssueView {
@@ -408,6 +409,27 @@ pub struct MboxImportView {
     /// never counted in `failed` — the message itself landed.
     pub rule_failures: u64,
     pub issues: Vec<MboxImportIssueView>,
+}
+
+/// `kiwi_mailbox_export_mbox` report (T-316). `exported + skipped` equals
+/// the rows processed (`min(rows, MAX_EXPORT_MESSAGES)`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MboxExportView {
+    pub account_id: String,
+    pub folder: String,
+    pub folder_id: i64,
+    /// Members written to the mbox file.
+    pub exported: u64,
+    /// Rows with no obtainable RFC822 body (envelope-only, or the body
+    /// could not be loaded) — omitted from the file, counted here.
+    pub skipped: u64,
+    /// Bytes written to the destination file.
+    pub bytes: u64,
+    /// `skipped > 0 || truncated` — the file does not carry every row.
+    pub partial: bool,
+    /// Rows beyond `MAX_EXPORT_MESSAGES` were not read.
+    pub truncated: bool,
 }
 
 /// `kiwi://mail-changed` event payload — emitted by the live-sync worker

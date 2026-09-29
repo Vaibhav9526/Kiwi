@@ -47,6 +47,8 @@ export interface MessageEnvelope {
   folderId: number;
   uid: number;
   from: string;
+  /** To-header addr list (MessageView.toAddrs — null/undefined = unknown). */
+  toAddrs?: string | null;
   subject: string;
   /** ISO timestamp. */
   date: string;

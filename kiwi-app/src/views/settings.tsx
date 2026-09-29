@@ -26,6 +26,9 @@ import { PairQrFlow } from "../components/pair";
 import { ThemePicker, useTheme } from "../themes";
 import { emitToPlugin, installPlugin, removePlugin, setPluginEnabled, useInstalledPlugins, usePluginPanes } from "../plugins";
 import type { TempMail } from "../state/tempmail";
+import { ItemizedSection, PlatformNote, PreferencesTabsBar, SettingRow } from "../ms/ms-preferences";
+import type { PreferencesTabGroup, PreferencesTabLike } from "../ms/ms-preferences";
+import "../ms/ms-preferences.css";
 
 // T-191 tabbed preferences (Mailspring idiom): the eight legacy sections
 // fold into seven tabs — General (general + notifications + privacy +
@@ -43,6 +46,15 @@ const SECTION_GROUPS: { label: string; sections: Section[] }[] = [
   { label: "Application", sections: ["Appearance", "Shortcuts"] },
   { label: "About", sections: ["About"] },
 ];
+
+/** Mailspring PreferencesUIStore.tab shape feeding the ported
+ * PreferencesTabsBar — tabIds ride the SECTIONS order so arrow-key traversal
+ * still lands on the right section. */
+const SECTION_TABS: PreferencesTabLike[] = SECTIONS.map((s) => ({ tabId: s, displayName: s }));
+const SECTION_TAB_GROUPS: PreferencesTabGroup[] = SECTION_GROUPS.map((g) => ({
+  label: g.label,
+  tabIds: [...g.sections],
+}));
 
 function errText(e: unknown): string {
   return e instanceof IpcError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e);
@@ -156,6 +168,7 @@ export function SettingsView({
   const [probeNote, setProbeNote] = useState<Record<string, string>>({});
   const [prefsSync, setPrefsSync] = useState<"local" | "synced" | "unavailable">("local");
   const pushTimer = useRef<number | null>(null);
+  const contentRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => savePref("kiwi.grace", grace), [grace]);
   useEffect(() => savePref("kiwi.minTls", minTls), [minTls]);
@@ -614,6 +627,14 @@ export function SettingsView({
     if (section === "General") countDrafts();
   }, [section]);
 
+  // Ported from PreferencesRoot.componentDidUpdate: reset the content scroll
+  // on tab switch (theirs was a ScrollRegion; KIWI's panel is document-
+  // scrolled, so the window scroll resets with it).
+  useEffect(() => {
+    if (contentRef.current) contentRef.current.scrollTop = 0;
+    window.scrollTo(0, 0);
+  }, [section]);
+
   const clearDrafts = () => {
     try {
       const doomed: string[] = [];
@@ -629,52 +650,19 @@ export function SettingsView({
   };
 
   return (
-    <div className="ms-prefs ms-view-enter">
-      <nav
-        className="ms-tabs ms-prefs-rail"
-        role="tablist"
-        aria-label="Preferences"
-        aria-orientation="vertical"
-        onKeyDown={(e) => {
-          const tabs = Array.from(
-            (e.currentTarget as HTMLElement).querySelectorAll<HTMLElement>('[role="tab"]'),
-          );
-          const i = tabs.indexOf(e.target as HTMLElement);
-          if (i < 0) return;
-          let n: number | null = null;
-          if (e.key === "ArrowRight" || e.key === "ArrowDown") n = (i + 1) % tabs.length;
-          else if (e.key === "ArrowLeft" || e.key === "ArrowUp") n = (i - 1 + tabs.length) % tabs.length;
-          else if (e.key === "Home") n = 0;
-          else if (e.key === "End") n = tabs.length - 1;
-          if (n !== null) {
-            e.preventDefault();
-            setSection(SECTIONS[n]);
-            tabs[n]?.focus();
-          }
-        }}
+    <div className="ms-prefs ms-prefs-layout ms-view-enter preferences-wrap">
+      <PreferencesTabsBar
+        tabs={SECTION_TABS}
+        groups={SECTION_TAB_GROUPS}
+        selection={{ tabId: section }}
+        onSelect={(tabId) => setSection(tabId as Section)}
+      />
+      <section
+        ref={contentRef}
+        className="ms-prefs-content preferences-content"
+        aria-label={`${section} settings`}
+        role="tabpanel"
       >
-        {SECTION_GROUPS.map((g) => (
-          <div key={g.label} className="ms-rail-group" role="presentation">
-            <div className="ms-rail-label" aria-hidden="true">
-              {g.label}
-            </div>
-            {g.sections.map((s) => (
-              <button
-                key={s}
-                type="button"
-                role="tab"
-                aria-selected={s === section}
-                className="ms-tab"
-                tabIndex={s === section ? 0 : -1}
-                onClick={() => setSection(s)}
-              >
-                {s}
-              </button>
-            ))}
-          </div>
-        ))}
-      </nav>
-      <section className="ms-prefs-content" aria-label={`${section} settings`} role="tabpanel">
         <h1>{section}</h1>
         {actionError && (
           <div className="kiwi-banner error" role="alert">
@@ -684,31 +672,96 @@ export function SettingsView({
 
         {section === "General" && (
           <>
-            <p>
-              <label>
-                Undo-send grace window:{" "}
-                <select value={grace} onChange={(e) => setGrace(e.target.value)}>
-                  <option value="5">5 seconds</option>
-                  <option value="10">10 seconds</option>
-                  <option value="20">20 seconds</option>
-                  <option value="30">30 seconds</option>
-                </select>
-              </label>
-            </p>
-            <p style={{ color: "var(--kiwi-text-secondary)" }}>
-              <small>
-                Prefs store: {mode === "live" ? (prefsSync === "synced" ? "backend + this device" : prefsSync === "unavailable" ? "this device (backend prefs IPC absent)" : "this device") : "this device (demo)"}.
-              </small>
-            </p>
+            <ItemizedSection title="Sending">
+              <SettingRow>
+                <label>
+                  Undo-send grace window:{" "}
+                  <select value={grace} onChange={(e) => setGrace(e.target.value)}>
+                    <option value="5">5 seconds</option>
+                    <option value="10">10 seconds</option>
+                    <option value="20">20 seconds</option>
+                    <option value="30">30 seconds</option>
+                  </select>
+                </label>
+              </SettingRow>
+            </ItemizedSection>
+            <ItemizedSection title="Workspace">
+              <SettingRow>
+                <label>
+                  Close to tray:{" "}
+                  <select
+                    value={trayClose}
+                    onChange={(e) => setTrayClose(e.target.value)}
+                    disabled={appInfo?.trayAvailable === false}
+                  >
+                    <option value="on">On (X hides to tray — sync keeps running; Quit exits)</option>
+                    <option value="off">Off (X quits the app)</option>
+                  </select>
+                </label>
+                {appInfo?.trayAvailable === false && (
+                  <small style={{ color: "var(--kiwi-text-secondary)" }}>
+                    — this platform reported no system tray, so the pref is inert and X always quits
+                  </small>
+                )}
+              </SettingRow>
+              <SettingRow>
+                <label>
+                  Background sync:{" "}
+                  <select value={poll} onChange={(e) => setPoll(e.target.value)}>
+                    <option value="manual">Manual only</option>
+                    <option value="1">Every minute</option>
+                    <option value="5">Every 5 minutes</option>
+                    <option value="15">Every 15 minutes</option>
+                  </select>
+                </label>
+              </SettingRow>
+            </ItemizedSection>
+            <ItemizedSection title="Notifications">
+              <SettingRow>
+                <label>
+                  OS notifications:{" "}
+                  <select value={osNotify} onChange={(e) => setOsNotify(e.target.value)}>
+                    <option value="on">On (new-mail ding per synced folder)</option>
+                    <option value="off">Off (no OS popups)</option>
+                  </select>
+                </label>
+                {mode !== "live" && (
+                  <small style={{ color: "var(--kiwi-text-secondary)" }}>
+                    — this build has no OS-notification channel; the pref still saves and the desktop
+                    app honors it
+                  </small>
+                )}
+              </SettingRow>
+              <SettingRow>
+                <label>
+                  Toast popups:{" "}
+                  <select value={toasts} onChange={(e) => setToasts(e.target.value)}>
+                    <option value="on">On (send/sync/policy events)</option>
+                    <option value="off">Off (in-view status only)</option>
+                  </select>
+                </label>
+              </SettingRow>
+              <SettingRow>
+                <label>
+                  Sound:{" "}
+                  <select value={sound} onChange={(e) => setSound(e.target.value)}>
+                    <option value="off">Off</option>
+                    <option value="on">On (short blip per popup)</option>
+                  </select>
+                </label>
+              </SettingRow>
+            </ItemizedSection>
           </>
         )}
 
         {section === "Appearance" && (
-          <>
+          <ItemizedSection title="Theme and Style">
             {/* T-268 picker (T-275 landed): stock + sideloaded theme packages,
                 System option, instant apply via data-theme on root. */}
-            <ThemePicker />
-            <p>
+            <SettingRow>
+              <ThemePicker />
+            </SettingRow>
+            <SettingRow>
               <label>
                 Accent intensity:{" "}
                 <select value={accent} onChange={(e) => setAccent(e.target.value)}>
@@ -717,8 +770,8 @@ export function SettingsView({
                   <option value="vivid">Vivid (strong glow)</option>
                 </select>
               </label>
-            </p>
-            <p>
+            </SettingRow>
+            <SettingRow>
               <label>
                 Density:{" "}
                 <select value={density} onChange={(e) => setDensity(e.target.value)}>
@@ -726,19 +779,23 @@ export function SettingsView({
                   <option value="compact">Compact</option>
                 </select>
               </label>
-            </p>
-            <p style={{ color: "var(--kiwi-text-secondary)" }}>
-              <small>Applies instantly on this device; the theme switcher in the top bar changes the live session.</small>
-            </p>
-          </>
+            </SettingRow>
+            <SettingRow>
+              <small style={{ color: "var(--kiwi-text-secondary)" }}>
+                Applies instantly on this device; the theme switcher in the top bar changes the live session.
+              </small>
+            </SettingRow>
+          </ItemizedSection>
         )}
 
         {section === "Accounts" && (
           <>
             {mode === "demo" && (
-              <p style={{ color: "var(--kiwi-text-secondary)" }}>
-                <small>Demo mode — account management needs the backend. Run the Tauri app for live accounts.</small>
-              </p>
+              <SettingRow>
+                <small style={{ color: "var(--kiwi-text-secondary)" }}>
+                  Demo mode — account management needs the backend. Run the Tauri app for live accounts.
+                </small>
+              </SettingRow>
             )}
             {accounts.map((a) => (
               <div className="kiwi-card" key={a.id}>
@@ -1009,9 +1066,11 @@ export function SettingsView({
               </div>
             ))}
             {mode === "live" && accounts.length === 0 ? (
-              <p style={{ color: "var(--kiwi-text-secondary)" }}>
-                <small>No accounts yet — add one before importing or exporting mail.</small>
-              </p>
+              <SettingRow>
+                <small style={{ color: "var(--kiwi-text-secondary)" }}>
+                  No accounts yet — add one before importing or exporting mail.
+                </small>
+              </SettingRow>
             ) : (
               <div className="kiwi-card">
                 <h2>
@@ -1084,89 +1143,91 @@ export function SettingsView({
                 )}
               </div>
             )}
-            <p>
+            <SettingRow>
               <button type="button" onClick={() => navigate({ name: "setup" })}>
                 Add account…
               </button>
-            </p>
+            </SettingRow>
           </>
         )}
 
         {section === "Identity" && (
           <>
-            <p>
-              <label>
-                Minimum TLS version (display default):{" "}
-                <select value={minTls} onChange={(e) => setMinTls(e.target.value)}>
-                  <option value="tls1.0">TLS 1.0</option>
-                  <option value="tls1.1">TLS 1.1</option>
-                  <option value="tls1.2">TLS 1.2 (recommended)</option>
-                  <option value="tls1.3">TLS 1.3</option>
-                </select>
-              </label>
-            </p>
-            <p>
-              <button type="button" onClick={onLock} disabled={mode !== "live"}>
-                Lock now
-              </button>{" "}
-              <button type="button" onClick={() => void collectSignals()} disabled={mode !== "live"}>
-                Collect endpoint signals
-              </button>
-            </p>
-            {signals && (
-              <pre className="kiwi-evidence" tabIndex={0}>
-                {JSON.stringify(signals, null, 2)}
-              </pre>
-            )}
-            <h2>Devices</h2>
-            {devicesError && (
-              <p role="alert">
-                <small>{devicesError}</small>
-              </p>
-            )}
-            {devices.length === 0 && !pairOpen && (
-              <p style={{ color: "var(--kiwi-text-secondary)" }}>
-                <small>
-                  {mode === "live"
-                    ? "No paired devices."
-                    : "Device management needs the backend."}
-                </small>
-              </p>
-            )}
-            {/* T-303: real pairing — begin issues a backend-owned ticket and
-                renders its qrPayload as a scannable QR; pair_status polls to
-                claimed/expired (§9d). Demo keeps an honest disabled state. */}
-            {pairOpen ? (
-              <div className="em-card" style={{ padding: "0.8rem", marginBottom: "0.6rem" }}>
-                <PairQrFlow
-                  onClaimed={() => {
-                    void loadDevices();
-                  }}
-                />
-                <p style={{ textAlign: "center", margin: "0.5rem 0 0" }}>
-                  <button type="button" className="ms-btn" onClick={() => setPairOpen(false)}>
-                    Close
-                  </button>
-                </p>
-              </div>
-            ) : (
-              <p>
-                <button
-                  type="button"
-                  className="ms-btn"
-                  onClick={() => setPairOpen(true)}
-                  disabled={mode !== "live"}
-                  title={mode !== "live" ? "Device pairing needs the Tauri backend" : undefined}
-                >
-                  Pair new device…
+            <ItemizedSection title="Security">
+              <SettingRow>
+                <label>
+                  Minimum TLS version (display default):{" "}
+                  <select value={minTls} onChange={(e) => setMinTls(e.target.value)}>
+                    <option value="tls1.0">TLS 1.0</option>
+                    <option value="tls1.1">TLS 1.1</option>
+                    <option value="tls1.2">TLS 1.2 (recommended)</option>
+                    <option value="tls1.3">TLS 1.3</option>
+                  </select>
+                </label>
+              </SettingRow>
+              <SettingRow>
+                <button type="button" onClick={onLock} disabled={mode !== "live"}>
+                  Lock now
+                </button>{" "}
+                <button type="button" onClick={() => void collectSignals()} disabled={mode !== "live"}>
+                  Collect endpoint signals
                 </button>
-              </p>
-            )}
-            {/* T-308: rows project the real §9d.5 DeviceView — fingerprint
-                (full dash-grouped, display-only) + keystoreRef presence +
-                paired/last-seen/revoked timestamps; "this device" marks the
-                local endpoint when its id appears. Nothing invented. */}
-            <ul>
+              </SettingRow>
+              {signals && (
+                <pre className="kiwi-evidence" tabIndex={0}>
+                  {JSON.stringify(signals, null, 2)}
+                </pre>
+              )}
+            </ItemizedSection>
+            <ItemizedSection title="Devices">
+              {devicesError && (
+                <p role="alert">
+                  <small>{devicesError}</small>
+                </p>
+              )}
+              {devices.length === 0 && !pairOpen && (
+                <p style={{ color: "var(--kiwi-text-secondary)" }}>
+                  <small>
+                    {mode === "live"
+                      ? "No paired devices."
+                      : "Device management needs the backend."}
+                  </small>
+                </p>
+              )}
+              {/* T-303: real pairing — begin issues a backend-owned ticket and
+                  renders its qrPayload as a scannable QR; pair_status polls to
+                  claimed/expired (§9d). Demo keeps an honest disabled state. */}
+              {pairOpen ? (
+                <div className="em-card" style={{ padding: "0.8rem", marginBottom: "0.6rem" }}>
+                  <PairQrFlow
+                    onClaimed={() => {
+                      void loadDevices();
+                    }}
+                  />
+                  <p style={{ textAlign: "center", margin: "0.5rem 0 0" }}>
+                    <button type="button" className="ms-btn" onClick={() => setPairOpen(false)}>
+                      Close
+                    </button>
+                  </p>
+                </div>
+              ) : (
+                <SettingRow>
+                  <button
+                    type="button"
+                    className="ms-btn"
+                    onClick={() => setPairOpen(true)}
+                    disabled={mode !== "live"}
+                    title={mode !== "live" ? "Device pairing needs the Tauri backend" : undefined}
+                  >
+                    Pair new device…
+                  </button>
+                </SettingRow>
+              )}
+              {/* T-308: rows project the real §9d.5 DeviceView — fingerprint
+                  (full dash-grouped, display-only) + keystoreRef presence +
+                  paired/last-seen/revoked timestamps; "this device" marks the
+                  local endpoint when its id appears. Nothing invented. */}
+              <ul>
               {devices.map((d) => (
                 <li key={d.deviceId}>
                   {d.label}{" "}
@@ -1220,179 +1281,120 @@ export function SettingsView({
                   )}
                 </li>
               ))}
-            </ul>
-            <h2>Organization binding</h2>
-            <p>
-              <small>
-                Current: {orgBinding ? `${orgBinding.orgId} @ ${orgBinding.baseUrl}` : "none"}
-              </small>
-            </p>
-            <p>
-              <label>
-                Org id: <input type="text" value={bindOrgId} onChange={(e) => setBindOrgId(e.target.value)} />
-              </label>{" "}
-              <label>
-                Base URL:{" "}
-                <input
-                  type="text"
-                  value={bindUrl}
-                  onChange={(e) => setBindUrl(e.target.value)}
-                  placeholder="http://127.0.0.1:8471"
-                  style={{ width: "14rem" }}
-                />
-              </label>{" "}
-              <button type="button" onClick={() => void setBinding()} disabled={mode !== "live"}>
-                Bind
-              </button>{" "}
-              <button type="button" onClick={() => void clearBinding()} disabled={mode !== "live" || !orgBinding}>
-                Clear
-              </button>
-            </p>
-            <p style={{ color: "var(--kiwi-text-secondary)" }}>
-              <small>Loopback URLs only — the backend rejects anything else.</small>
-            </p>
+              </ul>
+            </ItemizedSection>
+            <ItemizedSection title="Organization binding">
+              <SettingRow>
+                <small>
+                  Current: {orgBinding ? `${orgBinding.orgId} @ ${orgBinding.baseUrl}` : "none"}
+                </small>
+              </SettingRow>
+              <SettingRow>
+                <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "center" }}>
+                  <label>
+                    Org id: <input type="text" value={bindOrgId} onChange={(e) => setBindOrgId(e.target.value)} />
+                  </label>
+                  <label>
+                    Base URL:{" "}
+                    <input
+                      type="text"
+                      value={bindUrl}
+                      onChange={(e) => setBindUrl(e.target.value)}
+                      placeholder="http://127.0.0.1:8471"
+                      style={{ width: "14rem" }}
+                    />
+                  </label>
+                  <button type="button" onClick={() => void setBinding()} disabled={mode !== "live"}>
+                    Bind
+                  </button>
+                  <button type="button" onClick={() => void clearBinding()} disabled={mode !== "live" || !orgBinding}>
+                    Clear
+                  </button>
+                </div>
+              </SettingRow>
+              <SettingRow>
+                <small style={{ color: "var(--kiwi-text-secondary)" }}>
+                  Loopback URLs only — the backend rejects anything else.
+                </small>
+              </SettingRow>
+            </ItemizedSection>
           </>
         )}
 
         {section === "Appearance" && (
-          <>
-            <h2>Message templates</h2>
-            <TemplatesManager live={mode === "live"} />
-          </>
+          <ItemizedSection title="Message templates">
+            <div className="ms-pref-embed">
+              <TemplatesManager live={mode === "live"} />
+            </div>
+          </ItemizedSection>
         )}
 
         {section === "General" && (
           <>
-            <h2>Privacy</h2>
-            <p>
-              <small>
-                Default for every account: <strong>blocked</strong> (backend-enforced; tracking surface). Opt in
-                per account below — audited server-side.
-              </small>
-            </p>
-            <p>
-              <small>
-                Read receipts: <strong>stripped, always</strong> — the client never sends them and renders no
-                tracking pixels (remote content stays blocked). Link tracking stays off pending owner sign-off
-                (ARCHITECTURE.md §4).
-              </small>
-            </p>
-            <h2>Remote content per account</h2>
-            {mode === "demo" ? (
-              <p style={{ color: "var(--kiwi-text-secondary)" }}>
-                <small>Demo mode — toggling needs the backend. Run the Tauri app for live settings.</small>
-              </p>
-            ) : accounts.length === 0 ? (
-              <p style={{ color: "var(--kiwi-text-secondary)" }}>
-                <small>No accounts yet — add one to manage remote content.</small>
-              </p>
-            ) : (
-              <ul>
-                {accounts.map((a) => {
-                  const state = remoteState[a.id];
-                  return (
-                    <li key={a.id}>
-                      {a.displayName} <small>({a.email})</small> —{" "}
-                      <small>
-                        {state === undefined ? "currently blocked (backend default; unchanged this session)" : state ? "allowed" : "blocked"}
-                      </small>{" "}
-                      <button
-                        type="button"
-                        disabled={remoteBusy === a.id}
-                        onClick={() => void toggleRemote(a.id, !(state ?? false))}
-                      >
-                        {remoteBusy === a.id ? "Saving…" : state ? "Block" : "Allow"}
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-            <p style={{ color: "var(--kiwi-text-secondary)" }}>
-              <small>
+            <ItemizedSection title="Privacy">
+              <SettingRow>
+                <small>
+                  Default for every account: <strong>blocked</strong> (backend-enforced; tracking surface). Opt in
+                  per account below — audited server-side.
+                </small>
+              </SettingRow>
+              <SettingRow>
+                <small>
+                  Read receipts: <strong>stripped, always</strong> — the client never sends them and renders no
+                  tracking pixels (remote content stays blocked). Link tracking stays off pending owner sign-off
+                  (ARCHITECTURE.md §4).
+                </small>
+              </SettingRow>
+            </ItemizedSection>
+            <ItemizedSection title="Remote content per account">
+              {mode === "demo" ? (
+                <SettingRow>
+                  <small style={{ color: "var(--kiwi-text-secondary)" }}>
+                    Demo mode — toggling needs the backend. Run the Tauri app for live settings.
+                  </small>
+                </SettingRow>
+              ) : accounts.length === 0 ? (
+                <SettingRow>
+                  <small style={{ color: "var(--kiwi-text-secondary)" }}>
+                    No accounts yet — add one to manage remote content.
+                  </small>
+                </SettingRow>
+              ) : (
+                <ul>
+                  {accounts.map((a) => {
+                    const state = remoteState[a.id];
+                    return (
+                      <li key={a.id}>
+                        {a.displayName} <small>({a.email})</small> —{" "}
+                        <small>
+                          {state === undefined ? "currently blocked (backend default; unchanged this session)" : state ? "allowed" : "blocked"}
+                        </small>{" "}
+                        <button
+                          type="button"
+                          disabled={remoteBusy === a.id}
+                          onClick={() => void toggleRemote(a.id, !(state ?? false))}
+                        >
+                          {remoteBusy === a.id ? "Saving…" : state ? "Block" : "Allow"}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+              <PlatformNote>
                 Applies to rendered HTML bodies (kiwi_set_remote_content, audited server-side). Remote images are a
                 tracking surface — allow only for senders you trust.
-              </small>
-            </p>
+              </PlatformNote>
+            </ItemizedSection>
           </>
         )}
 
         {section === "General" && (
-          <>
-            <h2>Notifications</h2>
-            <p>
-              <label>
-                OS notifications:{" "}
-                <select value={osNotify} onChange={(e) => setOsNotify(e.target.value)}>
-                  <option value="on">On (new-mail ding per synced folder)</option>
-                  <option value="off">Off (no OS popups)</option>
-                </select>
-              </label>
-              {mode !== "live" && (
-                <>
-                  {" "}
-                  <small style={{ color: "var(--kiwi-text-secondary)" }}>
-                    — this build has no OS-notification channel; the pref still saves and the desktop
-                    app honors it
-                  </small>
-                </>
-              )}
-            </p>
-            <p>
-              <label>
-                Close to tray:{" "}
-                <select
-                  value={trayClose}
-                  onChange={(e) => setTrayClose(e.target.value)}
-                  disabled={appInfo?.trayAvailable === false}
-                >
-                  <option value="on">On (X hides to tray — sync keeps running; Quit exits)</option>
-                  <option value="off">Off (X quits the app)</option>
-                </select>
-              </label>
-              {appInfo?.trayAvailable === false && (
-                <>
-                  {" "}
-                  <small style={{ color: "var(--kiwi-text-secondary)" }}>
-                    — this platform reported no system tray, so the pref is inert and X always quits
-                  </small>
-                </>
-              )}
-            </p>
-            <p>
-              <label>
-                Toast popups:{" "}
-                <select value={toasts} onChange={(e) => setToasts(e.target.value)}>
-                  <option value="on">On (send/sync/policy events)</option>
-                  <option value="off">Off (in-view status only)</option>
-                </select>
-              </label>
-            </p>
-            <p>
-              <label>
-                Sound:{" "}
-                <select value={sound} onChange={(e) => setSound(e.target.value)}>
-                  <option value="off">Off</option>
-                  <option value="on">On (short blip per popup)</option>
-                </select>
-              </label>
-            </p>
-            <p>
-              <label>
-                Background sync:{" "}
-                <select value={poll} onChange={(e) => setPoll(e.target.value)}>
-                  <option value="manual">Manual only</option>
-                  <option value="1">Every minute</option>
-                  <option value="5">Every 5 minutes</option>
-                  <option value="15">Every 15 minutes</option>
-                </select>
-              </label>
-            </p>
-            <h2>Per-account mute</h2>
+          <ItemizedSection title="Per-account mute">
             {accounts.length === 0 ? (
-              <p style={{ color: "var(--kiwi-text-secondary)" }}>
-                <small>No accounts yet.</small>
-              </p>
+              <SettingRow>
+                <small style={{ color: "var(--kiwi-text-secondary)" }}>No accounts yet.</small>
+              </SettingRow>
             ) : (
               <ul>
                 {accounts.map((a) => (
@@ -1410,47 +1412,53 @@ export function SettingsView({
                 ))}
               </ul>
             )}
-            <p style={{ color: "var(--kiwi-text-secondary)" }}>
-              <small>
+            <SettingRow>
+              <small style={{ color: "var(--kiwi-text-secondary)" }}>
                 Muted accounts keep syncing but hide unread from counts and tag the sidebar — and a
                 muted account never raises an OS notification. OS-notification, toast, and sound
                 preferences sync through the backend prefs store.
               </small>
-            </p>
-          </>
+            </SettingRow>
+          </ItemizedSection>
         )}
 
         {section === "General" && (
-          <>
-            <h2>Advanced</h2>
-            <p>
+          <ItemizedSection title="Local Data" className="local-data">
+            <SettingRow>
               <small>
                 Contract: <code>kiwi.ipc/1</code> · local prefs under <code>kiwi.*</code> keys in this device's
                 localStorage (never credentials or message bodies — drafts only).
               </small>
-            </p>
-            <p>
+            </SettingRow>
+            <SettingRow>
               <small>
                 Autosaved drafts on this device: <strong>{draftCount}</strong>{" "}
                 <button type="button" onClick={clearDrafts} disabled={draftCount === 0}>
                   Clear all drafts
                 </button>
               </small>
-            </p>
-            <p style={{ color: "var(--kiwi-text-secondary)" }}>
-              <small>Backend data (accounts, mail store, outbox) lives in the app data dir — managed by the backend, not here.</small>
-            </p>
-          </>
+            </SettingRow>
+            <SettingRow>
+              <small>
+                Prefs store: {mode === "live" ? (prefsSync === "synced" ? "backend + this device" : prefsSync === "unavailable" ? "this device (backend prefs IPC absent)" : "this device") : "this device (demo)"}.
+              </small>
+            </SettingRow>
+            <SettingRow>
+              <small style={{ color: "var(--kiwi-text-secondary)" }}>
+                Backend data (accounts, mail store, outbox) lives in the app data dir — managed by the backend, not here.
+              </small>
+            </SettingRow>
+          </ItemizedSection>
         )}
 
         {section === "Shortcuts" && (
-          <>
-            <p style={{ color: "var(--kiwi-text-secondary)" }}>
-              <small>
+          <ItemizedSection>
+            <SettingRow>
+              <small style={{ color: "var(--kiwi-text-secondary)" }}>
                 List shortcuts (j/k/s/e/r/u) are inactive while typing in a text field — press Esc first. The full
                 overlay opens with <code>?</code>, the palette with <code>Ctrl+K</code>.
               </small>
-            </p>
+            </SettingRow>
             <table style={{ borderCollapse: "collapse", width: "100%" }}>
               <tbody>
                 {SHORTCUT_ROWS.map(([keys, what]) => (
@@ -1463,7 +1471,7 @@ export function SettingsView({
                 ))}
               </tbody>
             </table>
-          </>
+          </ItemizedSection>
         )}
 
         {section === "Mail Rules" && (
@@ -1471,121 +1479,130 @@ export function SettingsView({
             {/* T-281: server-side ruleset (kiwi_rules_*) — authoritative
                 management surface. The localFilters block below is the
                 older prefs-backed draft engine, kept separate. */}
-            <RulesView demo={mode === "demo"} accounts={accounts} folderLists={folderLists ?? {}} />
-            <hr style={{ border: 0, borderTop: "1px solid var(--kiwi-border)", margin: "1rem 0" }} />
-            <h3>
-              Draft filters{" "}
-              <small style={{ color: "var(--kiwi-text-secondary)", fontWeight: "normal" }}>
-                — local prefs engine (kiwi.filterRules), run-on-list only
-              </small>
-            </h3>
-            {filters ? (
-              <FiltersView {...filters} />
-            ) : (
-              <p>
-                <small>
-                  Mail rules need the mailbox context —{" "}
-                  <button type="button" onClick={() => navigate({ name: "filters" })}>
-                    open the Filters view
-                  </button>
-                  .
+            <div className="ms-pref-embed">
+              <RulesView demo={mode === "demo"} accounts={accounts} folderLists={folderLists ?? {}} />
+            </div>
+            <ItemizedSection title="Draft filters">
+              <SettingRow>
+                <small style={{ color: "var(--kiwi-text-secondary)" }}>
+                  Local prefs engine (kiwi.filterRules), run-on-list only.
                 </small>
-              </p>
-            )}
+              </SettingRow>
+              {filters ? (
+                <div className="ms-pref-embed">
+                  <FiltersView {...filters} />
+                </div>
+              ) : (
+                <SettingRow>
+                  <small>
+                    Mail rules need the mailbox context —{" "}
+                    <button type="button" onClick={() => navigate({ name: "filters" })}>
+                      open the Filters view
+                    </button>
+                    .
+                  </small>
+                </SettingRow>
+              )}
+            </ItemizedSection>
           </>
         )}
 
-        {section === "Integrations" && <IntegrationsView accounts={accounts} mode={mode} temp={temp} />}
+        {section === "Integrations" && (
+          <div className="ms-pref-embed">
+            <IntegrationsView accounts={accounts} mode={mode} temp={temp} />
+          </div>
+        )}
 
         {section === "Plugins" && (
           <>
             {/* T-307: sideload install — the folder picker feeds every package
                 file into installPlugin (manifest validation + capability gate
                 rejections surface verbatim in the error banner). */}
-            <p>
-              <button
-                type="button"
-                className="ms-btn"
-                onClick={() => pluginFileRef.current?.click()}
-                title="Pick a plugin folder containing manifest.json — sideloaded plugins run as trusted code (see src/plugins/GETTING-STARTED.md)"
-              >
-                <Icon name="puzzle" size={13} /> Install plugin…
-              </button>{" "}
-              <small style={{ color: "var(--kiwi-text-secondary)" }}>
-                Sideload-only alpha — plugins run as trusted code in a Worker (no DOM/localStorage).
-              </small>
-            </p>
-            <input
-              ref={pluginFileRef}
-              type="file"
-              // @ts-expect-error webkitdirectory is non-standard but supported by WebView2/WKWebView/Chromium
-              webkitdirectory=""
-              multiple
-              style={{ display: "none" }}
-              aria-label="Plugin package folder"
-              onChange={(e) => void installPluginFiles(e.target.files, e.target)}
-            />
-            {pluginErrs.length > 0 && (
-              <div className="kiwi-banner error" role="alert">
-                <small>
-                  Plugin not installed:
-                  <ul style={{ margin: "0.2rem 0 0", paddingLeft: "1.1rem" }}>
-                    {pluginErrs.map((e) => (
-                      <li key={e}>{e}</li>
-                    ))}
-                  </ul>
+            <ItemizedSection>
+              <SettingRow>
+                <button
+                  type="button"
+                  className="ms-btn"
+                  onClick={() => pluginFileRef.current?.click()}
+                  title="Pick a plugin folder containing manifest.json — sideloaded plugins run as trusted code (see src/plugins/GETTING-STARTED.md)"
+                >
+                  <Icon name="puzzle" size={13} /> Install plugin…
+                </button>{" "}
+                <small style={{ color: "var(--kiwi-text-secondary)" }}>
+                  Sideload-only alpha — plugins run as trusted code in a Worker (no DOM/localStorage).
                 </small>
-              </div>
-            )}
-            {installedPlugins.length === 0 ? (
-              <p style={{ color: "var(--kiwi-text-secondary)" }}>
-                <small>
-                  No plugins installed. Sideload-only v1 — see <code>src/plugins/GETTING-STARTED.md</code>.
-                </small>
-              </p>
-            ) : (
-              installedPlugins.map((p) => (
-                <div className="kiwi-card" key={p.manifest.id}>
-                  <h2>
-                    {p.manifest.name ?? p.manifest.id}{" "}
-                    <small style={{ color: "var(--kiwi-text-secondary)" }}>
-                      v{p.manifest.version} · {p.manifest.id}
-                    </small>
-                  </h2>
-                  <p>
-                    {p.manifest.permissions.length === 0 ? (
-                      <small style={{ color: "var(--kiwi-text-secondary)" }}>no capabilities declared</small>
-                    ) : (
-                      p.manifest.permissions.map((cap) => (
-                        <span key={cap} className="ms-badge" style={{ marginRight: "0.3rem" }} title={`Declared capability: ${cap}`}>
-                          {cap}
-                        </span>
-                      ))
-                    )}
-                  </p>
-                  <p>
-                    <label>
-                      <input
-                        type="checkbox"
-                        checked={p.enabled}
-                        onChange={(e) => setPluginEnabled(p.manifest.id, e.target.checked)}
-                      />{" "}
-                      Enabled
-                    </label>{" "}
-                    <button type="button" className="ms-btn" onClick={() => removePlugin(p.manifest.id)}>
-                      Remove
-                    </button>
-                  </p>
+              </SettingRow>
+              <input
+                ref={pluginFileRef}
+                type="file"
+                // @ts-expect-error webkitdirectory is non-standard but supported by WebView2/WKWebView/Chromium
+                webkitdirectory=""
+                multiple
+                style={{ display: "none" }}
+                aria-label="Plugin package folder"
+                onChange={(e) => void installPluginFiles(e.target.files, e.target)}
+              />
+              {pluginErrs.length > 0 && (
+                <div className="kiwi-banner error" role="alert">
+                  <small>
+                    Plugin not installed:
+                    <ul style={{ margin: "0.2rem 0 0", paddingLeft: "1.1rem" }}>
+                      {pluginErrs.map((e) => (
+                        <li key={e}>{e}</li>
+                      ))}
+                    </ul>
+                  </small>
                 </div>
-              ))
-            )}
+              )}
+              {installedPlugins.length === 0 ? (
+                <SettingRow>
+                  <small style={{ color: "var(--kiwi-text-secondary)" }}>
+                    No plugins installed. Sideload-only v1 — see <code>src/plugins/GETTING-STARTED.md</code>.
+                  </small>
+                </SettingRow>
+              ) : (
+                installedPlugins.map((p) => (
+                  <div className="kiwi-card" key={p.manifest.id}>
+                    <h2>
+                      {p.manifest.name ?? p.manifest.id}{" "}
+                      <small style={{ color: "var(--kiwi-text-secondary)" }}>
+                        v{p.manifest.version} · {p.manifest.id}
+                      </small>
+                    </h2>
+                    <p>
+                      {p.manifest.permissions.length === 0 ? (
+                        <small style={{ color: "var(--kiwi-text-secondary)" }}>no capabilities declared</small>
+                      ) : (
+                        p.manifest.permissions.map((cap) => (
+                          <span key={cap} className="ms-badge" style={{ marginRight: "0.3rem" }} title={`Declared capability: ${cap}`}>
+                            {cap}
+                          </span>
+                        ))
+                      )}
+                    </p>
+                    <p>
+                      <label>
+                        <input
+                          type="checkbox"
+                          checked={p.enabled}
+                          onChange={(e) => setPluginEnabled(p.manifest.id, e.target.checked)}
+                        />{" "}
+                        Enabled
+                      </label>{" "}
+                      <button type="button" className="ms-btn" onClick={() => removePlugin(p.manifest.id)}>
+                        Remove
+                      </button>
+                    </p>
+                  </div>
+                ))
+              )}
+            </ItemizedSection>
             {pluginPanes.length > 0 && (
-              <>
-                <h2>Plugin panes</h2>
+              <ItemizedSection title="Plugin panes">
                 {pluginPanes.map((pane) => (
                   <PluginPaneCard key={`${pane.pluginId}/${pane.paneId}`} pane={pane} />
                 ))}
-              </>
+              </ItemizedSection>
             )}
           </>
         )}
@@ -1605,66 +1622,67 @@ export function SettingsView({
               </p>
             </div>
 
-            <h2>Diagnostics</h2>
-            <dl style={{ display: "grid", gridTemplateColumns: "max-content 1fr", gap: "0.25rem 1rem", marginTop: 0 }}>
-              <dt>App version</dt>
-              <dd style={{ margin: 0 }}><code>{APP_VERSION}</code> (build manifest)</dd>
-              <dt>Accounts</dt>
-              {/* Demo's sidebar accounts come from DEMO_ACCOUNTS (mock.ts) —
-                  the live IPC list is empty there; count the source the UI
-                  actually renders, never a number that disagrees on screen. */}
-              <dd style={{ margin: 0 }}>
-                {mode === "demo" ? `${DEMO_ACCOUNTS.length} (demo fixtures)` : accounts.length}
-              </dd>
-              <dt>Plugins installed</dt>
-              <dd style={{ margin: 0 }}>{installedPlugins.length}</dd>
-              {appInfo && (
-                <>
-                  <dt>Backend</dt>
-                  <dd style={{ margin: 0 }}><code>{appInfo.version}</code> · IPC <code>{appInfo.contractVersion}</code></dd>
-                  <dt>Security sessions observed</dt>
-                  <dd style={{ margin: 0 }}>{appInfo.sessionsObserved}</dd>
-                  <dt>This device</dt>
-                  <dd style={{ margin: 0 }}><code>{appInfo.deviceId}</code></dd>
-                  {appInfo.org && (
-                    <>
-                      <dt>Organization</dt>
-                      <dd style={{ margin: 0 }}>{appInfo.org.orgId} — {appInfo.org.baseUrl}</dd>
-                    </>
-                  )}
-                </>
+            <ItemizedSection title="Diagnostics">
+              <dl style={{ display: "grid", gridTemplateColumns: "max-content 1fr", gap: "0.25rem 1rem", marginTop: 0 }}>
+                <dt>App version</dt>
+                <dd style={{ margin: 0 }}><code>{APP_VERSION}</code> (build manifest)</dd>
+                <dt>Accounts</dt>
+                {/* Demo's sidebar accounts come from DEMO_ACCOUNTS (mock.ts) —
+                    the live IPC list is empty there; count the source the UI
+                    actually renders, never a number that disagrees on screen. */}
+                <dd style={{ margin: 0 }}>
+                  {mode === "demo" ? `${DEMO_ACCOUNTS.length} (demo fixtures)` : accounts.length}
+                </dd>
+                <dt>Plugins installed</dt>
+                <dd style={{ margin: 0 }}>{installedPlugins.length}</dd>
+                {appInfo && (
+                  <>
+                    <dt>Backend</dt>
+                    <dd style={{ margin: 0 }}><code>{appInfo.version}</code> · IPC <code>{appInfo.contractVersion}</code></dd>
+                    <dt>Security sessions observed</dt>
+                    <dd style={{ margin: 0 }}>{appInfo.sessionsObserved}</dd>
+                    <dt>This device</dt>
+                    <dd style={{ margin: 0 }}><code>{appInfo.deviceId}</code></dd>
+                    {appInfo.org && (
+                      <>
+                        <dt>Organization</dt>
+                        <dd style={{ margin: 0 }}>{appInfo.org.orgId} — {appInfo.org.baseUrl}</dd>
+                      </>
+                    )}
+                  </>
+                )}
+              </dl>
+              {!appInfo && (
+                <p style={{ color: "var(--kiwi-text-secondary)" }}>
+                  <small>
+                    Backend stats unavailable{mode === "demo" ? " in demo mode" : ""} — backend
+                    version, sessions, and device id appear when a backend answers
+                    <code> kiwi_app_info</code>. Profile dir is omitted: no IPC exposes it, and an
+                    estimate is not shown.
+                  </small>
+                </p>
               )}
-            </dl>
-            {!appInfo && (
-              <p style={{ color: "var(--kiwi-text-secondary)" }}>
-                <small>
-                  Backend stats unavailable{mode === "demo" ? " in demo mode" : ""} — backend
-                  version, sessions, and device id appear when a backend answers
-                  <code> kiwi_app_info</code>. Profile dir is omitted: no IPC exposes it, and an
-                  estimate is not shown.
-                </small>
-              </p>
-            )}
+            </ItemizedSection>
 
             {/* T-333: real storage measurements via kiwi_storage_stats (§8).
                 Every value is measured backend-side — null renders as
                 "unmeasurable", 0 renders as 0; integrityCheck shows SQLite's
                 own verdict and a non-"ok" result is a danger row, not a pass. */}
-            <h2>Storage</h2>
-            {mode !== "live" ? (
-              <p style={{ color: "var(--kiwi-text-secondary)" }}>
-                <small>Storage diagnostics need the backend — demo mode has no store to measure.</small>
-              </p>
-            ) : storageLoading && !storage ? (
-              <p role="status">
-                <small>Measuring local storage…</small>
-              </p>
-            ) : storageErr ? (
-              <div className="kiwi-banner error" role="alert">
-                <small>Storage stats failed to load: {storageErr}</small>
-              </div>
-            ) : storage ? (
-              <>
+            <ItemizedSection title="Storage">
+              {mode !== "live" ? (
+                <p style={{ color: "var(--kiwi-text-secondary)" }}>
+                  <small>Storage diagnostics need the backend — demo mode has no store to measure.</small>
+                </p>
+              ) : storageLoading && !storage ? (
+                <p role="status">
+                  <small>Measuring local storage…</small>
+                </p>
+              ) : storageErr ? (
+                <div className="kiwi-banner error" role="alert">
+                  <small>Storage stats failed to load: {storageErr}</small>
+                </div>
+              ) : storage ? (
+                <>
                 <dl style={{ display: "grid", gridTemplateColumns: "max-content 1fr", gap: "0.25rem 1rem", marginTop: 0 }}>
                   <dt>Database size</dt>
                   <dd style={{ margin: 0 }}>
@@ -1739,31 +1757,33 @@ export function SettingsView({
                     <small>Compact failed: {compactErr}</small>
                   </div>
                 )}
-              </>
-            ) : null}
+                </>
+              ) : null}
+            </ItemizedSection>
 
-            <h2>Keyboard shortcuts</h2>
-            <p style={{ color: "var(--kiwi-text-secondary)", marginTop: 0 }}>
-              <small>The same map as the <code>?</code> overlay and the Shortcuts tab — one source.</small>
-            </p>
-            <table style={{ borderCollapse: "collapse", width: "100%" }} aria-label="Keyboard shortcuts">
-              <tbody>
-                {SHORTCUT_ROWS.map(([keys, what]) => (
-                  <tr key={keys}>
-                    <td style={{ padding: "0.3rem 0.6rem 0.3rem 0", whiteSpace: "nowrap" }}>
-                      <code>{keys}</code>
-                    </td>
-                    <td style={{ padding: "0.3rem 0" }}>{what}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+            <ItemizedSection title="Keyboard shortcuts">
+              <p style={{ color: "var(--kiwi-text-secondary)", marginTop: 0 }}>
+                <small>The same map as the <code>?</code> overlay and the Shortcuts tab — one source.</small>
+              </p>
+              <table style={{ borderCollapse: "collapse", width: "100%" }} aria-label="Keyboard shortcuts">
+                <tbody>
+                  {SHORTCUT_ROWS.map(([keys, what]) => (
+                    <tr key={keys}>
+                      <td style={{ padding: "0.3rem 0.6rem 0.3rem 0", whiteSpace: "nowrap" }}>
+                        <code>{keys}</code>
+                      </td>
+                      <td style={{ padding: "0.3rem 0" }}>{what}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </ItemizedSection>
 
-            <p style={{ color: "var(--kiwi-text-secondary)" }}>
-              <small>
+            <SettingRow>
+              <small style={{ color: "var(--kiwi-text-secondary)" }}>
                 {APP_NAME} contributors · {APP_LICENSE} — see <code>LICENSE</code>.
               </small>
-            </p>
+            </SettingRow>
           </>
         )}
       </section>

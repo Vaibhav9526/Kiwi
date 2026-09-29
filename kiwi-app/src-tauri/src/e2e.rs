@@ -1556,3 +1556,304 @@ async fn e2e_pop3_delete_after_download_sends_dele() {
 
     server.await.unwrap().expect("transcript replayed fully");
 }
+
+// ---------------------------------------------------------------------------
+// T-328 — IMAP server-folder CRUD over the same scripted loopback seam.
+// kiwi_folder_create/rename/delete on an IMAP account must issue real
+// CREATE/RENAME/DELETE wire commands; the local row mirrors only after a
+// tagged OK plus a verifying LIST — never local-first-fake. Server NO
+// surfaces `server-reject` with the reply text; INBOX and LIST-wildcard
+// names refuse before any connection is dialed.
+// ---------------------------------------------------------------------------
+
+/// IMAP account input on implicit-TLS loopback (same shape as
+/// `pop3_input`; the outgoing leg is never dialed).
+fn imap_input(port: u16) -> AddAccountInput {
+    AddAccountInput {
+        display_name: "E2E IMAP".into(),
+        email: "u@e2e.test".into(),
+        incoming_protocol: "imap".into(),
+        incoming: ServerInput {
+            host: "127.0.0.1".into(),
+            port,
+            security: "tls".into(),
+        },
+        outgoing: ServerInput {
+            host: "127.0.0.1".into(),
+            port: 2525,
+            security: "tls".into(),
+        },
+        username: Some("u@e2e.test".into()),
+        outgoing_username: Some("u@e2e.test".into()),
+        incoming_auth: Some(AuthInput {
+            kind: "password".into(),
+            secret: Some("s3cret".into()),
+            oauth2_ticket: None,
+        }),
+        outgoing_auth: None,
+        accept_invalid_certs: true,
+    }
+}
+
+/// Shared session head for folder ops: implicit-TLS handshake, scripted
+/// greeting + CAPABILITY, LOGIN, then the per-op transcript body.
+fn folder_sess(body: &str) -> String {
+    format!(
+        "# TLS handshake\n\
+         S: * OK e2e.test IMAP4rev2 TestServer ready\n\
+         C: a1 CAPABILITY\n\
+         S: * CAPABILITY IMAP4rev2 UIDPLUS\n\
+         S: a1 OK CAPABILITY completed\n\
+         C: a2 LOGIN u@e2e.test REDACTED-DUMMY\n\
+         S: a2 OK LOGIN completed\n\
+         {body}"
+    )
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn e2e_imap_folder_crud_hits_the_wire() {
+    use crate::commands::folders::{folder_create_impl, folder_delete_impl, folder_rename_impl};
+
+    let (acceptor, _der) = testutil::tls_acceptor(&["127.0.0.1"]);
+    let (listener, port) = bind_listener().await;
+    let state = test_state("foldercrud", MockNet::new());
+    let view = add_account_impl(&state, imap_input(port))
+        .await
+        .expect("add imap account");
+
+    // One session per op — each impl call opens its own connection.
+    let s_create_root = folder_sess(
+        "C: a3 LIST \"\" \"\"\n\
+         S: * LIST (\\Noselect) \"/\" \"\"\n\
+         S: a3 OK LIST completed\n\
+         C: a4 CREATE \"Work\"\n\
+         S: a4 OK CREATE completed\n\
+         C: a5 LIST \"\" \"Work\"\n\
+         S: * LIST (\\HasNoChildren) \"/\" \"Work\"\n\
+         S: a5 OK LIST completed\n\
+         C: a6 LOGOUT\n\
+         S: * BYE TestServer logging out\n\
+         S: a6 OK LOGOUT completed\n",
+    );
+    let s_create_child = folder_sess(
+        "C: a3 LIST \"\" \"\"\n\
+         S: * LIST (\\Noselect) \"/\" \"\"\n\
+         S: a3 OK LIST completed\n\
+         C: a4 CREATE \"Work/Sub\"\n\
+         S: a4 OK CREATE completed\n\
+         C: a5 LIST \"\" \"Work/Sub\"\n\
+         S: * LIST (\\HasNoChildren) \"/\" \"Work/Sub\"\n\
+         S: a5 OK LIST completed\n\
+         C: a6 LOGOUT\n\
+         S: * BYE TestServer logging out\n\
+         S: a6 OK LOGOUT completed\n",
+    );
+    let s_rename = folder_sess(
+        "C: a3 LIST \"\" \"\"\n\
+         S: * LIST (\\Noselect) \"/\" \"\"\n\
+         S: a3 OK LIST completed\n\
+         C: a4 RENAME \"Work\" \"Tasks\"\n\
+         S: a4 OK RENAME completed\n\
+         C: a5 LIST \"\" \"Tasks\"\n\
+         S: * LIST (\\HasNoChildren) \"/\" \"Tasks\"\n\
+         S: a5 OK LIST completed\n\
+         C: a6 LOGOUT\n\
+         S: * BYE TestServer logging out\n\
+         S: a6 OK LOGOUT completed\n",
+    );
+    // No delimiter probe on delete — nothing is derived from it.
+    let s_delete = folder_sess(
+        "C: a3 DELETE \"Tasks\"\n\
+         S: a3 OK DELETE completed\n\
+         C: a4 LIST \"\" \"Tasks\"\n\
+         S: a4 OK LIST completed\n\
+         C: a5 LOGOUT\n\
+         S: * BYE TestServer logging out\n\
+         S: a5 OK LOGOUT completed\n",
+    );
+    let server = spawn_sessions(
+        listener,
+        vec![s_create_root, s_create_child, s_rename, s_delete],
+        Proto::Imap,
+        Some(acceptor),
+    );
+
+    // ── create at root — wire op, then mirror ─────────────────────
+    let work = folder_create_impl(&state, &view.id, None, "Work")
+        .await
+        .expect("remote create");
+    assert_eq!(work.name, "Work");
+    assert_eq!(work.origin, "remote");
+    {
+        let store = state.store.lock().await;
+        let meta = store.folder_meta(work.id).unwrap().unwrap();
+        assert_eq!(meta.origin, kiwi_mail::store::FolderOrigin::Remote);
+    }
+
+    // ── create under a remote parent — delimiter composition ──────
+    let sub = folder_create_impl(&state, &view.id, Some(work.id), "Sub")
+        .await
+        .expect("remote child create");
+    assert_eq!(
+        sub.name, "Work/Sub",
+        "server-composed <parent>/name wire form"
+    );
+    assert_eq!(sub.origin, "remote");
+    // Remote folders mirror flat (the wire name IS the row name) —
+    // same shape imap_sync registers them with.
+    assert_eq!(sub.parent_id, None);
+
+    // ── rename — leaf semantics, inferiors follow (RFC 3501 §6.3.5) ─
+    let renamed = folder_rename_impl(&state, &view.id, work.id, "Tasks")
+        .await
+        .expect("remote rename");
+    assert_eq!(renamed.name, "Tasks");
+    {
+        let store = state.store.lock().await;
+        let names: Vec<String> = store
+            .list_folders(&view.id)
+            .unwrap()
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "Tasks/Sub"),
+            "inferior rows follow the rename: {names:?}"
+        );
+        assert!(!names.iter().any(|n| n == "Work" || n == "Work/Sub"));
+    }
+
+    // ── delete — server ACK + absent-in-LIST verify, then mirror ───
+    folder_delete_impl(&state, &view.id, renamed.id)
+        .await
+        .expect("remote delete");
+    {
+        let store = state.store.lock().await;
+        let names: Vec<String> = store
+            .list_folders(&view.id)
+            .unwrap()
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        assert!(!names.iter().any(|n| n == "Tasks"), "{names:?}");
+        assert!(
+            names.iter().any(|n| n == "Tasks/Sub"),
+            "inferiors survive a parent delete (server keeps them): {names:?}"
+        );
+    }
+
+    // Audit trail: intent rows plus the remote outcome rows.
+    let log = std::fs::read_to_string(state.data_dir.join("audit.jsonl")).unwrap();
+    for ev in [
+        "folder-create-requested",
+        "folder-created-remote",
+        "folder-renamed-remote",
+        "folder-deleted-remote",
+    ] {
+        assert!(log.contains(ev), "audit missing {ev}");
+    }
+
+    server.await.unwrap().expect("transcript replayed fully");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn e2e_imap_folder_no_reply_surfaces_server_reject() {
+    use crate::commands::folders::folder_create_impl;
+
+    let (acceptor, _der) = testutil::tls_acceptor(&["127.0.0.1"]);
+    let (listener, port) = bind_listener().await;
+    let state = test_state("folderno", MockNet::new());
+    let view = add_account_impl(&state, imap_input(port))
+        .await
+        .expect("add imap account");
+
+    let script = folder_sess(
+        "C: a3 LIST \"\" \"\"\n\
+         S: * LIST (\\Noselect) \"/\" \"\"\n\
+         S: a3 OK LIST completed\n\
+         C: a4 CREATE \"Denied\"\n\
+         S: a4 NO [CANNOT] denied: read-only server\n\
+         C: a5 LOGOUT\n\
+         S: * BYE TestServer logging out\n\
+         S: a5 OK LOGOUT completed\n",
+    );
+    let server = spawn_sessions(listener, vec![script], Proto::Imap, Some(acceptor));
+
+    let err = folder_create_impl(&state, &view.id, None, "Denied")
+        .await
+        .expect_err("server NO must surface");
+    assert_eq!(err.code, "server-reject");
+    assert!(
+        err.message.contains("denied"),
+        "server reply text surfaces: {}",
+        err.message
+    );
+    // No local row was minted for a refused create.
+    {
+        let store = state.store.lock().await;
+        assert!(store.list_folders(&view.id).unwrap().is_empty());
+    }
+    server.await.unwrap().expect("transcript replayed fully");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn e2e_imap_folder_refusals_never_dial() {
+    use crate::commands::folders::{folder_create_impl, folder_delete_impl, folder_rename_impl};
+
+    // Dead port: any attempt to connect would surface connect-failed, so
+    // an invalid-input/policy-blocked verdict proves refusal happened
+    // before a byte went on the wire.
+    let state = test_state("folderrefuse", MockNet::new());
+    let view = add_account_impl(&state, imap_input(1))
+        .await
+        .expect("add imap account (dead port is fine — nothing may dial)");
+    let inbox = {
+        let store = state.store.lock().await;
+        store.ensure_folder(&view.id, "INBOX").unwrap()
+    };
+
+    for res in [
+        folder_create_impl(&state, &view.id, None, "W*rk")
+            .await
+            .err(),
+        folder_create_impl(&state, &view.id, None, "a%b")
+            .await
+            .err(),
+        folder_create_impl(&state, &view.id, None, "INBOX")
+            .await
+            .err(),
+        folder_rename_impl(&state, &view.id, inbox, "Renamed")
+            .await
+            .err(),
+        folder_delete_impl(&state, &view.id, inbox).await.err(),
+    ] {
+        let code = res.expect("must refuse").code;
+        assert!(
+            matches!(code, "invalid-input" | "policy-blocked"),
+            "refused before dialing, not {code}"
+        );
+    }
+
+    // A local parent is not on the server — refuse, don't fake nesting.
+    {
+        let store = state.store.lock().await;
+        store.ensure_local_folder(&view.id, "LocalOnly").unwrap();
+    }
+    let local_id = {
+        let store = state.store.lock().await;
+        store
+            .list_folders(&view.id)
+            .unwrap()
+            .into_iter()
+            .find(|f| f.name == "LocalOnly")
+            .unwrap()
+            .id
+    };
+    assert_eq!(
+        folder_create_impl(&state, &view.id, Some(local_id), "Sub")
+            .await
+            .unwrap_err()
+            .code,
+        "invalid-input"
+    );
+}

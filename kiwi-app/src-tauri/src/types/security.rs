@@ -114,6 +114,27 @@ pub struct SandboxOpenView {
     pub report: kiwi_sandbox::AnalysisReport,
 }
 
+/// `kiwi_forensics_export` receipt (T-320). `sha256` is echoed so the UI can
+/// show the digest the file carries without re-reading the file; `path` is
+/// the user-chosen destination the user already knows.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ForensicsExportView {
+    /// The user-chosen destination written (never audited).
+    pub path: String,
+    /// Size of the whole artifact on disk (envelope + report), not the
+    /// digested payload length.
+    pub bytes: u64,
+    /// Lowercase hex SHA-256 of the canonical report payload, as embedded.
+    pub sha256: String,
+    /// Report contract version of the exported payload.
+    pub report_contract_version: String,
+    /// Findings carried in the exported report (a count, never the list).
+    pub findings: usize,
+    /// Unix seconds the artifact was sealed.
+    pub generated_at_unix: i64,
+}
+
 /// One recorded sandbox open (T-300). `target` is the sanitized display
 /// target: a redacted URL for links, the `attachment:f<id>/u<uid>` coordinate
 /// for attachments — never a raw path, filename, or payload.

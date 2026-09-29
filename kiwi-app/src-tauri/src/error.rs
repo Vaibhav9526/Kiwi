@@ -83,6 +83,20 @@ impl IpcError {
     pub fn link_denied() -> Self {
         Self::new("link-denied", "message link is not allowed by policy")
     }
+
+    pub fn consent_required() -> Self {
+        Self::new(
+            "consent-required",
+            "third-party send was not confirmed in the native confirmation dialog",
+        )
+    }
+
+    pub fn consent_throttled() -> Self {
+        Self::new(
+            "consent-throttled",
+            "too many third-party send confirmations requested; retry later",
+        )
+    }
 }
 
 impl From<kiwi_mail::error::MailError> for IpcError {

@@ -247,6 +247,9 @@ export const api = {
     sessionId: string;
     event: string;
     signatureB64: string;
+    /** §6.3 decision — absent means approve; "deny" is unsigned, audited
+     *  `challenge-denied`, and never consumes the challenge. */
+    decision?: "approve" | "deny";
   }): Promise<SecurityStatusView> {
     // Called only by flows holding a real authenticator signature — the UI
     // never signs. Exposed for completeness; unused by current views.

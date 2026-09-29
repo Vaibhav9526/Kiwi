@@ -30,14 +30,17 @@ use kiwi_core::trust::{SignalKind, TrustMachine, TrustSignal};
 use kiwi_forensics::findings::Finding;
 use kiwi_integrations::deliverability::{TestReservation, TestStatus};
 use kiwi_integrations::http::HttpClient;
-use kiwi_integrations::tempmail::GuerrillaMail;
+use kiwi_integrations::tempmail::{GuerrillaMail, TempMailProvider};
 use kiwi_mail::account::CredentialStore;
 use kiwi_mail::smtp::SendQueue;
 use kiwi_mail::store::MailStore;
 
-use crate::audit::AuditLog;
+use crate::audit::{AuditLog, RetentionPolicy};
 use crate::credstore::OsCredentialStore;
 use crate::error::{CmdResult, IpcError};
+use crate::send_consent::{
+    ConsentBurstGuard, IntegrationDestination, IntegrationDestinationKind, SendConsent,
+};
 
 /// Bound on retained session observations (ring buffer).
 pub const MAX_SESSIONS: usize = 512;
@@ -475,11 +478,19 @@ impl AppIndex {
 
     pub fn remember_folder(&mut self, account_id: &str, id: i64, name: &str) {
         let list = self.folders.entry(account_id.to_string()).or_default();
-        if !list.iter().any(|f| f.id == id) {
+        if let Some(folder) = list.iter_mut().find(|f| f.id == id) {
+            folder.name = name.to_string();
+        } else {
             list.push(FolderEntry {
                 id,
                 name: name.to_string(),
             });
+        }
+    }
+
+    pub fn forget_folder(&mut self, account_id: &str, id: i64) {
+        if let Some(list) = self.folders.get_mut(account_id) {
+            list.retain(|folder| folder.id != id);
         }
     }
 
@@ -655,9 +666,16 @@ pub struct AppState {
     /// `std::sync` — a one-shot take from the sync setup closure.
     pub pair_listen_socket: std::sync::Mutex<Option<std::net::TcpListener>>,
     pub send_queue: Mutex<SendQueue>,
+    /// OS-notification sink (T-329) — `None` until setup injects the
+    /// plugin-backed notifier (or a test recorder). `std::sync` — a
+    /// one-shot set like `pair_listen_socket`.
+    pub notifier: std::sync::Mutex<Option<Arc<dyn crate::notify::Notifier>>>,
+    /// `(account_id, folder_name)` → last OS-notification unix — the
+    /// T-329 rate limiter, in-memory only (a restart re-arms once).
+    pub notify_marks: Mutex<BTreeMap<(String, String), i64>>,
     /// Tray tooltip sink (T-345) — `None` until setup injects the tray
     /// (or a test recorder). Same one-shot `std::sync` pattern as
-    /// `pair_listen_socket`.
+    /// `notifier`.
     pub tray_tip: std::sync::Mutex<Option<Arc<dyn crate::tray::TooltipSink>>>,
     /// Whether a tray icon actually built (T-345). False on platforms
     /// without a tray surface — the close button then stays a real quit,
@@ -668,6 +686,8 @@ pub struct AppState {
     /// cannot await the tokio-guarded `index`. `kiwi_prefs_set` updates
     /// this after persisting, so the mirror can never lead the store.
     pub tray_on_close: std::sync::atomic::AtomicBool,
+    pub send_consent: std::sync::Mutex<Arc<dyn SendConsent>>,
+    pub send_consent_guard: std::sync::Mutex<ConsentBurstGuard>,
     /// queue_id → send metadata (SendQueue exposes no item iterator).
     pub outbox_meta: Mutex<BTreeMap<String, OutboxMeta>>,
     /// Durable single-attempt queue ids — the restart half of
@@ -736,6 +756,18 @@ pub struct AppState {
     session_counter: AtomicU64,
 }
 
+/// Resolve the audit retention policy from global prefs (T-327).
+///
+/// Pref keys `kiwi.audit.retentionDays` / `kiwi.audit.keepLast` (global scope,
+/// written through the ordinary `kiwi_prefs_set` store). Absent or malformed
+/// values fall back to the documented defaults; the resolver clamps whatever
+/// it finds, so a hostile value cannot disable retention.
+pub fn retention_policy(index: &AppIndex) -> RetentionPolicy {
+    let num =
+        |k: &str| -> Option<i64> { index.prefs.get(&pref_key(None, k)).and_then(|v| v.as_i64()) };
+    RetentionPolicy::resolve(num("kiwi.audit.retentionDays"), num("kiwi.audit.keepLast"))
+}
+
 impl AppState {
     /// Production open: store + index + audit under `data_dir`, OS keystore,
     /// persisted outbox reloaded (T-142).
@@ -743,7 +775,18 @@ impl AppState {
         std::fs::create_dir_all(&data_dir)?;
         let store = MailStore::open(&data_dir)?;
         let index = AppIndex::load(&data_dir)?;
-        let audit = AuditLog::open(&data_dir)?;
+        let mut audit = AuditLog::open(&data_dir)?;
+        // T-327: retention sweep on app open. This is the honest trigger — a
+        // timer would race concurrent `record` calls, and a sweep after every
+        // write would rewrite the file per event. App open is single-threaded
+        // here, before any command can write. The sweep audits itself, so
+        // pruning is visible in the log it trims; a failure is surfaced, never
+        // swallowed (retention that silently stops is worse than none).
+        {
+            let policy = retention_policy(&index);
+            let now = now_unix();
+            audit.prune(&policy, now)?;
+        }
         let http = integrations_transport()?;
         let sandbox = configured_sandbox(&data_dir);
         let mut s = Self::assemble(
@@ -755,6 +798,7 @@ impl AppState {
             http.clone(),
             Arc::new(crate::discovery_net::LiveDiscoveryNet::new(http)),
             sandbox,
+            Arc::new(crate::send_consent::NativeSendConsent),
         )?;
         s.reload_outbox();
         Ok(s)
@@ -837,6 +881,7 @@ impl AppState {
             Arc::new(kiwi_sandbox::NullProvider::new(
                 "sandbox provider not injected in tests",
             )),
+            Arc::new(crate::send_consent::FixedSendConsent::approving()),
         )?;
         s.reload_outbox();
         Ok(s)
@@ -924,6 +969,7 @@ impl AppState {
         integrations_http: Arc<dyn HttpClient>,
         autoconfig_net: Arc<dyn DiscoveryNet>,
         sandbox: Arc<dyn kiwi_sandbox::SandboxProvider>,
+        send_consent: Arc<dyn SendConsent>,
     ) -> CmdResult<Self> {
         let (provisioned_channel, listen_socket) =
             provision_pair_channel(&data_dir, credentials.as_ref());
@@ -946,9 +992,13 @@ impl AppState {
             trust: Mutex::new(TrustMachine::new()),
             policy: TrustPolicy::default(),
             send_queue: Mutex::new(SendQueue::new()),
+            notifier: std::sync::Mutex::new(None),
+            notify_marks: Mutex::new(BTreeMap::new()),
             tray_tip: std::sync::Mutex::new(None),
             tray_live: std::sync::atomic::AtomicBool::new(false),
             tray_on_close: std::sync::atomic::AtomicBool::new(tray_on_close),
+            send_consent: std::sync::Mutex::new(send_consent),
+            send_consent_guard: std::sync::Mutex::new(ConsentBurstGuard::default()),
             outbox_meta: Mutex::new(BTreeMap::new()),
             single_attempt: Mutex::new(single_attempt_book),
             sessions: Mutex::new(VecDeque::new()),
@@ -975,6 +1025,48 @@ impl AppState {
             boot_session_id: new_id("boot"),
             session_counter: AtomicU64::new(0),
         })
+    }
+
+    pub async fn integration_destinations(
+        &self,
+        recipients: &[String],
+    ) -> Vec<IntegrationDestination> {
+        let temp_address = {
+            let slot = self.tempmail.lock().await;
+            slot.as_ref().and_then(TempMailProvider::address)
+        };
+        let deliverability_addresses: Vec<String> = {
+            let sessions = self.deliverability.lock().await;
+            sessions
+                .values()
+                .map(|s| s.reservation.address.clone())
+                .collect()
+        };
+        recipients
+            .iter()
+            .filter_map(|recipient| {
+                let normalized = recipient.trim().to_ascii_lowercase();
+                if temp_address
+                    .as_ref()
+                    .is_some_and(|a| a.trim().to_ascii_lowercase() == normalized)
+                {
+                    return Some(IntegrationDestination {
+                        address: recipient.clone(),
+                        kind: IntegrationDestinationKind::TempInbox,
+                    });
+                }
+                if deliverability_addresses
+                    .iter()
+                    .any(|a| a.trim().to_ascii_lowercase() == normalized)
+                {
+                    return Some(IntegrationDestination {
+                        address: recipient.clone(),
+                        kind: IntegrationDestinationKind::DeliverabilityTest,
+                    });
+                }
+                None
+            })
+            .collect()
     }
 
     /// Poke the sync supervisor so an added/removed account reconciles

@@ -1,0 +1,164 @@
+/* Mailspring Darkside — port of vendor ui-darkside (internal_packages/
+ * ui-darkside). Signature look: dark purple-gray #313042 sidebar floating
+ * over light content (white thread list, tinted message area), coral
+ * #f18260 accent. Sidebar margin/panel gap rides on --kiwi-ms-sidebar-margin
+ * (already 15px, matching the source). */
+
+:root[data-theme="mailspring-darkside"],
+[data-theme="mailspring-darkside"] {
+  color-scheme: light;
+
+  /* ---- canonical palette ---- */
+  --accent: #f18260;
+  --accent-hover: #d97556;
+  --accent-ink: #ffffff;
+  --selection: #feede7;
+
+  /* ---- mailspring tokens ---- */
+  --kiwi-ms-bg: #fdfdfd;
+  --kiwi-ms-surface: #f5f5f6; /* @messagelist-bg: tint(@sidebar, 95%) */
+  --kiwi-ms-surface-2: #f2f2f5;
+  --kiwi-ms-surface-3: #e8e8ec;
+  --kiwi-ms-sidebar: #313042; /* @sidebar */
+  --kiwi-ms-toolbar: #f5f5f6;
+  --kiwi-ms-list-bg: #ffffff; /* @threadlist-bg */
+  --kiwi-ms-list-border: #e2e2e6;
+  --kiwi-ms-list-hover: #f5f5f6;
+  --kiwi-ms-text: #231f20;
+  --kiwi-ms-text-heading: #434648;
+  --kiwi-ms-text-secondary: #5b6470;
+  --kiwi-ms-text-muted: #8a94a0;
+  --kiwi-ms-link: #f18260;
+  --kiwi-ms-accent: #f18260; /* @accent */
+  --kiwi-ms-accent-active: #d97556; /* accent 10% darker */
+  --kiwi-ms-accent-emphasis: #5b90fb;
+  --kiwi-ms-primary: #f18260;
+  --kiwi-ms-primary-text: #ffffff;
+  --kiwi-ms-icon-muted: #919191;
+  --kiwi-ms-border: #d5d8dc;
+  --kiwi-ms-border-strong: #b9bec5;
+  --kiwi-ms-divider: #e3e5e8;
+  --kiwi-ms-hairline: rgba(49, 48, 66, 0.1); /* fade(@sidebar, 10%) */
+  --kiwi-ms-info: #3187e1;
+  --kiwi-ms-success: #5cb346;
+  --kiwi-ms-warning: #f0ad4e;
+  --kiwi-ms-danger: #ff5f56; /* @danger */
+  --kiwi-ms-toast-info: #009ec4;
+  --kiwi-ms-toast-success: #00ac6f;
+  --kiwi-ms-toast-warning: #ff4800;
+  --kiwi-ms-toast-error: #ca2541;
+  --kiwi-ms-toast-pending: #b4babd;
+  /* Swipe palette ships identical values in the source (@swipe-archive/
+   * snooze/trash = maximize/minimize/danger). */
+  --kiwi-ms-swipe-danger: #ff5f56;
+  --kiwi-ms-swipe-snooze: #fbd852;
+  --kiwi-ms-swipe-archive: #8dd07d;
+  --kiwi-ms-shadow-color: rgba(49, 48, 66, 0.16);
+  --kiwi-ms-shadow-standard: 0 1px 4px 0 rgba(49, 48, 66, 0.14);
+  --kiwi-ms-shadow-raised: 0 2px 8px 0 rgba(49, 48, 66, 0.16);
+  --kiwi-ms-shadow-popover: 0 2px 10px rgba(49, 48, 66, 0.18);
+  --kiwi-ms-shadow-modal: 0 12px 40px rgba(49, 48, 66, 0.28);
+  --kiwi-ms-focus-glow: 0 0 0 3px rgba(241, 130, 96, 0.28);
+  --kiwi-ms-select-tint: #feede7;
+  --kiwi-ms-select-border: #ecbaa9;
+  --kiwi-ms-select-solid: #d97556;
+
+  /* ---- --ms-* contract vars ui-darkside redefined ---- */
+  --ms-panel-background-color: #313042; /* @sidebar → @panel-background-color */
+  --ms-list-selected-color: #313042; /* @active-thread-text: @sidebar */
+
+  /* ---- legacy kiwi tokens ---- */
+  --kiwi-bg: #fdfdfd;
+  --kiwi-surface: #f5f5f6;
+  --kiwi-sidebar: #313042;
+  --kiwi-card: #ffffff;
+  --kiwi-input: #ffffff;
+  --kiwi-border: #d5d8dc;
+  --kiwi-border-soft: #e3e5e8;
+  --kiwi-text: #231f20;
+  --kiwi-text-secondary: #5b6470;
+  --kiwi-text-disabled: #8a94a0;
+  --kiwi-brand: #f18260;
+  --kiwi-brand-hover: #d97556;
+  --kiwi-brand-ink: #8c3f28;
+  --kiwi-focus: #d97556;
+  --kiwi-focus-ring: rgba(241, 130, 96, 0.28);
+  --kiwi-secure: #5cb346;
+  --kiwi-secure-bg: #e8f5e5;
+  --kiwi-secure-border: rgba(92, 179, 70, 0.45);
+  --kiwi-warning: #d89b3e;
+  --kiwi-warning-bg: #fcf3dd;
+  --kiwi-warning-border: rgba(240, 173, 78, 0.5);
+  --kiwi-danger: #ff5f56;
+  --kiwi-danger-bg: #ffecea;
+  --kiwi-danger-border: rgba(255, 95, 86, 0.45);
+  --kiwi-unknown: #5b6470;
+  --kiwi-unknown-bg: #eceef1;
+  --kiwi-unknown-border: rgba(91, 100, 112, 0.4);
+  --kiwi-lock: #8c3f28;
+  --kiwi-lock-bg: #fdeee7;
+  --kiwi-hover-bg: rgba(241, 130, 96, 0.06);
+  --kiwi-shadow: 0 4px 20px rgba(49, 48, 66, 0.16);
+  --kiwi-shimmer: rgba(49, 48, 66, 0.06);
+
+  /* ---- pane tokens ---- */
+  --em-pane-border: #d5d8dc;
+  --em-hairline: #e8e8ec;
+  --em-pane-bg: #ffffff;
+  --em-pane-alt: #f7f8fa;
+  --em-pane-titlebar: #fbfafb;
+  --em-toolbar-bg: #f5f5f6;
+  --em-select: #feede7;
+  --em-select-border: #ecbaa9;
+  --em-select-focus: #fbe0d5;
+  --em-unread-dot: #f18260;
+  --em-sender-blue: #d97556;
+  --em-link: #f18260;
+  --em-hover: #f5f5f6;
+  --em-text-dim: #69707c;
+  --em-text-faint: #98a0ab;
+  --em-group-head: #6a7280;
+  --em-avatar-text: #ffffff;
+  --em-card-bg: #ffffff;
+  --em-menu-bg: #ffffff;
+  --em-tab-line: #e3e5e8;
+  --em-star: #fbd852;
+  --em-cat-news: #3187e1;
+  --em-cat-news-bg: #e2effb;
+  --em-cat-personal: #f18260;
+  --em-cat-personal-bg: #fdeee7;
+  --em-cat-logs: #5cb346;
+  --em-cat-logs-bg: #e8f5e5;
+  --em-cat-social: #6d4fc2;
+  --em-cat-social-bg: #ece6fa;
+  --em-cat-other: #5b6470;
+  --em-cat-other-bg: #eceef1;
+}
+
+/* Dark sidebar: @sidebar #313042 fill, desaturated @sidebar-text items,
+ * white active item. Covers both the ms-* and em-* sidebar surfaces. */
+:root[data-theme="mailspring-darkside"] .ms-sidebar,
+:root[data-theme="mailspring-darkside"] .em-folders {
+  background: #313042;
+  border-right-color: rgba(255, 255, 255, 0.1);
+}
+:root[data-theme="mailspring-darkside"] .ms-sidebar .ms-tree-item,
+:root[data-theme="mailspring-darkside"] .ms-sidebar .ms-section-head,
+:root[data-theme="mailspring-darkside"] .ms-sidebar .ms-section-label,
+:root[data-theme="mailspring-darkside"] .ms-sidebar .ms-disclosure,
+:root[data-theme="mailspring-darkside"] .em-folders .em-tree-item,
+:root[data-theme="mailspring-darkside"] .em-folders .em-tree-count,
+:root[data-theme="mailspring-darkside"] .em-folders .em-tree-icon {
+  color: #82828d; /* desaturate(lighten(@sidebar, 40%), 75%) */
+}
+:root[data-theme="mailspring-darkside"] .ms-sidebar .ms-tree-item:hover,
+:root[data-theme="mailspring-darkside"] .em-folders .em-tree-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #ffffff;
+}
+:root[data-theme="mailspring-darkside"] .ms-sidebar .ms-tree-item[aria-selected="true"],
+:root[data-theme="mailspring-darkside"] .em-folders .em-tree-item[aria-selected="true"] {
+  background: rgba(241, 130, 96, 0.16);
+  border-color: rgba(241, 130, 96, 0.45);
+  color: #ffffff; /* @active-sidebar-text */
+}

@@ -8,13 +8,18 @@ it, not by assuming (T-337, 2026-09-25).
 
 ```powershell
 cd kiwi-app
-npx tauri build        # or: npm run tauri build
+npm run tauri build
 ```
+
+That is the verbatim `package.json` script (`"tauri": "tauri"`), which
+resolves the **local** `@tauri-apps/cli` devDependency in
+`node_modules` — cargo-tauri is not installed globally and must not be.
+(`npx tauri build` resolves the same local binary and is equivalent.)
 
 The command runs `npm run build` (tsc typecheck + `vite build` →
 `kiwi-app/dist`), then a full `cargo build --release`, then the bundlers.
-On this host (Windows 11 x64, tauri-cli 2.11.x) the last verified run
-succeeded end-to-end.
+On this host (Windows 11 x64, local tauri-cli 2.11.4) the last verified
+runs succeeded end-to-end.
 
 ### Verified outputs
 

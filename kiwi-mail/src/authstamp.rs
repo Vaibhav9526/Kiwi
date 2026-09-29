@@ -13,7 +13,7 @@
 //! - The DNS seam is **injected** ([`kiwi_mailauth::dns::DnsResolver`]). This
 //!   module never constructs a live resolver, so the whole path is testable
 //!   offline with `MockResolver` and `kiwi-mail` stays free of network I/O.
-//! - `now_unix` is a **parameter**, never the system clock (contract Â§1).
+//! - `now_unix` is a **parameter**, never the system clock (contract §1).
 //! - Per `docs/SECURITY.md` rules 1/2: this stamps **evidence**, not findings.
 //!   `temperror` means "could not check" and must never render as a failure;
 //!   `none` means "no record published" and is explicitly not a failure.
@@ -100,16 +100,16 @@ pub struct AuthStamp {
 }
 
 impl AuthStamp {
-    /// True when a verdict is a *check failure* â€” the only state the UI pill
+    /// True when a verdict is a *check failure* — the only state the UI pill
     /// should colour as a warning. `temperror` and `none` are explicitly not
-    /// failures (contract Â§1: never invent findings).
+    /// failures (contract §1: never invent findings).
     pub fn has_failure(&self) -> bool {
         matches!(self.dkim.as_str(), "fail" | "permerror")
             || matches!(self.dmarc.as_str(), "fail" | "permerror")
             || matches!(self.spf.as_str(), "fail" | "permerror")
     }
 
-    /// True when a check could not be completed (`temperror`) â€” renders as
+    /// True when a check could not be completed (`temperror`) — renders as
     /// "unknown", never as pass or fail.
     pub fn is_inconclusive(&self) -> bool {
         matches!(self.dkim.as_str(), "temperror")
@@ -124,7 +124,7 @@ impl AuthStamp {
 pub struct SmtpReceipt {
     /// IP the message was received from.
     pub client_ip: IpAddr,
-    /// RFC 5321 MAIL FROM domain (null sender â†’ HELO domain).
+    /// RFC 5321 MAIL FROM domain (null sender → HELO domain).
     pub mail_from_domain: Option<String>,
     /// HELO/EHLO hostname, for `%h`.
     pub helo: String,
@@ -335,7 +335,7 @@ pub fn compare_upstream_verdicts(
 ///
 /// `raw` is the received bytes (used for the DKIM body hash and header set);
 /// `parsed` is the bounded summary from [`crate::mime::parse_message`].
-/// `receipt` is optional â€” without it SPF is stamped `none` with an explicit
+/// `receipt` is optional — without it SPF is stamped `none` with an explicit
 /// comment (see module docs).
 pub fn evaluate<R: DnsResolver>(
     dns: &R,

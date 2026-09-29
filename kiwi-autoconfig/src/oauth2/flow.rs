@@ -207,18 +207,19 @@ impl OAuthFlow for OAuthClient {
             .as_deref()
             .filter(|c| !c.is_empty())
             .ok_or(OAuthError::Malformed("code"))?;
-        let reply = http
-            .post_form(
-                &self.provider.token_url,
-                &[
-                    ("client_id", self.provider.client_id.as_str()),
-                    ("code", code),
-                    ("redirect_uri", g.redirect_uri.as_str()),
-                    ("grant_type", "authorization_code"),
-                    ("code_verifier", g.code_verifier.as_str()),
-                ],
-            )
-            .await?;
+        let mut form: Vec<(&str, &str)> = vec![
+            ("client_id", self.provider.client_id.as_str()),
+            ("code", code),
+            ("redirect_uri", g.redirect_uri.as_str()),
+            ("grant_type", "authorization_code"),
+            ("code_verifier", g.code_verifier.as_str()),
+        ];
+        // Providers that issue a secret for installed-app clients (new
+        // Google Desktop clients) require it at the token endpoint.
+        if let Some(secret) = &self.provider.client_secret {
+            form.push(("client_secret", secret.as_str()));
+        }
+        let reply = http.post_form(&self.provider.token_url, &form).await?;
         token_reply(reply, now_unix)
     }
 
@@ -236,16 +237,15 @@ impl OAuthFlow for OAuthClient {
         if now_unix >= g.expires_at_unix {
             return Err(OAuthError::Expired);
         }
-        let reply = http
-            .post_form(
-                &self.provider.token_url,
-                &[
-                    ("grant_type", DEVICE_CODE_GRANT),
-                    ("client_id", self.provider.client_id.as_str()),
-                    ("device_code", g.device_code.as_str()),
-                ],
-            )
-            .await?;
+        let mut form: Vec<(&str, &str)> = vec![
+            ("grant_type", DEVICE_CODE_GRANT),
+            ("client_id", self.provider.client_id.as_str()),
+            ("device_code", g.device_code.as_str()),
+        ];
+        if let Some(secret) = &self.provider.client_secret {
+            form.push(("client_secret", secret.as_str()));
+        }
+        let reply = http.post_form(&self.provider.token_url, &form).await?;
         if (200..300).contains(&reply.status) {
             return Ok(PollOutcome::Complete(TokenSet::from_response(
                 &reply.body,
@@ -284,6 +284,9 @@ impl OAuthFlow for OAuthClient {
         // RFC 6749 §6: scope is optional and must not widen the grant.
         if let Some(scope) = tokens.scope() {
             form.push(("scope", scope));
+        }
+        if let Some(secret) = &self.provider.client_secret {
+            form.push(("client_secret", secret.as_str()));
         }
         let reply = http.post_form(&self.provider.token_url, &form).await?;
         let mut fresh = token_reply(reply, now_unix)?;

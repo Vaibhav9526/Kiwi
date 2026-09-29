@@ -42,4 +42,11 @@ auth-test-out.txt
 # Repository-hygiene scratch files
 /chk*.txt
 __*probe*
+/lm*-out.txt
+/lm*-err.txt
+/t340-*
+
+# Vendored reference checkout (study material — never shipped, same rule
+# as source/ and reference/)
+vendor/
 

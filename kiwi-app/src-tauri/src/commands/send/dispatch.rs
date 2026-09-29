@@ -294,7 +294,7 @@ async fn transmit(
         .get(account_id)
         .map(|m| m.accept_invalid_certs)
         .unwrap_or(false);
-    let secret = resolve_secret(state, &acct.outgoing.auth)?;
+    let secret = resolve_secret(state, &acct.outgoing.auth).await?;
 
     let t = Transport::connect(
         &acct.outgoing.server.host,

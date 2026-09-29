@@ -945,3 +945,370 @@ threat model, each marked proposed/pending sign-off.
   audit-row→ruling→code-consumer map.
 - No normative contract text amended; no code changed (R1's mobile-side
   check and R6's field are ratification-gated implementation notes).
+
+## T-316 — mbox export (kiwi_mailbox_export_mbox)
+
+**Status: DONE.** The symmetric counterpart to A19's T-309 import: a
+folder's rows stream out as mboxrd under the same conventions the
+importer reads.
+
+- `kiwi-mail/src/mbox.rs` — write-side mirrors, one shared module for
+  both directions: `escape_for_mbox` (every `^>*From ` line gains one
+  `>`, any depth, line terminators verbatim — no fast-path substring
+  check since `\n>>+From ` under-matches), `separator` (`From
+  <token-or---> <asctime-UTC>` LF — token from `from_addr` `<…>`/first
+  token ≤256 B; deterministic UTC asctime via `time`), and
+  `mozilla_status_lines`/`has_mozilla_status` (stamp `X-Mozilla-Status`
+  `%04x`/`Status2` `%08x` from stored flags so \Seen/\Answered/\Flagged/
+  \Junk round-trip; never double-stamp a re-exported import).
+- `kiwi-app/.../commands/export.rs` — `kiwi_mailbox_export_mbox(folderId,
+  destPath)`, lock-gated, folder↔account ownership via `folder_meta`.
+  Rows via `list_messages` (uid order), bodies via `load_body_raw` —
+  stored bytes verbatim or a bounded on-demand IMAP `BODY[]` fetch;
+  nothing synthesized from envelope fields. Runs on `run_mail_io` (the
+  IMAP path makes the future `!Send` — same reason as sync/get_message).
+  Envelope-only or unloadable rows are omitted and counted in `skipped`;
+  `partial` flips on any skip or truncation (50k row cap, symmetric to
+  import). An 8-consecutive-failure breaker turns a dead server into
+  skipped rows instead of a connect-per-row storm.
+- Atomic write: `<dest>.kiwi-part` then rename-over (Windows overwrite =
+  remove+rename retry); dest must be a writable file in an existing dir,
+  and — mirroring A21's T-320 `write_export_atomically` — anywhere under
+  the canonicalized app data dir is refused (never clobber mail.db /
+  audit.jsonl / stored bodies). Temp cleaned on any failure.
+- Audit `mbox-exported`: account/folder ids + counts only — never the
+  path or subjects.
+- Contract: ipc.md §6j documents the shared mboxrd conventions both
+  directions implement (separator/escape/status-bit map) plus both
+  commands — A19's import hadn't been contract-documented, now covered.
+  TS: `MboxExportView` + `api.mailboxExportMbox` were already wired by
+  A25 against this shape (verified field-for-field).
+- Tests: round-trip through A19's own `split_mbox` (3 members, bare `From
+  ` + `>From` body lines unescape byte-identical, status stamps map back
+  to flags, audit row written sans path); envelope-only row →
+  skipped+partial; dir/missing-parent/empty/inside-data-dir dest
+  rejections + unknown folder + no lingering `.kiwi-part`; lock gate.
+
+Gates: kiwi-mail 227 green; kiwi-app 184 green; workspace clippy
+`-D warnings` clean; fmt + tsc clean. Concurrent-churn repairs: stray `?`
+at oauth2.rs:1 removed; A21's T-320 test completed mechanically
+(`audit.jsonl` via data_dir — `AuditLog.path` is private — and a dead
+binding dropped); the v17 folders-migration `{system}` placeholder was
+superseded by the owner's UPDATE-loop rewrite while my interim format!
+fix was in flight — final tree is theirs.
+
+## T-325 — kiwi_copy_messages (store-level Copy-to) — DONE
+
+- `Store::copy_messages(src, dst, uids)` (queries.rs): fresh dst-local uids
+  minted off `MAX(uid)`; envelope + flags + category + unsub fields carried;
+  body file and attachment dir **copied** (never renamed — `copy_dir_all`
+  helper); attachment/link risk + `message_auth` evidence rows duplicated to
+  the new coordinates; snooze deliberately does NOT carry (parking binds to
+  the src coordinate). Source rows/payloads untouched. Absent uids skipped.
+- `kiwi_copy_messages` (message/delete.rs): lock-gated, `bounded_uids`
+  (≤500), src/dst ownership via `owned_folder`+`folder_meta`, `src==dst` →
+  invalid, smart views refused by construction (no row → not-found),
+  `origin==System` dst → `invalid-input` (sync-owned mailbox; a local copy
+  there fabricates provenance the next reconcile would expunge). **No IMAP
+  leg** — local-only by design; audit `messages-copied` ids+counts only.
+- `CopyResultView` (+uidMap) in types/message.rs; TS `CopyResultView` +
+  `copyMessages` wrapper; ipc.md documents local-only semantics + the filed
+  gap (real IMAP COPY is the sync layer's).
+- Bonus honesty: declared the `uidMap` field MoveResultView had on the wire
+  but not in kiwi.ts.
+- Tests: store-level (uid remap, source untouched, payload+evidence copied,
+  snooze not carried, absent-skip) + app-level (same-folder/foreign/
+  smart/system dst refusals, happy path, audit ids+counts).
+- Gates: kiwi-mail 229 green; kiwi-app 203 green; workspace clippy
+  -D warnings clean; fmt + tsc clean. Churn note: audit.rs (T-327) was
+  mid-write during the run — a stale-binary failure resolved itself.
+
+## T-329 — new-mail OS notifications — DONE
+
+- `tauri-plugin-notification = "=2.3.1"` (pinned exact, mid-2025 release —
+  well over 7 days) in Cargo.toml; `.plugin(tauri_plugin_notification::
+  init())` in lib.rs; `capabilities/default.json` gains the minimal
+  `notification:default` scope only.
+- `notify.rs` (new): the whole feature is decision-layer + seam.
+  `decide(...)` is a pure fn — suppression matrix (global `kiwi.notify` ==
+  "off", account in `kiwi.muted`, junk/spam/trash-named folder,
+  60 s per-(account,folder) rate limit) → builds bounded title/body
+  ("N new messages in {folder}" / single-item shows sender+subject; fields
+  control-char-stripped, ≤120 chars, honest placeholders `Unknown sender` /
+  `(no subject)`). `Notifier` trait = the mockable seam; `TauriNotifier`
+  is the production impl; `maybe_notify` marks the rate limiter BEFORE the
+  OS call (a broken notifier is throttled too) and swallows+logs failures —
+  notification can never fail a sync.
+- Wired at all four new-mail sites: manual `kiwi_sync_mailbox` (IMAP),
+  `pop3_sync`, the live-sync worker pass, and the IDLE-triggered resync in
+  syncer.rs — each diffs the folder's unseen set before/after and calls
+  `maybe_notify` post-completion. Unseen = literally no `\Seen` flag.
+- Pref: `kiwi.notify` (`"on"|"off"`, default on) rides the existing prefs
+  store — no new IPC. `kiwi_prefs_set` audits `pref-notify-set` for that
+  key only (per-notif audit = noise, per spec). Real toggle in
+  settings.tsx (`osNotify` select beside toasts/sound).
+- Click-to-focus honestly NOT wired: the plugin's Rust `show()` is
+  fire-and-forget; the `onAction` path is guest-side and unplumbed —
+  ipc.md §9c documents this rather than claiming it.
+- Contract: ipc.md §9c documents the pref, trigger, suppression rules,
+  rate limit, preview grammar, fail-soft, and the no-per-notif-audit
+  decision.
+- Tests: 4 unit (suppression matrix, sanitize, single-vs-multi shape,
+  field bounding) + `maybe_notify_fires_once_suppresses_and_mutes` —
+  Recorder-notifier integration through AppState: fires once with the
+  real preview, second pass rate-limited, global mute + per-account
+  `kiwi.muted` both suppress against a seeded unseen row.
+- Gates: kiwi-app 219 green; workspace clippy `-D warnings` clean; fmt +
+  tsc clean. Churn note: storage.rs doc-lazy-continuation (another
+  agent's file) fixed mechanically; e2e.rs mid-keystroke churn settled
+  on its own.
+
+## T-337 — release packaging pass — DONE
+
+- `tauri.conf.json` bundle: `targets: "all"` → explicit `["nsis","msi"]`
+  (both toolchains verified cached: `%LOCALAPPDATA%\tauri\{NSIS,WixTools314}`;
+  no dmg/appimage claimed on a Windows host). Added honest metadata —
+  publisher "KIWI contributors", MPL-2.0 copyright, alpha descriptions.
+  Identifier stays `com.kiwi.mail` (no registered domain — noted).
+- Version single-source verified, not duplicated: `src/version.ts` imports
+  `tauri.conf.json.version` at build time (package.json fallback only for
+  web dev); Cargo.toml merely agrees at 0.1.0.
+- Icons verified REAL — read the PNG: shipped mark is the KIWI "K"
+  gradient, not the Tauri template; all 5 listed files exist.
+- **Ran the real build — succeeded end-to-end:** `npx tauri build` →
+  tsc+vite clean (522 KB JS), `cargo build --release` 3m48s →
+  `target\release\kiwi-app.exe` (30 MB), then BOTH bundlers:
+  `bundle\nsis\KIWI_0.1.0_x64-setup.exe` (7.3 MB) and
+  `bundle\msi\KIWI_0.1.0_x64_en-US.msi` (10.7 MB).
+- Unsigned status VERIFIED not assumed: `Get-AuthenticodeSignature` →
+  `NotSigned` on exe + both installers.
+- Updater: `tauri-plugin-updater` confirmed absent (grep across
+  Cargo.toml/conf/package.json/src) — documented "no auto-update in
+  alpha" as deliberate (updater requires signed artifacts; signing doesn't
+  exist; half-wired verification-free updater would be worse than none).
+- `docs/RELEASING.md` created: build cmd, verified output paths+sizes,
+  bundle decisions, SmartScreen/unsigned caveat, what signing requires
+  (cert → certificateThumbprint — owner item), updater precondition,
+  alpha checklist.
+
+### T-337 correction — canonical build command
+
+Original task text mangled the invocation. Verified: `package.json`
+exposes `"tauri": "tauri"` → `npm run tauri build` is the canonical form;
+it resolves the **local** `@tauri-apps/cli@2.11.4` devDependency —
+cargo-tauri is NOT installed globally and none was installed. My earlier
+`npx tauri build` resolved the same local binary; RELEASING.md now
+documents `npm run tauri build` as the command. Re-ran the verbatim
+script — green end-to-end again (incremental 1m56s; same two installers
+regenerated; JS chunk hash moved `CLBUhj1g`→`D3jVXHjg` on concurrent
+frontend churn — expected).
+
+## T-345 — system tray (close-to-tray keep-alive)
+
+Real Tauri tray, not a renderer mock. `tauri` gained the `tray-icon`
+feature; `tray.rs` holds the whole surface.
+
+- **Icon + menu** built in `setup()`: verified KIWI mark via
+  `default_window_icon()`; items Show/Hide (toggle on `is_visible`),
+  Compose (raise+focus → `kiwi://tray-compose` → renderer navigate),
+  Quit. Left click restores (`show_menu_on_left_click(false)`; menu on
+  right). Any `TrayIconBuilder::build` failure → `Ok(false)` + log —
+  degrading is correct, refusing to launch on a trayless desktop would
+  be a regression. `kiwi_app_info.trayAvailable` reports it; the
+  settings toggle is disabled and labelled inert when false.
+- **Tooltip** `KIWI` / `KIWI — N unread` from new `Store::total_unseen`
+  — same unseen+muted predicate as `folder_stats`, so the tray number
+  equals the summed badges. Event-driven only: refreshed after every
+  sync pass site (manual, POP3, worker, IDLE) and every count-changing
+  mutation (update/delete/copy/junk/import). No polling.
+- **Quit guard** (`decide_quit` pure): outbox `outbox_count` 0 →
+  `app.exit(0)`; non-zero → raise window + `kiwi://confirm-quit` with
+  bounded `{pending}`; unreadable count → confirm path (fails toward
+  honesty). Renderer confirm modal → `kiwi_confirm_quit` (lock-exempt,
+  reason written in LOCK_EXEMPT — quitting leaks nothing).
+- **Close-to-tray** behind real pref `kiwi.trayOnClose` (default ON —
+  the ticket exists because X killed sync; opt-out not opt-in).
+  `on_window_event` is a sync main-thread callback, so the pref is
+  mirrored in `tray_on_close: AtomicBool` (init in `assemble`, updated
+  in `kiwi_prefs_set` after the persisted write, audited
+  `pref-tray-set`). X → `prevent_close()`+`hide()` only when pref on
+  AND tray live; sync/notifications continue.
+- **Frontend**: `onTrayCompose`/`onQuitRequested`/`api.confirmQuit` in
+  ipc.ts with promise-correct cleanup; quit modal states queued mail
+  survives to next launch; `AppInfoView.trayAvailable`; settings toggle
+  hydrated+pushed through the existing prefs path.
+- ipc.md documents the whole contract incl. honest Linux note (icon may
+  render without click events) and "no server COPY" analog — tooltip is
+  local truth only.
+
+### Gates
+kiwi-app 234 / kiwi-mail 255 green (5 tray + 1 store pinning test);
+workspace clippy `-D warnings` clean; fmt + tsc clean.
+
+### Churn navigated
+- rustc-LLVM OOM under parallel agent builds (4.2 GB free) — serialized
+  `CARGO_BUILD_JOBS=1`, then green.
+- lock_matrix flagged `tray::kiwi_confirm_quit` — added LOCK_EXEMPT row.
+- Fixed T-341 mid-flight bug: `bounded()` applied to the whole
+  `conversationId` rejected its own `\n` separator — length-bound the
+  composite, parts still validated post-split.
+- storage.rs `schema_version` literal 17 → 19 (concurrent migrations).
+- notify.rs `decide` grew to 8 args + stray doc gap (T-341 `muted_thread`
+  param) — `#[allow(too_many_arguments)]` + `///` continuation.
+
+---
+
+## STAND-DOWN 2026-09-25 (EOD)
+
+**In-flight:** none — T-345 (system tray) completed, all gates green
+(234 app + 255 mail tests, workspace clippy `-D warnings`, fmt, tsc),
+DONE report sent to Lead.
+
+**Files touched this ticket:** `kiwi-app/src-tauri/src/tray.rs` (new),
+`lib.rs`, `state.rs`, `commands/prefs.rs`, `commands/system.rs`,
+`commands/lock_matrix.rs`, `types/system.rs`, `commands/message/{update,delete,junk}.rs`,
+`commands/import.rs`, `commands/mail.rs`, `syncer.rs`, `Cargo.toml`;
+`kiwi-mail/src/store/{queries,outbox,mod}.rs`; frontend `App.tsx`,
+`ipc.ts`, `kiwi.ts`, `prefs.ts`, `views/settings.tsx`; `docs/contracts/ipc.md`.
+
+**Mechanical assists on other agents' mid-flight code (same session):**
+- `commands/thread.rs` — T-341: composite `conversationId` length-bound
+  (its `\n` separator must not hit `bounded`'s control-char sweep).
+- `commands/storage.rs` — `schema_version` literal 17 → 19.
+- `notify.rs` — `decide` 8-arg `#[allow]` + doc-gap fix (T-341 churn).
+
+**Next exact action on resume:** nothing pending — take the next ticket
+from Lead. Caveat: Docker test infra (mailpit/greenmail/db/admin) is
+down for live e2e until restart — all T-345 verification was unit/
+store-level and unaffected.
+
+**Env note for tomorrow:** rustc-LLVM OOMs under parallel cargo builds
+on this host (observed 4.2 GB free); `CARGO_BUILD_JOBS=1` serialized
+builds were the workaround. Restore map: docs/agents/fleet-state-2026-09-25.md.
+
+## 2026-09-26 — T-237 re-dispatch: verify-and-close (already committed)
+
+**Status:** done (verification pass). RESUME dispatched T-237 as new work —
+the fleet snapshot listed it "ready to dispatch" — but the full scope was
+completed 2026-09-25 and committed at `024e87d` (that commit added the
+T-237 ledger row itself). Ledger row still shows `open`; the status column
+is Lead's flip, not mine.
+
+### Evidence at HEAD
+
+- **prefs IPC renames** — `ipc.ts` `getPrefs()` folds `kiwi_prefs_list`
+  `{key,value}[]` into the prefs bag callers expect; `setPrefs(bag)`
+  pushes per-key through `kiwi_prefs_set`, first rejection aborts.
+  `kiwi_lookup_autoconfig` → `kiwi_discover_account`. All three names
+  registered in `lib.rs` invoke_handler (`:128`, `:211-213`) — T-230 has
+  since landed the discover handler, so the wrapper is live, not
+  wrapped-but-absent. Zero `kiwi_get_prefs`/`kiwi_set_prefs`/
+  `kiwi_lookup_autoconfig` call sites remain.
+- **contracts index** — `API_CONTRACTS.md` indexes all 14
+  `contracts/*.md` (disk count verified: exactly 14) with owner +
+  contract-version + status per row.
+- **admin-api post-T-193** — committed: fail-closed org scoping
+  (H2, lines 57-64), org-bound default-to-own-org (H4/§12.3),
+  `org.create` org_admin-only (H5, line 74), plus the symmetric
+  `GET /api/v1/audit` org-bound note (line 86).
+- **challenge-expired ruling** — `challenge-expired` kept (the
+  Lead-ratified spelling): ipc.md:181-182 "only emitted spelling; the
+  legacy `expired` code is withdrawn"; authenticator.md §6.3:271-272 same
+  + pre-migration-builds note. FINDINGS.md IPC-4/UIS-5/UIS-6 all
+  `fixed` → T-237.
+
+### Gates (this morning's tree, incl. foreign WIP)
+
+`npx tsc --noEmit` (kiwi-app) — clean. `cargo fmt --all -- --check` —
+clean. `cargo clippy --workspace --all-targets -- -D warnings` — clean.
+
+### Flag for Lead
+
+- **T-345 tray implementation is still UNCOMMITTED** in the working tree
+  (Lead-verified yesterday but never committed): `src-tauri/src/tray.rs`
+  untracked; `Cargo.toml` (tray-icon feature), `lib.rs`, `state.rs`,
+  `commands/{prefs,system,lock_matrix}.rs`, `types/system.rs`,
+  `commands/message/{update,delete,junk}.rs`, `commands/import.rs`,
+  `commands/mail.rs`, `syncer.rs`, frontend `App.tsx`/tray hunks in
+  `ipc.ts`/`prefs.ts`/`settings.tsx`, `ipc.md` sections — all dirty.
+  Shared tree is accruing foreign WIP on the same files (A15's T-341
+  `threadSetMuted`/`threadListMuted` wrappers sit inside the uncommitted
+  `ipc.ts` diff) — surgical staging gets harder the longer it sits.
+- DONE report sent to Lead `term_db8527c7-eb71-4274-b416-61c91143a6cf`
+  (2026-09-26 handle; c20c6737 dead).
+
+## 2026-09-26 (cont.) — T-345 system tray COMMITTED (urgent drift-prevention directive)
+
+Lead ordered immediate surgical commit before foreign churn buried the
+Lead-verified implementation. HEAD moved twice during staging
+(`d3ee008` A15 status, `ee543ef` A24 T-343, `6088169` A25 T-342) —
+verified each move before staging.
+
+**Commit `031b514` — "A20 → T-345 system tray" (24 files, +1546/-12)**
+
+Whole-file adds (diff 100% mine): `tray.rs` (new, 465 lines incl. unit
+tests), `Cargo.toml` (`tray-icon` feature), `Cargo.lock`, `prefs.ts`,
+`outbox.rs` (`outbox_count`), `import.rs`, `message/delete.rs`,
+`message/junk.rs`.
+
+Split files (T-345 hunks only, staged via filtered `git apply --cached`
+against moving HEAD): `lib.rs` (mod tray + install + on_window_event +
+kiwi_confirm_quit), `state.rs` (tray_tip/tray_live/tray_on_close + init),
+`prefs.rs` (post-write atomic mirror + `pref-tray-set` audit),
+`types/system.rs` (tray_available), `commands/system.rs` (view field
+only), `queries.rs` (`total_unseen`), `store/mod.rs` (test),
+`mail.rs`/`syncer.rs` (post-sync refresh hooks), `update.rs` (refresh
+only — T-339 `copy_parts_state` hunk left), `ipc.ts` (onTrayCompose/
+onQuitRequested/confirmQuit), `kiwi.ts` (trayAvailable), `App.tsx`
+(listeners + quit modal), `settings.tsx` (trayClose UI), `ipc.md`
+(§1 exempt bullet + §9c tray section).
+
+**Deliberate reductions (committed slice honest vs uncommitted deps):**
+- `total_unseen` drops the `muted_conversations` join — that table is
+  T-341's uncommitted schema v18. Committed predicate = same unseen rule
+  as `folder_stats`; mute suppression rides T-341 when its schema lands.
+- store test drops the `set_conversation_muted` block (foreign API).
+- `commands/system.rs` drops 4 `decision:` test literals (T-282 field
+  not yet in committed `ChallengeResponseInput`).
+- `ipc.md` tooltip line reworded to describe committed predicate;
+  dropped "like pref-notify-set" (T-329 audit action uncommitted).
+- `types/mod.rs`: staged ONLY the 1-line `use` reformat — HEAD was
+  already fmt-dirty there (foreign WIP reformats it); kept committed
+  state fmt-clean without sweeping `pub mod storage/thread` decls.
+- `Cargo.lock` whole-add justified: every entry traces to committed
+  manifests — the delta is the `tauri-plugin-notification` closure
+  (dep committed at HEAD but never locked) + tray-icon already-locked
+  optional deps. Fixes a pre-existing stale lockfile.
+
+**Gates on committed state (verified via ephemeral worktree at the
+staged tree — tree hash `085b1c4…` == `HEAD^{tree}`):**
+- `cargo fmt --all -- --check` — CLEAN.
+- `cargo check -p kiwi-app` — FAILS, **pre-existing HEAD breakage, not
+  T-345**: `kiwi-mail` committed queries.rs (8fdbefd) uses `FolderOrigin`,
+  `FolderMeta.{origin,parent_id}`, `is_system_folder_name` — all defined
+  only in uncommitted T-328/339 working-tree mod.rs (16 errors);
+  `kiwi-forensics` report/mod.rs:317 `use sha2` with the dep committed
+  nowhere (still an uncommitted Cargo.toml line, 275cd5f's T-320 half).
+  Zero errors in any T-345 file; every staged symbol verified to resolve
+  at HEAD (`open_test`, `pref_key`, `AppIndex::default`,
+  `upsert_message` 3-arg, `NewMessageMeta` fields, `record(action,
+  detail, now)`, `app.state::<Arc<AppState>>`, `&mut App → &App` coerce).
+- Working-tree `cargo check` additionally red on ANOTHER uncommitted
+  foreign hunk: pair.rs:381 `deny_response` (T-282, no such method on
+  committed PairEngine).
+- Frontend slice self-consistent (all new symbols staged together);
+  earlier full-tree tsc/clippy green stands.
+
+**Left uncommitted (foreign, flagged for Lead):** T-341 thread-mute
+(thread.rs, notify.rs mute bits, store/threads.rs, ipc.ts wrappers,
+queries.rs conversation_key, muted_conversations schema), T-329 notify
+wiring (`mod notify` decl + registrations — notify.rs is tracked-but-
+undeclared at HEAD), T-282 challenge-deny (pair.rs deny_response +
+types + ipc.ts decision), T-330 storage, T-340 lock_matrix, T-339
+copy_parts_state, T-342 remaining integration bits, T-320 sha2 dep line,
+misc types/error/commands-mod hunks.
+
+**Lead flag:** committed HEAD does not compile — folder-ops owner needs
+to land FolderOrigin/FolderMeta/migrations; forensics owner needs the
+sha2 manifest line. Not mine to stage (would pull half-schemas). Ledger:
+T-345 status column is Lead's to flip.

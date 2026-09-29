@@ -157,7 +157,7 @@ Sideload-only plugins v1 declare capabilities via manifest but run as **trusted 
 
 ## ADR-013 — Authenticator contract rulings (T-311 draft set, 8 rows)
 
-- **Date:** 2026-09-25 · **Status:** **PROPOSED — pending owner/Lead ratification** · **By:** Agent 20 (T-311)
+- **Date:** 2026-09-25 · **Status:** **R7 RATIFIED** (Lead, 2026-09-26 — implemented by A11 under T-282: `challenge-verification-failed err=Expired` + `challenge-expired` IPC, `authenticator.md` §7/§10.4 reconciled); **R1–R6, R8 remain PROPOSED — pending owner/Lead ratification** · **By:** Agent 20 (T-311)
 - **Scope:** the 8 contradictions A23's T-270 audit tabled in
   `docs/audits/authenticator-drift-1.md` §"Contract decisions required".
   Each ruling below is a proposal only — normative contract text is NOT
@@ -300,3 +300,32 @@ Each row above is independently ratifiable. On sign-off, the diff sketch in
 re-encode check and R5 event↔form rule, and R2/R3 gate the wss transport
 implementation (T-194). No normative text is amended by this entry.
 
+
+---
+
+### ADR-012 (ui-migration): Mailspring verbatim component port under license grant
+
+**Decision.** `kiwi-app/src/ms/` holds components ported verbatim from
+Mailspring (`vendor/mailspring`, upstream `Foundry376/Mailspring`). The
+project owner states a license/rights arrangement with the Mailspring
+developer covering verbatim reuse for KIWI; pending written terms landing in
+`docs/legal/` (or a contributor-level grant file), this ADR records the
+grant as asserted by the owner on 2026-09-26.
+
+**Scope.** Exemption applies ONLY to `kiwi-app/src/ms/` — the declared port
+surface, every file carrying a `Ported from Mailspring <path>` header.
+ADR-005 ("study, don't fork") remains in force for the rest of the tree:
+non-ms/ code must still be original, and CHECK B of
+`tests/tools/copy_overlap.py` continues to gate everything else.
+
+**Gate mechanics.** `copy_overlap.py` gained `PORTED_EXEMPT_PREFIXES` —
+ms/ files are skipped by CHECK B (verbatim overlap) and reported as
+`ported_exempt_files=N` in the gate summary so the exemption is auditable,
+never silent. CHECK A (forbidden provenance markers: GPL headers, vendor
+copyright lines, mailsync internals) still scans ms/ — ported files must
+adapt provenance comments into our own words, as they already do.
+
+**Merging caveat.** This grant covers the ui-migration work as asserted.
+If the written grant does not materialize before `ui-migration` merges to
+main, the merge review must re-raise license compatibility (GPL-3.0 ports
+inside an MPL-2.0 project) rather than assume clearance.

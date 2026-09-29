@@ -1,0 +1,164 @@
+/* Mailspring Ubuntu — port of vendor ui-ubuntu (internal_packages/ui-ubuntu).
+ * Light surfaces + Ubuntu orange #f07746 accent + the signature dark
+ * aubergine #41403b toolbar with light controls. Flat fills (the source's
+ * toolbar gradient is collapsed to a flat fill + hairline per KIWI rules). */
+
+:root[data-theme="mailspring-ubuntu"],
+[data-theme="mailspring-ubuntu"] {
+  color-scheme: light;
+
+  /* ---- canonical palette ---- */
+  --accent: #f07746;
+  --accent-hover: #e0612f;
+  --accent-ink: #ffffff;
+  --selection: #ffede5;
+
+  /* ---- mailspring tokens ---- */
+  --kiwi-ms-bg: #fdfdfd;
+  --kiwi-ms-surface: #ffffff;
+  --kiwi-ms-surface-2: #f6f6f6;
+  --kiwi-ms-surface-3: #eceef1;
+  --kiwi-ms-sidebar: #eeeeef;
+  --kiwi-ms-toolbar: #41403b; /* @toolbar-background-color */
+  --kiwi-ms-list-bg: #ffffff;
+  --kiwi-ms-list-border: #dddddf;
+  --kiwi-ms-list-hover: #f2f4f6;
+  --kiwi-ms-text: #231f20;
+  --kiwi-ms-text-heading: #434648;
+  --kiwi-ms-text-secondary: #5b6470;
+  --kiwi-ms-text-muted: #8a94a0;
+  --kiwi-ms-link: #419bf9;
+  --kiwi-ms-accent: #f07746; /* @accent-primary */
+  --kiwi-ms-accent-active: #ef7042; /* accent 1% darker */
+  --kiwi-ms-accent-emphasis: #5b90fb;
+  --kiwi-ms-primary: #f07746;
+  --kiwi-ms-primary-text: #ffffff;
+  --kiwi-ms-icon-muted: #919191;
+  --kiwi-ms-border: #d5d8dc;
+  --kiwi-ms-border-strong: #b9bec5;
+  --kiwi-ms-divider: #e2e2e2; /* @border-color-divider override */
+  --kiwi-ms-hairline: rgba(35, 31, 32, 0.1);
+  --kiwi-ms-info: #3187e1;
+  --kiwi-ms-success: #5cb346;
+  --kiwi-ms-warning: #f0ad4e;
+  --kiwi-ms-danger: #d9534f;
+  --kiwi-ms-toast-info: #009ec4;
+  --kiwi-ms-toast-success: #00ac6f;
+  --kiwi-ms-toast-warning: #ff4800;
+  --kiwi-ms-toast-error: #ca2541;
+  --kiwi-ms-toast-pending: #b4babd;
+  --kiwi-ms-shadow-color: rgba(0, 0, 0, 0.15);
+  --kiwi-ms-shadow-standard: 0 1px 4px 0 rgba(0, 0, 0, 0.15);
+  --kiwi-ms-shadow-raised: 0 2px 8px 0 rgba(0, 0, 0, 0.16);
+  --kiwi-ms-shadow-popover: 0 2px 10px rgba(0, 0, 0, 0.18);
+  --kiwi-ms-shadow-modal: 0 12px 40px rgba(0, 0, 0, 0.24);
+  --kiwi-ms-focus-glow: 0 0 0 3px rgba(240, 119, 70, 0.28);
+  --kiwi-ms-select-tint: #ffede5;
+  --kiwi-ms-select-border: #f8bba3;
+  --kiwi-ms-select-solid: #ef7042;
+
+  /* ---- --ms-* contract vars ui-ubuntu redefined ---- */
+  --ms-toolbar-background-color: #41403b;
+  --ms-border-color-divider: #e2e2e2;
+  --ms-border-color-secondary: #ffffff; /* lighten(#f6f6f6, 10%) */
+
+  /* ---- legacy kiwi tokens ---- */
+  --kiwi-bg: #fdfdfd;
+  --kiwi-surface: #ffffff;
+  --kiwi-sidebar: #eeeeef;
+  --kiwi-card: #ffffff;
+  --kiwi-input: #ffffff;
+  --kiwi-border: #d5d8dc;
+  --kiwi-border-soft: #e3e5e8;
+  --kiwi-text: #231f20;
+  --kiwi-text-secondary: #5b6470;
+  --kiwi-text-disabled: #8a94a0;
+  --kiwi-brand: #f07746;
+  --kiwi-brand-hover: #e0612f;
+  --kiwi-brand-ink: #9a3b1a;
+  --kiwi-focus: #e0612f;
+  --kiwi-focus-ring: rgba(240, 119, 70, 0.28);
+  --kiwi-secure: #5cb346;
+  --kiwi-secure-bg: #e8f5e5;
+  --kiwi-secure-border: rgba(92, 179, 70, 0.45);
+  --kiwi-warning: #d89b3e;
+  --kiwi-warning-bg: #fcf3dd;
+  --kiwi-warning-border: rgba(240, 173, 78, 0.5);
+  --kiwi-danger: #d9534f;
+  --kiwi-danger-bg: #fae9e8;
+  --kiwi-danger-border: rgba(217, 83, 79, 0.45);
+  --kiwi-unknown: #5b6470;
+  --kiwi-unknown-bg: #eceef1;
+  --kiwi-unknown-border: rgba(91, 100, 112, 0.4);
+  --kiwi-lock: #9a3b1a;
+  --kiwi-lock-bg: #fdeee7;
+  --kiwi-hover-bg: rgba(240, 119, 70, 0.07);
+  --kiwi-shadow: 0 4px 20px rgba(35, 31, 32, 0.14);
+  --kiwi-shimmer: rgba(240, 119, 70, 0.07);
+
+  /* ---- pane tokens ---- */
+  --em-pane-border: #d5d8dc;
+  --em-hairline: #eceef1;
+  --em-pane-bg: #ffffff;
+  --em-pane-alt: #f7f8fa;
+  --em-pane-titlebar: #fcfcfd;
+  --em-toolbar-bg: #41403b;
+  --em-select: #ffede5;
+  --em-select-border: #f8bba3;
+  --em-select-focus: #ffe2d4;
+  --em-unread-dot: #f07746;
+  --em-sender-blue: #d95f33;
+  --em-link: #419bf9;
+  --em-hover: #f2f4f6;
+  --em-text-dim: #69707c;
+  --em-text-faint: #98a0ab;
+  --em-group-head: #6a7280;
+  --em-avatar-text: #ffffff;
+  --em-card-bg: #ffffff;
+  --em-menu-bg: #ffffff;
+  --em-tab-line: #e2e2e2;
+  --em-star: #f5a623;
+  --em-cat-news: #3187e1;
+  --em-cat-news-bg: #e2effb;
+  --em-cat-personal: #f07746;
+  --em-cat-personal-bg: #fdeee7;
+  --em-cat-logs: #5cb346;
+  --em-cat-logs-bg: #e8f5e5;
+  --em-cat-social: #6d4fc2;
+  --em-cat-social-bg: #ece6fa;
+  --em-cat-other: #5b6470;
+  --em-cat-other-bg: #eceef1;
+}
+
+/* ui-ubuntu toolbar: dark aubergine bar with flat light controls
+ * (gradient collapsed to solid lighten(#41403b, 4%) ≈ #4b4a44). */
+:root[data-theme="mailspring-ubuntu"] .ms-toolbar,
+:root[data-theme="mailspring-ubuntu"] .em-toolbar {
+  background: #41403b;
+  border-bottom-color: rgba(255, 255, 255, 0.1);
+  color: #f6f6f6;
+}
+:root[data-theme="mailspring-ubuntu"] .ms-toolbar .ms-btn {
+  color: #f6f6f6;
+  background: #4b4a44;
+  border-color: rgba(255, 255, 255, 0.14);
+}
+:root[data-theme="mailspring-ubuntu"] .ms-toolbar .ms-btn:hover:not(:disabled) {
+  border-color: #f07746;
+}
+:root[data-theme="mailspring-ubuntu"] .em-toolbar .em-tool {
+  color: #f6f6f6;
+}
+:root[data-theme="mailspring-ubuntu"] .em-toolbar .em-tool:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.1);
+}
+:root[data-theme="mailspring-ubuntu"] .ms-toolbar input[type="search"],
+:root[data-theme="mailspring-ubuntu"] .ms-toolbar select {
+  color: #f6f6f6;
+  background: #4b4a44;
+  border-color: rgba(255, 255, 255, 0.14);
+}
+:root[data-theme="mailspring-ubuntu"] .ms-toolbar .ms-demo-pill {
+  color: rgba(246, 246, 246, 0.6);
+  border-color: rgba(255, 255, 255, 0.14);
+}

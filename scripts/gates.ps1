@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  T-344 (Agent 26) â€” local equivalent of the CI gate set, Windows.
+  T-344 (Agent 26) - local equivalent of the CI gate set, Windows.
 
 .DESCRIPTION
   Runs the same gates .github/workflows/ci.yml runs, in the same order:

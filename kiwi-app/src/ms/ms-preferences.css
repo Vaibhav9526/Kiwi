@@ -1,0 +1,203 @@
+/* Ported from Mailspring app/internal_packages/preferences/styles/preferences.less
+ * — the .preferences-wrap skin, .container-preference-tabs/.preferences-tabs
+ * strip, section/.item rows, and .platform-note callout.
+ *
+ * Adapted seams:
+ *   @tokens                          → --ms-* contract vars (mailspring-tokens.css),
+ *                                      which resolve to --kiwi-* theme tokens
+ *   horizontal tab strip             → vertical rail: the strip's bottom
+ *                                      hairline becomes a right hairline, the
+ *                                      flex row becomes a column, and the
+ *                                      centered 120px-max items become
+ *                                      full-width left-aligned rows (the
+ *                                      .ms-tab/.ms-prefs-rail skin stays in
+ *                                      shell.css — ui-stress asserts it)
+ *   select { margin-top: 4px }       → dropped: KIWI .item labels are flex-
+ *                                      centered, a top margin would un-align
+ *                                      the control
+ *   .item rows                       → hairline dividers added (.item + .item),
+ *                                      matching the rest of the KIWI card skin
+ *   fade(@black, 4%) platform-note   → color-mix text-color 4% (theme-safe)
+ *   Flat fills only — no gradients.
+ *
+ * Not ported (KIWI settings doesn't render these Mailspring blocks):
+ *   .container-appearance mode-switch + scale-slider, .container-keymaps
+ *   shortcut editing rows, .container-general .local-data .btn overrides,
+ *   .two-columns-flexbox, the ≤680px tab-icon collapse.
+ */
+
+.preferences-wrap {
+  height: 100%;
+  background-color: var(--ms-background-primary);
+  color: var(--ms-text-color);
+}
+
+.preferences-wrap input[type="checkbox"] {
+  margin: 0 7px 0 0;
+  position: relative;
+  top: 1px;
+}
+.preferences-wrap input[type="radio"] {
+  margin: 0 7px 0 0;
+}
+
+.preferences-wrap p {
+  color: var(--ms-text-color-very-subtle);
+  font-size: var(--ms-font-size-smaller);
+}
+.preferences-wrap p a {
+  color: var(--ms-text-color-very-subtle);
+  font-weight: var(--ms-font-weight-semi-bold);
+  text-decoration: underline;
+}
+
+/* ---------- tab bar (ported, vertical rail adaptation) ---------- */
+
+.preferences-wrap .container-preference-tabs {
+  background-color: var(--ms-source-list-bg);
+  border-right: 1px solid var(--ms-border-color-divider);
+}
+
+.preferences-wrap .preferences-tabs {
+  display: flex;
+  flex-direction: column;
+  padding-top: 10px;
+  background-color: var(--ms-source-list-bg);
+}
+
+.preferences-wrap .preferences-tabs .item {
+  cursor: default;
+}
+
+.preferences-wrap .preferences-tabs .item .tab-icon {
+  display: block;
+  margin: auto;
+}
+
+.preferences-wrap .preferences-tabs .item .name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: var(--ms-font-size-small);
+  line-height: var(--ms-font-size-small);
+}
+
+/* ---------- content column: itemized sections + hairline rows ---------- */
+
+/* The panel card itself keeps its shell.css skin (.ms-prefs-content);
+ * .preferences-content marks the Mailspring scroll-region equivalent. */
+.preferences-wrap .preferences-content {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Itemized sections — Mailspring's <section><h6/> blocks become the
+ * hairline-separated blocks inside the settings card. */
+.preferences-wrap .ms-prefs-content > section.ms-pref-section {
+  padding: 4px 0;
+  border-bottom: 1px solid var(--ms-border-color-divider);
+}
+.preferences-wrap .ms-prefs-content > section.ms-pref-section:last-child {
+  border-bottom: none;
+}
+
+/* Section headers: Mailspring h6 (very-subtle) + the KIWI group-label look. */
+.preferences-wrap .ms-prefs-content section.ms-pref-section > h6 {
+  margin: 0;
+  padding: 10px 18px 4px;
+  font-size: var(--ms-font-size-smaller);
+  font-weight: var(--ms-font-weight-semi-bold);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ms-text-color-very-subtle);
+}
+
+/* .item — the Mailspring setting row. Inside a section, consecutive items
+ * are hairline-separated; loose .item rows also work directly under the
+ * panel (same treatment as the panel's other direct children). */
+.preferences-wrap .ms-prefs-content .item {
+  padding: 10px 18px;
+}
+.preferences-wrap .ms-prefs-content > section.ms-pref-section > .item + .item {
+  border-top: 1px solid var(--kiwi-ms-hairline);
+}
+.preferences-wrap .ms-prefs-content > .item {
+  border-bottom: 1px solid var(--ms-border-color-divider);
+}
+.preferences-wrap .ms-prefs-content > .item:last-child {
+  border-bottom: none;
+}
+
+/* Label-wraps-control rows: title text left, trailing control right. */
+.preferences-wrap .ms-prefs-content .item > label {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+.preferences-wrap .ms-prefs-content .item > label > :last-child:not(:first-child) {
+  margin-left: auto;
+}
+/* Checkbox-first rows keep the label text inline next to the box. */
+.preferences-wrap .ms-prefs-content .item.item-leading > label > :last-child:not(:first-child) {
+  margin-left: 0;
+}
+
+/* Non-.item children of a section keep the card's horizontal inset; cards,
+ * banners and notes also get a vertical gap so they read as inset blocks. */
+.preferences-wrap .ms-prefs-content > section.ms-pref-section > :where(p, dl, pre, table, fieldset) {
+  margin-left: 18px;
+  margin-right: 18px;
+}
+.preferences-wrap .ms-prefs-content > section.ms-pref-section > :where(p, dl, pre) {
+  margin-top: 8px;
+  margin-bottom: 8px;
+}
+.preferences-wrap .ms-prefs-content > section.ms-pref-section > :where(.kiwi-card, .kiwi-banner, .em-card, .platform-note, table) {
+  margin-left: 18px;
+  margin-right: 18px;
+  margin-top: 10px;
+  margin-bottom: 10px;
+}
+
+/* Itemized plain lists (remote-content rows, device rows, mute rows):
+ * full-bleed hairline rows inside the section. */
+.preferences-wrap .ms-prefs-content > section.ms-pref-section > ul {
+  list-style: none;
+  margin: 4px 0;
+  padding: 0;
+}
+.preferences-wrap .ms-prefs-content > section.ms-pref-section > ul > li {
+  padding: 9px 18px;
+}
+.preferences-wrap .ms-prefs-content > section.ms-pref-section > ul > li + li {
+  border-top: 1px solid var(--kiwi-ms-hairline);
+}
+
+/* Embedded views (rules editor, filters, integrations, templates) — the
+ * panel inset without .item hairlines. */
+.preferences-wrap .ms-prefs-content > .ms-pref-embed,
+.preferences-wrap .ms-prefs-content > section.ms-pref-section > .ms-pref-embed {
+  padding: 10px 18px;
+}
+.preferences-wrap .ms-prefs-content > .ms-pref-embed {
+  border-bottom: 1px solid var(--ms-border-color-divider);
+}
+.preferences-wrap .ms-prefs-content > .ms-pref-embed:last-child {
+  border-bottom: none;
+}
+
+/* ---------- platform-note (verbatim port, token-mapped) ---------- */
+
+.preferences-wrap .platform-note {
+  padding: var(--ms-padding-base-vertical) var(--ms-padding-base-horizontal);
+  background: color-mix(in srgb, var(--ms-text-color) 4%, transparent);
+  border-left: 3px solid var(--ms-color-info);
+  margin: var(--ms-padding-base-vertical) 0;
+  font-size: 0.95em;
+}
+.preferences-wrap .platform-note:before {
+  color: var(--ms-color-info);
+  font-weight: var(--ms-font-weight-semi-bold);
+  content: "NOTE: ";
+}
