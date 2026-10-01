@@ -18,7 +18,12 @@
         "height": 820,
         "dragDropEnabled": false,
         "titleBarStyle": "Overlay",
-        "hiddenTitle": true
+        "hiddenTitle": true,
+        "transparent": true,
+        "windowEffects": {
+          "effects": ["mica", "acrylic", "blur"],
+          "state": "active"
+        }
       }
     ],
     "security": {
