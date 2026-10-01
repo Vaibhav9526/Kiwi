@@ -14,6 +14,7 @@ import lightOrangeManifestJson from "./stock/light-orange/manifest.json";
 import darkBlueManifestJson from "./stock/dark-blue/manifest.json";
 import darkOledManifestJson from "./stock/dark-oled/manifest.json";
 import sepiaManifestJson from "./stock/sepia/manifest.json";
+import liquidGlassManifestJson from "./stock/liquid-glass/manifest.json";
 import mailspringTaigaManifestJson from "./stock/mailspring-taiga/manifest.json";
 import mailspringUbuntuManifestJson from "./stock/mailspring-ubuntu/manifest.json";
 import mailspringLessIsMoreManifestJson from "./stock/mailspring-less-is-more/manifest.json";
@@ -27,6 +28,7 @@ import "./stock/light-orange/theme.css";
 import "./stock/dark-blue/theme.css";
 import "./stock/dark-oled/theme.css";
 import "./stock/sepia/theme.css";
+import "./stock/liquid-glass/theme.css";
 import "./stock/mailspring-taiga/theme.css";
 import "./stock/mailspring-ubuntu/theme.css";
 import "./stock/mailspring-less-is-more/theme.css";
@@ -48,6 +50,7 @@ const STOCK_THEMES: ThemeManifest[] = [
   lightBlueManifestJson,
   lightOrangeManifestJson,
   sepiaManifestJson,
+  liquidGlassManifestJson,
   mailspringTaigaManifestJson,
   mailspringUbuntuManifestJson,
   mailspringLessIsMoreManifestJson,
