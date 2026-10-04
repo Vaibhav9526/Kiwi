@@ -28,6 +28,7 @@ import OutlineViewItem from "../ms/outline-view-item";
 import "../ms/ms-outline.css";
 import { usePaneWidth } from "../state/panes";
 import { useTheme } from "../themes";
+import { WindowControls } from "./window-controls";
 import {
   IconArchive,
   IconBolt,
@@ -388,6 +389,10 @@ export function TopBar(props: TopBarProps) {
           </button>
           <TrustChip {...trust} />
         </div>
+        {/* Custom caption controls — the window is undecorated
+            (decorations: false), so this cluster IS the titlebar's
+            min/max/close. See window-controls.tsx. */}
+        <WindowControls />
       </div>
       <div className="em-toolbar" role="toolbar" aria-label="Mail toolbar">
         <ToolBtn

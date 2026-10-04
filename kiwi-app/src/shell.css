@@ -1206,9 +1206,11 @@
   align-items: center;
   gap: 8px;
   height: 40px;
-  /* Overlay titlebar: reserve room for the OS caption buttons (min/max/close)
-     so the theme picker + trust chip never slide under them. */
-  padding: 0 138px 0 8px;
+  /* The window is undecorated (decorations: false): the OS no longer paints
+     caption buttons over this row, so the right pad shrinks to a normal gap
+     and .em-wincontrols owns the right edge. The 138px that used to reserve
+     room for the native captions is gone. */
+  padding: 0 8px;
   background: var(--em-pane-titlebar);
   border-bottom: 1px solid var(--em-pane-border);
   user-select: none;
@@ -1285,6 +1287,53 @@
   padding: 1px 8px;
   white-space: nowrap;
 }
+/* ---------- window caption controls (undecorated window) ----------
+ * Win11 caption metrics: 46px wide, full titlebar height, square (no radius —
+ * the cluster butts against the window's top-right corner). Hover fills mix
+ * against the button's own `currentColor`, so they read correctly on light and
+ * dark; close carries the danger red the themes already define. */
+.em-wincontrols {
+  flex: none;
+  display: flex;
+  align-items: stretch;
+  align-self: stretch;
+  margin-left: 4px;
+}
+
+.em-winbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  color: var(--em-text-dim);
+  cursor: default;
+}
+.em-winbtn:hover {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  color: var(--em-text);
+}
+.em-winbtn:active {
+  background: color-mix(in srgb, currentColor 20%, transparent);
+}
+.em-winbtn:focus-visible {
+  outline: 1px solid var(--kiwi-ms-accent);
+  outline-offset: -2px;
+}
+/* Close keeps Win11's red wash + white glyph on hover. */
+.em-winbtn-close:hover {
+  background: var(--kiwi-ms-danger);
+  color: #ffffff;
+}
+.em-winbtn-close:active {
+  background: color-mix(in srgb, var(--kiwi-ms-danger) 82%, #000000);
+  color: #ffffff;
+}
+
+
 
 /* ---------- chrome: toolbar split buttons ---------- */
 

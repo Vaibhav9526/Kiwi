@@ -560,6 +560,26 @@ export const ICONS = {
       </>
     ),
   },
+
+  /* ---------- window caption controls ----------
+   * Win11 caption glyphs (undecorated window): minimize is a centered rule,
+   * maximize a single rounded square, restore the two overlapping squares.
+   * Same 16x16 stroke grid + currentColor as every other entry, so they
+   * inherit the active theme's ink without extra theming. */
+  minimize: {
+    body: <path d="M3.4 11.4h9.2" />,
+  },
+  maximize: {
+    body: <rect x="3" y="3" width="10" height="10" rx="1.4" />,
+  },
+  restore: {
+    body: (
+      <>
+        <rect x="2.4" y="5.2" width="8.4" height="8.4" rx="1.3" />
+        <path d="M5.4 5.2V3.8A1.4 1.4 0 0 1 6.8 2.4h5.4A1.4 1.4 0 0 1 13.6 3.8v5.4a1.4 1.4 0 0 1-1.4 1.4h-1.4" />
+      </>
+    ),
+  },
 } satisfies Record<string, IconDef>;
 
 export type IconName = keyof typeof ICONS;

@@ -19,6 +19,7 @@
         "dragDropEnabled": false,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
+        "decorations": false,
         "transparent": true,
         "windowEffects": {
           "effects": ["mica", "acrylic", "blur"],

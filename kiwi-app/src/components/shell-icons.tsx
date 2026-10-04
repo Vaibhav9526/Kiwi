@@ -68,3 +68,24 @@ export const IconCompose = named("compose");
 export const IconPrint = named("print");
 export const IconCollapseRight = named("collapse-right");
 export const IconUnreplied = named("unreplied");
+
+/** Icon adapters for the custom window caption controls (min / max-restore /
+ * close) on the undecorated main window. Same registry glyphs and contract as
+ * every other shell icon — `components/icons` (T-268). */
+export interface CaptionIconProps {
+  size?: number;
+  className?: string;
+  /** Accessible name; omit for decorative use. */
+  title?: string;
+}
+
+function caption(name: "minimize" | "maximize" | "restore" | "close") {
+  return function CaptionIcon({ size = 10, className, title }: CaptionIconProps) {
+    return <Icon name={name} size={size} className={className} label={title} />;
+  };
+}
+
+export const IconMinimize = caption("minimize");
+export const IconMaximize = caption("maximize");
+export const IconRestore = caption("restore");
+export const IconWindowClose = caption("close");
