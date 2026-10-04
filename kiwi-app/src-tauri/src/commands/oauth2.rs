@@ -558,7 +558,16 @@ pub(crate) async fn oauth2_poll_impl(
         "error" => Some("oauth2-failed"),
         _ => None,
     };
-    let audit_detail = format!("{ticket_id} {} {}", session.provider.id, view.status);
+    // On failure the audit detail carries the stable code + sanitized
+    // message — "google error" alone is undiagnosable (the renderer is the
+    // only other place the detail ever surfaces).
+    let audit_detail = match (&view.error_code, &view.error_message) {
+        (Some(code), Some(message)) => format!(
+            "{ticket_id} {} {} {code} {message}",
+            session.provider.id, view.status
+        ),
+        _ => format!("{ticket_id} {} {}", session.provider.id, view.status),
+    };
     drop(sessions);
     if let Some(tag) = audit_state {
         state.audit.lock().await.record(tag, &audit_detail, now)?;
