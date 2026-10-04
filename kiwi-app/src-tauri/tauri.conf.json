@@ -22,7 +22,8 @@
         "decorations": false,
         "transparent": true,
         "windowEffects": {
-          "effects": ["mica", "acrylic", "blur"],
+          "effects": ["acrylic", "blur", "mica"],
+          "color": "#e8e4f333",
           "state": "followsWindowActiveState"
         }
       }
