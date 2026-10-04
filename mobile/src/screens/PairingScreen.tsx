@@ -60,6 +60,11 @@ export function PairingScreen(props: PairingScreenProps): React.JSX.Element {
     try {
       const nowUnix = environment.clock.nowUnix();
       const payload = parseQrPayload(qrText, nowUnix); // §3.1 gates, incl. 5-min max + canonical key
+      // USB/LAN mode: the link dials the QR endpoint (plus the adb-reverse
+      // loopback fallback) — remember it before the hello goes out.
+      (environment.link as { noteQrEndpoint?: (endpoint: string) => void }).noteQrEndpoint?.(
+        payload.desktop_endpoint,
+      );
       if (!isQrPayloadCurrent(payload, nowUnix)) {
         setStatus('Pairing QR is not yet valid (issued in the future) — regenerate it.');
         return;

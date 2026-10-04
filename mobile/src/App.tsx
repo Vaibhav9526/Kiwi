@@ -11,6 +11,9 @@
  * - `mock` (default): in-process mock desktop + soft-HSM test keystore, so
  *   every screen is exercisable end to end. Persistently bannered — mock
  *   signatures are non-cryptographic, nothing in this mode authorizes.
+ * - `desktop` (USB/LAN bring-up): real Ed25519 dev keystore (tweetnacl,
+ *   memory-only) + HTTP link to the desktop's KIWI_PAIR_LISTEN dev
+ *   listener. Bannered DEV KEYS — not the Android Keystore (contract §5).
  * - `fail-closed`: unavailable keystore, offline transport, rejecting link —
  *   the posture a signed build must keep until Phase 4 wires the real
  *   wss/TLS transport (contract §3.2) and the platform keystore (§5).
@@ -18,8 +21,8 @@
  * `tests/isolation/mock-isolation.test.ts` enforces that screens and core
  * modules never import `src/mock/**` — they receive this environment.
  */
-import React, { useCallback, useMemo, useState } from 'react';
-import { SafeAreaView, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { SafeAreaView, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
 import {
   createApprovalBundle,
@@ -27,6 +30,7 @@ import {
   type EnvironmentMode,
 } from './environment';
 import { createMockEnvironment } from './mock';
+import { createDesktopEnvironment, type DesktopEnvironmentBundle } from './desktop';
 import { SystemClock } from './protocol/replay';
 import { PairingScreen, type PairedIdentity } from './screens/PairingScreen';
 import { PendingApprovalsScreen } from './screens/PendingApprovalsScreen';
@@ -42,17 +46,41 @@ const TABS: { name: ScreenName; label: string }[] = [
   { name: 'history', label: 'History' },
 ];
 
+const MODE_ORDER: EnvironmentMode[] = ['mock', 'desktop', 'fail-closed'];
+
 export function App(): React.JSX.Element {
   const [screen, setScreen] = useState<ScreenName>('pairing');
   const [mode, setMode] = useState<EnvironmentMode>('mock');
   const [identity, setIdentity] = useState<PairedIdentity | null>(null);
+  const [desktopOverride, setDesktopOverride] = useState('http://127.0.0.1:49310/pair');
+  const desktopRef = useRef<DesktopEnvironmentBundle | null>(null);
 
   const environment = useMemo(() => {
     // Fresh clock per mode: switching environments resets all local state.
+    // The desktop bundle persists across override edits so generated keys
+    // survive typing in the endpoint box.
     const clock = new SystemClock();
-    return mode === 'mock' ? createMockEnvironment(clock) : createFailClosedEnvironment(clock);
+    if (mode === 'mock') {
+      return createMockEnvironment(clock);
+    }
+    if (mode === 'desktop') {
+      if (desktopRef.current === null) {
+        desktopRef.current = createDesktopEnvironment(clock);
+      }
+      // Override text is applied in the effect below so typing in the
+      // endpoint box never recreates the environment or approval bundle.
+      return desktopRef.current.environment;
+    }
+    return createFailClosedEnvironment(clock);
   }, [mode]);
   const bundle = useMemo(() => createApprovalBundle(environment), [environment]);
+
+  useEffect(() => {
+    if (desktopRef.current !== null) {
+      const trimmed = desktopOverride.trim();
+      desktopRef.current.endpointStore.override = trimmed.length === 0 ? null : trimmed;
+    }
+  }, [desktopOverride, mode]);
 
   const onPaired = useCallback((paired: PairedIdentity) => {
     setIdentity(paired);
@@ -60,10 +88,18 @@ export function App(): React.JSX.Element {
   }, []);
 
   const onToggleMode = useCallback(() => {
-    setMode((m) => (m === 'mock' ? 'fail-closed' : 'mock'));
+    setMode((m) => MODE_ORDER[(MODE_ORDER.indexOf(m) + 1) % MODE_ORDER.length] ?? 'mock');
     setIdentity(null);
     setScreen('pairing');
   }, []);
+
+  const modeLabel = mode === 'mock' ? 'MOCK (dev)' : mode === 'desktop' ? 'DESKTOP (USB)' : 'FAIL-CLOSED';
+  const banner =
+    mode === 'mock'
+      ? 'MOCK TRANSPORT — demo only. No desktop is contacted, mock signatures are non-cryptographic, nothing here authorizes anything.'
+      : mode === 'desktop'
+        ? 'DESKTOP (USB/LAN) — real Ed25519 signatures over the dev http:// channel. DEV KEYS live in app memory (not the Android Keystore). Use adb reverse + KIWI_PAIR_LISTEN=1 on the desktop.'
+        : 'FAIL-CLOSED — platform keystore and live pairing transport land in Phase 4; every action here refuses.';
 
   const onForget = useCallback(() => {
     if (identity !== null) {
@@ -80,19 +116,39 @@ export function App(): React.JSX.Element {
       <View style={styles.headerRow}>
         <Text style={styles.title}>KIWI Authenticator</Text>
         <TouchableOpacity
-          style={[styles.modeBtn, mode === 'mock' ? styles.modeMock : styles.modeFail]}
+          style={[
+            styles.modeBtn,
+            mode === 'mock' ? styles.modeMock : mode === 'desktop' ? styles.modeDesktop : styles.modeFail,
+          ]}
           onPress={onToggleMode}
           accessibilityRole="button"
           accessibilityLabel="Toggle environment mode"
         >
-          <Text style={styles.modeText}>{mode === 'mock' ? 'MOCK (dev)' : 'FAIL-CLOSED'}</Text>
+          <Text style={styles.modeText}>{modeLabel}</Text>
         </TouchableOpacity>
       </View>
-      <Text style={mode === 'mock' ? styles.bannerMock : styles.bannerFail}>
-        {mode === 'mock'
-          ? 'MOCK TRANSPORT — demo only. No desktop is contacted, mock signatures are non-cryptographic, nothing here authorizes anything.'
-          : 'FAIL-CLOSED — platform keystore and live pairing transport land in Phase 4; every action here refuses.'}
+      <Text style={mode === 'mock' ? styles.bannerMock : mode === 'desktop' ? styles.bannerDesktop : styles.bannerFail}>
+        {banner}
       </Text>
+      {mode === 'desktop' && (
+        <View style={styles.endpointRow}>
+          <Text style={styles.endpointLabel}>Desktop endpoint override (adb reverse target):</Text>
+          <TextInput
+            style={styles.endpointInput}
+            onChangeText={setDesktopOverride}
+            value={desktopOverride}
+            placeholder="http://127.0.0.1:49310/pair"
+            placeholderTextColor="#5a6a78"
+            accessibilityLabel="Desktop endpoint override"
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          <Text style={styles.endpointHint}>
+            Empty = use the QR endpoint. With USB: run `adb reverse tcp:49310 tcp:49310`, start the desktop with
+            KIWI_PAIR_LISTEN=1 KIWI_PAIR_PORT=49310, then paste the QR payload in Pairing.
+          </Text>
+        </View>
+      )}
       <View style={styles.tabs}>
         {TABS.map((t) => (
           <TouchableOpacity
@@ -136,7 +192,20 @@ const styles = StyleSheet.create({
   title: { color: '#e8edf2', fontSize: 20, fontWeight: '700', flex: 1 },
   modeBtn: { borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6 },
   modeMock: { backgroundColor: '#7a5a1e' },
+  modeDesktop: { backgroundColor: '#1f5fa8' },
   modeFail: { backgroundColor: '#2c3945' },
+  bannerDesktop: { color: '#7db8f0', fontSize: 11, paddingHorizontal: 16, paddingTop: 8 },
+  endpointRow: { paddingHorizontal: 16, paddingTop: 8 },
+  endpointLabel: { color: '#aebccb', fontSize: 11, marginBottom: 4 },
+  endpointInput: {
+    borderColor: '#2c3945',
+    borderWidth: 1,
+    borderRadius: 8,
+    color: '#e8edf2',
+    padding: 8,
+    fontSize: 12,
+  },
+  endpointHint: { color: '#7a8a99', fontSize: 11, marginTop: 4 },
   modeText: { color: '#ffffff', fontSize: 11, fontWeight: '700' },
   bannerMock: { color: '#e0a34a', fontSize: 11, paddingHorizontal: 16, paddingTop: 8 },
   bannerFail: { color: '#7a8a99', fontSize: 11, paddingHorizontal: 16, paddingTop: 8 },

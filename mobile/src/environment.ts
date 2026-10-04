@@ -20,7 +20,7 @@ import { ApprovalService } from './protocol/approval';
 import type { ChallengeEvent } from './protocol/event';
 import type { ChallengeData } from './protocol/types';
 
-export type EnvironmentMode = 'fail-closed' | 'mock';
+export type EnvironmentMode = 'fail-closed' | 'mock' | 'desktop';
 
 export interface Environment {
   readonly mode: EnvironmentMode;
