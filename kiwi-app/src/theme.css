@@ -135,6 +135,19 @@
 
 * { box-sizing: border-box; }
 
+/* ---- font-size control (Settings → Appearance → Font size) ----
+ * `kiwi.fontScale` is written onto the root element by applyUiPrefs()
+ * (src/prefs.ts) as a plain multiplier (0.8 … 1.2). Two hooks consume it:
+ *   1. the --kiwi-ms-text-* / --kiwi-ms-h* tokens in mailspring-tokens.css
+ *      (every px-sized surface: menubar, sidebar, thread rows, reader);
+ *   2. this root font-size, which scales every `rem` declaration
+ *      (theme.css, shell.css and the inline styles in the views).
+ * 16px is the browser default, so `--kiwi-font-scale: 1` is a no-op. */
+:root {
+  --kiwi-font-scale: 1;
+  font-size: calc(16px * var(--kiwi-font-scale));
+}
+
 ::selection { background: var(--selection); }
 
 body {
@@ -142,7 +155,7 @@ body {
   background: var(--kiwi-bg);
   color: var(--kiwi-text);
   font-family: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  font-size: 14px;
+  font-size: calc(14px * var(--kiwi-font-scale, 1));
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
 }
@@ -549,8 +562,10 @@ input:focus, select:focus, textarea:focus {
 
 /* ---------- T-167: density + accent intensity ---------- */
 
+/* Density sets the root size, so it composes with --kiwi-font-scale rather
+ * than replacing it (font size at 100% stays 13px here). */
 [data-density="compact"] {
-  font-size: 13px;
+  font-size: calc(13px * var(--kiwi-font-scale, 1));
 }
 [data-density="compact"] .kiwi-row {
   padding: 0.3rem 0.45rem;

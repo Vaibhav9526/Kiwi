@@ -56,18 +56,24 @@
   --kiwi-ms-search-current: #ff8b1a;
 
   /* ---- type ---- */
+  /* Font-size control (Settings → Appearance → Font size, `kiwi.fontScale`):
+   * every text size in the app funnels through these nine tokens, so the
+   * scale multiplies here and reaches the whole shell, the ported .ms-. and
+   * .em- components and the reader via --ms-font-size-* without touching a
+   * single consumer. `rem` sizes (theme.css, shell.css, inline styles) are
+   * covered by the root font-size rule in theme.css. */
   --kiwi-ms-font-sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --kiwi-ms-font-serif: Georgia, "Times New Roman", serif;
   --kiwi-ms-font-mono: ui-monospace, "DejaVu Sans Mono", Menlo, Consolas, monospace;
-  --kiwi-ms-text-tiny: 10.5px;
-  --kiwi-ms-text-smaller: 12px;
-  --kiwi-ms-text-small: 13px;
-  --kiwi-ms-text-base: 14px;
-  --kiwi-ms-text-large: 16px;
-  --kiwi-ms-text-larger: 18px;
-  --kiwi-ms-h1: 24px;
-  --kiwi-ms-h3: 20px;
-  --kiwi-ms-h4: 18px;
+  --kiwi-ms-text-tiny: calc(10.5px * var(--kiwi-font-scale, 1));
+  --kiwi-ms-text-smaller: calc(12px * var(--kiwi-font-scale, 1));
+  --kiwi-ms-text-small: calc(13px * var(--kiwi-font-scale, 1));
+  --kiwi-ms-text-base: calc(14px * var(--kiwi-font-scale, 1));
+  --kiwi-ms-text-large: calc(16px * var(--kiwi-font-scale, 1));
+  --kiwi-ms-text-larger: calc(18px * var(--kiwi-font-scale, 1));
+  --kiwi-ms-h1: calc(24px * var(--kiwi-font-scale, 1));
+  --kiwi-ms-h3: calc(20px * var(--kiwi-font-scale, 1));
+  --kiwi-ms-h4: calc(18px * var(--kiwi-font-scale, 1));
   --kiwi-ms-weight-thin: 200;
   --kiwi-ms-weight-light: 300;
   --kiwi-ms-weight-normal: 400;

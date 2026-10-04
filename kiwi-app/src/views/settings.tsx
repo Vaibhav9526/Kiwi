@@ -1,7 +1,8 @@
 /**
  * Settings (T-143…T-167): prefs sections; Accounts (per-account pane:
  * test/remove/reconfigure/set-default, re-probe, sync frequency, signature),
- * devices, org binding, endpoint signals, Appearance (theme/accent/density),
+ * devices, org binding, endpoint signals, Appearance (theme/accent/density/
+ * font size),
  * Notifications (toasts/sound/mute), Privacy (remote-content + receipts),
  * Advanced. Live prefs sync through the kiwi_prefs_* key/value store
  * (T-175/T-237) with localStorage fallback (T-167). Secrets never appear here.
@@ -155,6 +156,7 @@ export function SettingsView({
   const [defaultId, setDefaultId] = useState(() => loadPref("kiwi.defaultAccount", ""));
   const [accent, setAccent] = useState(() => loadPref("kiwi.accent", "standard"));
   const [density, setDensity] = useState(() => loadPref("kiwi.density", "comfortable"));
+  const [fontScale, setFontScale] = useState(() => loadPref("kiwi.fontScale", "default"));
   const [toasts, setToasts] = useState(() => loadPref("kiwi.toasts", "on"));
   const [sound, setSound] = useState(() => loadPref("kiwi.sound", "off"));
   const [osNotify, setOsNotify] = useState(() => loadPref("kiwi.notify", "on"));
@@ -182,6 +184,10 @@ export function SettingsView({
     savePref("kiwi.density", density);
     applyUiPrefs();
   }, [density]);
+  useEffect(() => {
+    savePref("kiwi.fontScale", fontScale);
+    applyUiPrefs();
+  }, [fontScale]);
   useEffect(() => savePref("kiwi.toasts", toasts), [toasts]);
   useEffect(() => savePref("kiwi.sound", sound), [sound]);
   useEffect(() => savePref("kiwi.notify", osNotify), [osNotify]);
@@ -207,7 +213,7 @@ export function SettingsView({
       })();
     }, 600);
   };
-  useEffect(() => schedulePush(), [themeDefault, grace, minTls, poll, defaultId, accent, density, toasts, sound, osNotify, trayClose, mutedIds, syncFreq, signatures, mode]);
+  useEffect(() => schedulePush(), [themeDefault, grace, minTls, poll, defaultId, accent, density, fontScale, toasts, sound, osNotify, trayClose, mutedIds, syncFreq, signatures, mode]);
   useEffect(() => () => {
     if (pushTimer.current !== null) window.clearTimeout(pushTimer.current);
   }, []);
@@ -227,6 +233,7 @@ export function SettingsView({
         setDefaultId(loadPref("kiwi.defaultAccount", ""));
         setAccent(loadPref("kiwi.accent", "standard"));
         setDensity(loadPref("kiwi.density", "comfortable"));
+        setFontScale(loadPref("kiwi.fontScale", "default"));
         setToasts(loadPref("kiwi.toasts", "on"));
         setSound(loadPref("kiwi.sound", "off"));
         setOsNotify(loadPref("kiwi.notify", "on"));
@@ -777,6 +784,20 @@ export function SettingsView({
                 <select value={density} onChange={(e) => setDensity(e.target.value)}>
                   <option value="comfortable">Comfortable</option>
                   <option value="compact">Compact</option>
+                </select>
+              </label>
+            </SettingRow>
+            {/* Font size: scales the --kiwi-ms-text-* tokens and the root
+                font-size (see theme.css), so every surface follows. */}
+            <SettingRow>
+              <label>
+                Font size:{" "}
+                <select value={fontScale} onChange={(e) => setFontScale(e.target.value)}>
+                  <option value="compact">Compact (80%)</option>
+                  <option value="small">Small (90%)</option>
+                  <option value="default">Default (100%)</option>
+                  <option value="large">Large (110%)</option>
+                  <option value="xl">Extra large (120%)</option>
                 </select>
               </label>
             </SettingRow>
