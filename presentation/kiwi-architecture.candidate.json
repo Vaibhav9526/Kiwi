@@ -16,7 +16,7 @@
     { "id": "user", "type": "external", "label": "User", "sublabel": "desktop mail user", "pos": [40, 40], "size": [110, 56] },
     { "id": "mailservers", "type": "external", "label": "Mail servers", "sublabel": "remote SMTP/IMAP/POP3 · mailpit+greenmail (dev)", "pos": [10, 470], "size": [190, 60],
       "sources": [{ "path": "docker-compose.yml", "line": 31, "end_line": 64, "label": "mailpit + greenmail" }] },
-    { "id": "mobile", "type": "external", "label": "RN Authenticator", "sublabel": "QR pairing · approve/deny", "pos": [560, 40], "size": [170, 56],
+    { "id": "mobile", "type": "external", "label": "RN Authenticator", "sublabel": "QR pairing · approve/deny", "pos": [565, 40], "size": [170, 56],
       "sources": [{ "path": "mobile/src/protocol/qr.ts", "line": 1, "end_line": 4, "label": "QR payload parsing" }] },
     { "id": "wsl2guest", "type": "external", "label": "WSL2 guest", "sublabel": "disposable · torn down per open", "pos": [1110, 40], "size": [140, 56],
       "sources": [{ "path": "kiwi-sandbox/src/wsl2.rs", "line": 77, "label": "Wsl2Provider" }] },

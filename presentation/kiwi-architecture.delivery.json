@@ -1,17 +1,17 @@
 {
   "schemaVersion": 1,
-  "receiptId": "ad98a30d-24e9-4bcb-a689-9531ba6d65b1",
+  "receiptId": "cd68b5e5-e26d-403b-a402-a7f1884b4cf7",
   "status": "current",
   "command": "deliver",
   "type": "architecture",
   "input": "D:\\Hackathon\\PROJECTS\\Kiwi Mail\\presentation\\kiwi-architecture.candidate.json",
   "output": "D:\\Hackathon\\PROJECTS\\Kiwi Mail\\presentation\\kiwi-architecture.html",
   "specification": {
-    "sha256": "025960543130bec59b5baeb227f837c8780d4bf7d00636347396dfeda820e66f",
+    "sha256": "9d25ca6399aaa68c1d37ce4b229cbdbf6b0d4bcb178d44d6c584285cb20113a5",
     "bytes": 9235
   },
   "artifact": {
-    "sha256": "7326b5653021faf175cb4a4e81742ec01f93c42dbcc1e0e0ce5028aa54ce5f9a",
-    "bytes": 788649
+    "sha256": "c4b447da3e71418fd4d246aea36c8eec15198a49762e500b03e7338398ec5b2f",
+    "bytes": 788405
   }
 }
