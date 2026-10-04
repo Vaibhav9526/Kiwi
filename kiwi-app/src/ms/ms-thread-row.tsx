@@ -25,8 +25,16 @@ import type { MsKiwiRow, MsThread } from "./ms-thread";
 import { IconCheck, IconChevronDown, IconClose } from "../components/shell-icons";
 
 /** Row height — the ported rows are absolutely positioned inside each
- *  group's `.list-rows` block (vendor metrics: top = idx * itemHeight). */
-export const MS_ROW_HEIGHT = 72;
+ *  group's `.list-rows` block (vendor metrics: top = idx * itemHeight).
+ *  85px = Mailspring's narrow-mode default
+ *  (`DOMUtils.getWorkspaceCssNumberProperty('thread-list-item-height-narrow',
+ *  85)`, vendor thread-list.tsx:103; documented in
+ *  docs/ui/mailspring-metrics.md:31). The wide one-line default is 36px
+ *  (thread-list.tsx:100) — our rows carry participants + subject + snippet,
+ *  i.e. the narrow/two-line variant, so 85 is the matching number. The three
+ *  stacked lines measure 24 + 22 + 21 = 67px, so 85 leaves the vendor's
+ *  vertical slack instead of the old 72px which clipped the snippet. */
+export const MS_ROW_HEIGHT = 85;
 
 export type MsRowEntry =
   | { kind: "msg"; m: MessageEnvelope }
