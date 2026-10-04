@@ -360,6 +360,15 @@ impl PairEngine {
         self.store.list_devices(limit)
     }
 
+    /// Open challenges for the USB/LAN dev channel (`pullChallenges`).
+    /// Read-only: never consumes, never extends expiry — the phone's local
+    /// clock + replay ledger remain defense-in-depth, `ChallengeBook`
+    /// semantics stay authoritative at verify time.
+    pub fn open_challenges(&self, device_id: &str, now: i64, limit: u32) -> Result<Vec<ChallengeRow>> {
+        check_field("device_id", device_id, MAX_ID_LEN)?;
+        self.store.open_challenges(device_id, now, limit)
+    }
+
     /// Display fingerprint of a registered device's public key.
     pub fn device_fingerprint(&self, device_id: &str) -> Result<Option<String>> {
         Ok(self
