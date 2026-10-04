@@ -22,6 +22,10 @@ getrandom.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
+# Loopback-listener regression tests need a real RST (linger=0 close) —
+# std TcpStream::set_linger is still unstable; socket2 already ships in
+# the dep tree transitively.
+socket2 = "0.6"
 
 [lints]
 workspace = true

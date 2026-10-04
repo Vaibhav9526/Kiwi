@@ -61,21 +61,24 @@ impl LoopbackListener {
 
     /// Block until a request carrying `code`/`error`/`state` arrives, or
     /// `timeout` elapses. Non-matching requests (probes, favicon fetches,
-    /// garbage) get a minimal response and the wait continues. Returns
-    /// `Err(Expired)` on deadline — the grant is dead by then anyway.
+    /// garbage) get a minimal response and the wait continues. Per-connection
+    /// failures — a browser preconnect the tab abandons, a probe that resets
+    /// mid-read, a pending connection the peer drops before `accept` returns
+    /// (surfaces as `ConnectionReset`/`ConnectionAborted` on Windows) — are
+    /// noise: the real redirect may still be queued behind them. Only the
+    /// deadline ends the wait; returns `Err(Expired)` then.
     pub fn wait(&self, timeout: Duration) -> Result<RedirectOutcome, OAuthError> {
         let deadline = Instant::now() + timeout;
         loop {
             match self.inner.accept() {
                 Ok((mut stream, _)) => {
-                    if let Some(outcome) = handle_conn(&mut stream)? {
+                    if let Ok(Some(outcome)) = handle_conn(&mut stream) {
                         return Ok(outcome);
                     }
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                Err(_) => {
                     std::thread::sleep(Duration::from_millis(ACCEPT_POLL_MS));
                 }
-                Err(e) => return Err(OAuthError::Loopback(format!("accept: {e}"))),
             }
             if Instant::now() >= deadline {
                 return Err(OAuthError::Expired);
