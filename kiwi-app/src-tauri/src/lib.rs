@@ -56,6 +56,10 @@ use commands::thread::*;
 /// IPC contract version — bump on breaking changes (ipc.md §1).
 pub const IPC_CONTRACT_VERSION: &str = "kiwi.ipc/1";
 
+// NOTE: no DWMWA_WINDOW_CORNER_PREFERENCE hack — the crate forbids unsafe,
+/// and a decorated window (titleBarStyle Overlay) keeps Win11's native
+/// rounded corners + frame shadow from DWM anyway. Only relevant if
+/// decorations ever go off.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
