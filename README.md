@@ -199,12 +199,9 @@ Phases as tracked in [docs/ROADMAP.md](docs/ROADMAP.md):
 | 7 | Intelligence/enrichment (optional): native SPF/DKIM/DMARC, CT, threat intel, AI explanations with graceful degradation |
 | 8 | Hardening / release: security review, dependency audit, secret scan, fuzzing, performance, Tauri bundling, update strategy |
 
-Phase 4 production use is blocked on the R1-R8 authenticator contract rulings; the integrations consent boundary is recorded in [ADR-011](docs/DECISIONS.md) and its contract in [docs/contracts/integrations.md](docs/contracts/integrations.md).
 
-> Note: the checkbox state in [docs/ROADMAP.md](docs/ROADMAP.md) lags the as-built tree (the Tauri shell, the local mail-server end-to-end suites and the CI gates are all present and wired), so the table above summarises the planned scope, not verified completion. Reconciling the checkboxes is tracked separately - see the T-347 notes in `docs/agents/agent-12-status.md`.
 
 ## License
 
 [MPL-2.0](LICENSE) - see [LICENSE](LICENSE) and the license-boundary ADR in [docs/DECISIONS.md](docs/DECISIONS.md).
 
-Reference checkouts under `source/` (Thunderbird, MPL-2.0) and `reference/` (Mailspring) are study material only: never imported, never shipped, and a CI copy-overlap gate keeps provenance clean.
