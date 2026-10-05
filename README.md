@@ -63,7 +63,7 @@ Nine settings tabs (General, Accounts, Identity, Appearance, Shortcuts, Mail Rul
 
 ## Architecture
 
-![KIWI as-built architecture](docs/architecture.svg)
+![KIWI as-built architecture](docs/architecture-dark.png)
 
 Full write-up: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Diagram source: [docs/architecture.svg](docs/architecture.svg).
 
