@@ -18,7 +18,8 @@ export function validChallenge(): ChallengeData {
     schema_version: 1,
     challenge_id: 'chg-test-0001',
     device_id: 'dev-test-0001',
-    session_id: 'x-tx-test-0001',
+    // §4.2 session grammar: unlock/device-pairing => boot-<...> form.
+    session_id: 'boot-test-0001',
     event: 'unlock',
     nonce_b64: Buffer.from(NONCE).toString('base64'),
     issued_unix: ISSUED,

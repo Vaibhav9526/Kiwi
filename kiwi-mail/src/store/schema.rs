@@ -1,7 +1,7 @@
 //! SQLite schema — DDL + version. Migrations are explicit and
 //! append-only; `user_version` is the source of truth.
 
-pub(crate) const SCHEMA_VERSION: u32 = 16;
+pub(crate) const SCHEMA_VERSION: u32 = 19;
 
 pub(crate) const DDL: &str = r#"
 CREATE TABLE IF NOT EXISTS accounts (
@@ -13,11 +13,16 @@ CREATE TABLE IF NOT EXISTS accounts (
 CREATE TABLE IF NOT EXISTS folders (
     id           INTEGER PRIMARY KEY,
     account_id   TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+    parent_id    INTEGER REFERENCES folders(id) ON DELETE RESTRICT,
     name         TEXT NOT NULL,
+    -- T-319: remote = server/sync-owned, local = user-managed, system =
+    -- canonical mailbox. Smart views are not rows and are non-deletable by
+    -- construction.
+    origin       TEXT NOT NULL DEFAULT 'remote'
+                 CHECK (origin IN ('remote', 'local', 'system')),
     uid_validity INTEGER,
     uid_next     INTEGER,
-    highest_uid  INTEGER NOT NULL DEFAULT 0,
-    UNIQUE (account_id, name)
+    highest_uid  INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS messages (
     id              INTEGER PRIMARY KEY,
@@ -40,9 +45,18 @@ CREATE TABLE IF NOT EXISTS messages (
     unsub_http      TEXT,
     unsub_mailto    TEXT,
     unsub_oneclick  INTEGER NOT NULL DEFAULT 0,
+    -- T-341: normalized conversation key (threading::normalize_subject of
+    -- `subject`), or NULL when the subject carries no signal. Materialized
+    -- at ingest so a conversation mute can suppress *counts* in SQL rather
+    -- than only filtering the client-side list. See the module's honest
+    -- limitation: this is subject-folding, matching the list view, NOT
+    -- RFC 5322 References threading.
+    conversation_key TEXT,
     UNIQUE (folder_id, uid)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_folder ON messages(folder_id, uid);
+-- T-309: mbox import dedups on the RFC822 identity account-wide.
+CREATE INDEX IF NOT EXISTS idx_messages_mid ON messages(message_id);
 CREATE TABLE IF NOT EXISTS pop3_seen (
     account_id TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
     uidl       TEXT NOT NULL,
@@ -179,6 +193,28 @@ CREATE TABLE IF NOT EXISTS snoozed (
     FOREIGN KEY (folder_id, uid) REFERENCES messages(folder_id, uid) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_snoozed_due ON snoozed(until_unix);
+-- Conversation mute (T-341, Thunderbird "Ignore Thread"). A row means
+-- "every stored message whose conversation_key equals this, on this account,
+-- is suppressed": its unseen count is excluded from `folder_stats` (which
+-- also drops the derived smart-folder badges) and it never raises a new-mail
+-- notification.
+--
+-- Deliberately NOT a FK to messages: a mute is keyed by the *conversation*,
+-- not by rows. It must keep suppressing future arrivals that have not synced
+-- yet, and it must survive every message in the thread being deleted or moved
+-- — a mute with a dangling message set is still a real user decision, not
+-- garbage. `ON DELETE CASCADE` on the account is the one cleanup that IS
+-- wanted: removing the account removes the conversation with it.
+--
+-- `conversation_key` is `threading::normalize_subject(subject)`, the same
+-- grouping the list view displays (see the honest limitation there: this is
+-- subject-folding, not RFC 5322 References threading).
+CREATE TABLE IF NOT EXISTS muted_conversations (
+    account_id       TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+    conversation_key TEXT NOT NULL,
+    muted_at_unix    INTEGER NOT NULL,
+    PRIMARY KEY (account_id, conversation_key)
+);
 -- Link hints (T-261): sibling evidence because URL classification is local
 -- parsed-body work, independent of auth sealing. Only the bounded enum and a
 -- fixed reason-code JSON array are retained; URLs/display text are never kept.
@@ -202,5 +238,29 @@ CREATE TABLE IF NOT EXISTS templates (
     body_html    TEXT,
     created_unix INTEGER NOT NULL,
     updated_unix INTEGER NOT NULL
+);
+-- Deferred attachment parts (T-339): one row per attachment-classified
+-- MIME leaf, written at sync from the message's BODYSTRUCTURE (real
+-- metadata — the IMAP server computed it). `section` is the RFC 3501
+-- part specifier ("2", "1.3") used for the on-demand BODY.PEEK fetch;
+-- `size_bytes` is the encoded wire size; `fetched` flips when the
+-- decoded payload lands in attachments/<folder>/<uid>/<part_index>.
+-- A skeleton body (deferred parts) still parses — each part keeps its
+-- MIME headers with an empty body — and rows absent entirely means the
+-- stored body is complete (POP3/import/legacy full fetch) or unknown.
+-- The composite FK mirrors snoozed/rule_evals: expunge, move-source
+-- delete, and UIDVALIDITY reset all clean up for free.
+CREATE TABLE IF NOT EXISTS message_parts (
+    folder_id   INTEGER NOT NULL,
+    uid         INTEGER NOT NULL,
+    part_index  INTEGER NOT NULL,
+    section     TEXT NOT NULL,
+    name        TEXT,
+    mime        TEXT NOT NULL,
+    size_bytes  INTEGER,
+    encoding    TEXT NOT NULL DEFAULT '',
+    fetched     INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (folder_id, uid, part_index),
+    FOREIGN KEY (folder_id, uid) REFERENCES messages(folder_id, uid) ON DELETE CASCADE
 );
 "#;

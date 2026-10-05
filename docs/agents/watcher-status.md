@@ -121,3 +121,67 @@ as PID `12912`; the new gate-watch loop runs as PID `9088` with
   PID `9088` alive with command line
   `C:\Users\VAIBHAV\AppData\Local\Python\pythoncore-3.14-64\python.exe -u tools/watcher/gate_watch.py --interval 600`.
 
+
+## 2026-09-26 — T-249w resume (session restart)
+
+- **Claim:** Watcher agent T-249w standing duties claimed at session restart
+  per resume order (branch `release/v0.2.0`, HEAD `cff709f`).
+- Scope is strictly watcher-owned files: `watcher.py`,
+  `tools/watcher/gate_watch.py`, `docs/agents/watcher-status.md`. No foreign
+  files will be swept into any watcher commit.
+- Pending work: rotate stale Lead terminal `term_c20c6737-…` → new Lead
+  `term_db8527c7-eb71-4274-b416-61c91143a6cf` in both watcher loops,
+  evidence-first gates, restart both loops, verify alive, DONE to Lead.
+  - 2026-09-26 ~21:24 UTC+5:30 restart verified alive **(PID CORRECTION —
+    Lead dedup note, same evening):** the PIDs `19288`/`27292` recorded at
+    restart time were the pre-dedup shim-fork pair; Lead killed one side of
+    each pair during dedup and each collapsed. **Current live PIDs:
+    `watcher.py` real `12980` (WindowsApps shim `37324`); `gate_watch.py`
+    real `40476` (shim `32784`).** `state.json` writing normally
+    (`run_count` 17, all-pass `fmt/tsc/overlap/secrets=PASS`, last
+    `2026-09-26T15:57:37Z`). Handle rotation to `db8527c7` confirmed
+    correct — GATE-WATCH reports are reaching Lead. All-gates-green claim
+    verified independently by Lead.
+  - Original restart evidence (superseded PIDs struck):
+  - ~~`python -u watcher.py` — real PID `19288`~~ (superseded, see correction
+    above) — original launch verified one fresh all-clear cycle in
+    `watcher_stdout.log` (2048 bytes at restart, 2512 bytes at commit);
+    `watcher_stderr.log` empty (0 bytes). Both logs ignored (`*.log`) and
+    untracked.
+  - ~~`python -u tools/watcher/gate_watch.py --interval 600 --state-dir
+    %LOCALAPPDATA%\KiwiMail\gate-watch-t249w` — real PID `27292`, stub
+    `3788`~~ (superseded, see correction above); prior cycle 14 closed all-pass
+    (`fmt/tsc/overlap/secrets=PASS`, run_count 14); validation `--once
+    --no-ready` cycle 15 all-pass, no Lead report (existing state.json
+    preserved — `--once` writes only on code change; verified no diff).
+  - Lead handle rotated in both files (py_compile clean); no foreign files
+    touched — `git status` shows only `watcher.py`,
+    `tools/watcher/gate_watch.py`, `docs/agents/watcher-status.md`.
+  - Gates: `cargo fmt --check` PASS; `cargo clippy --workspace --all-targets
+    -- -D warnings` clean (`Finished dev profile`); `npx tsc --noEmit` run
+    from `kiwi-app/` PASS (repo-root invocation fails on CSS side-effect
+    imports — pre-existing invocation nuance, no source fault);
+    `copy_overlap` PASS (scanned=344/0, substantive=0); `secret_scan` PASS
+    (scanned=569/0).
+
+## 2026-09-25 — T-249w fast-gate watch armed
+
+- Runs every 600 seconds: `cargo fmt --check`, `kiwi-app` `npx tsc
+  --noEmit`, `copy_overlap.py`, and `secret_scan.py`.
+- Episode identity is `(gate, file)`: all failing lines in one file are
+  aggregated; a location is reported once and can report again only after a
+  clean cycle followed by a new failure.
+- Owner attribution reads only the `CURRENT-OWNERSHIP` block in
+  `docs/TASKS.md`; historical task-row `Agent N` values are never used.
+- Runtime state: `%LOCALAPPDATA%\KiwiMail\gate-watch-t249w\state.json`
+  (schema v2), with stdout/stderr beside it. No repository files are changed
+  by the watcher.
+- The existing terminal watcher remains independently active; this is a dual
+  monitor, not a replacement.
+- Live arming baseline: `tsc`, `copy_overlap`, and `secret_scan` pass;
+  `cargo fmt --check` has one foreign in-flight episode in
+  `kiwi-app/src-tauri/src/send_consent.rs` (lines 96, 167). It was reported
+  once as a new file-level episode and is now retained silently until clean;
+  the watcher did not modify the foreign file.
+
+

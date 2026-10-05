@@ -5,12 +5,19 @@
  * defect. Pure functions — deterministic, no I/O, no AI (rule 1).
  */
 import { isRecord, assertIntInRange, assertBoundedString } from './validate';
+import { base64DecodeStrict, base64Encode } from './bytes';
 import type { QrPayload } from './types';
 
 const MAX_QR_CHARS = 1024;
 
 /** Non-secret public-key prefix kept in the QR for endpoint verification. */
 const DESKTOP_KEY_ED25519_PREFIX = 'ed25519:';
+
+/** Contract §3.1: QR validity is at most five minutes (recommended = 300 s). */
+const MAX_QR_VALIDITY_SECS = 300;
+
+/** Ed25519 public keys are exactly 32 bytes (contract §1 invariant). */
+const DESKTOP_KEY_BYTES = 32;
 
 function isFiniteInt(v: unknown): v is number {
   return typeof v === 'number' && Number.isSafeInteger(v);
@@ -46,6 +53,24 @@ export function parseQrPayload(raw: string, nowUnix: number): QrPayload {
   if (!keyB64.startsWith(DESKTOP_KEY_ED25519_PREFIX)) {
     throw new Error('unsupported desktop key algorithm');
   }
+  // AUTH-4: the pin must be THE key — `ed25519:` + RFC 4648 standard
+  // Base64, padded, decoding to exactly 32 bytes, re-encoded byte-for-byte.
+  // Prefix+length alone accepts URL-safe/unpadded spellings of the same key,
+  // which breaks the QR-swap equality pin. Same rule as the desktop's
+  // `check_desktop_key` (kiwi-app pair.rs, ipc.md §9d.8).
+  const keyBody = keyB64.slice(DESKTOP_KEY_ED25519_PREFIX.length);
+  let keyBytes: Uint8Array;
+  try {
+    keyBytes = base64DecodeStrict(keyBody);
+  } catch {
+    throw new Error('desktop key is not canonical base64');
+  }
+  if (keyBytes.length !== DESKTOP_KEY_BYTES) {
+    throw new Error(`desktop key must decode to exactly ${DESKTOP_KEY_BYTES} bytes`);
+  }
+  if (base64Encode(keyBytes) !== keyBody) {
+    throw new Error('desktop key is not canonical base64');
+  }
 
   const issued = parsed.issued_unix;
   const expires = parsed.expires_unix;
@@ -55,6 +80,13 @@ export function parseQrPayload(raw: string, nowUnix: number): QrPayload {
   assertIntInRange(issued, 'issued_unix', 0, Number.MAX_SAFE_INTEGER);
   assertIntInRange(expires, 'expires_unix', 0, Number.MAX_SAFE_INTEGER);
   if (expires < issued) {throw new Error('expires_unix precedes issued_unix');}
+  if (expires === issued) {throw new Error('expires_unix must strictly follow issued_unix');}
+  // AUTH-10 / contract §3.1: a QR may never be valid for more than 5 minutes,
+  // whatever the producer claims — a long-lived ticket widens the
+  // interception window on a hostile LAN.
+  if (expires - issued > MAX_QR_VALIDITY_SECS) {
+    throw new Error(`QR validity exceeds the ${MAX_QR_VALIDITY_SECS}-second maximum`);
+  }
   if (nowUnix >= expires) {throw new Error('pairing ticket expired — regenerate the QR');}
 
   // Bounded, opaque ticket charset (base64url-ish + dashes).

@@ -31,7 +31,7 @@ describe('ChallengeQueue (sign-then-queue)', () => {
     expect(queue.enqueue(validChallenge(), resp, decision)).toEqual({ ok: true });
     expect(queue.size).toBe(1);
     const outcome = await queue.tick();
-    expect(outcome).toEqual({ delivered: [validChallenge().challenge_id], offline: [], skipped: 0 });
+    expect(outcome).toEqual({ delivered: [validChallenge().challenge_id], offline: [], dropped: [], skipped: 0 });
     expect(queue.size).toBe(0);
     expect(delivered).toEqual([validChallenge().challenge_id]);
   });

@@ -12,7 +12,7 @@ use tauri::State;
 
 use super::{bounded, gate};
 use crate::error::{CmdResult, IpcError};
-use crate::state::{AppState, MAX_PREFS, pref_key};
+use crate::state::{AppState, MAX_PREFS, now_unix, pref_key};
 use crate::types::PrefEntryView;
 
 const MAX_PREF_KEY: usize = 128;
@@ -90,6 +90,32 @@ pub async fn kiwi_prefs_set(
     index.prefs.insert(k, value.clone());
     index.save(&state.data_dir)?;
     drop(index);
+    // Posture-changing global prefs are audited (T-329 notifications,
+    // T-345 close-to-tray — an attacker with a write could silence dings
+    // or turn X into an invisible park). Cosmetic prefs stay unaudited.
+    match (key.as_str(), account_id.is_none()) {
+        ("kiwi.notify", true) => {
+            state.audit.lock().await.record(
+                "pref-notify-set",
+                &format!("kiwi.notify={}", value.as_str().unwrap_or("?")),
+                now_unix(),
+            )?;
+        }
+        ("kiwi.trayOnClose", true) => {
+            // Mirror AFTER the store write — the sync close handler reads
+            // the atomic, and it must never lead the persisted pref.
+            state.tray_on_close.store(
+                value.as_str() != Some("off"),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            state.audit.lock().await.record(
+                "pref-tray-set",
+                &format!("kiwi.trayOnClose={}", value.as_str().unwrap_or("?")),
+                now_unix(),
+            )?;
+        }
+        _ => {}
+    }
     Ok(PrefEntryView { key, value })
 }
 

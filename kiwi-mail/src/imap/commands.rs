@@ -376,6 +376,33 @@ impl ImapClient {
         Ok(boxes)
     }
 
+    /// RFC 3501 §6.3.8 hierarchy delimiter via `LIST "" ""` — the root
+    /// reply's name is the empty string, which `list()` drops, so the
+    /// delimiter needs its own probe. `Ok(None)` = flat namespace (NIL).
+    pub async fn hierarchy_delimiter(&mut self) -> Result<Option<String>> {
+        let out = Self::ok_or_reject(self.command("LIST \"\" \"\"").await?, "LIST")?;
+        for line in &out.untagged {
+            let text = String::from_utf8_lossy(line);
+            if text.len() >= 5 && text[..5].eq_ignore_ascii_case("LIST ") {
+                let rest = &text[5..];
+                // LIST (flags) "delim" name — the delimiter is the first
+                // quoted atom after the flags list.
+                if let Some(close) = rest.find(')') {
+                    let tail = rest[close + 1..].trim();
+                    let delim = tail
+                        .split(' ')
+                        .next()
+                        .map(|d| d.trim_matches('"').to_string())
+                        .filter(|d| d != "NIL" && !d.is_empty());
+                    if delim.is_some() {
+                        return Ok(delim);
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
     pub async fn create_mailbox(&mut self, name: &str) -> Result<()> {
         check_quoted(name)?;
         Self::ok_or_reject(

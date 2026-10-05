@@ -83,6 +83,20 @@ impl IpcError {
     pub fn link_denied() -> Self {
         Self::new("link-denied", "message link is not allowed by policy")
     }
+
+    pub fn consent_required() -> Self {
+        Self::new(
+            "consent-required",
+            "third-party send was not confirmed in the native confirmation dialog",
+        )
+    }
+
+    pub fn consent_throttled() -> Self {
+        Self::new(
+            "consent-throttled",
+            "too many third-party send confirmations requested; retry later",
+        )
+    }
 }
 
 impl From<kiwi_mail::error::MailError> for IpcError {
@@ -284,5 +298,69 @@ mod tests {
         let v = serde_json::to_value(&e).unwrap();
         assert_eq!(v["code"], "locked");
         assert!(v["message"].is_string());
+    }
+
+    #[test]
+    fn backoff_hint_is_structured_and_absent_otherwise() {
+        let hinted = IpcError::rate_limited("provider rate-limited", Some(1_500));
+        let v = serde_json::to_value(&hinted).unwrap();
+        assert_eq!(v["code"], "rate-limited");
+        assert_eq!(v["retryAfterMs"], 1_500);
+        assert_eq!(hinted.retry_after_ms, Some(1_500));
+
+        // Every other failure keeps the two-field shape: a caller must not
+        // have to distinguish "no hint" from "hint is zero".
+        for e in [IpcError::locked(), IpcError::not_found("gone")] {
+            let v = serde_json::to_value(&e).unwrap();
+            assert!(v.get("retryAfterMs").is_none());
+            assert_eq!(e.retry_after_ms, None);
+        }
+
+        // A hint can also be attached to a non-rate-limited code (the poll
+        // single-flight gate) without changing the code itself.
+        let busy = IpcError::new("poll-in-flight", "already running").with_retry_after(Some(5_000));
+        let v = serde_json::to_value(&busy).unwrap();
+        assert_eq!(v["code"], "poll-in-flight");
+        assert_eq!(v["retryAfterMs"], 5_000);
+        assert!(
+            serde_json::to_value(IpcError::new("poll-in-flight", "already running"))
+                .unwrap()
+                .get("retryAfterMs")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn provider_rate_limit_hint_survives_the_error_mapping() {
+        use kiwi_integrations::IntegrationError as E;
+        let hinted: IpcError = E::RateLimited {
+            retry_after_ms: Some(2_500),
+        }
+        .into();
+        assert_eq!(hinted.code, "rate-limited");
+        assert_eq!(hinted.retry_after_ms, Some(2_500));
+        assert_eq!(
+            serde_json::to_value(&hinted).unwrap()["retryAfterMs"],
+            2_500
+        );
+
+        let bare: IpcError = E::RateLimited {
+            retry_after_ms: None,
+        }
+        .into();
+        assert_eq!(bare.code, "rate-limited");
+        assert_eq!(bare.retry_after_ms, None);
+        assert!(
+            serde_json::to_value(&bare)
+                .unwrap()
+                .get("retryAfterMs")
+                .is_none()
+        );
+
+        // Non-rate-limited provider failures never grow a backoff hint.
+        for e in [E::NotFound, E::Expired, E::BodyTooLarge] {
+            let mapped: IpcError = e.into();
+            assert_eq!(mapped.retry_after_ms, None, "{}", mapped.code);
+        }
     }
 }

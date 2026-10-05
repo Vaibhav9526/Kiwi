@@ -32,7 +32,9 @@ pub mod error;
 pub mod imap;
 pub mod lines;
 pub mod linkrisk;
+pub mod mbox;
 pub mod mime;
+pub mod parts;
 pub mod pop3;
 pub mod rules;
 pub mod search;
@@ -42,5 +44,6 @@ pub mod sync;
 pub mod templates;
 #[cfg(any(test, feature = "e2e-fixtures"))]
 pub mod testutil;
+pub mod threading;
 pub mod transport;
 pub mod unsub;

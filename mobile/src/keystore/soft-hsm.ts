@@ -1,9 +1,13 @@
 /**
- * TEST-ONLY software keystore stub (T-136 contract §5, §8).
+ * TEST-ONLY software keystore stub (T-136 contract §5, §8; T-194 mock mode).
  *
  * NOT a signature scheme. SECURITY.md rule 7: stubs sit behind interfaces,
  * are explicitly marked, and fail closed. This class:
- *  - never runs in the app bundle (Metro only reaches it via tests);
+ *  - is constructed only by `src/mock` (the labelled mock environment) and
+ *    tests — `tests/isolation/mock-isolation.test.ts` proves no core,
+ *    transport or screen module reaches it directly;
+ *  - reaches the UI only through the app's MOCK mode, which is bannered
+ *    as demo-only (mock signatures authorize nothing);
  *  - derives deterministic NON-CRYPTOGRAPHIC bytes for fixtures, so tests
  *    are reproducible without any key material or CSPRNG;
  *  - refuses every operation unless constructed through `createTestOnly()`;

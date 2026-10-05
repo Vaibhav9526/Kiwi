@@ -594,3 +594,282 @@ the `rusqlite::Error → MailError` conversion; added `Ok(...?)`. The e2e
 send-test wedge (DATA terminator stall hanging the suite >60s) was
 diagnosed + reported — owner landed `TRANSCRIPT_STEP_TIMEOUT` + the fix;
 suite now exits clean.
+
+
+
+## 2026-09-25 — T-319 local folder management
+
+**Status:** COMPLETE. Folder management is real for **local store folders**;
+IMAP server-folder CRUD is explicitly not implemented and is documented as a
+deeper sync gap rather than faked.
+
+### Store / schema
+
+- Schema v17 adds `folders.parent_id` and checked
+  `folders.origin IN ('remote','local','system')`; the migration preserves ids
+  and rows, rebuilds the old account-wide unique constraint into a
+  case-insensitive per-parent identity, and classifies canonical mailbox names
+  as `system` while other pre-existing sync rows stay `remote`.
+- `FolderOrigin` / `FolderMeta` are public typed store values. Smart views
+  (Unread, Snoozed, Starred, categories) remain derived, not `folders` rows,
+  so they have no id and are non-deletable by construction.
+- New store methods: `create_local_folder`, `rename_local_folder`,
+  `delete_local_folder`, plus `ensure_target_folder` so T-309 mbox import can
+  still target an existing synced folder while new import destinations are
+  honestly classified local.
+- Validation: trimmed non-empty, ≤255 bytes, no `/`, `\\`, control chars,
+  `.`/`..`, reserved system names, or case-insensitive sibling duplicates.
+  Parent must be a local folder on the same account. Remote/system rows are
+  immutable. Delete fails closed for messages or child folders.
+
+### IPC / TypeScript
+
+- New lock-gated commands in `commands/folders.rs`:
+  `kiwi_folder_create(accountId,parentId?,name)`,
+  `kiwi_folder_rename(accountId,folderId,newName)`, and
+  `kiwi_folder_delete(accountId,folderId)`. Every command checks account
+  ownership/existence, records an audit intent before the effect, updates the
+  persisted folder index, and returns store-derived counts.
+- `FolderView` now carries `parentId` and `origin`; TS `FolderView` matches.
+  `ipc.ts` exposes `createFolder`, `renameFolder`, and `deleteFolder`.
+- `kiwi_list_folders` now reads the authoritative store folder list rather
+  than depending on the sidecar index, so a newly created local folder is
+  visible even if index population later diverges.
+
+### Honest non-goal
+
+No IMAP CREATE/RENAME/DELETE, LIST reconciliation, UIDVALIDITY/parent
+semantics, capability probing, or offline/conflict policy is claimed. The
+contract (`ipc.md` §6, T-319) files that deeper sync question explicitly.
+
+### Tests / gates
+
+- Store: v16→v17 preservation/classification + full local CRUD/ownership/
+  validation/fail-closed matrix.
+- App: real `AppState` + audit log + index create/rename/delete, cross-account
+  denial, system immutability.
+- `cargo test -p kiwi-mail --lib` — **227/227**.
+- `cargo test -p kiwi-app` — **184/184**.
+- `cargo clippy --workspace --all-targets -- -D warnings` — clean.
+- `cargo fmt --check` — clean.
+- `kiwi-app: npx tsc --noEmit` — clean.
+- `python tests/tools/copy_overlap.py` — OK, `hits=0`.
+- `python tests/tools/secret_scan.py` — OK, `hits=0`.
+
+No UI was added; the typed IPC is the handoff to the UI agent.
+
+
+## 2026-09-25 — T-324 `kiwi_audit_events` read IPC
+
+**Status:** COMPLETE. A25's T-323 Security Center view now has a real,
+lock-gated backend over the existing app-audit channel.
+
+### Actual store schema (no invented fields)
+
+The client audit store is the hash-chained `audit.jsonl`, not a SQL table. Its
+real record schema is `{seq, ts_unix, action, detail, prev, hash}`. The
+`AuditEventView` projection therefore maps only persisted facts:
+
+- `action` → `event`
+- `ts_unix` → `atUnix`
+- verbatim `detail` → `detailJson` (often plain text, not a JSON object)
+- `actor` / `subjectId` → explicit `null` because the store has no such
+  columns; nothing is synthesized as `system` or `user`
+
+### IPC / pagination
+
+- Registered `kiwi_audit_events(beforeUnix?, limit?)`; the audit reader runs
+  the standard lock gate first because the trail is device-owner sensitive.
+- `beforeUnix` is an exclusive `ts_unix` keyset cursor. Results are newest
+  first and the reader stops at the bounded result count.
+- `limit` defaults to 100 and clamps to 1–500. Negative cursors are
+  `invalid-input`; an absent log returns `[]`; malformed persisted rows fail
+  closed as `audit-corrupt` instead of silently under-reporting.
+- `ipc.md` §8 now documents the real JSONL schema and nullable fields.
+  `kiwi.ts` / `ipc.ts` expose the nullable `AuditEventView` and existing
+  `api.auditEvents(beforeUnix, limit)` wrapper, ready for A25.
+
+### Tests / gates
+
+- Store-level: absent → empty; real rows newest first; exclusive cursor;
+  verbatim detail; no fabricated actor/subject.
+- Command-level: 600 persisted rows clamp to 500; negative cursor rejected;
+  keyset page returns only strictly older rows; locked endpoint is denied.
+- `cargo test -p kiwi-app` — **203/203**.
+- `cargo clippy --workspace --all-targets -- -D warnings` — clean.
+- `cargo fmt --check` — clean.
+- `kiwi-app: npx tsc --noEmit` — clean.
+
+
+## 2026-09-26 — T-334 search operators + T-341 conversation mute
+
+**Status:** DONE for both. Both tasks were landed-but-unverified in the
+working tree when the runtime restarted (no status entries existed); this
+session verified the tree, found and fixed two real gaps, and ran the
+full gate matrix.
+
+### T-334 — fielded operators over the FTS path
+
+`kiwi-mail/src/search.rs` rewritten around `ParsedSearch { terms,
+predicates }`: free text still runs through FTS5 (`plain`, `"phrase"`,
+`-negated`, `body:`/`text:`/`snippet:` scope); `key:value` operators
+become real-column predicates AND-ed with the FTS terms:
+
+- `from:`/`to:`/`subject:` — case-insensitive LIKE substring with
+  `ESCAPE '\'` (literal `%`/`_`/`\`), bound parameters only.
+- `has:attachment` — `has_attachments` column.
+- `is:unread`/`is:read`/`is:starred`/`is:flagged` — padded-token flag
+  match (same rule as `folder_stats`).
+- `before:`/`after:YYYY-MM-DD` — strict calendar parse (`time` crate);
+  `before:` is exclusive UTC midnight, `after:` inclusive.
+- `in:`/`folder:` — folder-name EXISTS match, `COLLATE NOCASE`, ANDs
+  with a `folderId` scope.
+- `-` negates an operator (`-is:unread`). Honest fallback preserved:
+  unknown operators AND known-operators-with-malformed-values
+  (`before:tuesday`, `has:cheese`, `is:sent`, empty `from:`) fall
+  through to the FTS path as literal text — nothing typed is silently
+  dropped. Filters-only queries skip the FTS join entirely.
+- Bound unchanged: `MAX_QUERY_TERMS`=8 shared across terms+predicates;
+  `MAX_RESULTS`=200.
+
+**Found + fixed this session:** negated predicates on NULL columns were
+SQL-tri-state wrong — `NOT (m.from_addr LIKE ?)` on a NULL sender
+evaluates NULL and *drops* the row, so `-from:boss` hid mail whose sender
+failed to parse. `nullable_column()` now emits `col IS NULL OR NOT (…)`
+for `from`/`to`/`subject`/`before`/`after`; new test
+`negated_predicate_keeps_null_column_rows` pins it. Also corrected the
+ipc.md limit line (command clamps 1–500 but the engine's effective page
+cap is 200 — documented the truth).
+
+UI (`views/search.tsx`): the full grammar now reaches the server (the
+old client-side has:/folder: post-filters are deleted); the local
+fallback mirrors each operator over envelope fields (to: stays
+server-only, noted in-view); chips/placeholder/`?`-overlay updated.
+`commands/mail.rs` doc comment reflects the real grammar.
+
+### T-341 — conversation mute (Ignore Thread)
+
+Store-owned conversation identity: `kiwi-mail/src/threading.rs` ports the
+list view's subject fold verbatim (`Re:`/`Fwd:`/`Fw:`/`Aw:`/`Sv:` ≤8
+passes, one `[list-tag]` ≤40 chars, case-fold + whitespace-collapse, None
+when no signal) so the muted set is exactly the set the UI groups — the
+honest subject-fold limitation is documented in the module, ipc.md
+§6b-ii, and threading.rs.
+
+- Schema v18: `messages.conversation_key` (materialized at ingest in
+  `upsert_message`, INSERT-only — conflict path can't re-point a row) +
+  `idx_messages_conversation` + bounded `backfill_conversation_keys` +
+  `muted_conversations(account_id, conversation_key, muted_at_unix)` —
+  deliberately NOT FK'd to messages (mutes outlive their rows and
+  suppress future arrivals); account cascade only.
+- Suppression: `folder_stats` `unseen` excludes muted conversations
+  (exists stays the honest total; smart badges derive for free);
+  `total_unseen` (tray) same predicate; `muted_uids_in` is the notify
+  seam (chunked 400-uid IN list, join through folders for the account).
+- `notify.rs`: `maybe_notify` resolves muted arrivals from the store and
+  `decide()` gained `muted_thread` — an all-muted batch is an explicit
+  suppressor, not a side effect of an emptied vec.
+- IPC: `kiwi_thread_set_muted` / `kiwi_thread_list_muted` —
+  lock-gated, composite `conversationId = "accountId\n<folded subject>"`
+  re-normalized server-side (renderer can't smuggle a non-canonical
+  key), unknown account → not-found, idempotent with honest `changed`,
+  audited as `thread-muted`/`thread-unmuted` (key, never subject).
+  `ThreadMuteView` + TS wrappers (`threadSetMuted`/`threadListMuted`).
+  UI seam deferred per contract (context-menu item → next UI pass).
+
+**Found + fixed this session:** `move_messages`/`copy_messages`
+re-INSERTed rows without `conversation_key` — moved muted mail silently
+lost suppression. Both now carry the stored key verbatim (insert #17);
+new test `a_mute_survives_its_messages_being_moved` covers move + copy.
+
+### Gates at snapshot
+
+- `cargo test -p kiwi-mail` — **257/257** (+2 this session).
+- `cargo test -p kiwi-app` — **234/234** (thread cmd + notify tests).
+- `cargo clippy --workspace --all-targets -- -D warnings` — clean.
+- `cargo fmt --all -- --check` — my files clean; ONE foreign diff
+  remains in `commands/pair.rs:464` (A11's active T-282 file — their
+  `decision`-field compile break self-resolved while I watched; the
+  format! wrap is theirs to land).
+- `kiwi-app: npx tsc --noEmit` — clean.
+
+### Cross-agent / merge notes (Lead)
+
+- Everything below is **uncommitted** in the shared tree — fleet
+  convention is Lead-sweep; file map for attribution:
+  - **T-334 mine:** `kiwi-mail/src/search.rs`, `kiwi-app/src/views/
+    search.tsx`, `kiwi-app/src/components/shortcuts.tsx` (operator row),
+    `commands/mail.rs` (search doc hunk only), ipc.md search section.
+  - **T-341 mine:** `kiwi-mail/src/threading.rs`, `store/threads.rs`;
+    `store/schema.rs` v18 hunks; `store/mod.rs` (conversation_key
+    column/backfill fns); `store/queries.rs` (key materialization,
+    folder_stats suppression, move/copy carry); `commands/thread.rs`,
+    `types/thread.rs`; `notify.rs` (mute seam + decide arg); `lib.rs`
+    (2 registrations), `commands/mod.rs`/`types/mod.rs` (mod decls);
+    `ipc.ts`/`kiwi.ts` (thread wrappers + ThreadMuteView); ipc.md §6b-ii.
+  - **Also mine, ledger-done, still uncommitted:** T-330 diagnostics.rs
+    + commands/storage.rs + types/storage.rs; T-319 store half (schema
+    v17, FolderOrigin, folder CRUD, FolderView parentId/origin).
+  - **Foreign hunks inside shared files (not mine):** queries.rs
+    `rename/delete_remote_folder` + `total_unseen` (T-328/T-345);
+    schema.rs `message_parts` v19 (A19 T-339); sync.rs `is_attachment_
+    leaf`/`disp_params` (T-339); lib.rs tray/send_consent/lock_matrix
+    registrations; state.rs notifier/tray/consent fields; ipc.ts/kiwi.ts
+    tray wrappers; types/system.rs `decision`/`audit_ok`/`tray_available`.
+- `lm*.txt` scratch files in root are foreign debris — untouched.
+
+### Assumptions / risks
+
+- `conversation_key` derives from envelope `subject` at ingest — a
+  subject edited post-store (impossible today) would diverge; the
+  conflict-clause freeze is deliberate.
+- `in:`/`folder:` matches folder *names* across accounts (a folder named
+  "Work" on two accounts is one filter, matching Thunderbird semantics).
+- `is:` vocabulary is deliberately narrow (unread/read/starred/flagged) —
+  `is:sent`/`is:muted` degrade to literal text, documented in ipc.md.
+- Negated-only operator queries (`-from:x` alone) are legal — predicates
+  anchor — and return every non-matching row, bounded as usual.
+
+### Committed (Lead-directed surgical staging, 2026-09-26)
+
+Lead verified the claims and directed self-commit with hunk-level staging.
+Done via per-hunk `git apply --cached` patches (helper: `.git/a15/stage.py`,
+repo-internal scratch, not tracked):
+
+- **`c24b774`** — `A15 → T-319+T-330 unswept halves`: schema.rs v17 folders
+  DDL, mod.rs v17 migration + folder mgmt fns + T-319 tests, diagnostics.rs,
+  commands/storage.rs, types/storage.rs, storage mod decls + registrations,
+  types/mail.rs FolderView parentId/origin, ipc.md storage sections.
+  (Side effect: fixes committed-but-unwired refs — HEAD's mod.rs already
+  used `MailError`/`FolderOrigin`/`create_local_folder` without the schema.)
+- **`d5e8d9a`** — `A15 → T-334+T-341 search operators + thread mute`:
+  search.rs (full T-334 rewrite + NULL-safe negation fix), threading.rs,
+  store/threads.rs, schema.rs v18 (conversation_key + muted_conversations),
+  mod.rs v18 migration + backfill + mute-aware test edits, queries.rs
+  (upsert key materialization, folder_stats + total_unseen suppression,
+  move/copy carry — T-328 `*_remote_folder` fns excluded, A19's),
+  commands/thread.rs + types/thread.rs, notify.rs mute seam,
+  commands/mod.rs + types/mod.rs thread decls, lib.rs thread regs,
+  mail.rs search doc hunk, ipc.ts thread wrappers, kiwi.ts ThreadMuteView,
+  views/search.tsx, components/shortcuts.tsx, ipc.md search § + §6b-ii +
+  tooltip wording. `pub mod threading` in kiwi-mail/lib.rs folded in via
+  --amend (initially missed — would have broken the committed crate).
+
+Left uncommitted (foreign, by design): queries.rs T-328 fns; mod.rs
+copy_messages_* tests + stray blank line; commands/mod.rs lock_matrix +
+audit_ok; types/mod.rs T-260 tests; types/mail.rs T-316 hunks; lib.rs
+notify/send_consent/tray/export-import/folder/copy/audit/forensics wiring;
+mail.rs T-329 hunks; ipc.ts `decision` (T-282); ipc.md foreign sections;
+state.rs/syncer.rs/prefs.rs/system.rs/pair.rs/etc.
+
+**Post-commit verification on committed state:** `cargo test -p kiwi-mail
+--lib search` 15/15, `threading` 6/6, `threads::` 10/10 (incl.
+a_mute_survives_its_messages_being_moved); `cargo test -p kiwi-app --lib
+commands::thread` 5/5, `notify` 6/6. Lead-flagged foreign failures
+(parts.rs base64, rules/blocklist idempotent, testutil EOF) untouched
+and unstaged as instructed.
+
+A concurrent foreign staging race was observed mid-commit (A25 UI pass#5
+files entered the index while I was staging); foreign entries were
+unstaged before committing — `git show` audit confirms zero foreign
+content in either commit.

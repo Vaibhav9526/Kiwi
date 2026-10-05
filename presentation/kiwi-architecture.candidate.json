@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "KIWI — Email That Proves Its Security",
+    "output": "presentation/kiwi-architecture.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/Vaibhav9526/Kiwi.git",
+      "revision": "63b14387200675ac1114eeb39421f14baa451591",
+      "provider": "github",
+      "link_mode": "web"
+    }
+  },
+  "components": [
+    { "id": "user", "type": "external", "label": "User", "sublabel": "desktop mail user", "pos": [40, 40], "size": [110, 56] },
+    { "id": "mailservers", "type": "external", "label": "Mail servers", "sublabel": "remote SMTP/IMAP/POP3 · mailpit+greenmail (dev)", "pos": [10, 470], "size": [190, 60],
+      "sources": [{ "path": "docker-compose.yml", "line": 31, "end_line": 64, "label": "mailpit + greenmail" }] },
+    { "id": "mobile", "type": "external", "label": "RN Authenticator", "sublabel": "QR pairing · approve/deny", "pos": [565, 40], "size": [170, 56],
+      "sources": [{ "path": "mobile/src/protocol/qr.ts", "line": 1, "end_line": 4, "label": "QR payload parsing" }] },
+    { "id": "wsl2guest", "type": "external", "label": "WSL2 guest", "sublabel": "disposable · torn down per open", "pos": [1110, 40], "size": [140, 56],
+      "sources": [{ "path": "kiwi-sandbox/src/wsl2.rs", "line": 77, "label": "Wsl2Provider" }] },
+
+    { "id": "renderer", "type": "frontend", "label": "React renderer", "sublabel": "React 18 + TS + Vite · untrusted webview", "pos": [40, 170], "size": [190, 64],
+      "sources": [{ "path": "kiwi-app/src/ipc.ts", "line": 1, "end_line": 11, "label": "typed IPC layer" }] },
+    { "id": "tauri", "type": "backend", "label": "Rust host (src-tauri)", "sublabel": "commands/* IPC · lock gate · audit · syncer", "pos": [530, 170], "size": [240, 80],
+      "sources": [
+        { "path": "kiwi-app/src-tauri/src/lib.rs", "line": 97, "label": "invoke_handler" },
+        { "path": "kiwi-app/src-tauri/src/bridge.rs", "line": 1, "end_line": 8, "label": "admin bridge (loopback)" },
+        { "path": "kiwi-app/src-tauri/src/pairing_listen.rs", "line": 1, "label": "pairing listener" }
+      ] },
+    { "id": "audit", "type": "database", "label": "audit.jsonl", "sublabel": "hash-chained · genesis-verified", "pos": [810, 170], "size": [150, 64],
+      "sources": [{ "path": "kiwi-app/src-tauri/src/audit.rs", "line": 1, "end_line": 5, "label": "hash-chained audit" }] },
+
+    { "id": "core", "type": "security", "label": "kiwi-core", "sublabel": "session · trust engine", "pos": [36, 340], "size": [110, 64],
+      "sources": [{ "path": "kiwi-core/src/lib.rs", "line": 1, "end_line": 13, "label": "trust engine" }] },
+    { "id": "mail", "type": "backend", "label": "kiwi-mail", "sublabel": "SMTP·IMAP·POP3·MIME·rules", "pos": [170, 340], "size": [160, 64],
+      "sources": [
+        { "path": "kiwi-mail/src/transport.rs", "line": 43, "label": "TlsObservation" },
+        { "path": "kiwi-mail/src/sync.rs", "line": 58, "label": "sync_folder" }
+      ] },
+    { "id": "pair", "type": "security", "label": "kiwi-pair", "sublabel": "PairEngine · TOFU · revocation", "pos": [360, 340], "size": [130, 64],
+      "sources": [{ "path": "kiwi-pair/src/engine.rs", "line": 43, "label": "PairEngine" }] },
+    { "id": "forensics", "type": "security", "label": "kiwi-forensics", "sublabel": "PCAP · analyzers · score · reports", "pos": [540, 340], "size": [150, 64],
+      "sources": [{ "path": "kiwi-forensics/src/report/mod.rs", "line": 255, "end_line": 292, "label": "ExportEnvelope" }] },
+    { "id": "mailauth", "type": "security", "label": "kiwi-mailauth", "sublabel": "SPF·DKIM·DMARC · fail-closed DNS", "pos": [750, 340], "size": [150, 64],
+      "sources": [{ "path": "kiwi-mailauth/src/lib.rs", "line": 1, "label": "SPF/DKIM/DMARC" }] },
+    { "id": "integrations", "type": "backend", "label": "kiwi-integrations", "sublabel": "temp-mail · deliverability · consent-bound", "pos": [920, 340], "size": [170, 64],
+      "sources": [{ "path": "kiwi-integrations/src/http.rs", "line": 140, "label": "bounded HTTP client" }] },
+    { "id": "sandbox", "type": "security", "label": "kiwi-sandbox", "sublabel": "link sandbox · guest exec", "pos": [1110, 340], "size": [140, 64],
+      "sources": [{ "path": "kiwi-sandbox/src/wsl2.rs", "line": 235, "label": "SandboxProvider impl" }] },
+
+    { "id": "sqlite", "type": "database", "label": "SQLite mail.db", "sublabel": "local-first · FTS5 · bodies on disk", "pos": [210, 480], "size": [160, 60],
+      "sources": [{ "path": "kiwi-mail/src/store/mod.rs", "line": 359, "label": "opens mail.db" }] },
+    { "id": "admin", "type": "backend", "label": "kiwi-admin", "sublabel": "Node + Drizzle org API :3001", "pos": [650, 480], "size": [140, 60],
+      "sources": [{ "path": "kiwi-admin/src/server.ts", "line": 195, "label": "HTTP server" }] },
+    { "id": "pg", "type": "database", "label": "PostgreSQL 17", "sublabel": "orgs · policies · mail-flow meta", "pos": [830, 480], "size": [140, 60],
+      "sources": [{ "path": "docker-compose.yml", "line": 10, "end_line": 21, "label": "postgres:17" }] },
+    { "id": "adminui", "type": "frontend", "label": "kiwi-admin-ui", "sublabel": "React · localhost console", "pos": [650, 600], "size": [140, 56],
+      "sources": [{ "path": "kiwi-admin-ui/src/App.tsx", "line": 1, "label": "admin UI" }] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "kiwi-app — Tauri 2 desktop (webview untrusted)", "wraps": ["renderer", "tauri", "audit"] },
+    { "kind": "region", "label": "Rust workspace — cargo crates", "wraps": ["core", "mail", "pair", "forensics", "mailauth", "integrations", "sandbox"] },
+    { "kind": "region", "label": "Org plane — docker-compose · localhost only", "wraps": ["admin", "pg", "adminui"] }
+  ],
+  "connections": [
+    { "id": "user-renderer", "from": "user", "to": "renderer", "label": "uses", "variant": "emphasis" },
+    { "id": "renderer-tauri", "from": "renderer", "to": "tauri", "label": "typed kiwi_* IPC · lock-gated", "variant": "emphasis" },
+    { "id": "tauri-audit", "from": "tauri", "to": "audit", "label": "hash-chained append", "variant": "security", "labelDy": -40 },
+    { "id": "mail-servers", "from": "mail", "to": "mailservers", "label": "SMTP·IMAP·POP3 + TLS obs", "variant": "emphasis", "fromSide": "bottom", "toSide": "top" },
+    { "id": "mobile-tauri", "from": "mobile", "to": "tauri", "label": "QR pairing · LAN claim", "variant": "security", "fromSide": "bottom", "toSide": "top" },
+    { "id": "sandbox-wsl2", "from": "sandbox", "to": "wsl2guest", "label": "risky links open here", "variant": "security", "fromSide": "top", "toSide": "bottom" },
+    { "id": "tauri-admin", "from": "tauri", "to": "admin", "label": "evaluate-outbound · mailflow emit", "fromSide": "bottom", "toSide": "top" },
+    { "id": "adminui-admin", "from": "adminui", "to": "admin", "label": "localhost HTTP", "fromSide": "top", "toSide": "bottom" },
+    { "id": "admin-pg", "from": "admin", "to": "pg", "label": "SQL", "fromSide": "right", "toSide": "left" },
+    { "id": "tauri-core", "from": "tauri", "to": "core" },
+    { "id": "tauri-mail", "from": "tauri", "to": "mail" },
+    { "id": "tauri-pair", "from": "tauri", "to": "pair" },
+    { "id": "tauri-forensics", "from": "tauri", "to": "forensics" },
+    { "id": "tauri-mailauth", "from": "tauri", "to": "mailauth" },
+    { "id": "tauri-integrations", "from": "tauri", "to": "integrations" },
+    { "id": "tauri-sandbox", "from": "tauri", "to": "sandbox" },
+    { "id": "mail-sqlite", "from": "mail", "to": "sqlite", "label": "rusqlite · FTS5", "fromSide": "bottom", "toSide": "top" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Mail pipeline", "items": [
+      "Inbound: IMAP IDLE/poll or POP3 UIDL → TLS capture → MIME → SQLite+FTS5 → risk/auth stamps → rules",
+      "Outbound: compose → enqueue (undo window) → outbox → SMTP wire → IMAP \\Sent append → audit"
+    ] },
+    { "dot": "rose", "title": "Security spine", "items": [
+      "TlsObservation per connection: TLS version, cipher, forward secrecy, STARTTLS",
+      "Deterministic findings only — AI explains, never asserts",
+      "Trust engine + PairEngine drive a native lock enforced at IPC",
+      "Link gate verdicts: allow | confirm | sandbox | deny — risky opens in WSL2 guest"
+    ] },
+    { "dot": "emerald", "title": "Boundaries", "items": [
+      "Every kiwi_* command validates input and runs the lock gate",
+      "External sends require a native consent dialog — renderer cannot reach out alone",
+      "audit.jsonl corruption surfaces as audit-corrupt, never hidden",
+      "Secrets live in the OS credential store — never persisted or logged",
+      "unsafe_code forbidden across the whole workspace",
+      "kiwi-integrations reaches external APIs only via a consented, bounded client"
+    ] },
+    { "dot": "violet", "title": "Also in the workspace", "items": [
+      "kiwi-autoconfig — ISPDB/MX account discovery + OAuth2 (kiwi-autoconfig/src/lib.rs)",
+      "kiwi-contacts — vCard address book (kiwi-contacts/src/lib.rs)"
+    ] }
+  ]
+}

@@ -3,15 +3,17 @@
  * embedded as the Preferences ▸ Integrations tab.
  *
  * Temp mail: the mandated `PUBLIC_INBOX_NOTICE` renders verbatim BEFORE
- * the user can create an inbox, and again from every backend response
- * (`publicInboxNotice` is structural — never paraphrased). Fetch returns
- * pre-sanitized html (remote resources are always stripped backend-side);
- * the fragment mounts via dangerouslySetInnerHTML exactly like the
- * reading-pane render path. Nothing persists — sessions die with the app.
+ * the user can create an inbox, re-rendered from every backend response
+ * via the shared `useTempMail` state (`publicInboxNotice` is structural —
+ * never paraphrased). T-342 moved the inbox itself to `#/disposable`
+ * (sidebar row + list/reader view); this card is the session-management
+ * surface. Nothing persists — sessions die with the app.
  *
- * Deliverability: begin mints testId + a single-use consentToken; the
- * token stays in component memory (never rendered); the send requires
- * the consent checkbox — `consentNotice` is shown verbatim beside it.
+ * Deliverability: begin mints testId + a single-use anti-replay token; the
+ * token stays in component memory (never rendered) and is returned to the
+ * backend, which additionally requires an operating-system confirmation
+ * before any message to an integration-managed address is enqueued. The
+ * checkbox only acknowledges `consentNotice`; it is never the approval.
  * Status polls are single-shot IPC calls; one recursive timeout drives
  * the loop while a test is in flight, and the report loads once `ready`.
  *
@@ -27,11 +29,9 @@ import type {
   DeliverabilityReportView,
   DeliverabilitySendView,
   DeliverabilityStatusView,
-  TempMailboxView,
-  TempMessageSummaryView,
-  TempMessageView,
 } from "../kiwi";
-import { PUBLIC_INBOX_NOTICE } from "../kiwi";
+import type { TempMail } from "../state/tempmail";
+import { navigate } from "../router";
 import { Icon } from "../components/icons/index";
 
 function errText(e: unknown): string {
@@ -80,234 +80,96 @@ function CopyButton({ text, label }: { text: string; label: string }) {
 
 /* ================= Temp mail ================= */
 
-export function TempMailPanel({ live }: { live: boolean }) {
-  const [mailbox, setMailbox] = useState<TempMailboxView | null>(null);
-  const [notice, setNotice] = useState(PUBLIC_INBOX_NOTICE);
+/**
+ * T-342: the inbox moved to the sidebar + `#/disposable` view; this card is
+ * the MANAGEMENT surface — session lifecycle (create/poll/extend/discard),
+ * the mandated notice, and the real unread count. Session state comes from
+ * the shared `useTempMail` hook owned by App (one poller app-wide).
+ */
+export function TempMailPanel({ temp, live }: { temp: TempMail; live: boolean }) {
   const [localPart, setLocalPart] = useState("");
-  const [messages, setMessages] = useState<TempMessageSummaryView[]>([]);
-  const [openId, setOpenId] = useState<string | null>(null);
-  const [openBody, setOpenBody] = useState<TempMessageView | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [flash, setFlash] = useState<string | null>(null);
-  const mounted = useRef(true);
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-    };
-  }, []);
-
-  // Reconnect to a live session if the view remounts (sessions are
-  // backend-held; a poll tells us whether one exists).
-  useEffect(() => {
-    if (!live || mailbox) return;
-    api
-      .integrationsTempmailPoll()
-      .then((p) => {
-        if (!mounted.current) return;
-        if (p.address) setMailbox({ address: p.address, publicInboxNotice: p.publicInboxNotice });
-        setNotice(p.publicInboxNotice);
-        setMessages(p.messages);
-      })
-      .catch((e) => {
-        if (mounted.current) setError(errText(e));
-      });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [live]);
-
-  const run = async (what: string, fn: () => Promise<void>) => {
-    setBusy(what);
-    setError(null);
-    setFlash(null);
-    try {
-      await fn();
-    } catch (e) {
-      if (mounted.current) setError(errText(e));
-    } finally {
-      if (mounted.current) setBusy(null);
-    }
-  };
-
-  const create = () =>
-    run("create", async () => {
-      const v = await api.integrationsTempmailCreate(localPart.trim() || undefined);
-      setMailbox(v);
-      setNotice(v.publicInboxNotice);
-      const p = await api.integrationsTempmailPoll();
-      setMessages(p.messages);
-    });
-
-  const refresh = () =>
-    run("poll", async () => {
-      const p = await api.integrationsTempmailPoll();
-      setNotice(p.publicInboxNotice);
-      setMessages(p.messages);
-      if (p.address && !mailbox) setMailbox({ address: p.address, publicInboxNotice: p.publicInboxNotice });
-    });
-
-  const fetchMsg = (mailId: string) =>
-    run("fetch", async () => {
-      if (openId === mailId) {
-        setOpenId(null);
-        setOpenBody(null);
-        return;
-      }
-      const m = await api.integrationsTempmailFetch(mailId);
-      setOpenId(mailId);
-      setOpenBody(m);
-      setNotice(m.publicInboxNotice);
-    });
-
-  const extend = () =>
-    run("extend", async () => {
-      const v = await api.integrationsTempmailExtend();
-      setNotice(v.publicInboxNotice);
-      setFlash(v.extended ? "Session extended." : v.expired ? "Session already expired server-side." : "Not extended.");
-    });
-
-  const discard = () =>
-    run("discard", async () => {
-      const v = await api.integrationsTempmailDiscard();
-      setNotice(v.publicInboxNotice);
-      setMailbox(null);
-      setMessages([]);
-      setOpenId(null);
-      setOpenBody(null);
-      setFlash(
-        v.discarded
-          ? v.remoteForgotten
-            ? "Address discarded; the remote session was forgotten too."
-            : "Address discarded locally; the remote inbox may still exist briefly."
-          : "Nothing to discard.",
-      );
-    });
 
   return (
     <div className="kiwi-card" style={{ padding: "0.9rem", marginBottom: "1rem" }}>
       <h2 style={{ marginTop: 0 }}>Disposable inbox (temp mail)</h2>
+      <p>
+        <small>
+          A throwaway address on a public provider for sign-ups you don't trust. The inbox lives in the
+          sidebar (Disposable Inbox) — this card manages the session.
+        </small>
+      </p>
       {/* The notice precedes every control — it must be seen before enable. */}
       <div className="kiwi-banner warn" role="note" aria-label="Public inbox notice">
-        <small>{notice}</small>
+        <small>{temp.notice}</small>
       </div>
       {!live && (
         <p>
           <small>Demo mode — disposable inboxes require the live backend.</small>
         </p>
       )}
-      {error && (
+      {temp.error && (
         <div className="kiwi-banner error" role="alert">
-          <small>{error}</small>
+          <small>{temp.error}</small>
         </div>
       )}
-      {flash && (
+      {temp.flash && (
         <p role="status">
-          <small>{flash}</small>
+          <small>{temp.flash}</small>
         </p>
       )}
 
-      {!mailbox && (
-        <>
-          <p>
-            <small>
-              Create a throwaway address on a public provider for sign-ups you don't trust. Optional local part:
-            </small>{" "}
-            <input
-              type="text"
-              value={localPart}
-              onChange={(e) => setLocalPart(e.target.value)}
-              placeholder="(random)"
-              aria-label="Requested local part"
-              style={{ width: "12rem" }}
-              disabled={!live || busy !== null}
-            />{" "}
-            <button
-              type="button"
-              className="ms-btn ms-btn-primary"
-              disabled={!live || busy !== null}
-              onClick={() => void create()}
-            >
-              {busy === "create" ? "Creating…" : "Create disposable address"}
-            </button>
-          </p>
-        </>
+      {!temp.mailbox && (
+        <p>
+          <small>Optional local part:</small>{" "}
+          <input
+            type="text"
+            value={localPart}
+            onChange={(e) => setLocalPart(e.target.value)}
+            placeholder="(random)"
+            aria-label="Requested local part"
+            style={{ width: "12rem" }}
+            disabled={!live || temp.busy !== null}
+          />{" "}
+          <button
+            type="button"
+            className="ms-btn ms-btn-primary"
+            disabled={!live || temp.busy !== null}
+            onClick={() => void temp.create(localPart.trim() || undefined)}
+          >
+            {temp.busy === "create" ? "Creating…" : "Create disposable address"}
+          </button>
+        </p>
       )}
 
-      {mailbox && (
+      {temp.mailbox && (
         <>
           <p>
-            <strong>Address:</strong> <code>{mailbox.address}</code>{" "}
-            <CopyButton text={mailbox.address} label="address" />{" "}
-            {mailbox.addressCreatedUnix && <small>created {fmtUnix(mailbox.addressCreatedUnix)}</small>}
+            <strong>Address:</strong> <code>{temp.mailbox.address}</code>{" "}
+            <CopyButton text={temp.mailbox.address} label="address" />{" "}
+            {temp.mailbox.addressCreatedUnix && <small>created {fmtUnix(temp.mailbox.addressCreatedUnix)}</small>}
+            {temp.unread > 0 && (
+              <>
+                {" "}
+                <small>
+                  · {temp.unread} unread in the sidebar inbox
+                </small>
+              </>
+            )}
           </p>
           <p>
-            <button
-              type="button"
-              className="ms-btn"
-              disabled={busy !== null}
-              onClick={() => void refresh()}
-            >
-              {busy === "poll" ? "Checking…" : "Check for mail"}
+            <button type="button" className="ms-btn ms-btn-primary" onClick={() => navigate({ name: "disposable" })}>
+              Open Disposable Inbox
             </button>{" "}
-            <button type="button" className="ms-btn" disabled={busy !== null} onClick={() => void extend()}>
-              {busy === "extend" ? "Extending…" : "Extend session"}
+            <button type="button" className="ms-btn" disabled={temp.busy !== null} onClick={() => void temp.refresh()}>
+              {temp.busy === "poll" ? "Checking…" : "Check for mail"}
             </button>{" "}
-            <button type="button" className="ms-btn" disabled={busy !== null} onClick={() => void discard()}>
-              {busy === "discard" ? "Discarding…" : "Discard address"}
+            <button type="button" className="ms-btn" disabled={temp.busy !== null} onClick={() => void temp.extend()}>
+              {temp.busy === "extend" ? "Extending…" : "Extend session"}
+            </button>{" "}
+            <button type="button" className="ms-btn" disabled={temp.busy !== null} onClick={() => void temp.discard()}>
+              {temp.busy === "discard" ? "Discarding…" : "Discard address"}
             </button>
           </p>
-
-          {messages.length === 0 ? (
-            <p>
-              <small>No mail yet — the inbox is live; anything sent to the address lands here.</small>
-            </p>
-          ) : (
-            <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
-              {messages.map((m) => (
-                <li key={m.mailId} style={{ borderTop: "1px solid var(--kiwi-border-soft)", padding: "0.4rem 0" }}>
-                  <button
-                    type="button"
-                    className="ms-btn"
-                    onClick={() => void fetchMsg(m.mailId)}
-                    aria-expanded={openId === m.mailId}
-                  >
-                    <Icon name={openId === m.mailId ? "chevron-down" : "chevron-right"} size={12} />
-                  </button>{" "}
-                  <strong>
-                    {m.from || "(unknown)"}
-                  </strong>{" "}
-                  — {m.subject || "(no subject)"}{" "}
-                  <small>{m.date || fmtUnix(m.timestampUnix)}</small>
-                  {openId === m.mailId && openBody && (
-                    <div className="ms-unsub-panel" style={{ marginTop: "0.4rem" }}>
-                      {openBody.html ? (
-                        <div
-                          /* Backend-sanitized fragment — remote resources
-                             always stripped for a public inbox (T-227). */
-                          style={{ pointerEvents: "none" }}
-                          onClickCapture={(event) => event.preventDefault()}
-                          onKeyDownCapture={(event) => {
-                            if (event.key === "Enter" || event.key === " ") event.preventDefault();
-                          }}
-                          onSubmitCapture={(event) => event.preventDefault()}
-                          dangerouslySetInnerHTML={{ __html: openBody.html }}
-                        />
-                      ) : (
-                        <pre className="kiwi-evidence" style={{ whiteSpace: "pre-wrap" }}>
-                          {openBody.text ?? "(empty body)"}
-                        </pre>
-                      )}
-                      {openBody.remoteImagesStripped > 0 && (
-                        <p>
-                          <small>{openBody.remoteImagesStripped} remote resource(s) stripped.</small>
-                        </p>
-                      )}
-                    </div>
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
         </>
       )}
     </div>
@@ -380,7 +242,7 @@ function ReportView({ r }: { r: DeliverabilityReportView }) {
               <span className="kiwi-pill unknown">compat {milli(r.scoreCompatMilli)}/10</span>{" "}
             </>
           )}
-          {!r.complete && <span className="kiwi-pill warn">partial report</span>}
+          {!r.evidenceComplete && <span className="kiwi-pill warn">partial report</span>}
         </p>
       )}
       {r.authFailureIds.length > 0 && (
@@ -672,7 +534,7 @@ export function DeliverabilityPanel({ accounts, live }: { accounts: AccountView[
                 onChange={(e) => setConsent(e.target.checked)}
                 disabled={!live || busy !== null}
               />{" "}
-              I consent — send the test message once (single-use; the backend will refuse a replay).
+              I have read this notice — the system confirmation dialog is the approval.
             </label>
           </p>
           <p>
@@ -739,11 +601,19 @@ export function DeliverabilityPanel({ accounts, live }: { accounts: AccountView[
 
 /* ================= root ================= */
 
-export function IntegrationsView({ accounts, mode }: { accounts: AccountView[]; mode: "live" | "demo" }) {
+export function IntegrationsView({
+  accounts,
+  mode,
+  temp,
+}: {
+  accounts: AccountView[];
+  mode: "live" | "demo";
+  temp: TempMail;
+}) {
   const live = mode === "live";
   return (
     <div className="ms-view-enter">
-      <TempMailPanel live={live} />
+      <TempMailPanel temp={temp} live={live} />
       <DeliverabilityPanel accounts={accounts} live={live} />
     </div>
   );

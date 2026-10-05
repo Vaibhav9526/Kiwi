@@ -68,6 +68,9 @@ const send = {
   testId: begin.testId,
   queueId: "queue-1",
   notBeforeUnix: 1_700_000_001,
+  consentConsumed: true,
+  enqueued: true,
+  singleAttempt: true,
 };
 
 const status = {
@@ -77,6 +80,7 @@ const status = {
   checksTotal: 2,
   ready: false,
   sent: true,
+  consentConsumed: true,
 };
 
 const report = {
@@ -100,6 +104,8 @@ const report = {
   ],
   authFailureIds: [],
   authGate: "pass",
+  checksTruncated: false,
+  evidenceComplete: true,
 };
 
 describe("integration response decoders", () => {

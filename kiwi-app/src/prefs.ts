@@ -33,6 +33,7 @@ export const PREF_KEYS = [
   "kiwi.theme",
   "kiwi.accent",
   "kiwi.density",
+  "kiwi.fontScale",
   "kiwi.rail",
   "kiwi.agenda",
   "kiwi.pane.folders",
@@ -42,6 +43,7 @@ export const PREF_KEYS = [
   "kiwi.minTls",
   "kiwi.templates",
   "kiwi.notify",
+  "kiwi.trayOnClose",
   "kiwi.poll",
   "kiwi.toasts",
   "kiwi.sound",
@@ -103,6 +105,24 @@ export function loadMuted(): string[] {
   return Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : [];
 }
 
+/** Font-size options (`kiwi.fontScale`): id → the `--kiwi-font-scale`
+ * multiplier applied to the root element by `applyUiPrefs`. Ids are stable
+ * (persisted + backend-synced); the numbers are the UI percentages. */
+export const FONT_SCALES = {
+  compact: 0.8,
+  small: 0.9,
+  default: 1,
+  large: 1.1,
+  xl: 1.2,
+} as const;
+
+export type FontScaleId = keyof typeof FONT_SCALES;
+
+/** Resolve a `kiwi.fontScale` value to its multiplier (unknown → 1). */
+export function fontScaleFor(id: string): number {
+  return (FONT_SCALES as Record<string, number>)[id] ?? FONT_SCALES.default;
+}
+
 /** Apply accent + density attributes to the document root. T-275:
  * `data-theme` is owned solely by src/themes (`initThemes`/`useTheme` →
  * `applyThemeToRoot`) so installed-package ids and uninstalled-id fallback
@@ -112,6 +132,9 @@ export function applyUiPrefs(): void {
     const root = document.documentElement;
     root.setAttribute("data-accent", loadPref<string>("kiwi.accent", "standard"));
     root.setAttribute("data-density", loadPref<string>("kiwi.density", "comfortable"));
+    // Font size: one multiplier read by theme.css (root font-size, for `rem`
+    // sizes) and mailspring-tokens.css (the --kiwi-ms-text-* type tokens).
+    root.style.setProperty("--kiwi-font-scale", String(fontScaleFor(loadPref<string>("kiwi.fontScale", "default"))));
     // T-191: the Mailspring-idiom shell is the active theme foundation.
     root.setAttribute("data-shell", "mailspring");
   } catch {

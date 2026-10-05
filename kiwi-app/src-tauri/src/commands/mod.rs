@@ -17,8 +17,14 @@ pub mod autoconfig;
 pub mod contacts;
 pub mod devices;
 pub mod endpoint;
+pub mod export;
+pub mod folders;
+pub mod import;
 pub mod integrations;
 pub mod link;
+/// T-340: the lock matrix as an **enforced** invariant, not a comment.
+#[cfg(test)]
+mod lock_matrix;
 pub mod mail;
 pub mod message;
 /// OAuth2 plus the generic gated system-browser handoff. Message-link policy
@@ -31,8 +37,10 @@ pub mod rules;
 pub mod sandbox;
 pub mod security;
 pub mod send;
+pub mod storage;
 pub mod system;
 pub mod templates;
+pub mod thread;
 
 use std::sync::Arc;
 
@@ -93,6 +101,11 @@ pub async fn status_view(state: &AppState) -> SecurityStatusView {
         required_action: crate::types::required_action(action).to_string(),
         sessions_observed,
         device_id,
+        // T-331: the chain was verified when the log opened at startup, so the
+        // backend knows the answer — surface it instead of making the renderer
+        // guess. `None` (unknown) is reachable only if the file became
+        // unreadable since, never as a stand-in for "fine".
+        audit_ok: state.audit.lock().await.integrity().ok(),
     }
 }
 
@@ -153,7 +166,13 @@ pub fn clamp_u32(v: Option<u32>, default: u32, max: u32) -> u32 {
 /// Resolve the secret behind an `AuthRef` through the credential store.
 /// `None` for `AuthRef::None`; missing stored secret → error (the account
 /// references a credential that isn't there — fail closed, loud).
-pub fn resolve_secret(
+///
+/// `AuthRef::XOAuth2` with an `oauth2/<provider>/<email>` grant key holds
+/// a `TokenSet` blob — NOT a usable bearer string — so the grant is
+/// loaded (and refreshed via `ensure_fresh` when inside the expiry skew)
+/// and the access token returned. Inline xoauth2 secrets (non-oauth2
+/// keys) pass through raw.
+pub async fn resolve_secret(
     state: &AppState,
     auth: &kiwi_mail::account::AuthRef,
 ) -> CmdResult<Option<Zeroizing<String>>> {
@@ -164,6 +183,12 @@ pub fn resolve_secret(
         | AuthRef::XOAuth2 { credential_key }
         | AuthRef::Apop { credential_key } => credential_key,
     };
+    if matches!(auth, AuthRef::XOAuth2 { .. })
+        && let Some((provider_id, email)) = oauth2::parse_oauth2_key(key)
+    {
+        let token = oauth2::resolve_oauth2_token(state, provider_id, email).await?;
+        return Ok(Some(token));
+    }
     match state.credentials.get(key)? {
         Some(s) => Ok(Some(s)),
         Option::None => Err(IpcError::new(

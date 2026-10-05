@@ -1,5 +1,11 @@
-//! Attachment download (T-146) — extract one attachment from the stored
-//! MIME body to a caller-chosen path, size-bounded.
+//! Attachment download (T-146 + T-339) — extract one attachment to a
+//! caller-chosen path, size-bounded.
+//!
+//! Two honest paths: a message with `message_parts` rows resolves the
+//! ordinal through the persisted server descriptors and lazily fetches
+//! `BODY.PEEK[<section>]` (the skeleton body's empty parts are never
+//! parsed as real payloads); a message without rows extracts from the
+//! stored MIME body verbatim.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -8,18 +14,15 @@ use mail_parser::{MessageParser, MimeHeaders};
 use tauri::State;
 
 use super::super::{bounded, gate, run_mail_io};
-use crate::commands::mail::load_body_raw;
+use super::MAX_ATTACHMENT_BYTES;
+use crate::commands::mail::{ensure_part_fetched, load_body_raw};
 use crate::error::{CmdResult, IpcError};
 use crate::state::{AppState, now_unix};
 use crate::types::AttachmentSavedView;
 
-/// One attachment download is bounded — MIME bodies are already size-capped
-/// by the store, this guards the decoded part.
-const MAX_ATTACHMENT_BYTES: usize = 50 * 1024 * 1024;
-
-/// Extract one attachment from the stored MIME body to a caller-chosen path
-/// (UI save dialog). Size-bounded; filename/content-type come from the MIME
-/// part, not the caller.
+/// Extract one attachment to a caller-chosen path (UI save dialog).
+/// Size-bounded; filename/content-type come from the MIME part or the
+/// persisted part descriptor, never the caller.
 #[tauri::command]
 pub async fn kiwi_download_attachment(
     state: State<'_, Arc<AppState>>,
@@ -50,29 +53,52 @@ pub(crate) async fn download_attachment_impl(
     if uid < 0 || attachment_index < 0 {
         return Err(IpcError::invalid("uid and attachmentIndex must be >= 0"));
     }
-    let raw = load_body_raw(&state, &account_id, folder_id, uid as u64)
-        .await?
-        .ok_or_else(|| IpcError::not_found("message body not available"))?;
-    let msg = MessageParser::default()
-        .parse(&raw)
-        .ok_or_else(|| IpcError::new("protocol-error", "stored body failed MIME parse"))?;
-    let att = msg
-        .attachments()
-        .nth(attachment_index as usize)
-        .ok_or_else(|| IpcError::not_found("no such attachment index"))?;
-    let bytes = att.contents();
+
+    // T-339: part rows are authoritative for a message that has them.
+    let parts = {
+        let store = state.store.lock().await;
+        store.message_parts(folder_id, uid as u64)?
+    };
+    let (filename, content_type, bytes) = if parts.is_empty() {
+        let raw = load_body_raw(&state, &account_id, folder_id, uid as u64)
+            .await?
+            .ok_or_else(|| IpcError::not_found("message body not available"))?;
+        let msg = MessageParser::default()
+            .parse(&raw)
+            .ok_or_else(|| IpcError::new("protocol-error", "stored body failed MIME parse"))?;
+        let att = msg
+            .attachments()
+            .nth(attachment_index as usize)
+            .ok_or_else(|| IpcError::not_found("no such attachment index"))?;
+        let filename = att
+            .attachment_name()
+            .map(|s| s.to_string())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| format!("attachment-{attachment_index}"));
+        let content_type = att
+            .content_type()
+            .map(|c| format!("{}/{}", c.ctype(), c.subtype().unwrap_or("octet-stream")))
+            .unwrap_or_else(|| "application/octet-stream".into());
+        (filename, content_type, att.contents().to_vec())
+    } else {
+        let row = parts
+            .iter()
+            .find(|p| p.part_index as i64 == attachment_index)
+            .cloned()
+            .ok_or_else(|| IpcError::not_found("no such attachment index"))?;
+        let path =
+            ensure_part_fetched(&state, &account_id, folder_id, uid as u64, row.part_index).await?;
+        let bytes = std::fs::read(&path)?;
+        let filename = row
+            .name
+            .clone()
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| format!("attachment-{attachment_index}"));
+        (filename, row.mime, bytes)
+    };
     if bytes.len() > MAX_ATTACHMENT_BYTES {
         return Err(IpcError::invalid("attachment exceeds 50 MiB bound"));
     }
-    let filename = att
-        .attachment_name()
-        .map(|s| s.to_string())
-        .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| format!("attachment-{attachment_index}"));
-    let content_type = att
-        .content_type()
-        .map(|c| format!("{}/{}", c.ctype(), c.subtype().unwrap_or("octet-stream")))
-        .unwrap_or_else(|| "application/octet-stream".into());
 
     // dest_path is a user-chosen save location (UI dialog). We still bound
     // it: must be absolute-ish (has a parent or is a filename we resolve),
@@ -104,7 +130,7 @@ pub(crate) async fn download_attachment_impl(
     {
         std::fs::create_dir_all(parent)?;
     }
-    std::fs::write(dest, bytes)?;
+    std::fs::write(dest, &bytes)?;
     let path = dest.to_string_lossy().to_string();
     state.audit.lock().await.record(
         "attachment-saved",

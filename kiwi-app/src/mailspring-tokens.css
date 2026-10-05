@@ -25,7 +25,7 @@
   --kiwi-ms-text: #231f20;
   --kiwi-ms-text-heading: #434648;
   --kiwi-ms-text-secondary: #5b6470;
-  --kiwi-ms-text-muted: #8a94a0;
+  --kiwi-ms-text-muted: #6b7480;
   --kiwi-ms-link: #419bf9;
 
   /* ---- borders (light) ---- */
@@ -56,24 +56,30 @@
   --kiwi-ms-search-current: #ff8b1a;
 
   /* ---- type ---- */
+  /* Font-size control (Settings → Appearance → Font size, `kiwi.fontScale`):
+   * every text size in the app funnels through these nine tokens, so the
+   * scale multiplies here and reaches the whole shell, the ported .ms-. and
+   * .em- components and the reader via --ms-font-size-* without touching a
+   * single consumer. `rem` sizes (theme.css, shell.css, inline styles) are
+   * covered by the root font-size rule in theme.css. */
   --kiwi-ms-font-sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --kiwi-ms-font-serif: Georgia, "Times New Roman", serif;
   --kiwi-ms-font-mono: ui-monospace, "DejaVu Sans Mono", Menlo, Consolas, monospace;
-  --kiwi-ms-text-tiny: 10.5px;
-  --kiwi-ms-text-smaller: 12px;
-  --kiwi-ms-text-small: 13px;
-  --kiwi-ms-text-base: 14px;
-  --kiwi-ms-text-large: 16px;
-  --kiwi-ms-text-larger: 18px;
-  --kiwi-ms-h1: 24px;
-  --kiwi-ms-h3: 20px;
-  --kiwi-ms-h4: 18px;
+  --kiwi-ms-text-tiny: calc(10.5px * var(--kiwi-font-scale, 1));
+  --kiwi-ms-text-smaller: calc(12px * var(--kiwi-font-scale, 1));
+  --kiwi-ms-text-small: calc(13px * var(--kiwi-font-scale, 1));
+  --kiwi-ms-text-base: calc(14px * var(--kiwi-font-scale, 1));
+  --kiwi-ms-text-large: calc(16px * var(--kiwi-font-scale, 1));
+  --kiwi-ms-text-larger: calc(18px * var(--kiwi-font-scale, 1));
+  --kiwi-ms-h1: calc(24px * var(--kiwi-font-scale, 1));
+  --kiwi-ms-h3: calc(20px * var(--kiwi-font-scale, 1));
+  --kiwi-ms-h4: calc(18px * var(--kiwi-font-scale, 1));
   --kiwi-ms-weight-thin: 200;
   --kiwi-ms-weight-light: 300;
   --kiwi-ms-weight-normal: 400;
   --kiwi-ms-weight-medium: 500;
   --kiwi-ms-weight-semibold: 600;
-  --kiwi-ms-leading-base: 1.5;
+  --kiwi-ms-leading-base: 1.55;
   --kiwi-ms-leading-heading: 1.1;
   --kiwi-ms-leading-lead: 1.4;
 
@@ -105,20 +111,25 @@
   --kiwi-ms-narrow-breakpoint: 540px;
   --kiwi-ms-badge-min: 15px;
 
-  /* ---- radii ---- */
-  --kiwi-ms-radius-base: 3px;
-  --kiwi-ms-radius-large: 5px;
-  --kiwi-ms-radius-small: 2px;
-  --kiwi-ms-radius-toolbar: 6px;
-  --kiwi-ms-radius-pill: 999px;
-  --kiwi-ms-radius-circle: 50%;
+  /* ---- radii ----
+   * T-342: re-based onto the global --kiwi-radius-* scale (planner UI pass#2
+   * — "soft corners everywhere"). The observed Mailspring literals
+   * (2/3/5/6px) were sharper than the shipped design language, so these now
+   * alias the global tiers: base/small → controls, toolbar → menus, large →
+   * cards/panels. Dialogs/composer use --kiwi-radius-large directly. */
+  --kiwi-ms-radius-base: var(--kiwi-radius-sm);
+  --kiwi-ms-radius-large: var(--kiwi-radius-card);
+  --kiwi-ms-radius-small: var(--kiwi-radius-sm);
+  --kiwi-ms-radius-toolbar: var(--kiwi-radius-md);
+  --kiwi-ms-radius-pill: var(--kiwi-radius-pill);
+  --kiwi-ms-radius-circle: var(--kiwi-radius-circle);
 
   /* ---- shadows ---- */
   --kiwi-ms-shadow-color: rgba(0, 0, 0, 0.15);
-  --kiwi-ms-shadow-standard: 0 1px 4px 0 rgba(0, 0, 0, 0.15);
-  --kiwi-ms-shadow-raised: 0 4px 14px 0 rgba(0, 0, 0, 0.18);
-  --kiwi-ms-shadow-popover: 0 8px 28px rgba(0, 0, 0, 0.22);
-  --kiwi-ms-shadow-modal: 0 24px 64px rgba(0, 0, 0, 0.35);
+  --kiwi-ms-shadow-standard: 0 1px 2px 0 rgba(0, 0, 0, 0.1);
+  --kiwi-ms-shadow-raised: 0 2px 8px 0 rgba(0, 0, 0, 0.14);
+  --kiwi-ms-shadow-popover: 0 2px 10px rgba(0, 0, 0, 0.16);
+  --kiwi-ms-shadow-modal: 0 12px 40px rgba(0, 0, 0, 0.26);
   --kiwi-ms-focus-glow: 0 0 0 3px rgba(65, 155, 249, 0.25);
 
   /* ---- motion ladder (own tokens, observed cadence) ---- */
@@ -171,7 +182,7 @@
   --kiwi-ms-text: #f4f2f9;
   --kiwi-ms-text-heading: #ffffff;
   --kiwi-ms-text-secondary: #a9a7bd;
-  --kiwi-ms-text-muted: #5e5c72;
+  --kiwi-ms-text-muted: #84829a;
   --kiwi-ms-link: #f2c063;
 
   --kiwi-ms-border: #2a2a35;
@@ -198,10 +209,10 @@
   --kiwi-ms-search-current: #ff8b1a;
 
   --kiwi-ms-shadow-color: rgba(0, 0, 0, 0.55);
-  --kiwi-ms-shadow-standard: 0 1px 4px 0 rgba(0, 0, 0, 0.5);
-  --kiwi-ms-shadow-raised: 0 4px 14px 0 rgba(0, 0, 0, 0.55);
-  --kiwi-ms-shadow-popover: 0 8px 28px rgba(0, 0, 0, 0.6);
-  --kiwi-ms-shadow-modal: 0 24px 64px rgba(0, 0, 0, 0.65);
+  --kiwi-ms-shadow-standard: 0 1px 2px 0 rgba(0, 0, 0, 0.4);
+  --kiwi-ms-shadow-raised: 0 2px 8px 0 rgba(0, 0, 0, 0.45);
+  --kiwi-ms-shadow-popover: 0 2px 10px rgba(0, 0, 0, 0.5);
+  --kiwi-ms-shadow-modal: 0 12px 40px rgba(0, 0, 0, 0.55);
   --kiwi-ms-focus-glow: 0 0 0 3px rgba(234, 161, 50, 0.25);
 }
 
@@ -219,6 +230,191 @@
   --kiwi-ms-reminder-bg: #312856;
   --kiwi-ms-reminder-text: #7d5bef;
   --kiwi-ms-reminder-border: #4d3b8a;
+}
+
+/* ==================== Mailspring contract layer (--ms-*) ====================
+ * Maps the component-facing tokens of Mailspring's ui-variables.less onto
+ * the KIWI tokens above, so ported component styles can consume the
+ * familiar contract: `@text-color` → `var(--ms-text-color)`, etc.
+ * Values are pure var() aliases — custom properties resolve per-element,
+ * so [data-theme] package overrides of the --kiwi-*, --em-* and
+ * --kiwi-ms-* tokens flow through automatically. Only the handful of
+ * vars whose dark-side *mapping* differs get literal overrides in the
+ * dark block below. Theme packages (stock/mailspring-*) override the
+ * individual --ms-* vars their .less counterparts redefined. Flat fills
+ * only: --ms-background-gradient is intentionally `none`. */
+
+:root,
+[data-theme="light"][data-shell="mailspring"],
+[data-shell="mailspring"] {
+
+  /* ---- color descriptors ---- */
+  --ms-accent-primary: var(--kiwi-ms-accent);
+  --ms-accent-primary-dark: var(--kiwi-ms-accent-active);
+  --ms-background-primary: var(--kiwi-ms-surface);
+  --ms-background-off-primary: var(--kiwi-ms-bg);
+  --ms-background-secondary: var(--kiwi-ms-surface-2);
+  --ms-background-tertiary: var(--kiwi-ms-surface-3);
+  --ms-background-gradient: none; /* flat fills on data surfaces */
+  --ms-color-info: var(--kiwi-ms-info);
+  --ms-color-success: var(--kiwi-ms-success);
+  --ms-color-warning: var(--kiwi-ms-warning);
+  --ms-color-error: var(--kiwi-ms-danger);
+  --ms-color-danger: var(--kiwi-ms-danger);
+  --ms-component-active-color: var(--kiwi-ms-accent-active);
+  --ms-component-active-bg: var(--kiwi-ms-surface);
+  --ms-border-color-primary: var(--kiwi-ms-border);
+  --ms-border-color-secondary: var(--kiwi-ms-divider);
+  --ms-border-color-tertiary: var(--kiwi-ms-border-strong);
+  --ms-border-color-divider: var(--kiwi-ms-divider);
+
+  /* ---- text ---- */
+  --ms-text-color: var(--kiwi-ms-text);
+  --ms-text-color-subtle: var(--kiwi-ms-text-secondary);
+  --ms-text-color-very-subtle: var(--kiwi-ms-text-muted);
+  --ms-text-color-inverse: #ffffff;
+  --ms-text-color-inverse-subtle: rgba(255, 255, 255, 0.8);
+  --ms-text-color-inverse-very-subtle: rgba(255, 255, 255, 0.5);
+  --ms-text-color-heading: var(--kiwi-ms-text-heading);
+  --ms-text-color-link: var(--kiwi-ms-link);
+  --ms-text-color-link-hover: var(--kiwi-ms-accent-active);
+  --ms-text-color-link-active: var(--kiwi-ms-accent-active);
+  --ms-text-color-selected: var(--ms-text-color-inverse);
+  --ms-text-color-search-match: var(--kiwi-ms-search-match);
+  --ms-text-color-search-current-match: var(--kiwi-ms-search-current);
+
+  /* ---- type ---- */
+  --ms-font-family: var(--kiwi-ms-font-sans);
+  --ms-font-family-serif: var(--kiwi-ms-font-serif);
+  --ms-font-family-monospace: var(--kiwi-ms-font-mono);
+  --ms-font-family-heading: var(--kiwi-ms-font-sans);
+  --ms-font-weight-thin: var(--kiwi-ms-weight-thin);
+  --ms-font-weight-blond: var(--kiwi-ms-weight-light);
+  --ms-font-weight-normal: var(--kiwi-ms-weight-normal);
+  --ms-font-weight-medium: var(--kiwi-ms-weight-medium);
+  --ms-font-weight-semi-bold: var(--kiwi-ms-weight-semibold);
+  --ms-font-size-base: var(--kiwi-ms-text-base);
+  --ms-font-size-tiny: var(--kiwi-ms-text-tiny);
+  --ms-font-size-smaller: var(--kiwi-ms-text-smaller);
+  --ms-font-size-small: var(--kiwi-ms-text-small);
+  --ms-font-size: var(--kiwi-ms-text-base);
+  --ms-font-size-large: var(--kiwi-ms-text-large);
+  --ms-font-size-larger: var(--kiwi-ms-text-larger);
+  --ms-font-size-h1: var(--kiwi-ms-h1);
+  --ms-font-size-h2: var(--kiwi-ms-h1);
+  --ms-font-size-h3: var(--kiwi-ms-h3);
+  --ms-font-size-h4: var(--kiwi-ms-h4);
+  --ms-font-size-h5: var(--kiwi-ms-text-base);
+  --ms-font-size-h6: var(--kiwi-ms-text-smaller);
+  --ms-line-height-base: var(--kiwi-ms-leading-base);
+  --ms-line-height-computed: calc(var(--ms-font-size-base) * var(--ms-line-height-base));
+  --ms-line-height-heading: var(--kiwi-ms-leading-heading);
+  --ms-line-height-large: calc(var(--ms-line-height-computed) * 1.3);
+  --ms-line-height-small: calc(var(--ms-line-height-computed) * 0.95);
+
+  /* ---- spacing / padding ---- */
+  --ms-spacing-standard: var(--kiwi-ms-space-unit);
+  --ms-spacing-quarter: var(--kiwi-ms-space-quarter);
+  --ms-spacing-half: var(--kiwi-ms-space-half);
+  --ms-spacing-three-quarters: var(--kiwi-ms-space-three-quarter);
+  --ms-spacing-double: var(--kiwi-ms-space-double);
+  --ms-padding-base-vertical: var(--kiwi-ms-btn-pad-y);
+  --ms-padding-base-horizontal: var(--kiwi-ms-btn-pad-x);
+  --ms-padding-large-vertical: 9px;
+  --ms-padding-large-horizontal: 16px;
+  --ms-padding-small-vertical: 4px;
+  --ms-padding-small-horizontal: 10px;
+  --ms-padding-xs-vertical: 1px;
+  --ms-padding-xs-horizontal: 5px;
+
+  /* ---- radii ---- */
+  --ms-border-radius-base: var(--kiwi-ms-radius-base);
+  --ms-border-radius-large: var(--kiwi-ms-radius-large);
+  --ms-border-radius-small: var(--kiwi-ms-radius-small);
+
+  /* ---- shadows ---- */
+  --ms-standard-shadow-color: var(--kiwi-ms-shadow-color);
+  --ms-standard-shadow: var(--kiwi-ms-shadow-standard);
+  --ms-standard-shadow-up: 0 -1px 4px 0 var(--kiwi-ms-shadow-color);
+  --ms-shadow-border:
+    0 0.5px 0 var(--kiwi-ms-shadow-color), 0 -0.5px 0 var(--kiwi-ms-shadow-color),
+    0.5px 0 0 var(--kiwi-ms-shadow-color), -0.5px 0 0 var(--kiwi-ms-shadow-color);
+
+  /* ---- buttons ---- */
+  --ms-btn-border-color: var(--kiwi-ms-shadow-color);
+  --ms-btn-default-bg-color: var(--kiwi-ms-surface);
+  --ms-btn-default-text-color: var(--ms-text-color);
+  --ms-btn-icon-color: var(--kiwi-ms-icon-muted);
+  --ms-btn-action-bg-color: var(--kiwi-ms-success);
+  --ms-btn-action-text-color: var(--ms-text-color);
+  --ms-btn-emphasis-bg-color: var(--kiwi-ms-accent-emphasis);
+  --ms-btn-emphasis-text-color: var(--ms-text-color-inverse);
+  --ms-btn-danger-bg-color: var(--kiwi-ms-danger);
+  --ms-btn-danger-text-color: var(--ms-text-color-inverse);
+
+  /* ---- dropdowns / menus ---- */
+  --ms-dropdown-default-bg-color: var(--em-menu-bg);
+  --ms-dropdown-default-text-color: var(--ms-text-color);
+  --ms-dropdown-default-border-color: var(--kiwi-ms-border);
+  --ms-menu-item-color-hover: color-mix(in srgb, var(--kiwi-ms-toast-info) 10%, transparent);
+  --ms-menu-item-color-selected: var(--kiwi-ms-toast-info);
+  --ms-menu-text-color-selected: var(--ms-text-color-inverse);
+
+  /* ---- inputs ---- */
+  --ms-input-bg: var(--kiwi-input);
+  --ms-input-bg-disabled: var(--kiwi-ms-surface-2);
+  --ms-input-border-color: var(--kiwi-ms-border);
+  --ms-input-border-color-blurred: var(--kiwi-ms-divider);
+  --ms-input-font-size: var(--kiwi-ms-text-base);
+
+  /* ---- toolbar / account sidebar ---- */
+  --ms-toolbar-background-color: var(--kiwi-ms-toolbar);
+  --ms-toolbar-height-darwin: 46px;
+  --ms-toolbar-btn-height-darwin: 30px;
+  --ms-panel-background-color: var(--kiwi-ms-sidebar);
+  --ms-source-list-bg: var(--ms-panel-background-color);
+  --ms-source-list-active-bg: var(--ms-panel-background-color);
+  --ms-source-list-active-color: var(--ms-component-active-color);
+
+  /* ---- thread list ---- */
+  --ms-list-bg: var(--kiwi-ms-list-bg);
+  --ms-list-border: var(--kiwi-ms-list-border);
+  --ms-list-hover-bg: var(--kiwi-ms-list-hover);
+  --ms-list-focused-color: var(--kiwi-ms-list-bg);
+  --ms-list-focused-bg: var(--ms-component-active-color);
+  --ms-list-focused-border: var(--ms-list-focused-bg);
+  --ms-list-selected-color: inherit;
+  --ms-list-selected-bg: var(--kiwi-ms-select-tint);
+  --ms-list-selected-border: var(--kiwi-ms-select-border);
+
+  /* ---- notifications ---- */
+  --ms-background-color-info: var(--kiwi-ms-toast-info);
+  --ms-background-color-success: var(--kiwi-ms-toast-success);
+  --ms-background-color-warning: var(--kiwi-ms-toast-warning);
+  --ms-background-color-error: var(--kiwi-ms-toast-error);
+  --ms-background-color-pending: var(--kiwi-ms-toast-pending);
+
+  /* ---- component sizes ---- */
+  --ms-component-padding: var(--kiwi-ms-component-pad);
+  --ms-component-icon-padding: var(--kiwi-ms-icon-pad);
+  --ms-component-icon-size: var(--kiwi-ms-icon-size);
+  --ms-component-line-height: var(--kiwi-ms-component-line);
+  --ms-component-border-radius: var(--kiwi-ms-radius-small);
+  --ms-sidebar-margin: var(--kiwi-ms-sidebar-margin);
+
+  /* ---- feature flags-as-colors (open/link tracking pills) ---- */
+  --ms-open-tracking-color: #7c19cc;
+  --ms-link-tracking-color: #d43353;
+}
+
+/* Dark-side remaps: ui-variables.less vars whose *definition* (not just
+ * value) changes under Mailspring's dark theme. Everything else follows
+ * automatically through the --kiwi-* and --em-* aliases. */
+[data-theme="dark"][data-shell="mailspring"],
+[data-shell="mailspring"].kiwi-ms-dark {
+  /* @btn-border-color: fadeout(@text-color, 65%) — soft light ring instead
+   * of the light theme's shadow-color border. */
+  --ms-btn-border-color: rgba(255, 255, 255, 0.22);
 }
 
 /* ---- reduced motion: full kill-switch (Mailspring has none; KIWI does) ---- */

@@ -106,6 +106,33 @@ async fn client_id_for(state: &AppState, provider_id: &str) -> CmdResult<String>
     ))
 }
 
+/// Optional client secret for providers that issue one to installed-app
+/// clients (new Google Desktop clients require it at the token endpoint).
+/// Same resolution order as `client_id_for` but never an error — absent
+/// means the field simply isn't posted (the pre-2024 Google posture).
+async fn client_secret_for(state: &AppState, provider_id: &str) -> Option<String> {
+    let env_key = format!(
+        "KIWI_OAUTH2_{}_CLIENT_SECRET",
+        provider_id.to_ascii_uppercase()
+    );
+    if let Ok(v) = std::env::var(&env_key) {
+        let v = v.trim().to_string();
+        if !v.is_empty() {
+            return Some(v);
+        }
+    }
+    let key = crate::state::pref_key(None, &format!("oauth2.{provider_id}.clientSecret"));
+    state
+        .index
+        .lock()
+        .await
+        .prefs
+        .get(&key)
+        .and_then(|v| v.as_str().map(str::to_string))
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
 /// `OAuthError` → IPC `(code, message)`. Codes are contract-stable;
 /// messages are already secret-free by construction.
 fn oauth_code(e: &OAuthError) -> (&'static str, String) {
@@ -196,7 +223,10 @@ pub(crate) async fn oauth2_begin_impl(
     }
 
     let client_id = client_id_for(state, &provider_id).await?;
-    let config = ProviderConfig::by_id(&provider_id, &client_id).map_err(oauth_ipc_err)?;
+    let mut config = ProviderConfig::by_id(&provider_id, &client_id).map_err(oauth_ipc_err)?;
+    if let Some(secret) = client_secret_for(state, &provider_id).await {
+        config = config.with_client_secret(&secret);
+    }
     let flow = OAuthClient::new(config.clone());
     let http = SharedTransport(state.integrations_http.clone());
     let now = now_unix();
@@ -528,7 +558,16 @@ pub(crate) async fn oauth2_poll_impl(
         "error" => Some("oauth2-failed"),
         _ => None,
     };
-    let audit_detail = format!("{ticket_id} {} {}", session.provider.id, view.status);
+    // On failure the audit detail carries the stable code + sanitized
+    // message — "google error" alone is undiagnosable (the renderer is the
+    // only other place the detail ever surfaces).
+    let audit_detail = match (&view.error_code, &view.error_message) {
+        (Some(code), Some(message)) => format!(
+            "{ticket_id} {} {} {code} {message}",
+            session.provider.id, view.status
+        ),
+        _ => format!("{ticket_id} {} {}", session.provider.id, view.status),
+    };
     drop(sessions);
     if let Some(tag) = audit_state {
         state.audit.lock().await.record(tag, &audit_detail, now)?;
@@ -631,13 +670,55 @@ pub(crate) async fn oauth2_status_impl(
 
 /// Split `oauth2/<provider>/<email>` — the credential-key form
 /// `kiwi-autoconfig::oauth2::credential_key` emits.
-fn parse_oauth2_key(key: &str) -> Option<(&str, &str)> {
+pub(crate) fn parse_oauth2_key(key: &str) -> Option<(&str, &str)> {
     let rest = key.strip_prefix("oauth2/")?;
     let (provider, email) = rest.split_once('/')?;
     if provider.is_empty() || email.is_empty() {
         return None;
     }
     Some((provider, email))
+}
+
+// ---------------------------------------------------------------------------
+// Grant consume (resolve_secret seam, commands/mod.rs)
+// ---------------------------------------------------------------------------
+
+/// Resolve a usable bearer token for an `oauth2/<provider>/<email>` grant:
+/// rebuilds the provider config (client id + optional client secret), then
+/// `ensure_fresh` — loads the stored `TokenSet`, refreshes when inside the
+/// expiry skew, persists any rotated refresh token — and returns the
+/// access token. `Err(oauth2-reauth)` when no grant exists; transport
+/// failures surface as connect-failed so the caller's retry stays honest.
+pub(crate) async fn resolve_oauth2_token(
+    state: &AppState,
+    provider_id: &str,
+    email: &str,
+) -> CmdResult<zeroize::Zeroizing<String>> {
+    let client_id = client_id_for(state, provider_id).await?;
+    let mut config = ProviderConfig::by_id(provider_id, &client_id).map_err(oauth_ipc_err)?;
+    if let Some(secret) = client_secret_for(state, provider_id).await {
+        config = config.with_client_secret(&secret);
+    }
+    let flow = OAuthClient::new(config);
+    let http = SharedTransport(state.integrations_http.clone());
+    let tokens = oauth2::ensure_fresh(
+        &http,
+        &flow,
+        state.credentials.as_ref(),
+        email,
+        now_unix(),
+    )
+    .await
+    .map_err(oauth_ipc_err)?
+    .ok_or_else(|| {
+        IpcError::new(
+            "oauth2-reauth",
+            "no stored oauth2 grant — re-authorize the account",
+        )
+    })?;
+    Ok(zeroize::Zeroizing::new(
+        tokens.access_token().to_string(),
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -838,7 +919,15 @@ mod tests {
     use crate::types::{AddAccountInput, AuthInput};
     use kiwi_integrations::http::{ScriptedHttp, Step};
 
-    fn state_with(script: Vec<Step>, tag: &str) -> AppState {
+    /// The scripted transport handle is retained so every test can assert
+    /// the fixture replayed in full — an endpoint call that silently stopped
+    /// happening must fail the test, not pass on a half-replayed script.
+    struct Fixture {
+        state: AppState,
+        http: Arc<ScriptedHttp>,
+    }
+
+    fn state_with(script: Vec<Step>, tag: &str) -> Fixture {
         let dir = std::env::temp_dir().join(format!(
             "kiwi-oauth2-{tag}-{}-{}",
             std::process::id(),
@@ -847,7 +936,9 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         ));
-        AppState::open_test_with_http(dir, Arc::new(ScriptedHttp::new(script))).unwrap()
+        let http = Arc::new(ScriptedHttp::new(script));
+        let state = AppState::open_test_with_http(dir, http.clone()).unwrap();
+        Fixture { state, http }
     }
 
     /// Set the provider's client id via the pref path (deterministic — no
@@ -875,23 +966,25 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn begin_rejects_unknown_provider() {
-        let s = state_with(vec![], "badprov");
+        let Fixture { state: s, http } = state_with(vec![], "badprov");
         let e = oauth2_begin_impl(&s, "aol", None).await.unwrap_err();
         assert_eq!(e.code, "invalid-input");
+        http.assert_exhausted();
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn begin_requires_client_id() {
-        let s = state_with(vec![], "nocid");
+        let Fixture { state: s, http } = state_with(vec![], "nocid");
         let e = oauth2_begin_impl(&s, "microsoft", Some("u@outlook.com"))
             .await
             .unwrap_err();
         assert_eq!(e.code, "oauth2-not-configured");
+        http.assert_exhausted();
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn device_begin_poll_complete_persists_tokens() {
-        let s = state_with(
+        let Fixture { state: s, http } = state_with(
             vec![
                 Step::post("devcode", &["devicecode"], 200, MS_DEVICE),
                 pending_step(),
@@ -936,11 +1029,12 @@ mod tests {
         // Repeat poll is idempotent-complete until the ticket is consumed.
         let p = oauth2_poll_impl(&s, &b.ticket_id).await.unwrap();
         assert_eq!(p.status, "complete");
+        http.assert_exhausted();
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn device_denial_is_terminal_error_status() {
-        let s = state_with(
+        let Fixture { state: s, http } = state_with(
             vec![
                 Step::post("devcode", &["devicecode"], 200, MS_DEVICE),
                 Step::post("poll", &["oauth2/v2.0/token"], 400, MS_DENIED),
@@ -957,11 +1051,12 @@ mod tests {
         // Failed state is sticky.
         let p = oauth2_poll_impl(&s, &b.ticket_id).await.unwrap();
         assert_eq!(p.status, "error");
+        http.assert_exhausted();
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn poll_unknown_ticket_and_cancel() {
-        let s = state_with(vec![], "ticket");
+        let Fixture { state: s, http } = state_with(vec![], "ticket");
         assert_eq!(
             oauth2_poll_impl(&s, "oauth2-nope").await.unwrap_err().code,
             "not-found"
@@ -972,11 +1067,12 @@ mod tests {
                 .unwrap()
                 .cancelled
         );
+        http.assert_exhausted();
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn add_account_binds_completed_grant_both_directions() {
-        let s = state_with(
+        let Fixture { state: s, http } = state_with(
             vec![
                 Step::post("devcode", &["devicecode"], 200, MS_DEVICE),
                 Step::post("poll", &["oauth2/v2.0/token"], 200, MS_TOKEN),
@@ -1033,6 +1129,7 @@ mod tests {
         assert!(st.credential_present);
         assert_eq!(st.has_refresh_token, Some(true));
         assert_eq!(st.needs_refresh, Some(false));
+        http.assert_exhausted();
     }
 
     fn ticket_only_input(ticket: &str) -> AddAccountInput {
@@ -1047,7 +1144,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn ticket_email_mismatch_rejected() {
-        let s = state_with(
+        let Fixture { state: s, http } = state_with(
             vec![
                 Step::post("devcode", &["devicecode"], 200, MS_DEVICE),
                 Step::post("poll", &["oauth2/v2.0/token"], 200, MS_TOKEN),
@@ -1067,11 +1164,12 @@ mod tests {
         input.email = "bob@outlook.com".to_string();
         let e = oauth2_ticket_key(&s, &input).await.unwrap_err();
         assert_eq!(e.code, "invalid-input");
+        http.assert_exhausted();
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn incomplete_ticket_rejected_by_add_account() {
-        let s = state_with(
+        let Fixture { state: s, http } = state_with(
             vec![Step::post("devcode", &["devicecode"], 200, MS_DEVICE)],
             "incomplete",
         );
@@ -1086,11 +1184,12 @@ mod tests {
             oauth2_ticket_key(&s, &input).await.unwrap_err().code,
             "oauth2-incomplete"
         );
+        http.assert_exhausted();
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn legacy_xoauth2_inline_secret_still_works() {
-        let s = state_with(vec![], "legacy");
+        let Fixture { state: s, http } = state_with(vec![], "legacy");
         let mut input = acct_input();
         input.incoming_auth = Some(AuthInput {
             kind: "xoauth2".to_string(),
@@ -1112,13 +1211,14 @@ mod tests {
         assert!(st.credential_present);
         // Legacy key isn't an oauth2/ grant key — no lifecycle detail.
         assert_eq!(st.provider, None);
+        http.assert_exhausted();
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn loopback_begin_exposes_url_and_polls_complete() {
         // ScriptedHttp answers the code exchange once the waiter sees the
         // redirect. The listener is a REAL 127.0.0.1 socket.
-        let s = state_with(
+        let Fixture { state: s, http } = state_with(
             vec![Step::post(
                 "exchange",
                 &["oauth2.googleapis.com/token"],
@@ -1189,6 +1289,7 @@ mod tests {
             .unwrap()
             .expect("stored blob");
         assert!(blob.contains("AT-g"));
+        http.assert_exhausted();
     }
 
     #[tokio::test(flavor = "current_thread")]

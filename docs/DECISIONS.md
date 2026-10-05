@@ -154,3 +154,178 @@
 ## ADR-012 — Plugin alpha = trusted-code model (owner amendment)
 
 Sideload-only plugins v1 declare capabilities via manifest but run as **trusted code** — sandbox/isolation enforcement deferred to post-alpha. Risk accepted by owner directive; A25 records the threat-model entry + follow-up hardening task.
+
+## ADR-013 — Authenticator contract rulings (T-311 draft set, 8 rows)
+
+- **Date:** 2026-09-25 · **Status:** **R7 RATIFIED** (Lead, 2026-09-26 — implemented by A11 under T-282: `challenge-verification-failed err=Expired` + `challenge-expired` IPC, `authenticator.md` §7/§10.4 reconciled); **R1–R6, R8 remain PROPOSED — pending owner/Lead ratification** · **By:** Agent 20 (T-311)
+- **Scope:** the 8 contradictions A23's T-270 audit tabled in
+  `docs/audits/authenticator-drift-1.md` §"Contract decisions required".
+  Each ruling below is a proposal only — normative contract text is NOT
+  amended by this entry; the diff sketch lives in
+  `docs/proposals/t311-authenticator-rulings.md` and applies only on
+  sign-off. These rulings block T-194 (mobile authenticator).
+- **Grounding:** current code is authoritative where it already enforces
+  fail-closed behavior (`check_desktop_key`, `claim_ticket_and_register`,
+  `canonical_bytes`, `ChallengeBook` verify order); each ruling picks the
+  option that preserves fail-closed + least-surprise.
+
+### R1 — Desktop-key encoding (`desktop_public_key_b64`)
+
+**Proposed:** canonical check is `ed25519:` + RFC 4648 **standard** Base64
+(padded) decoding to exactly 32 bytes, with byte-for-byte re-encode
+equality. Correct the §3.1 example `<64-char base64>` → 44 chars. Every
+consumer enforces the identical check: `pair.rs::check_desktop_key` is the
+reference impl; mobile `qr.ts` must decode+reencode, not just prefix-check.
+**Rationale:** canonical form is what makes the pin an equality comparison
+— the QR-swap defense depends on exact match. Already enforced at the IPC
+boundary.
+**Rejected:** accept any decodable 32-byte base64 (unpadded/URL-safe) —
+admits multiple spellings of one key, weakening equality-pinning and
+inviting parse drift.
+
+### R2 — TLS pin identity
+
+**Proposed:** the QR key IS the TLS peer identity — the desktop's
+self-signed certificate's public key (SPKI) must equal the 32-byte Ed25519
+key in `desktop_public_key_b64`. The phone pins the leaf SPKI bytes; no CA
+chain, no hostname check, no fingerprint. One key serves as both pairing
+identity and cert key, so the pin check doubles as endpoint binding.
+**Rationale:** least machinery, fail-closed, platform-native (rustls /
+Conscrypt / URLSession all verify Ed25519 certs); no CA issues LAN certs.
+**Rejected:** (a) SPKI-hash pin of an ephemeral cert + in-channel signed
+proof — extra step, same guarantee, transcript-binding subtleties; (b)
+whole-cert fingerprint — breaks on cert regen, conflates serialization
+with identity; (c) pinned CA — unworkable on RFC1918.
+**Contingency flagged, not pre-authorized:** if a target mobile TLS stack
+cannot verify Ed25519 certs, the fallback (ECDSA cert + in-channel proof
+of the QR key over the handshake transcript) needs Agent 6 crypto sign-off.
+
+### R3 — Pairing scheme grammar
+
+**Proposed:** ratify `wss://<host-or-ip>:<port>/<path>` as the SOLE
+production `desktop_endpoint` scheme; scanners reject `ws://`, `http://`,
+`https://`, anything else (bounded 1..256, no userinfo/query/fragment).
+`http://` exists only for the dev-flagged T-304 listener
+(`KIWI_PAIR_LISTEN`) and may appear in QR only under that flag.
+**Rationale:** §3.2 already recommends wss; plaintext is forbidden for
+production — accepting `ws://` normalizes the forbidden path; single-scheme
+parsing is fail-closed. Corrects the `ws://` example.
+**Rejected:** dual-scheme acceptance with upgrade semantics — nothing
+upgrades ws→TLS post-connect; a QR could bless plaintext on a hostile LAN.
+
+### R4 — Challenge casing/version (`nonceB64` vs `nonce_b64`/`schema_version`)
+
+**Proposed:** two vocabularies, one explicit adapter, never dual spellings
+in one payload. ipc.md camelCase (`nonceB64`, no `schema_version`) stays
+the ratified desktop-renderer IPC wire (T-269 shipped). The
+mobile-transport wire keeps §4.2 snake_case + `schema_version: 1`
+(`nonce_b64`, `signature_b64`, `decision`). One named adapter maps between
+them at the channel boundary — desktop emits the snake_case form on the
+phone-facing socket; mobile's `canonical.ts` already parses §4.2 verbatim.
+**Rationale:** preserves the ratified IPC surface and mobile's tested
+fixtures; the hazard is ambiguity within one payload, which the adapter
+eliminates by construction.
+**Rejected:** (a) emit both spellings — the audit's named hazard (which
+field signs? divergence = forgery surface); (b) move IPC to snake_case —
+churns every ratified renderer consumer for zero security gain.
+
+### R5 — Session form (`boot-` vs `x-tx:`)
+
+**Proposed:** normative text stands — `unlock`/`device-pairing` ⇒
+`session_id = boot-<…>`; `recovery`/`elevated-action` ⇒ `x-tx:<txn>`.
+Correct the §4.2/§6.2 examples that show `x-tx:` with `unlock`. Consumers
+enforce the event↔form pairing: reject `x-tx:` on unlock, `boot-` on
+recovery/elevated — fail closed on mismatch.
+**Rationale:** `boot-` is what the desktop emits and binds (system.rs;
+ipc.md examples); `x-tx:` exists because recovery/elevated actions are
+narrower than a session. The mismatch rule makes the grammar testable.
+**Rejected:** `x-tx:` for all events — forces minting meaningless
+transaction ids for session-scoped acts (unlock authorizes a session;
+there is no narrower action).
+
+### R6 — Approval-context field (`desktop_label`)
+
+**Proposed:** add `desktop_label` to the challenge delivery JSON (≤128
+chars, sanitized per `safeDeviceLabel` rules — strip controls/bidi
+marks). **Display-only**: NOT in canonical bytes, NOT a trust input — the
+signed binding stays `challenge_id+device_id+session_id+event+nonce+times`.
+§6.1's other required context already exists (transaction id =
+`session_id`; issue/expiry = existing fields); `desktop_label` is the only
+schema gap. Desktop supplies it from its own provisioning identity —
+channel-owned, never renderer-supplied.
+**Rationale:** closes §6.1's required-context gap without touching signed
+bytes (a canonical-byte change ⇒ contract v2 + coordinated release, §10).
+The trust anchor is the paired `device_id`; a mislabeled desktop only
+mislabels itself to a phone that paired it.
+**Rejected:** sign the label into canonical bytes — contract-major bump +
+coordinated release to sign a value with no security function (identity is
+the key, not the name).
+
+### R7 — Timeout audit
+
+**Proposed:** §6.3 rule wins — a timeout is the *absence* of a decision:
+no audit row is created, unless a response later arrives (late response →
+`challenge-verification-failed Expired`, IPC `challenge-expired`). Fix
+§7's "desktop audits the timeout instead" → the challenge simply expires;
+drop §10 item 4's stale "DONE" pointer.
+**Rationale:** every unanswered challenge is a timeout — auditing
+non-events is unbounded noise with no evidence value, and it would make
+deny-droppability load-bearing on an audit guarantee the desktop shouldn't
+have to provide. `challenge-denied` stays for explicit denies only.
+**Rejected:** audit every timeout — manufactures rows for events that
+never happened; invites misreading absence as a decision.
+**Out of scope (noted):** an aggregate "repeated unanswered challenges"
+forensics signal belongs in session telemetry, not per-challenge audit.
+
+### R8 — QR secrecy wording
+
+**Proposed:** reword rule 6 / §3.1 — the QR carries **no private key
+material**, but `pairing_ticket` IS short-lived bearer material: never
+logged, audited, persisted beyond the flow window, or echoed in errors;
+renderer-display-only under the ratified local-render exception (§9d);
+at rest it lives in `pair.db` bounded by its 5-minute expiry.
+**Rationale:** the current "no secrets" wording is factually wrong about
+the ticket and licenses careless handling; the code already treats it as
+bearer (never echoed, never a status field).
+**Rejected:** keep "no secrets" — licenses log leakage. Hashing tickets in
+`pair.db` is noted as possible hardening, not required: the store is
+local-profile and the token is single-use/short-lived (status polling
+needs the plaintext anyway).
+
+### Ratification mechanics
+
+Each row above is independently ratifiable. On sign-off, the diff sketch in
+`docs/proposals/t311-authenticator-rulings.md` applies to
+`authenticator.md`/`ipc.md`, mobile `protocol/` consumers gain the R1
+re-encode check and R5 event↔form rule, and R2/R3 gate the wss transport
+implementation (T-194). No normative text is amended by this entry.
+
+
+---
+
+### ADR-012 (ui-migration): Mailspring verbatim component port under license grant
+
+**Decision.** `kiwi-app/src/ms/` holds components ported verbatim from
+Mailspring (`vendor/mailspring`, upstream `Foundry376/Mailspring`). The
+project owner states a license/rights arrangement with the Mailspring
+developer covering verbatim reuse for KIWI; pending written terms landing in
+`docs/legal/` (or a contributor-level grant file), this ADR records the
+grant as asserted by the owner on 2026-09-26.
+
+**Scope.** Exemption applies ONLY to `kiwi-app/src/ms/` — the declared port
+surface, every file carrying a `Ported from Mailspring <path>` header.
+ADR-005 ("study, don't fork") remains in force for the rest of the tree:
+non-ms/ code must still be original, and CHECK B of
+`tests/tools/copy_overlap.py` continues to gate everything else.
+
+**Gate mechanics.** `copy_overlap.py` gained `PORTED_EXEMPT_PREFIXES` —
+ms/ files are skipped by CHECK B (verbatim overlap) and reported as
+`ported_exempt_files=N` in the gate summary so the exemption is auditable,
+never silent. CHECK A (forbidden provenance markers: GPL headers, vendor
+copyright lines, mailsync internals) still scans ms/ — ported files must
+adapt provenance comments into our own words, as they already do.
+
+**Merging caveat.** This grant covers the ui-migration work as asserted.
+If the written grant does not materialize before `ui-migration` merges to
+main, the merge review must re-raise license compatibility (GPL-3.0 ports
+inside an MPL-2.0 project) rather than assume clearance.

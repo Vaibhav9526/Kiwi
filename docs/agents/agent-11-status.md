@@ -693,3 +693,104 @@ full suite was validated in module chunks instead.
 - `pair_flow` holds the active ticket (backend-owned, expiry-bounded)
   for the flow exemption — it is a capability binding, not a ticket
   cache; `pair.db` remains the only ticket store.
+
+## 2026-09-26 — RESUME: T-227 post-restart re-verification → DONE report sent
+
+**Status:** re-verified green after the Orca overnight restart (all
+terminal handles reincarnated; Lead is now `term_db8527c7`). The tree
+accumulated later work (incl. my T-269 pair landing) on top of the
+T-227 surface — all nine `kiwi_integrations_*` commands still
+registered (`lib.rs:215-223`), ipc.md §9e + `src/ipc.ts`/`src/kiwi.ts`
+wrappers intact. Ledger still lists T-227 `open`; DONE reported to Lead.
+
+### Re-run gates (evidence)
+
+```
+cargo test -p kiwi-app                                  → 234/234 pass
+cargo clippy -p kiwi-app --all-targets -- -D warnings   → clean
+cargo fmt -p kiwi-app -p kiwi-integrations --check      → clean
+npx tsc --noEmit (kiwi-app)                             → clean
+```
+
+Still uncommitted — Lead integrates.
+
+## 2026-09-26 — T-282: AUTH-1 failure/denied audit rows + timeout ruling (DONE)
+
+**Status:** implemented + verified. `kiwi_submit_challenge` (canonical impl
+in `commands/pair.rs`; `commands/system.rs` is the thin alias) now audits
+every authenticator outcome per authenticator.md §9, evidence-before-effect.
+
+**Claimed files:** `kiwi-pair/src/engine.rs` (+`deny_response`),
+`kiwi-app/src-tauri/src/types/system.rs` (+`decision` on
+`ChallengeResponseInput`), `kiwi-app/src-tauri/src/commands/pair.rs`
+(`submit_challenge_impl` rewrite + `audit_challenge_failure` + 5 tests),
+`kiwi-app/src-tauri/src/commands/system.rs` (test-literal `decision: None`),
+`kiwi-app/src/ipc.ts` (+`decision?`), `docs/contracts/authenticator.md`
+(§7 + §10.4 R7 wording + §9 implemented note), `docs/contracts/ipc.md`
+(§4 submit entry), `docs/audits/FINDINGS.md` (AUTH-1 row → resolved),
+this file.
+
+### Design (contract: authenticator.md §6.2/§6.3/§9 + SECURITY.md §6 bullet)
+
+- `decision: Option<String>` on `ChallengeResponseInput` (absent ⇒
+  `approve` — wire-compatible; `"deny"` carries no signature, §6.3).
+- New `PairEngine::deny_response` — same read-only checks as verify
+  (exists → device present/not revoked → unexpired → unconsumed →
+  binding) with NO signature check and NO consume.
+- `submit_challenge_impl`: `unsupported-event` events rejected BEFORE
+  `verify_response` (never consume a capability for an action that
+  cannot run — closes the consume-then-fail half of T270-02).
+- Audit vocabulary per §9 (evidence-before-effect — every row lands
+  before the effect/error leaves the boundary):
+  `challenge-approved` (detail `event=… device=…`, replaces the
+  undocumented `challenge-verified`), `device-paired` (pairing
+  activation, separate row), `challenge-denied`, and
+  `challenge-verification-failed` (detail `err=<ChallengeError-name |
+  IPC-code> event=…`) on EVERY engine failure — `?` propagation with
+  no row is gone.
+- Timeout ruling (ADR-013 R7, wording-only): silent expiry = absence of
+  a decision → NO row; a late response is audited
+  `challenge-verification-failed err=Expired` + IPC `challenge-expired`
+  (already the engine mapping). §7's stale "desktop audits the timeout"
+  line corrected to match binding §6.3.
+
+### Verified
+
+```
+cargo test -p kiwi-pair                                  → 20/20 pass
+cargo test -p kiwi-app                                   → 237/239
+  (my 5 new pair tests pass; the 2 failures are FOREIGN —
+   e2e_discover_add_sync_list_green_path /
+   e2e_send_delivers_files_sent_copy diverge on T-339's new
+   `UID FETCH … BODYSTRUCTURE` item vs the stale transcript fixture;
+   A19 landing in-flight — flag for owner)
+cargo clippy -p kiwi-pair -p kiwi-app --all-targets -D warnings → clean
+cargo fmt -p kiwi-pair -p kiwi-app -p kiwi-mail --check  → clean
+npx tsc --noEmit (kiwi-app)                              → clean
+```
+
+### Cross-agent repairs during this session (flag for A19 / T-339)
+
+- `kiwi-mail/src/sync.rs` — `#[allow(clippy::too_many_arguments)]` on
+  `refine_after_body` (9 args after skeleton-fetch params; matches the
+  existing allows at sync.rs:452/476 + apply.rs convention).
+- `kiwi-mail/src/parts.rs` — `PartPlan::default()` → struct-init syntax
+  (clippy `field_reassign_with_default`).
+- `kiwi-mail/src/store/queries.rs` — `cargo fmt` on `stage_payload_file`
+  signature (only diff rustfmt wanted).
+- `kiwi-mail/src/rules/blocklist.rs` — `hex(&digest)` compile error was
+  already fixed on disk by owner before I touched it; no action.
+
+### Assumptions / flags for Lead
+
+- `challenge-verified` (the undocumented success row) is REPLACED by the
+  §9 names `challenge-approved` + `device-paired` — no other consumer
+  references the old action (grep-verified).
+- ADR-013 is still "PROPOSED — pending ratification"; I applied only R7's
+  wording reconcile because §6.3 is already binding (marked "binding,
+  T-184" in-contract) and §7 self-contradicted it. Ratify R7 formally.
+- AUTH-2's desktop half (`decision` carried + deny semantics) is closed;
+  the mobile deny UX/Phase-4 transport remains open (not this task).
+- IPC-boundary rejections (bad base64, oversize, bad `decision` value)
+  return `invalid-input` without an audit row — they never reach the
+  engine, so no challenge outcome exists to record; documented in §4.

@@ -8,7 +8,7 @@
  * NO security verdicts — every verdict comes from the backend.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, IpcError, isTauri, onMailChanged } from "./ipc";
+import { api, IpcError, isTauri, onMailChanged, onQuitRequested, onTrayCompose } from "./ipc";
 import { applyUiPrefs } from "./prefs";
 import { useTheme } from "./themes";
 import { broadcastPluginEvent, usePluginRuntime } from "./plugins";
@@ -49,6 +49,7 @@ import {
   unixToIso,
 } from "./kiwi";
 import { AgendaRail, AppShell, FolderPane, StatusStrip, TopBar } from "./components/chrome";
+import type { FolderOp } from "./components/chrome";
 import { Icon } from "./components/icons/index";
 import { AuthenticatorDialog, FindingDialog, LockOverlay } from "./components/security";
 import type { AuthStatus } from "./components/security";
@@ -56,8 +57,8 @@ import { CommandPalette } from "./components/palette";
 import type { PaletteAction } from "./components/palette";
 import { ShortcutsHelp } from "./components/shortcuts";
 import { ToastStack } from "./components/toasts";
-import { MailboxView } from "./views/mailbox";
-import { ComposeView } from "./views/compose";
+import { MailboxView, seedCompose } from "./views/mailbox";
+import { ComposeView, ComposeDockCard, registerComposeDock, requestCompose } from "./views/compose";
 import { SetupWizardView } from "./views/setup";
 import { SettingsView } from "./views/settings";
 import { SecurityCenterView } from "./views/security-center";
@@ -65,6 +66,8 @@ import { SearchView } from "./views/search";
 import type { SearchResultRow } from "./views/search";
 import { ContactsView } from "./views/contacts";
 import { FiltersView } from "./views/filters";
+import { DisposableInboxView } from "./views/disposable";
+import { useTempMail } from "./state/tempmail";
 
 
 function toEnvelope(
@@ -87,6 +90,7 @@ function toEnvelope(
     folderId,
     uid: m.uid,
     from: m.fromAddr || "(unknown)",
+    toAddrs: m.toAddrs ?? null,
     subject: m.subject || "(no subject)",
     date: unixToIso(m.dateUnix),
     unread: ov?.unread ?? !flags.includes("\\Seen"),
@@ -97,6 +101,10 @@ function toEnvelope(
     snippet: m.snippet || "",
     category: normalizeCategory(m.category),
     unsub: parseUnsubscribe(m),
+    // T-310: reply-chain ids for the reader's in-reply-to jump.
+    messageId: m.messageId ?? null,
+    inReplyTo: m.inReplyTo ?? null,
+    references: m.references ?? [],
     // T-284: carry per-message evidence hints so the reader pill reflects
     // this message's auth/link/attachment evaluation, not just session trust.
     auth: m.auth ?? null,
@@ -132,6 +140,12 @@ export default function App() {
   // ref (declared before `messages` exists in scope — ref reads at call time).
   const pluginListRef = useRef<MessageEnvelope[]>([]);
   usePluginRuntime(notify, trust.locked, () => pluginListRef.current);
+  // T-342: one shared disposable-inbox session for the app — sidebar badge
+  // + quick-action, the #/disposable view, and the Integrations management
+  // card all read this instance (no double polling). Paused while locked:
+  // the provider session isn't mailbox content the lock protects, but a
+  // locked app shouldn't keep hitting the provider either.
+  const temp = useTempMail(!demo && !trust.locked);
   const [folderLists, setFolderLists] = useState<Record<string, FolderView[]>>({});
   const [foldersError, setFoldersError] = useState<string | null>(null);
   const { emailById, folders, folderLabel, filtersListLabel, smartFolders, accountSections, smartUnread } = useAccountModel(
@@ -163,8 +177,14 @@ export default function App() {
   const [searchHits, setSearchHits] = useState<SearchHit[] | null>(null);
   const [searchBusy, setSearchBusy] = useState(false);
   const [searchNote, setSearchNote] = useState<string | null>(null);
+  const [sandboxOpens, setSandboxOpens] = useState<number | null>(null);
   const [findingIndex, setFindingIndex] = useState<number | null>(null);
   const [findingDetail, setFindingDetail] = useState<FindingDetailView | null>(null);
+  // T-345: tray Quit found sends still queued — the backend emitted
+  // kiwi://confirm-quit and raised the window; this modal is the honest
+  // confirm. `confirmQuit` performs the exit (exempt — quitting while
+  // locked leaks nothing).
+  const [quitPending, setQuitPending] = useState<number | null>(null);
   const [findingDetailError, setFindingDetailError] = useState<string | null>(null);
   const [authOpen, setAuthOpen] = useState(false);
   const [authStatus, setAuthStatus] = useState<AuthStatus>("waiting");
@@ -175,6 +195,72 @@ export default function App() {
   const [lockReason, setLockReason] = useState("Trust reduced — verify with your authenticator to unlock.");
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+
+  // T-343: floating compose docks. Each entry is one real ComposeView whose
+  // draft/autosave/send lifecycle is unchanged — the dock is chrome only.
+  // Minimized docks stay mounted-but-hidden (autosave is 1s-debounced; an
+  // unmount could drop the last keystrokes). At most one dock is expanded.
+  const [docks, setDocks] = useState<
+    { id: number; minimized: boolean; subject: string; flushRef: { current: (() => void) | null }; discardRef: { current: (() => void) | null } }[]
+  >([]);
+  const dockSeq = useRef(0);
+  const [dockAnnc, setDockAnnc] = useState("");
+  const openComposeDock = useCallback(() => {
+    setDocks((ds) => [...ds.map((d) => ({ ...d, minimized: true })), { id: ++dockSeq.current, minimized: false, subject: "", flushRef: { current: null }, discardRef: { current: null } }]);
+    setDockAnnc("Compose opened.");
+  }, []);
+  useEffect(() => registerComposeDock(openComposeDock), [openComposeDock]);
+  const minimizeDock = (id: number) => {
+    setDocks((ds) => ds.map((d) => (d.id === id ? { ...d, minimized: true } : d)));
+    setDockAnnc("Draft minimized — kept as a chip.");
+  };
+  const restoreDock = (id: number) => {
+    setDocks((ds) => ds.map((d) => ({ ...d, minimized: d.id !== id })));
+    setDockAnnc("Draft restored.");
+  };
+  const removeDock = (id: number) => setDocks((ds) => ds.filter((d) => d.id !== id));
+  const expandDock = (id: number) => {
+    const d = docks.find((x) => x.id === id);
+    d?.flushRef.current?.(); // sessionStorage handoff — page composer restores it
+    removeDock(id);
+    navigate({ name: "compose" });
+  };
+  // Orphaned dock drafts: exiting with a draft minimized leaves its
+  // `kiwi.draft.dock.<id>` key behind. On the next boot, sweep each orphan
+  // into its owning account's page-draft slot — but ONLY when that slot is
+  // empty (never clobber a newer draft), then drop the dock key.
+  useEffect(() => {
+    try {
+      for (const key of Object.keys(window.localStorage)) {
+        if (!key.startsWith("kiwi.draft.dock.")) continue;
+        const raw = window.localStorage.getItem(key);
+        window.localStorage.removeItem(key);
+        if (!raw) continue;
+        try {
+          const d = JSON.parse(raw) as { account?: unknown };
+          const acct = typeof d.account === "string" && d.account ? d.account : "default";
+          const slot = `kiwi.draft.${acct}`;
+          if (!window.localStorage.getItem(slot)) window.localStorage.setItem(slot, raw);
+        } catch {
+          // Malformed payload — dropped with the key.
+        }
+      }
+    } catch {
+      // Storage unavailable — leave every draft untouched.
+    }
+  }, []);
+  // Pointer-down outside an expanded dock minimizes it (never destroys).
+  useEffect(() => {
+    if (!docks.some((d) => !d.minimized)) return;
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t?.closest(".em-dock") || t?.closest(".em-dock-chips")) return;
+      setDocks((ds) => ds.map((d) => ({ ...d, minimized: true })));
+      setDockAnnc("Draft minimized — kept as a chip.");
+    };
+    document.addEventListener("pointerdown", onDown, true);
+    return () => document.removeEventListener("pointerdown", onDown, true);
+  }, [docks]);
 
   // UI prefs (accent/density) apply from storage on mount; data-theme is
   // applied by useTheme (above) — installed theme ids resolve via registry.
@@ -251,9 +337,26 @@ export default function App() {
         unlisten = fn;
       })
       .catch(() => undefined);
+    // T-345: tray events — Compose navigates to the compose route (the
+    // window was already raised backend-side); Quit-with-pending-outbox
+    // arms the confirm modal below.
+    let unlistenTrayCompose: (() => void) | undefined;
+    let unlistenQuit: (() => void) | undefined;
+    onTrayCompose(() => navigate({ name: "compose" }))
+      .then((fn) => {
+        unlistenTrayCompose = fn;
+      })
+      .catch(() => undefined);
+    onQuitRequested((pending) => setQuitPending(pending))
+      .then((fn) => {
+        unlistenQuit = fn;
+      })
+      .catch(() => undefined);
     return () => {
       if (timer) clearTimeout(timer);
       unlisten?.();
+      unlistenTrayCompose?.();
+      unlistenQuit?.();
     };
   }, [demo, loadFolders, refreshOutbox, notify]);
 
@@ -458,9 +561,10 @@ export default function App() {
   const loadSecurity = useCallback(async () => {
     if (demo) return;
     try {
-      const [f, e] = await Promise.all([api.securityFindings(), api.securityEvents(100)]);
+      const [f, e, s] = await Promise.all([api.securityFindings(), api.securityEvents(100), api.sandboxSessions()]);
       setFindings(f.map((x, i) => findingToInfo(x as never, i)));
       setEvents(e.map((x) => eventToRow(x as never, (id) => (id ? (emailById.get(id) ?? id) : "—"))));
+      setSandboxOpens(s.sessions.length);
     } catch {
       // Security panels keep last-known values; errors surface in-view on demand.
     }
@@ -868,11 +972,55 @@ export default function App() {
         }
       }
       await reloadMail();
-      const summary = fail === 0 ? `Moved ${moved} message(s).` : `Moved ${moved}, ${fail} failed.`;
+      const dstName = Object.values(folderLists).flat().find((f) => f.id === dstFolderId)?.name;
+      const where = dstName ? ` to ${dstName}` : "";
+      const summary = fail === 0 ? `Moved ${moved} message(s)${where}.` : `Moved ${moved}${where}, ${fail} failed.`;
       setSyncNote(summary);
       notify(fail === 0 ? "ok" : "warn", summary);
     },
-    [demo, groupByFolder, reloadMail, notify],
+    [demo, groupByFolder, reloadMail, notify, folderLists],
+  );
+
+  /**
+   * T-332 copy-to: same grouping/chunk shape as moveToFolder but hits
+   * kiwi_copy_messages — a LOCAL duplicate (never server-side IMAP COPY;
+   * the contract files the reconcile gap). src==dst groups no-op like
+   * move (a same-folder duplicate would be a real copy — skipped so the
+   * count never claims it). Toast names the destination; no undo — no
+   * undo IPC exists.
+   */
+  const copyToFolder = useCallback(
+    async (ids: string[], dstFolderId: number) => {
+      if (demo || ids.length === 0) {
+        if (ids.length === 0) return;
+        notify("info", "Demo mode — copy needs the Tauri backend.");
+        return;
+      }
+      const { groups, missing } = groupByFolder(ids);
+      let copied = 0;
+      let fail = missing;
+      for (const g of groups) {
+        if (g.folderId === dstFolderId) {
+          copied += g.uids.length; // already in the destination
+          continue;
+        }
+        for (let i = 0; i < g.uids.length; i += 400) {
+          try {
+            const r = await api.copyMessages(g.accountId, g.folderId, dstFolderId, g.uids.slice(i, i + 400));
+            copied += r.copied;
+          } catch {
+            fail += g.uids.slice(i, i + 400).length;
+          }
+        }
+      }
+      await reloadMail();
+      const dstName = Object.values(folderLists).flat().find((f) => f.id === dstFolderId)?.name;
+      const where = dstName ? ` to ${dstName}` : "";
+      const summary = fail === 0 ? `Copied ${copied} message(s)${where}.` : `Copied ${copied}${where}, ${fail} failed.`;
+      setSyncNote(summary);
+      notify(fail === 0 ? "ok" : "warn", summary);
+    },
+    [demo, groupByFolder, reloadMail, notify, folderLists],
   );
 
   /**
@@ -997,6 +1145,110 @@ export default function App() {
     [demo, selectedEnvelope, notify],
   );
 
+  // T-318: folder ctx-menu "Export to mbox…" → path dialog → real IPC.
+  const [exportDlg, setExportDlg] = useState<{ folderId: number; label: string } | null>(null);
+  const [exportDlgPath, setExportDlgPath] = useState("");
+  const [exportDlgBusy, setExportDlgBusy] = useState(false);
+  const [exportDlgErr, setExportDlgErr] = useState<string | null>(null);
+  const openFolderExport = useCallback(
+    (folderKey: string, label: string) => {
+      const fid = Number(folderKey.split(":").pop());
+      if (!Number.isFinite(fid) || fid <= 0) {
+        notify("error", `Can't export “${label}” — not a real folder id.`);
+        return;
+      }
+      setExportDlgErr(null);
+      setExportDlgPath("");
+      setExportDlg({ folderId: fid, label });
+    },
+    [notify],
+  );
+  const runFolderExport = useCallback(async () => {
+    if (!exportDlg) return;
+    let path = exportDlgPath.trim();
+    if (!path) {
+      setExportDlgErr("Enter a destination path first.");
+      return;
+    }
+    if (!/\.mbox$/i.test(path)) path = `${path}.mbox`;
+    setExportDlgBusy(true);
+    setExportDlgErr(null);
+    try {
+      const r = await api.mailboxExportMbox(exportDlg.folderId, path);
+      const parts = [`Exported ${r.exported}`, `${r.bytes.toLocaleString()} B`];
+      if (r.skipped > 0) parts.push(`${r.skipped} skipped`);
+      if (r.truncated) parts.push("truncated at member cap");
+      if (r.exported === 0 && r.skipped === 0) parts.push("folder was empty");
+      notify(r.partial ? "warn" : "ok", `mbox export — ${parts.join(" · ")} → ${path}`);
+      setExportDlg(null);
+    } catch (e) {
+      setExportDlgErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setExportDlgBusy(false);
+    }
+  }, [exportDlg, exportDlgPath, notify]);
+
+  // T-322: folder CRUD — create/rename/delete resolve to null (tree refresh
+  // + toast) or the backend's error string shown verbatim in the dialog.
+  // Contract limits ops to local folders; remote/system come back
+  // policy-blocked and land in the dialog as-is.
+  const folderOp = useCallback(
+    async (op: FolderOp): Promise<string | null> => {
+      if (demo) return "Folder management needs the Tauri backend — demo folders are fixtures.";
+      try {
+        if (op.kind === "create") {
+          const f = await api.createFolder(op.accountId, op.name, op.parentId);
+          notify("ok", `Created local folder “${f.name}” (not synced to the server).`);
+        } else if (op.kind === "rename") {
+          const f = await api.renameFolder(op.accountId, op.folderId, op.newName);
+          notify("ok", `Renamed to “${f.name}”.`);
+        } else if (op.kind === "empty") {
+          // T-323-aux: drain the folder via the real delete path — list a
+          // page, delete chunked (permanent), repeat until empty or the
+          // folder stops shrinking (honest stall, not a silent spin).
+          let removed = 0;
+          let failed = 0;
+          for (let round = 0; round < 25; round++) {
+            const page = await api.listMessages(op.accountId, op.folderId, 500);
+            if (page.length === 0) break;
+            let progressed = 0;
+            for (let i = 0; i < page.length; i += 400) {
+              try {
+                const r = await api.deleteMessages(
+                  op.accountId,
+                  op.folderId,
+                  page.slice(i, i + 400).map((m) => m.uid),
+                  true,
+                );
+                progressed += r.movedToTrash + r.deleted;
+                removed += r.movedToTrash + r.deleted;
+              } catch {
+                failed += page.slice(i, i + 400).length;
+              }
+            }
+            if (progressed === 0) break;
+            if (page.length < 500) break;
+          }
+          await reloadMail();
+          if (removed === 0 && failed > 0)
+            return `Empty failed — ${failed} message${failed === 1 ? "" : "s"} could not be deleted.`;
+          notify(
+            failed === 0 ? "ok" : "warn",
+            `Emptied folder — ${removed} permanently deleted${failed > 0 ? `, ${failed} failed` : ""}.`,
+          );
+        } else {
+          await api.deleteFolder(op.accountId, op.folderId);
+          notify("ok", "Folder deleted.");
+        }
+        void loadFolders();
+        return null;
+      } catch (e) {
+        return e instanceof Error ? e.message : String(e);
+      }
+    },
+    [demo, loadFolders, notify, reloadMail],
+  );
+
   /** Flag/star overrides applied, query NOT applied — feeds mailbox + search. */
   const baseMessages = useMemo(() => {
     // T-267 smart-folder predicates. Demo slugs map onto DEMO_MESSAGES
@@ -1109,7 +1361,7 @@ export default function App() {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "n") {
         if (!isTyping(e.target)) {
           e.preventDefault();
-          navigate({ name: "compose" });
+          requestCompose();
         }
         return;
       }
@@ -1195,7 +1447,7 @@ export default function App() {
 
   const paletteActions: PaletteAction[] = useMemo(() => {
     const list: PaletteAction[] = [
-      { id: "compose", label: "Compose new message", hint: "r", run: () => navigate({ name: "compose" }) },
+      { id: "compose", label: "Compose new message", hint: "r", run: requestCompose },
       {
         id: "search",
         label: "Focus message search",
@@ -1338,9 +1590,9 @@ export default function App() {
         syncing={syncing}
         hasSelection={!!selectedEnvelope}
         inTrash={folderKey === "trash" || /trash|deleted|bin/i.test(folderLabel)}
-        onReply={() => navigate({ name: "compose" })}
-        onReplyAll={() => navigate({ name: "compose" })}
-        onForward={() => navigate({ name: "compose" })}
+        onReply={() => selectedEnvelope && seedCompose("reply", selectedEnvelope, body)}
+        onReplyAll={() => selectedEnvelope && seedCompose("replyAll", selectedEnvelope, body)}
+        onForward={() => selectedEnvelope && seedCompose("forward", selectedEnvelope, body)}
         onMarkRead={(read) => {
           if (selectedEnvelope) void bulkPatch([selectedEnvelope.id], { seen: read }, read ? "Marked read" : "Marked unread");
         }}
@@ -1372,10 +1624,35 @@ export default function App() {
             smartUnread={smartUnread}
             accountSections={accountSections}
             activeFolder={route.name === "mail" ? (route.folder ?? "all-inboxes") : "all-inboxes"}
+            onDropMessages={(ids, folderKey) => {
+              // T-317: drag→folder drop. The composite "accountId:folderId"
+              // resolves to the numeric id moveToFolder chunks onto
+              // kiwi_move_messages — same path as the Move-to menu.
+              if (demo) {
+                notify("info", "Demo mode — move needs the Tauri backend.");
+                return;
+              }
+              const fid = Number(folderKey.split(":").pop());
+              if (!Number.isFinite(fid)) return;
+              void moveToFolder(ids, fid);
+            }}
             outboxCount={outbox.length}
             foldersError={foldersError}
             demo={demo}
+            disposable={{
+              unread: temp.unread,
+              active: route.name === "disposable",
+              canCreate: !demo,
+              busy: temp.busy !== null,
+              onNew: () => {
+                // Create (or fail) THEN land on the inbox view either way —
+                // the view surfaces temp.error/flash honestly.
+                void temp.create().finally(() => navigate({ name: "disposable" }));
+              },
+            }}
             onMarkAllRead={(key) => void markFolderRead(key)}
+            onExportMbox={openFolderExport}
+            onFolderOp={folderOp}
           />
         }
         rail={
@@ -1392,6 +1669,9 @@ export default function App() {
                 flagged: demo ? (smartUnread["flagged"] ?? null) : null,
                 unreplied: demo ? (smartUnread["unreplied"] ?? null) : null,
                 activeDevices: demo ? null : devices.filter((d) => d.status === "active").length,
+                // T-312: real count from kiwi_sandbox_sessions (bounded,
+                // completed opens). null in demo — never a fixture.
+                sandboxOpens: demo ? null : sandboxOpens,
                 demo,
               }}
             />
@@ -1409,6 +1689,9 @@ export default function App() {
             )}
             {foldersError && <span> · folders: {foldersError}</span>}
             {demo && <span> · demo mode — run the Tauri backend for live data</span>}
+            {appInfo?.devPlaintext && (
+              <span className="dev-plaintext-chip"> · DEV — plaintext allowed (loopback)</span>
+            )}
             <button type="button" onClick={() => navigate({ name: "setup" })}>
               Add account
             </button>
@@ -1463,6 +1746,7 @@ export default function App() {
             folderLists={folderLists}
             onSnooze={(ids, preset) => void snoozeIds(ids, preset)}
             onMoveToFolder={(ids, dst) => void moveToFolder(ids, dst)}
+            onCopyToFolder={(ids, dst) => void copyToFolder(ids, dst)}
           />
         )}
         {route.name === "compose" && (
@@ -1514,6 +1798,189 @@ export default function App() {
             </div>
           </div>
         )}
+        {/* T-343 floating compose docks — chrome over the real ComposeView.
+            Hidden (not unmounted) while the full-page composer is up so the
+            1s-debounced autosave can't drop keystrokes. */}
+        {docks.length > 0 && (
+          <div className={`em-dock-layer${docks.some((d) => !d.minimized) ? " has-open" : ""}`} hidden={route.name === "compose"}>
+            <span role="status" aria-live="polite" className="em-visually-hidden">
+              {dockAnnc}
+            </span>
+            {docks.map((d) => (
+              <div key={d.id} hidden={d.minimized}>
+                <ComposeDockCard
+                  subject={d.subject}
+                  focused={!d.minimized && route.name !== "compose"}
+                  onMinimize={() => minimizeDock(d.id)}
+                  onExpand={() => expandDock(d.id)}
+                >
+                  <ComposeView
+                    mode={mode}
+                    accounts={accountsRaw.map((a) => ({ id: a.id, email: a.email, displayName: a.displayName || a.email }))}
+                    onSent={() => {
+                      void refreshOutbox();
+                      void refreshStatus();
+                    }}
+                    onNotify={notify}
+                    dock={{
+                      hidden: d.minimized || route.name === "compose",
+                      draftKey: `kiwi.draft.dock.${d.id}`,
+                      // Same-ref return when unchanged — otherwise every App
+                      // render (new `dock` object) would re-report and loop.
+                      onSubject: (s) =>
+                        setDocks((ds) =>
+                          ds.some((x) => x.id === d.id && x.subject !== s)
+                            ? ds.map((x) => (x.id === d.id ? { ...x, subject: s } : x))
+                            : ds,
+                        ),
+                      onDone: () => removeDock(d.id),
+                      onMinimize: () => minimizeDock(d.id),
+                      onExpand: () => expandDock(d.id),
+                      flushRef: d.flushRef,
+                      discardRef: d.discardRef,
+                    }}
+                  />
+                </ComposeDockCard>
+              </div>
+            ))}
+            {docks.some((d) => d.minimized) && (
+              <div className="em-dock-chips" role="group" aria-label="Minimized drafts">
+                {docks
+                  .filter((d) => d.minimized)
+                  .map((d) => (
+                    <span key={d.id} className="em-dock-chip">
+                      <button
+                        type="button"
+                        className="em-dock-chip-label"
+                        onClick={() => restoreDock(d.id)}
+                        aria-label={`Draft: ${d.subject || "New message"} — restore`}
+                        title="Restore draft"
+                      >
+                        {d.subject || "New message"}
+                      </button>
+                      <button
+                        type="button"
+                        className="em-dock-chip-x"
+                        aria-label={`Discard draft${d.subject ? `: ${d.subject}` : ""}`}
+                        title="Discard draft"
+                        onClick={() => d.discardRef.current?.()}
+                      >
+                        <Icon name="close" size={10} />
+                      </button>
+                    </span>
+                  ))}
+              </div>
+            )}
+          </div>
+        )}
+        {exportDlg && (
+          <div
+            className="ms-composer-backdrop"
+            onMouseDown={(e) => {
+              if (e.target === e.currentTarget && !exportDlgBusy) setExportDlg(null);
+            }}
+          >
+            <div
+              className="ms-composer-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-label={`Export ${exportDlg.label} to mbox`}
+              style={{ width: "min(430px, 100%)" }}
+              onKeyDown={(e) => {
+                if (e.key === "Escape" && !exportDlgBusy) setExportDlg(null);
+              }}
+            >
+              <div className="ms-composer-head">
+                <h1>Export “{exportDlg.label}” to mbox</h1>
+                <button
+                  type="button"
+                  className="ms-btn"
+                  onClick={() => setExportDlg(null)}
+                  disabled={exportDlgBusy}
+                  aria-label="Close export dialog"
+                >
+                  <Icon name="close" size={12} />
+                </button>
+              </div>
+              <p>
+                <label htmlFor="ctx-export-path">Destination file</label>
+                <br />
+                <input
+                  id="ctx-export-path"
+                  type="text"
+                  value={exportDlgPath}
+                  onChange={(e) => setExportDlgPath(e.target.value)}
+                  placeholder="C:\\…\\folder.mbox"
+                  style={{ width: "100%" }}
+                  disabled={exportDlgBusy}
+                  autoFocus
+                />
+                <br />
+                <small style={{ color: "var(--kiwi-text-secondary)" }}>
+                  kiwi_mailbox_export_mbox — .mbox appended if missing; atomic write. Rows whose body
+                  can't be loaded are skipped and reported.
+                </small>
+              </p>
+              {exportDlgErr && (
+                <div className="kiwi-banner error" role="alert">
+                  <small>{exportDlgErr}</small>
+                </div>
+              )}
+              <p style={{ marginBottom: 0 }}>
+                <button type="button" onClick={() => void runFolderExport()} disabled={exportDlgBusy}>
+                  {exportDlgBusy ? "Exporting…" : "Export"}
+                </button>{" "}
+                <button type="button" onClick={() => setExportDlg(null)} disabled={exportDlgBusy}>
+                  Cancel
+                </button>
+              </p>
+            </div>
+          </div>
+        )}
+        {quitPending !== null && (
+          <div
+            className="ms-composer-backdrop"
+            onMouseDown={(e) => {
+              if (e.target === e.currentTarget) setQuitPending(null);
+            }}
+          >
+            <div
+              className="ms-composer-modal"
+              role="alertdialog"
+              aria-modal="true"
+              aria-label="Confirm quit"
+              style={{ width: "min(430px, 100%)" }}
+              onKeyDown={(e) => {
+                if (e.key === "Escape") setQuitPending(null);
+              }}
+            >
+              <div className="ms-composer-head">
+                <h1>Quit KIWI?</h1>
+                <button
+                  type="button"
+                  className="ms-btn"
+                  onClick={() => setQuitPending(null)}
+                  aria-label="Cancel quit"
+                >
+                  <Icon name="close" size={12} />
+                </button>
+              </div>
+              <p>
+                <b>{quitPending} message{quitPending === 1 ? " is" : "s are"} still queued</b> in the
+                outbox and won’t send until KIWI runs again. Quitting now abandons them to the next
+                launch.
+              </p>
+              <p style={{ marginBottom: 0 }}>
+                <button type="button" onClick={() => void api.confirmQuit()}>
+                  Quit anyway
+                </button>{" "}
+                <button type="button" onClick={() => setQuitPending(null)} autoFocus>
+                  Stay open
+                </button>
+              </p>
+            </div>
+          </div>
+        )}
         {route.name === "setup" && (
           <SetupWizardView
             mode={mode}
@@ -1528,6 +1995,7 @@ export default function App() {
           <SettingsView
             mode={mode}
             accounts={accountsRaw}
+            appInfo={appInfo}
             orgBinding={appInfo?.org ?? null}
             onAccountsChanged={() => void refreshAccounts()}
             onStatusChanged={() => void refreshStatus()}
@@ -1542,6 +2010,7 @@ export default function App() {
             }}
             onLock={() => void doLock()}
             folderLists={folderLists}
+            temp={temp}
             filters={{
               demo,
               accounts: accountsRaw.map((a) => ({ id: a.id, email: a.email, displayName: a.displayName || a.email })),
@@ -1568,6 +2037,7 @@ export default function App() {
             onNotify={notify}
           />
         )}
+        {route.name === "disposable" && <DisposableInboxView temp={temp} live={!demo} />}
         {route.name === "search" && (
           <SearchView
             query={query}
@@ -1601,6 +2071,19 @@ export default function App() {
 
       {trust.locked && (
         <LockOverlay
+          onDevUnlock={
+            !demo && appInfo?.devPlaintext
+              ? () => {
+                  void (async () => {
+                    try {
+                      setTrust(toTrustState(await api.devUnlock()));
+                    } catch (e) {
+                      setLockReason(e instanceof Error ? e.message : String(e));
+                    }
+                  })();
+                }
+              : undefined
+          }
           reason={demo ? `${lockReason} (Demo: auto-approves.)` : lockReason}
           busy={verifying}
           trustLines={[

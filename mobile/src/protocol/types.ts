@@ -42,8 +42,12 @@ export interface ChallengeResponseData {
   event: ChallengeEvent;
   /** Ed25519 signature over canonicalChallengeBytes(challenge). */
   signature_b64: string;
-  /** Optional explicit denial marker; absent = approve (see contract §6.3). */
-  decision?: 'approve' | 'deny';
+  /**
+   * Explicit decision, always present (contract §6.2/§6.3): `approve`
+   * carries a real 64-byte signature, `deny` carries the empty string and
+   * confers no authorization. Absence is never read as approval.
+   */
+  decision: 'approve' | 'deny';
 }
 
 export type Decision = 'approve' | 'deny';
@@ -53,3 +57,19 @@ export type DeliveryResult =
   | { kind: 'offline'; reason: string };
 
 export type DeliveryOutcome = DeliveryResult | { kind: 'skipped'; reason: string };
+
+/**
+ * Locally held paired-device identity (app state, not a wire shape — T-194).
+ * `deviceId` is desktop-assigned during pairing; `keystoreRef` points at the
+ * private key that never leaves the platform keystore (contract §5);
+ * `desktopKeyB64` is the QR-carried pin the channel must match (§3.1).
+ */
+export interface PairedIdentity {
+  deviceId: string;
+  deviceLabel: string;
+  desktopEndpoint: string;
+  desktopKeyB64: string;
+  keystoreRef: string;
+  publicKeyB64: string;
+  pairedUnix: number;
+}

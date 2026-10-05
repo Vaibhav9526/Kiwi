@@ -28,12 +28,17 @@
 //! side-effecting part.
 
 mod apply;
+mod blocklist;
 mod eval;
 mod model;
 
 pub use apply::{
     ARCHIVE_FOLDER, AppliedRules, ApplyNowReport, EvalStage, PreviewConditionHit, PreviewHit,
     RulePreview, TRASH_FOLDER, apply_now, apply_on_ingest, preview_rule,
+};
+pub use blocklist::{
+    BlockedSender, MAX_BLOCK_SENDER_LEN, block_sender, blocked_addresses, is_blocked,
+    list_blocked_senders, normalize_sender, unblock_sender,
 };
 pub use eval::evaluate;
 pub(crate) use model::RuleSpec;

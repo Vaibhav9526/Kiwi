@@ -1,0 +1,489 @@
+/* Ported from Mailspring:
+ *   app/static/style/components/menu.less              — the .menu/.item rules
+ *     the completions dropdown needs (TokenizingTextField renders Menu)
+ *   app/static/style/components/key-commands-region.less
+ *   app/static/style/components/tokenizing-text-field.less
+ *   app/internal_packages/composer/styles/composer.less — the
+ *     .composer-participant-field / .participant subset (.button-dropdown,
+ *     .from-single-name, .contact.is-alias rules omitted — they belong to the
+ *     from-field account dropdown, not this component chain)
+ *
+ * Less-var -> token mapping (no gradients per KIWI rules, so the vendor's
+ * token-top/token-bottom gradient pairs collapse to flat surfaces; color-mix()
+ * preserves the vendor's mix()/fade() semantics on themed tokens):
+ *   @background-primary            -> var(--kiwi-ms-surface)
+ *   @background-secondary          -> var(--kiwi-ms-surface-2)
+ *   token gradient mid             -> var(--kiwi-ms-surface-3)
+ *   @accent-primary                -> var(--kiwi-ms-accent)
+ *   @component-active-color        -> var(--kiwi-ms-accent-active)
+ *   @text-color                    -> var(--kiwi-ms-text)
+ *   @text-color-very-subtle        -> var(--kiwi-ms-text-muted)
+ *   @text-color-inverse            -> var(--kiwi-ms-primary-text)
+ *   @text-color-inverse-subtle     -> color-mix(80% primary-text)
+ *   @text-color-inverse-very-subtle-> color-mix(50% primary-text)
+ *   @border-color-secondary        -> var(--kiwi-ms-border)
+ *   @border-color-divider          -> var(--kiwi-ms-divider)
+ *   @border-radius-base / -small   -> var(--kiwi-ms-radius-base) / --small
+ *   @spacing-three-quarters        -> var(--kiwi-ms-space-three-quarter)
+ *   @padding-base-vertical/horizontal -> --kiwi-ms-btn-pad-y / --kiwi-ms-btn-pad-x
+ *   @font-weight-semi-bold         -> var(--kiwi-ms-weight-semibold)
+ *   @font-size-small               -> var(--kiwi-ms-text-small)
+ *   @standard-shadow               -> var(--kiwi-ms-shadow-*)
+ *   red (invalid tokens)           -> var(--kiwi-ms-danger)
+ *
+ * KIWI seams:
+ * - RetinaImg (ms/retina-img.tsx) resolves `composer-caret.png` through the
+ *   Icon registry to `chevron-down` — an inline svg.kiwi-icon stroked
+ *   currentColor, so it inherits `.action`/`color` rules (the vendor used a
+ *   mask-image img; svg sizing stands in for `img { background-color }`).
+ * - .item.checked uses a text ✓ (./images/menu/checked@2x.png has no KIWI
+ *   asset).
+ * - body.is-blurred / body.platform-win32 rules are ported but dormant —
+ *   KIWI doesn't set those classes today.
+ */
+
+/* ------------------- menu.less (completions dropdown) ------------------- */
+
+.menu {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.menu .header-container {
+  flex-shrink: 0; /* Don't squish the header! There may be a search box here */
+  background-color: var(--kiwi-ms-surface-2);
+  border-bottom: 1px solid var(--kiwi-ms-border);
+  padding: 3px;
+  position: relative;
+}
+
+.menu .footer-container {
+  position: relative;
+}
+
+.menu .content-container {
+  background: var(--kiwi-ms-surface-2);
+  width: 100%;
+  margin-top: -1px;
+  overflow: auto;
+}
+
+.menu .content-container::-webkit-scrollbar {
+  width: 8px;
+}
+.menu .content-container::-webkit-scrollbar-track {
+  background: transparent;
+}
+.menu .content-container::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--kiwi-ms-text) 20%, transparent);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.menu .content-container::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--kiwi-ms-text) 35%, transparent);
+  background-clip: padding-box;
+}
+
+.menu .item {
+  display: block;
+  padding-left: var(--kiwi-ms-btn-pad-x);
+  padding-top: var(--kiwi-ms-btn-pad-y);
+  padding-bottom: var(--kiwi-ms-btn-pad-y);
+  cursor: default;
+  color: var(--kiwi-ms-text);
+  width: 100%;
+  overflow: hidden;
+}
+
+.menu .item .primary {
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.menu .item .secondary {
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  padding-left: 5px;
+  color: var(--kiwi-ms-text-muted);
+}
+
+.menu .item.divider {
+  font-weight: var(--kiwi-ms-weight-semibold);
+  color: var(--kiwi-ms-divider);
+  font-size: var(--kiwi-ms-text-small);
+  text-transform: uppercase;
+  margin-top: 10px;
+  pointer-events: none;
+}
+
+/* KIWI seam: vendor used background-image url(./images/menu/checked@2x.png);
+ * no bitmap assets in KIWI — a text checkmark instead. */
+.menu .item.checked::after {
+  content: "\2713";
+  float: right;
+  margin-right: 20px;
+}
+
+.menu .item.selected,
+.menu .item:active {
+  text-decoration: none;
+  background-color: var(--kiwi-ms-accent);
+  color: var(--kiwi-ms-primary-text);
+}
+.menu .item.selected .primary,
+.menu .item:active .primary {
+  color: var(--kiwi-ms-primary-text);
+}
+.menu .item.selected .secondary,
+.menu .item:active .secondary {
+  color: color-mix(in srgb, var(--kiwi-ms-primary-text) 50%, transparent);
+}
+
+.menu .item:not(.active):not(.selected):hover {
+  text-decoration: none;
+  background-color: color-mix(in srgb, var(--kiwi-ms-text) 5%, transparent);
+}
+
+body.platform-win32 .menu .header-container input.search {
+  box-shadow: none;
+}
+
+/* ------------- key-commands-region.less ------------- */
+
+.key-commands-region {
+  position: relative;
+  height: 100%;
+  width: 100%;
+}
+
+/* ------------- tokenizing-text-field.less ------------- */
+
+.tokenizing-field {
+  display: block;
+  margin: 0;
+  padding: 0;
+  position: relative;
+
+  /* flat stand-ins for the vendor's @token-* gradient pair */
+  --ms-token-bg: var(--kiwi-ms-surface-3);
+  --ms-token-hover-bg: color-mix(in srgb, var(--ms-token-bg) 91%, var(--kiwi-ms-accent-active));
+  --ms-token-selected-bg: var(--kiwi-ms-accent-active);
+  --ms-token-invalid-selected-bg: color-mix(
+    in srgb,
+    var(--kiwi-ms-danger) 42%,
+    var(--ms-token-bg)
+  );
+  --ms-token-ring: 0 0.5px 0 rgba(0, 0, 0, 0.17), 0 -0.5px 0 rgba(0, 0, 0, 0.17),
+    0.5px 0 0 rgba(0, 0, 0, 0.17), -0.5px 0 0 rgba(0, 0, 0, 0.17), 0 1px 1px rgba(0, 0, 0, 0.1);
+}
+
+.tokenizing-field.disabled {
+  background: rgba(0, 0, 0, 0.02);
+  opacity: 0.7;
+}
+.tokenizing-field.disabled .token {
+  background: var(--ms-token-bg);
+  box-shadow: var(--ms-token-ring);
+}
+.tokenizing-field.disabled .token:hover {
+  background: var(--ms-token-bg);
+  cursor: default;
+  box-shadow: var(--ms-token-ring);
+}
+.tokenizing-field.disabled .tokenizing-field-input:hover {
+  cursor: default;
+}
+.tokenizing-field.disabled:hover {
+  cursor: default;
+}
+
+.tokenizing-field .content-container {
+  border: 1px solid var(--kiwi-ms-border);
+  box-shadow: var(--kiwi-ms-shadow-raised);
+  border-radius: var(--kiwi-ms-radius-small);
+  background-color: var(--kiwi-ms-surface);
+  position: absolute;
+  z-index: 3;
+}
+
+.tokenizing-field .content-container.empty {
+  border: 0;
+  box-shadow: none;
+}
+
+.tokenizing-field .header-container,
+.tokenizing-field .footer-container {
+  background-color: transparent;
+  padding: 0;
+  margin: 0;
+  border: 0;
+}
+
+.tokenizing-field .token-editing-input {
+  max-width: 100%;
+  font-size: var(--kiwi-ms-text-base);
+  line-height: 17px;
+  padding: 2em;
+  padding-right: 1.5em;
+  margin: 3px 6px 6px 1px;
+}
+.tokenizing-field .token-editing-input input {
+  font-size: var(--kiwi-ms-text-base);
+}
+
+.tokenizing-field .token {
+  display: inline-block;
+  position: relative;
+  color: var(--kiwi-ms-text);
+  padding: 0 var(--kiwi-ms-space-three-quarter);
+  padding-right: 1.5em;
+  margin: 1px 5px 1px 1px;
+  border-radius: var(--kiwi-ms-radius-base);
+  max-width: 100%;
+  line-height: 1.9em;
+
+  /* vendor: linear-gradient(token-top, token-bottom) — flat per KIWI rules */
+  background: var(--ms-token-bg);
+  box-shadow: var(--ms-token-ring);
+  vertical-align: middle;
+}
+
+.tokenizing-field .token .action {
+  position: absolute;
+  padding: 0;
+  border: 0;
+  margin: 0;
+  right: 7px;
+  background-color: transparent;
+  color: var(--kiwi-ms-text-muted);
+  font-size: 10px;
+}
+/* KIWI seam: vendor tinted composer-caret.png via img background-color +
+ * mask-image; the Icon-registry svg strokes currentColor — inherits .action
+ * color — so only sizing is needed here. */
+.tokenizing-field .token .action .kiwi-icon {
+  width: 9px;
+  height: 9px;
+  display: block;
+}
+
+.tokenizing-field .token:hover {
+  background: var(--ms-token-hover-bg);
+  box-shadow: 0 0.5px 0 color-mix(in srgb, var(--ms-token-hover-bg), #000 35%),
+    0 -0.5px 0 color-mix(in srgb, var(--ms-token-hover-bg), #000 25%),
+    0.5px 0 0 color-mix(in srgb, var(--ms-token-hover-bg), #000 25%),
+    -0.5px 0 0 color-mix(in srgb, var(--ms-token-hover-bg), #000 25%),
+    0 1px 1px rgba(0, 0, 0, 0.07);
+  cursor: default;
+}
+.tokenizing-field .token.invalid {
+  border-bottom: 1px dashed var(--kiwi-ms-danger);
+  margin-bottom: -1px;
+  background: transparent;
+}
+.tokenizing-field .token.invalid:hover {
+  box-shadow: 0 -0.5px 0 var(--ms-token-invalid-selected-bg),
+    0.5px 0 0 var(--ms-token-invalid-selected-bg),
+    -0.5px 0 0 var(--ms-token-invalid-selected-bg), 0 1px 1px rgba(0, 0, 0, 0.07);
+}
+.tokenizing-field .token.invalid.selected,
+.tokenizing-field .token.invalid.dragging {
+  background: var(--ms-token-invalid-selected-bg);
+  box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, 0.3), 0 1px 1px rgba(0, 0, 0, 0.1);
+  border: 1px solid color-mix(in srgb, var(--ms-token-invalid-selected-bg), #000 8%);
+  border-top: 1px solid color-mix(in srgb, var(--ms-token-invalid-selected-bg), #000 10%);
+}
+
+.tokenizing-field .token.selected,
+.tokenizing-field .token.dragging {
+  background: var(--ms-token-selected-bg);
+  box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, 0.3), 0 1px 1px rgba(0, 0, 0, 0.1);
+  border: 1px solid color-mix(in srgb, var(--ms-token-selected-bg), #000 8%);
+  border-top: 1px solid color-mix(in srgb, var(--ms-token-selected-bg), #000 10%);
+  border-radius: var(--kiwi-ms-radius-base);
+
+  /* Note: we switch from 0.5px borders with box shadows to a real border,
+     because the 0.5px shadows can't be as dark as we want. This means
+     margins / border radius change by 1px. */
+  margin: 0 4px 0 0;
+
+  color: var(--kiwi-ms-primary-text);
+}
+.tokenizing-field .token.selected .action,
+.tokenizing-field .token.dragging .action {
+  color: color-mix(in srgb, var(--kiwi-ms-primary-text) 80%, transparent);
+}
+.tokenizing-field .token.selected .secondary,
+.tokenizing-field .token.dragging .secondary,
+.tokenizing-field .token.selected .participant-secondary,
+.tokenizing-field .token.dragging .participant-secondary {
+  color: color-mix(in srgb, var(--kiwi-ms-primary-text) 80%, transparent);
+}
+.tokenizing-field .token.dragging {
+  cursor: grabbing;
+}
+
+.tokenizing-field .tokenizing-field-label {
+  color: var(--kiwi-ms-text-muted);
+  float: left;
+  text-transform: capitalize;
+  padding-top: 12px;
+  display: block;
+}
+.tokenizing-field .tokenizing-field-label:hover {
+  cursor: default;
+}
+
+.tokenizing-field .tokenizing-field-input {
+  position: relative;
+  margin-left: 2.8em;
+  padding-top: 9px;
+  padding-bottom: 3px;
+}
+.tokenizing-field .tokenizing-field-input:hover {
+  cursor: text;
+}
+.tokenizing-field .tokenizing-field-input.at-max-tokens {
+  cursor: default;
+}
+.tokenizing-field .tokenizing-field-input.at-max-tokens input:hover {
+  cursor: default;
+}
+.tokenizing-field .tokenizing-field-input.at-max-tokens input {
+  opacity: 0;
+}
+
+.tokenizing-field .tokenizing-field-input input {
+  display: inline-block;
+  width: initial;
+  vertical-align: top;
+  border: none;
+  min-width: 0.5em;
+  background-color: transparent;
+
+  /* NOTE: padding-top and padding-bottom need to match that of `.token` to
+     ensure they have the same baseline. The padding-left and padding-right
+     must be 0 so the width can be set to always match the input text. */
+  padding: 0.3em 0 0.3em 0;
+}
+
+.tokenizing-field .tokenizing-field-input input.noop-input {
+  position: absolute;
+  min-width: 0;
+  padding-left: 0;
+  margin-right: 0;
+  box-shadow: none;
+}
+.tokenizing-field .tokenizing-field-input input.noop-input:focus {
+  box-shadow: none;
+}
+
+.tokenizing-field .tokenizing-field-input input:focus {
+  box-shadow: none;
+}
+
+.tokenizing-field .placeholder {
+  color: color-mix(in srgb, var(--kiwi-ms-text) 50%, transparent);
+  position: absolute;
+  top: 50%;
+  margin-top: -0.75em;
+  left: 8px;
+}
+
+/* dormant in KIWI (no is-blurred class) — ported for parity */
+body.is-blurred .tokenizing-field .token:not(.invalid) {
+  background: var(--kiwi-ms-surface-2);
+  color: var(--kiwi-ms-text);
+}
+body.is-blurred .tokenizing-field .token:not(.invalid).selected .action {
+  color: var(--kiwi-ms-text-muted);
+}
+
+/* dormant in KIWI (no platform-win32 class) — ported for parity */
+body.platform-win32 .tokenizing-field .content-container {
+  border-radius: 0;
+}
+body.platform-win32 .tokenizing-field .tokenizing-field-input input,
+body.platform-win32 .tokenizing-field .tokenizing-field-input input:focus {
+  border: 0;
+  box-shadow: none;
+}
+body.platform-win32 .token {
+  border-radius: 0;
+  background: var(--ms-token-bg);
+}
+body.platform-win32 .token.selected,
+body.platform-win32 .token.dragging {
+  border-radius: 0;
+  background: var(--ms-token-selected-bg);
+}
+body.platform-win32 .token:hover {
+  background: var(--ms-token-hover-bg);
+}
+body.platform-win32 .token.invalid.selected,
+body.platform-win32 .token.invalid.dragging {
+  background: var(--ms-token-invalid-selected-bg);
+}
+
+/* ------------- composer.less .composer-participant-field subset ------------- */
+
+.composer-participant-field {
+  position: relative;
+  margin: 0;
+  flex-shrink: 0;
+  min-height: 46px;
+  color: var(--kiwi-ms-text);
+}
+
+.composer-participant-field .tokenizing-field-wrap {
+  padding: 0 22px;
+}
+
+.composer-participant-field .content-container {
+  margin-left: 22px;
+  width: calc(100% - 44px);
+}
+
+/* .composer-field-bottom-border mixin */
+.composer-participant-field::after {
+  width: calc(100% - 44px);
+  height: 1px;
+  position: absolute;
+  bottom: 0;
+  left: 23px;
+  content: " ";
+  background: var(--kiwi-ms-divider);
+}
+
+.composer-participant-field.from-field {
+  padding: 0 22px;
+}
+
+.composer-participant-field.replyto-field .tokenizing-field-input {
+  margin-left: 5.5em;
+}
+
+.composer-participant-field .participant {
+  display: flex;
+  align-items: center;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
+
+.composer-participant-field .participant .participant-primary {
+  font-weight: var(--kiwi-ms-weight-semibold);
+}
+
+.composer-participant-field .participant .participant-secondary {
+  color: var(--kiwi-ms-text-muted);
+}
+
+.composer-participant-field .tokenizing-field-input {
+  margin-left: 2.8em;
+}

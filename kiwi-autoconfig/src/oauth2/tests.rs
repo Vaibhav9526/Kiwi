@@ -673,6 +673,36 @@ fn listener_captures_error_redirect_and_times_out() {
     assert!(matches!(err, OAuthError::Expired));
 }
 
+#[test]
+fn listener_survives_reset_connections() {
+    // Browsers open speculative sockets alongside the real redirect, and
+    // security software probes freshly-bound loopback ports — a connection
+    // that dies mid-request (or a pending connection reset before accept)
+    // must not kill the grant.
+    let listener = LoopbackListener::bind().unwrap();
+    let port = listener.port();
+    let handle = std::thread::spawn(move || listener.wait(Duration::from_secs(10)));
+
+    // RST on close (linger=0) — the accepted stream reads ConnectionReset.
+    let addr: std::net::SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    for _ in 0..4 {
+        let s = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None)
+            .unwrap();
+        s.connect(&socket2::SockAddr::from(addr)).unwrap();
+        let _ = s.send(b"GET /?partia");
+        s.set_linger(Some(Duration::ZERO)).unwrap();
+        drop(s);
+    }
+    // One connection that opens and vanishes without a request.
+    drop(TcpStream::connect(("127.0.0.1", port)).unwrap());
+
+    let outcome = send_get(port, "/?code=LC-7&state=st-3");
+    assert!(outcome.starts_with("HTTP/1.1 200"));
+    let outcome = handle.join().unwrap().unwrap();
+    assert_eq!(outcome.code.as_deref(), Some("LC-7"));
+    assert_eq!(outcome.state.as_deref(), Some("st-3"));
+}
+
 // ---------------------------------------------------------------------------
 // RedirectOutcome parsing
 // ---------------------------------------------------------------------------

@@ -41,7 +41,7 @@ export const DEMO_MESSAGES: MessageEnvelope[] = [
   {
     id: "msg-4", accountId: "acc-demo-1", accountEmail: "ava@example.test", folder: "sent",
     folderId: 2, uid: 104,
-    from: "ava@example.test", subject: "Re: launch checklist", date: "2026-09-18T18:02:00Z",
+    from: "ava@example.test", toAddrs: "team@project.test", subject: "Re: launch checklist", date: "2026-09-18T18:02:00Z",
     unread: false, starred: false, hasAttachments: false, trust: "secure",
     snippet: "Sounds good — shipping Friday…",
     category: "primary",

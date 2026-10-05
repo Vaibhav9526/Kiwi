@@ -139,6 +139,15 @@ export const ICONS = {
       <path d="m14.3 7.4-6.1 6.1a4 4 0 0 1-5.7-5.6l6.1-6.1a2.67 2.67 0 0 1 3.8 3.7l-6.2 6.1a1.33 1.33 0 0 1-1.9-1.9l5.7-5.6" />
     ),
   },
+  image: {
+    body: (
+      <>
+        <rect x="1.6" y="2.6" width="12.8" height="10.8" rx="1.4" />
+        <circle cx="5.6" cy="6" r="1.2" />
+        <path d="m14.4 10.2-3.2-3.2a1 1 0 0 0-1.4 0L4.2 12.8" />
+      </>
+    ),
+  },
   flag: {
     body: (
       <>
@@ -548,6 +557,26 @@ export const ICONS = {
       <>
         <rect x="2" y="2.8" width="12" height="8.6" rx="1.3" />
         <path d="M6 14h4M8 11.4V14" />
+      </>
+    ),
+  },
+
+  /* ---------- window caption controls ----------
+   * Win11 caption glyphs (undecorated window): minimize is a centered rule,
+   * maximize a single rounded square, restore the two overlapping squares.
+   * Same 16x16 stroke grid + currentColor as every other entry, so they
+   * inherit the active theme's ink without extra theming. */
+  minimize: {
+    body: <path d="M3.4 11.4h9.2" />,
+  },
+  maximize: {
+    body: <rect x="3" y="3" width="10" height="10" rx="1.4" />,
+  },
+  restore: {
+    body: (
+      <>
+        <rect x="2.4" y="5.2" width="8.4" height="8.4" rx="1.3" />
+        <path d="M5.4 5.2V3.8A1.4 1.4 0 0 1 6.8 2.4h5.4A1.4 1.4 0 0 1 13.6 3.8v5.4a1.4 1.4 0 0 1-1.4 1.4h-1.4" />
       </>
     ),
   },

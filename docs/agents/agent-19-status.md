@@ -540,3 +540,371 @@ delete test scopes the guard before readback calls.
 Flags: the IPC path has NO delete-after-download switch today —
 hardcoded keep-on-server. If the contract grows a per-account flag,
 `pop3_sync` just needs to pass it through.
+
+## T-295 — message_source IPC + POP3 delete-after-download policy (2026-09-25)
+
+Two backend closes, delivered together.
+
+### `kiwi_message_source` (T-292 follow-up — view-source had no command)
+
+- `commands/mail.rs`: `kiwi_message_source` → `message_source_impl`. Lock-gated.
+  Resolves `account_id` (len-bound) + `folder_id`/`uid` (negative uid →
+  `invalid-input`), asserts folder belongs to the account
+  (`store.folder_meta` cross-check → `not-found` on foreign/ghost folder),
+  then `store.body_file` → bounded raw read via `load_body_raw`. Absent body
+  → `not-found` — honest error, never an empty string.
+- `types/mail.rs`: `MessageSourceView { accountId, folderId, uid, source,
+  bytes, truncated }` — `bytes` reports the true stored size even when the
+  wire payload is truncated (reader sees honesty, not a guess).
+- Cap: same 8 MiB UTF-8 discipline as `message_body` — `MAX_SOURCE_BYTES` +
+  `truncate_to_byte_cap` char-boundary walk-back (verified with a multi-byte
+  `€` straddling the cap).
+- lib.rs registered; `kiwi.ts` type + `ipc.ts` `api.messageSource`; ipc.md
+  §6 row.
+- Frontend: `SourceDialog` gains a **Raw** tab — lazy-loads on first open,
+  renders verbatim `<pre>` source, shows `bytes` + a truncation notice when
+  `truncated`; error/loading states are honest.
+
+### POP3 delete-after-download policy (the T-285 flag)
+
+- `state.rs`: `AccountMeta.pop3_delete_after_download: bool`
+  (`#[serde(default)]` — existing sidecars keep keep-on-server).
+- `accounts.rs`: init `false` on account add.
+- `mail.rs::pop3_sync`: reads the flag from `index.account_meta` alongside
+  `accept_invalid_certs`, passes through to `sync_pop3_with_auth` — covers
+  manual sync AND the worker path (single funnel).
+- `kiwi_set_pop3_policy` → `set_pop3_policy_impl`: bounds account id,
+  `not-found` on unknown account, `invalid-input` on non-POP3 accounts
+  (IMAP has expunge semantics, not this), persists to sidecar index, audits
+  `pop3-delete-policy` with the account id + new value.
+- `types/mail.rs`: `Pop3PolicyView { accountId, deleteAfterDownload }`;
+  `kiwi.ts` + `ipc.ts api.setPop3Policy`; ipc.md documents default-keep,
+  UIDL dedup, and the destructive nature of enabling DELE.
+
+### Tests
+
+- `message_source_roundtrips_stored_rfc822` — verbatim RFC822 (no parse),
+  `bytes`/folder/uid echo; folded-in absent-body → `not-found`, negative
+  uid → `invalid-input`, ghost account → `not-found`.
+- `message_source_byte_cap_is_honest` — 8MiB+ straddling `€` →
+  `truncated:true`, `bytes` = full size, source ends on a char boundary.
+- `pop3_policy_toggle_persists_and_is_pop3_only` — toggle on a POP3 row
+  persists via `set_pop3_policy_impl` + `Pop3PolicyView` reflects it;
+  same call on an IMAP row → `invalid-input`; ghost → `not-found`.
+- The e2e DELE wire branch was already proven in T-285
+  (`e2e_pop3_delete_after_download_sends_dele`); the policy command is the
+  new IPC surface.
+
+### Verified
+
+`cargo test -p kiwi-app` — **139/139 green** on the final binary.
+`cargo clippy -p kiwi-app --all-targets -- -D warnings` clean; fmt clean;
+tsc clean.
+
+### Caveats (cross-agent churn, not this change)
+
+- The tree was heavily contended all session: kiwi-integrations +
+  `send/` T-298 (outbox `last_error`) + pairing_listen tests were all
+  mid-write during verification. Gates were taken on quiet windows;
+  two suite runs saw transient failures inside other agents' modules
+  (a stale-exe schema mismatch and a socket-contention stall) — both
+  resolved on rerun with zero changes from me.
+- `store_body` requires an existing message row (`UPDATE messages SET
+  body_path`) — the source tests `upsert_message` first. Noted for future
+  fixture authors.
+
+## T-309 — mbox import (mailbox migration path) — DONE
+
+### Landed
+
+- **Parser** (`kiwi-mail/src/mbox.rs`, `pub mod mbox`): line-start `From `
+  separators (mboxrd), envelope-sender token extracted for `fromAddr`
+  fallback, `>+From ` unescape (one level), LF+CRLF, EOF-terminated last
+  member, leading-junk flag, X-Mozilla-Status/-Status2 → `\Seen`/`\Answered`/
+  `\Flagged`/`\Junk` best-effort, `0x0008` Expunged surfaced (skip, don't
+  resurrect deleted mail). `split()`/`member()` share one offset walk.
+- **Store**: `has_message_id(account_id, mid)` + `idx_messages_mid`;
+  `max_uid(account_id)` for import-side uid minting.
+- **`kiwi_import_mbox`** (`commands/import.rs`): lock-gated; path must be
+  a regular file ≤512MiB (metadata check first — over-cap never read), no
+  `From ` → `invalid-input`, ≤50k members. `folder` defaults to `Import`
+  (local folder — IMAP reconcile would expunge imported uids from a synced
+  folder); explicit synced folder is allowed with that documented caveat.
+  Minted uids = `max_uid+1..`. Dedup on Message-ID (account-wide, null mid
+  always imports). Rows run the full sync-side ingest pipeline:
+  `EvalStage::Full` rules (errors → `ruleFailures`), attach/link risk,
+  authstamp with no SMTP receipt (spf=none — never fabricated), threading
+  headers indexed. Honest accounting: imported+dup+expunged+failed ==
+  min(found,cap); `truncated` marks never-parsed overflow; `issues`
+  bounded (≤200×160ch, no bodies/filenames). Audited `mbox-imported`
+  (counts only, no path). Front-end: `api.importMbox`, `MboxImportView`,
+  ipc.md §6 row with the synced-folder caveat. UI seam deferred per task.
+
+### Tests
+
+- `import_multi_member_with_unescape_expunge_and_bad_skip` — 3-member
+  fixture: envelope-sender fallback, `>>From`/`>From` unescape, flags map
+  (read/starred/replied/junk + unseen default), Expunged skipped, a member
+  with zero parseable headers fails-not-fatals, order preserved, bodies
+  stored verbatim.
+- `import_dedups_on_message_id_and_rejects_bad_inputs` — re-import dedups,
+  bad path / dir / over-cap / no-separator / bad folder / unregistered
+  account all typed errors, counter invariant held.
+- `import_is_lock_gated`.
+- `kiwi-mail`: 6 parser tests (split/unescape/status map/junk/no-sep/eof).
+
+### Caveats
+
+- "Malformed" = zero parseable headers (mail-parser is deliberately
+  forgiving); still deterministic + reported.
+- Line endings stored verbatim (never normalized) — bytes stay exact.
+- Import lands rows only; bodies go to `store_body`'s files dir.
+- Heavy concurrent churn (export/folders/forensics agents mid-write);
+  final gates taken once tree quieted.
+
+### Final verification (quiet tree, 22:2x)
+
+- `cargo test -p kiwi-mail` — **227/227**
+- `cargo test -p kiwi-app` — **184/184** (incl. import 3 + export/folders/
+  forensics tests landed by other agents during the session)
+- `cargo clippy --workspace --all-targets -- -D warnings` — clean
+- `cargo fmt --all -- --check` — clean; `tsc --noEmit` — clean
+- Interim breakage during the session was cross-agent mid-write
+  (mbox export half, folders v17 migration, T-320 envelope): three
+  mechanical unblocks applied in passing (parse_borrowed::<2>,
+  execute_batch literal, one redundant `&`) — all other agents' files,
+  no semantic changes.
+
+## T-326 — synced-folder import refusal (2026-09-25 ~22:3x)
+
+Closes the caveat T-309 documented: imported rows carry locally-minted
+uids with no server identity, so an IMAP reconcile treating the server as
+authoritative would expunge them on the next pass.
+
+Chose option (a) — refuse synced targets at resolution; option (b)
+(origin flag on message rows + reconcile skip-list) would have touched
+the hot sync path for a corner already avoidable by folder choice, and
+T-319's `FolderOrigin` made (a) a ~25-line store change.
+
+Change:
+
+- `kiwi-mail/src/store/queries.rs` `ensure_target_folder` (import-only
+  caller): now resolves **local-only** — reuses a local row of the name,
+  creates one when none exists, and `PolicyRejected` (→ `policy-blocked`
+  on the wire) when only remote/system rows match. A same-name local row
+  wins over a synced twin (folders table has no unique constraint —
+  remote+local "Archive" can coexist). Unrecognized origin fails closed
+  (counts as synced, never writable).
+- `commands/import.rs` module doc updated (the "allowed but expunges"
+  caveat → refusal).
+- ipc.md §`kiwi_import_mbox` bullet rewritten to the refusal semantics;
+  `folderIsSynced` deliberately absent — a returned view is non-synced
+  by construction.
+
+Tests: `import_refuses_synced_target_folders` — remote `Work` and system
+`INBOX` targets → `policy-blocked` (no rows written); local `Shared`
+coexisting with a same-name remote row resolves local and imports 2.
+Existing import tests unchanged (targets default/new → local).
+
+Verification: `cargo test -p kiwi-mail` **227/227**; fmt clean.
+`kiwi-app` gates blocked mid-session by a foreign audit-retention
+migration (`audit.rs`/`security.rs`/`state.rs` — duplicate
+`kiwi_audit_events`, `RetentionPolicy`/`clamp_u32` unresolved, owner
+actively writing) — re-verified once it landed (see below).
+
+### T-326 follow-up (quiet-tree re-verify)
+
+The foreign audit-retention migration landed. Final state:
+
+- `cargo test -p kiwi-app --lib` — **201 pass / 2 fail**, both foreign:
+  `audit::tests::sweep_is_audited_with_counts_only` and
+  `audit::tests::prune_keeps_newest_and_the_chain_still_verifies`
+  (audit-retention cutoff math — that migration's own tests, owner
+  still iterating; reported in-band, untouched by me).
+- `cargo test -p kiwi-mail --lib` — **229/229** (store change covered;
+  `v16_to_v17_preserves_folders_and_classifies_origins` green).
+- `cargo clippy -p kiwi-mail -p kiwi-app --all-targets` — clean.
+- fmt clean on my files (`queries.rs`, `import.rs`); one pre-existing
+  fmt drift in foreign `store/mod.rs` test code left untouched.
+- Design note surfaced during test: `idx_folders_sibling_name` is
+  UNIQUE `(account_id, COALESCE(parent_id,0), name COLLATE NOCASE)` —
+  same-name remote+local twins cannot coexist, so the resolver lookup
+  is `COLLATE NOCASE` too: a case-variant of a synced name refuses
+  rather than dying on the unique index as a raw store error.
+
+## T-328 — IMAP server-folder CRUD on real wire commands
+
+Closed T-319's filed gap: `kiwi_folder_create|rename|delete` now route by
+ownership — IMAP accounts perform real `CREATE`/`RENAME`/`DELETE` on the
+wire, local rows/POP3 keep the T-319 store-only path.
+
+**Ordering (fail-closed, nothing faked locally first):** validate → audit
+intent (`folder-*-requested`) → wire op → verifying `LIST` → local mirror →
+audit outcome (`folder-*-remote`). Server `NO`/`BAD` → `server-reject` with
+reply text verbatim; an `OK` that LIST contradicts → `protocol-error`; a
+refused or failed op leaves zero local residue.
+
+**Files:**
+
+- `kiwi-mail/src/imap/commands.rs` — new `hierarchy_delimiter()`:
+  `LIST "" ""` probe, parses the delimiter off the root row, `None` = NIL
+  (flat namespace). `create_mailbox`/`delete_mailbox`/`rename_mailbox`
+  already existed with `ok_or_reject` surfacing server text.
+- `kiwi-mail/src/store/queries.rs` — `rename_remote_folder` (local rows
+  refuse, NOCASE sibling-duplicate check, target + `old<sep>…` inferiors
+  rewritten in **one unchecked transaction**, returns refreshed metas) and
+  `delete_remote_folder` (local rows refuse, `clear_folder_messages` drops
+  messages/evidence/watermarks/payload dirs, inferiors survive — flat
+  model, server keeps them).
+- `kiwi-app/src-tauri/src/commands/folders.rs` — routing:
+  - `with_imap_session` — `connect_imap` → op → `record_connection`
+    observation (`imap folder create|rename|delete` labels) → logout.
+  - create (IMAP): `LIST "" ""` delimiter → leaf rejects controls,
+    `.`/`..`, `%`/`*` wildcards, reserved names, and the server delimiter
+    → `<parentWire><sep><leaf>` → `CREATE` → `LIST` verify → `ensure_folder`
+    mirror (server spelling wins).
+  - rename (remote/system row): `INBOX` → `policy-blocked`; leaf keeps
+    the old wire prefix (`A/B` → `C` issues `RENAME A/B A/C`); `RENAME` →
+    `LIST` verify → `rename_remote_folder` mirrors target + inferiors.
+  - delete (remote/system row): `INBOX` → `policy-blocked`; `DELETE` →
+    `LIST` must show absent → `delete_remote_folder` mirror.
+  - POP3 remote/system rows → `policy-blocked` (no server namespace);
+    local rows unchanged T-319 path. Local parent under IMAP →
+    `invalid-input` (server can't see it).
+- `kiwi-app/src-tauri/src/e2e.rs` — 3 scripted-loopback tests (real TCP +
+  TLS, same harness as T-262/T-285):
+  - `e2e_imap_folder_crud_hits_the_wire` — 4 sessions: CREATE `Work` →
+    CREATE `Work/Sub` (delimiter composition) → `RENAME Work Tasks` (local
+    mirror renames `Tasks` + `Tasks/Sub`) → `DELETE Tasks` (row gone,
+    `Tasks/Sub` survives) → audit intents + outcomes all present.
+  - `e2e_imap_folder_no_reply_surfaces_server_reject` — tagged `NO
+    [CANNOT] denied: read-only server` → `server-reject` + reply text +
+    zero folders mirrored.
+  - `e2e_imap_folder_refusals_never_dial` — dead port; `W*rk`, `a%b`,
+    `INBOX` create → `invalid-input`; INBOX rename/delete →
+    `policy-blocked`; local-parent under IMAP → `invalid-input`. Codes
+    prove refusal before connect.
+- `docs/contracts/ipc.md` — 3-command section rewritten: protocol/origin
+  routing, delimiter probing, LIST-verify ordering, error mapping,
+  audit labels; T-319 non-goal block replaced with the T-328 contract.
+
+**Verification:** `cargo test -p kiwi-app` **219/219** (all e2e incl.
+T-285's POP3 delete green — that hang is resolved in-tree); `cargo test
+-p kiwi-mail` **235/235**; `cargo clippy --workspace --all-targets --
+-D warnings` clean; `cargo fmt --all -- --check` clean.
+
+## STAND-DOWN checkpoint (Lead EOD, ~22:3x)
+
+### In-flight state
+None. T-309 mbox import was completed, verified, and DONE-reported
+(`input_accepted`) before the stand-down. No atomic step was in progress;
+no half-written files are mine.
+
+### Files touched this task (T-309)
+- `kiwi-mail/src/mbox.rs` — mboxrd parser (split/member/flags/
+  envelope-sender/unescape). NOTE: the mbox-*export* half (separator,
+  `escape_for_mbox`, `mozilla_status_lines`, asctime) was added on top by
+  another agent; I applied two compile unblocks in their half
+  (`parse_borrowed::<2>` for the deprecated `parse`, collapsed a
+  `format!`/redundant-closure) — mechanical only.
+- `kiwi-mail/src/store/queries.rs` — `has_message_id` + `idx_messages_mid`,
+  `max_uid`. Later agents added v17–v19 folder/mute/parts schema around it.
+- `kiwi-app/src-tauri/src/commands/import.rs` — `kiwi_import_mbox` + 3
+  tests. Later: T-326 owner changed synced-folder targets from
+  caveat-allowed to refused (`policy-blocked` via `ensure_target_folder`)
+  and added `tray::refresh_tooltip` — contract already reflects it (§6j).
+- `kiwi-app/src-tauri/src/types/mail.rs`, `kiwi.ts`, `ipc.ts`,
+  `docs/contracts/ipc.md` — `MboxImportView`/`MboxImportIssueView`,
+  `api.importMbox`, §6j row (relocated + updated by later agents).
+- `kiwi-app/src-tauri/src/lib.rs`, `commands/mod.rs` — registration.
+
+### Verified at checkpoint
+kiwi-mail 227/227, kiwi-app 184/184, workspace clippy `-D warnings` clean,
+fmt/tsc clean — all on the merged tree *before* the EOD land-rush in the
+diff burst above. That burst (T-316/319/320/323-345, tray/notify/consent/
+copy/storage/thread-mute/search-ops) is unverified by me.
+
+### Next exact action on resume
+1. `cargo clippy --workspace --all-targets -- -D warnings` and
+   `cargo test -p kiwi-mail && cargo test -p kiwi-app` on the post-land-rush
+   tree — confirm nothing in the T-3xx wave broke (they touch my import.rs
+   via `ensure_target_folder` + `tray::refresh_tooltip`).
+2. If green: nothing — T-309 is closed. Await next task from Lead.
+3. If red in import/mbox: fix on my files only; flag the rest to owners.
+4. Live e2e (mailpit/greenmail) is down until infra restart — do not
+   interpret `e2e_*` connection failures as regressions tomorrow.
+
+## 2026-09-26 — T-339 lazy attachment fetch (claimed → in progress)
+
+Status: **in progress**. Assigned at `f405b0b`; session restarted mid-
+flight — this log entry is the formal claim/re-claim.
+
+Found pre-restart work already in the tree (mine, per file headers):
+`kiwi-mail/src/parts.rs` (untracked — plan/compose skeleton),
+`BodyStructure::Single` disposition+disp_params in `imap/parser.rs`,
+`message_parts` DDL at schema v19 in `store/schema.rs`, `sync.rs`
+has_attachment_parts → `parts::is_attachment_leaf` delegation.
+
+### Design (locked after reading the full tree)
+
+- **Sync**: metadata fetch gains `BODYSTRUCTURE`; `plan_parts` →
+  `set_message_parts` rows. Body fetch (`fetch_missing_bodies` +
+  `load_body_raw`): when parts rows exist → fetch
+  `BODY.PEEK[HEADER]` + `{sec}.MIME` for every leaf/container + `{sec}`
+  for eager leaves → `compose_skeleton` → `store_body`. Any plan/
+  compose/fetch failure or `too_complex` → fall back to full `BODY[]`
+  and `clear_message_parts` (absent rows = complete body; present rows =
+  skeleton). Skeletons never leak as "complete RFC822".
+- **On-demand**: `ensure_part_fetched` — `UID FETCH (UID BODYSTRUCTURE)`
+  re-plan → drift check (`section`+`mime` must match the stored row,
+  fails closed on stale uids/moved messages) →
+  `BODY.PEEK[<section>]` → `decode_transfer_encoding` → ≤50 MiB cap →
+  `store_attachment` (`attachments/<fid>/<uid>/<idx>`) →
+  `mark_part_fetched` → merge `inspect_attachment` evidence into
+  `message_attachment_risk` → observe + audit (`attachment-fetched`,
+  ids/names only, never bytes).
+- **Surfaces**: `kiwi_download_attachment` + `kiwi_sandbox_open_attachment`
+  resolve through `message_parts` rows when present (rows are
+  authoritative — never the skeleton's empty parts); `kiwi_message_source`
+  + `kiwi_mailbox_export_mbox` switch to `load_body_full` (real BODY[],
+  never skeleton bytes); `AttachmentView` gains `index`/`fetched`.
+- **Consistency**: `move_messages` re-keys rows, `copy_messages`/`move_local`
+  copy rows + payload dir, delete/expunge/uidvalidity cascade via the
+  composite FK, `clear_message_parts` removes payload dir.
+- **Honesty**: deferred attachment = unfetched, never "clean"; export/
+  source paths never emit skeletons; copies of deferred messages fail
+  closed at the drift check (server uid differs) rather than fetching a
+  wrong message's bytes.
+
+### Foreign-file caution
+`kiwi-mail/src/threading.rs`, `store/threads.rs`, `thread_mutes` schema
+chunk = T-341 (another agent). queries.rs move/copy already carries
+their `thread_mutes` re-key — I add `message_parts` alongside without
+touching their lines.
+
+### T-339 verification (DONE)
+
+- `e2e_lazy_attachment_body_peek` (new, kiwi-app/src-tauri/src/e2e.rs):
+  scripted two-connection loopback — sync asserts BODYSTRUCTURE in the
+  metadata UID FETCH, no BODY[] on the wire; `message_parts` row persists
+  (`fetched=0`, section "2", wire size); reader body is the skeleton;
+  `kiwi_download_attachment` triggers a fresh `BODYSTRUCTURE` re-verify +
+  `BODY.PEEK[2]`, base64-decodes, stores, marks fetched;
+  `kiwi_message_source` forces a complete `BODY[]`.
+- Gates: `cargo fmt` clean, `cargo clippy --workspace --all-targets
+  -D warnings` clean, `kiwi-app` `tsc --noEmit` clean,
+  `cargo test -p kiwi-mail` 284/284, `cargo test -p kiwi-app` 242/242.
+- Bug found+fixed by the tests: lenient base64 silently misdecoded
+  mid-stream `=` padding — decoder now preserves padding bytes, re-pads
+  only truncated tails, rejects misplaced padding (parts.rs tests pin it).
+- Testutil `rewrite_tag` hardened: bare `a`/letter+digit tags rewrite,
+  literal-payload lines (`Content-Type:`, `From:`) pass through
+  unrewritten — was mangling literal-bearing fixtures.
+- Committed as `A19 → T-339` with hunk-level staging: foreign in-flight
+  work (T-328/329/334/341/345/316/319/282…) in shared files left
+  unstaged; my hunks only.
+
+DONE: Agent-19 T-339 — lazy attachment fetch landed: BODYSTRUCTURE-first
+sync persists message_parts + skeleton bodies, attachments fetch
+on-demand via BODY.PEEK[section] with drift re-verification; export/
+source/sandbox stay honest; all gates green.

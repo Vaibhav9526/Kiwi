@@ -4,10 +4,10 @@
  * kiwi_finding_detail), session-detail dialog, JSON report export. Demo mode
  * renders the T-112 fixtures, badged.
  */
-import { useEffect, useState } from "react";
-import type { FindingInfo, SecurityEventRow, Severity } from "../kiwi";
-import { severityGlyph, severityLabel } from "../kiwi";
-import { api } from "../ipc";
+import { Fragment, useEffect, useState } from "react";
+import type { AuditEventView, FindingInfo, SecurityEventRow, SecuritySessionView, Severity } from "../kiwi";
+import { AUDIT_CORRUPT_MESSAGE, severityGlyph, severityLabel } from "../kiwi";
+import { api, BackendUnavailableError, IpcError } from "../ipc";
 
 function pretty(v: unknown): string {
   try {
@@ -30,9 +30,115 @@ export function SecurityCenterView({
 }) {
   const [accountFilter, setAccountFilter] = useState("");
   const [severityFilter, setSeverityFilter] = useState<"" | Severity>("");
-  const [session, setSession] = useState<Record<string, unknown> | null>(null);
+  // T-260: the typed SessionView (ipc.md §3). `null` is a real state — an
+  // unrecognized/malformed envelope — and the view below says so rather than
+  // rendering a blank or half-parsed card.
+  const [session, setSession] = useState<SecuritySessionView | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [reportError, setReportError] = useState<string | null>(null);
+  // T-323: app-audit trail (audit.jsonl — mbox import/export, device, rules,
+  // account mutations). Read IPC kiwi_audit_events (T-324) is queued, not yet
+  // registered → until it lands the section shows the honest pending state;
+  // the moment it registers the same code renders real rows.
+  const AUDIT_PAGE = 200;
+  const [audit, setAudit] = useState<AuditEventView[]>([]);
+  const [auditState, setAuditState] = useState<"idle" | "loading" | "pending" | "ready" | "error">("idle");
+  const [auditErr, setAuditErr] = useState<string | null>(null);
+  const [auditDone, setAuditDone] = useState(false); // older page returned empty
+  const [auditExpanded, setAuditExpanded] = useState<number | null>(null);
+  const [auditCopy, setAuditCopy] = useState<string | null>(null);
+  // T-331: chain health. `corrupt` is a PERSISTENT security state, not a
+  // transient load failure — it must not clear on a successful reload, and it
+  // must not be a toast (a security signal has to stay on screen until the
+  // user dismisses or the backend reports a verified chain again).
+  const [auditIntegrity, setAuditIntegrity] = useState<"ok" | "corrupt" | "unknown" | null>(null);
+
+  const loadAudit = async (beforeUnix?: number) => {
+    setAuditState("loading");
+    setAuditErr(null);
+    try {
+      const rows = await api.auditEvents(beforeUnix, AUDIT_PAGE);
+      setAudit((prev) => (beforeUnix === undefined ? rows : [...prev, ...rows]));
+      if (beforeUnix === undefined) setAuditDone(false);
+      if (rows.length < AUDIT_PAGE) setAuditDone(true);
+      setAuditState("ready");
+    } catch (e) {
+      // Not-yet-registered command = pending, not failure.
+      const msg = e instanceof Error ? e.message : String(e);
+      if (e instanceof BackendUnavailableError || /unknown command|not found|unregistered|not implemented/i.test(msg)) {
+        setAuditState("pending");
+      } else if (e instanceof IpcError && e.code === "audit-corrupt") {
+        // T-331: a failed verification is the headline, not a retry-able
+        // error string. Rows below are untrustworthy — don't render them as
+        // if they were evidence.
+        setAuditIntegrity("corrupt");
+        setAuditState("error");
+        setAuditErr(AUDIT_CORRUPT_MESSAGE);
+      } else {
+        setAuditState("error");
+        setAuditErr(msg);
+      }
+    }
+  };
+
+  // T-331 + T-338: probe chain health. Cheap (no rows), ungated, and it is the
+  // only way corruption becomes visible before the rows are requested. The
+  // verdict is backend-owned — the renderer never guesses.
+  const probeIntegrity = async (): Promise<"ok" | "corrupt" | "unknown"> => {
+    try {
+      const v = await api.auditIntegrity();
+      setAuditIntegrity(v.state);
+      return v.state;
+    } catch {
+      setAuditIntegrity("unknown");
+      return "unknown";
+    }
+  };
+
+  // "Re-check" on the corrupt banner: a real re-verification — if the chain
+  // now verifies, reload the rows that were withheld as evidence.
+  const recheckIntegrity = async () => {
+    const s = await probeIntegrity();
+    if (s === "ok") void loadAudit();
+  };
+
+  useEffect(() => {
+    if (demo) {
+      setAuditIntegrity("unknown");
+      return;
+    }
+    void probeIntegrity();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [demo]);
+
+  useEffect(() => {
+    if (demo) {
+      setAuditState("pending"); // demo never fabricates an audit trail
+      return;
+    }
+    void loadAudit();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [demo]);
+
+  const auditCsv = (rows: AuditEventView[]) =>
+    [
+      "event,at_iso,actor,subject_id,detail_json",
+      ...rows.map((r) =>
+        [r.event, new Date(r.atUnix * 1000).toISOString(), r.actor, r.subjectId ?? "", r.detailJson ?? ""]
+          .map((c) => `"${String(c).replaceAll('"', '""')}"`)
+          .join(","),
+      ),
+    ].join("\n");
+
+  const copyAudit = async (fmt: "json" | "csv") => {
+    if (!audit.length || !navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(fmt === "json" ? JSON.stringify(audit, null, 2) : auditCsv(audit));
+      setAuditCopy(`${audit.length} loaded rows copied as ${fmt.toUpperCase()}.`);
+    } catch {
+      setAuditCopy("Clipboard unavailable — copy failed.");
+    }
+  };
 
   useEffect(() => {
     if (!session) return;
@@ -64,7 +170,15 @@ export function SecurityCenterView({
     if (!id) return;
     setSessionError(null);
     try {
-      setSession(await api.sessionDetail(id));
+      const detail = await api.sessionDetail(id);
+      // T-260: a null detail means the envelope didn't match the §3 shape.
+      // Say so — silence would read as "the session is fine".
+      if (!detail) {
+        setSession(null);
+        setSessionError("Session detail was not in the expected format.");
+        return;
+      }
+      setSession(detail);
     } catch (e) {
       setSessionError(e instanceof Error ? e.message : String(e));
     }
@@ -80,36 +194,36 @@ export function SecurityCenterView({
   };
 
   return (
-    <section aria-label="KIWI Security event center" className="ms-prefs ms-view-enter">
-      <h1>Security</h1>
-      {demo && (
-        <p>
-          <span className="ms-badge">? demo events</span>
-        </p>
-      )}
-      <h2>Findings ({findings.length})</h2>
-      {findings.length === 0 && (
-        <p style={{ color: "var(--kiwi-ms-text-secondary)" }}>
-          <small>No retained findings.</small>
-        </p>
-      )}
-      <ul className="ms-findings-list">
-        {findings.map((f, i) => (
-          <li key={f.id} className="ms-finding-row">
-            <span className={`kiwi-pill ${f.severity}`}>
-              {severityGlyph(f.severity)} {severityLabel(f.severity)}
-            </span>{" "}
-            <span className="ms-finding-title" title={f.title}>
-              {f.title}
-            </span>{" "}
-            <button type="button" className="ms-btn" onClick={() => onOpenFinding(i)}>
-              Details
-            </button>
-          </li>
-        ))}
-      </ul>
-      <h2>Events</h2>
-      <div className="ms-filterbar">
+    <section aria-label="KIWI Security event center" className="em-security ms-view-enter">
+      <h1 className="em-view-title">
+        Security{" "}
+        {demo && <span className="ms-badge">? demo events</span>}
+      </h1>
+      <div className="ms-pane">
+        <h2 className="ms-pane-title">Findings ({findings.length})</h2>
+        {findings.length === 0 ? (
+          <p className="em-pane-desc">No retained findings.</p>
+        ) : (
+          <ul className="ms-findings-list">
+            {findings.map((f, i) => (
+              <li key={f.id} className="ms-finding-row">
+                <span className={`kiwi-pill ${f.severity}`}>
+                  {severityGlyph(f.severity)} {severityLabel(f.severity)}
+                </span>{" "}
+                <span className="ms-finding-title" title={f.title}>
+                  {f.title}
+                </span>{" "}
+                <button type="button" className="ms-btn" onClick={() => onOpenFinding(i)}>
+                  Details
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+      <div className="ms-pane">
+        <h2 className="ms-pane-title">Events</h2>
+        <div className="ms-filterbar">
         <label>
           Account filter:{" "}
           <input type="text" value={accountFilter} onChange={(e) => setAccountFilter(e.target.value)} placeholder="account substring" />
@@ -196,6 +310,168 @@ export function SecurityCenterView({
           )}
         </tbody>
       </table>
+      </div>
+      <div className="ms-pane">
+        <h2 className="ms-pane-title">App audit log</h2>
+        <p className="em-pane-desc">
+          <small>
+            Action trail (audit.jsonl) — imports, exports, device and account mutations. Distinct from the
+            transport-security events above: these rows record what the app DID, not what the wire showed.
+            Ids and counts only — the trail never carries paths, subjects, or bodies.
+          </small>
+        </p>
+      {auditState === "pending" && (
+        <div className="kiwi-banner" role="status">
+          <small>
+            Audit-log read IPC (<code>kiwi_audit_events</code>) is backend-pending (T-324 — queued). Actions
+            are already being recorded; this panel renders them the moment the read command lands.
+            {demo && " Demo mode never fabricates an audit trail."}
+          </small>
+        </div>
+      )}
+      {/*
+        T-338: the probe verdict surfaces alongside the rows in every readable
+        state — verified says so, unreadable says the rows are unverified.
+        Both come from kiwi_audit_integrity alone; nothing is assumed.
+      */}
+      {!demo && auditIntegrity === "ok" && (
+        <p role="status" style={{ color: "var(--kiwi-ms-text-secondary)" }}>
+          <small>Chain integrity: verified (kiwi_audit_integrity).</small>
+        </p>
+      )}
+      {!demo && auditIntegrity === "unknown" && auditState === "ready" && (
+        <p role="status" style={{ color: "var(--kiwi-ms-text-secondary)" }}>
+          <small>Chain integrity: could not be verified — rows shown are unverified.</small>
+        </p>
+      )}
+      {/*
+        T-331: the persistent security state. Deliberately NOT a toast and NOT
+        dismissible-by-time: `audit-corrupt` means the log can no longer prove
+        what the app did, and that claim has to keep standing on screen.
+      */}
+      {auditIntegrity === "corrupt" && (
+        <div className="kiwi-banner error" role="alert" data-audit-integrity="corrupt">
+          <strong>Audit integrity failure.</strong> {AUDIT_CORRUPT_MESSAGE}.{" "}
+          <button type="button" className="ms-btn" onClick={() => void recheckIntegrity()}>
+            Re-check
+          </button>
+          <br />
+          <small>
+            The rows below are unverified and must not be treated as evidence. Do not clear the log — it
+            is the only record of what this app did. <code>kiwi_security_status</code> carries the same
+            verdict as <code>auditOk</code>.
+          </small>
+        </div>
+      )}
+      {auditState === "error" && auditIntegrity !== "corrupt" && (
+        <div className="kiwi-banner error" role="alert">
+          <small>Audit log failed to load: {auditErr}</small>{" "}
+          <button type="button" className="ms-btn" onClick={() => void loadAudit()}>
+            Retry
+          </button>
+        </div>
+      )}
+      {auditState === "loading" && audit.length === 0 && (
+        <p role="status">
+          <small>Loading audit log…</small>
+        </p>
+      )}
+      {audit.length > 0 && auditIntegrity !== "corrupt" && (
+        <>
+          <div className="ms-filterbar">
+            <button type="button" className="ms-btn" onClick={() => void loadAudit()} disabled={auditState === "loading"}>
+              Refresh
+            </button>
+            <button type="button" className="ms-btn" onClick={() => void copyAudit("json")}>
+              Copy JSON
+            </button>
+            <button type="button" className="ms-btn" onClick={() => void copyAudit("csv")}>
+              Copy CSV
+            </button>
+            <small style={{ color: "var(--kiwi-ms-text-secondary)" }}>
+              copies the {audit.length} loaded rows — a full-file download needs the backend
+            </small>
+          </div>
+          {auditCopy && (
+            <p role="status">
+              <small>{auditCopy}</small>
+            </p>
+          )}
+          <table className="ms-table">
+            <caption className="kiwi-sr-only">App audit trail</caption>
+            <thead>
+              <tr>
+                {["Time", "Event", "Actor", "Subject", "Detail"].map((h) => (
+                  <th key={h} scope="col">
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {audit.map((r, i) => (
+                <Fragment key={i}>
+                  <tr>
+                    <td>{new Date(r.atUnix * 1000).toLocaleString()}</td>
+                    <td>
+                      <code>{r.event}</code>
+                    </td>
+                    <td>{r.actor}</td>
+                    <td>{r.subjectId ?? "—"}</td>
+                    <td>
+                      {r.detailJson ? (
+                        <button
+                          type="button"
+                          className="ms-btn"
+                          aria-expanded={auditExpanded === i}
+                          onClick={() => setAuditExpanded(auditExpanded === i ? null : i)}
+                        >
+                          Detail
+                        </button>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                  </tr>
+                  {auditExpanded === i && r.detailJson && (
+                    <tr>
+                      <td colSpan={5}>
+                        <pre className="kiwi-evidence" tabIndex={0}>
+                          {(() => {
+                            try {
+                              return JSON.stringify(JSON.parse(r.detailJson), null, 2);
+                            } catch {
+                              return r.detailJson;
+                            }
+                          })()}
+                        </pre>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+          {!auditDone && (
+            <p>
+              <button
+                type="button"
+                className="ms-btn"
+                disabled={auditState === "loading"}
+                onClick={() => void loadAudit(audit[audit.length - 1]?.atUnix)}
+              >
+                {auditState === "loading" ? "Loading…" : "Load older"}
+              </button>
+            </p>
+          )}
+        </>
+      )}
+      {auditState === "ready" && audit.length === 0 && auditIntegrity !== "corrupt" && (
+        <p>
+          <small>No audit events recorded yet.</small>
+        </p>
+      )}
+      </div>
       {session && (
         <div className="kiwi-dialog-backdrop" onClick={() => setSession(null)}>
           <div

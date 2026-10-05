@@ -179,3 +179,58 @@ No `kiwi-autoconfig` source or contract file was changed by Agent 23 in this ver
 ### Handoff
 
 - Terminal DONE command sent: `orca terminal send --terminal term_c20c6737-9b80-4911-bcd2-38aa5113e4d7 --text 'DONE: Agent-23 T-278 — result' --enter`; Orca returned `input_accepted` and reported provider delivery as unsupported.
+
+## 2026-09-25 — T-286: close the integrations-drift findings (INTG-1..19)
+
+**Status:** done (code-fix and contract-amend rulings applied in severity order). Lead ruling INTG-1: option 1, narrowed to integration-managed recipients only.
+
+### INTG-1 (H) — trusted native consent, narrowed per Lead
+
+- New `kiwi-app/src-tauri/src/send_consent.rs`: an injected `SendConsent` seam with a production `rfd 0.16` warning dialog (custom "Send once" / "Cancel", fail-closed on anything that is not the exact affirmative result). The decision is read and consumed inside Rust; the renderer can neither forge nor suppress it. `AppState` installs it in `open`, an auto-approving fake in test open, and tests can swap it.
+- `send_impl_class` resolves the final recipient set against integration-managed endpoints (live temp-mail address + every reserved deliverability address) **before** the outbox write. Ordinary composition never prompts. This closes the ordinary-`kiwi_send_message`-to-the-reserved-address bypass, not just the token path.
+- Denial: `consent-required`, `send-consent-denied` audit, no enqueue, session stays `enqueued: false`. Burst guard: 3 integration-bound confirmations per 30 s, then `consent-throttled` + `send-consent-burst-denied` with no prompt (anti consent-fatigue flood).
+- The `consentToken` is now documented and coded as a single-use **anti-replay** capability only; the UI checkbox is reworded to a notice acknowledgement and the notice text names the OS dialog.
+- 7 new regressions: ordinary send never prompts, reserved-address ordinary-send bypass denied, deliverability denial leaves no enqueue, temp-inbox destination prompts, burst denial audited, approval prompts exactly once, guard unit tests.
+
+### Remaining M findings (code-fix)
+
+- **INTG-2** redacting `Debug` + `SecretString`/`Zeroizing` in the crate; zeroized consumed capability and redacted `DeliverabilityBeginView`; serde removed from `TestSlug`/`TestReservation`.
+- **INTG-3** provider report/citation URLs validated (https, bounded, no userinfo/fragment) and dropped when they carry the slug raw or percent-encoded; copy-only UI retained.
+- **INTG-4** a shared in-band `error`-envelope rejection runs before every success parser; exact `forget_me` success (`true`) and required `extend` fields; a failed `forget_me` keeps the local address so cleanup stays retryable.
+- **INTG-5** `AuthGate` (Clear/Blocked/Incomplete) + `checks_truncated`; only `clear` with complete evidence passes; provider `complete` never cancels client truncation.
+- **INTG-6** `sanitize_html_display_only` removes anchors/hrefs for temp mail; frontend click/submit interception is defense in depth.
+- **INTG-7** `consent_consumed` / `enqueued` / `queue_id` are separate; `enqueued` is set only after the queue row exists.
+- **INTG-8** durable `OutboxClass::SingleAttempt` ledger written before the outbox row; no requeue on held/ambiguous failure and no replay after restart; ordinary send keeps five attempts.
+- **INTG-9** structured `retryAfterMs` on `IpcError` and the status view, per-test poll single-flight, 30 s cooldown floor after 429, SMTP `SendOutcome.accepted` empty never journaled as sent, and a single-flight recursive UI poll that stops on terminal states.
+- **INTG-10** the temp-mail session lock spans the whole lifecycle: failed candidates are retired and the old session stays usable; a displaced session is forgotten before replacement.
+- **INTG-11** `*-intent` audit records precede every irreversible effect and abort the operation when unwritable; completion/failure records are never dropped with `let _ =`.
+- **INTG-12** app test state installs a network-rejecting transport; `::live()` requires `KIWI_INTEGRATIONS_LIVE=1` and refuses under `CI`.
+- **INTG-13** Vitest 3.2.7 + jsdom + Testing Library gate with `typecheck`/`test` scripts and a `node-kiwi-app` CI job.
+- **INTG-14** explicit runtime decoders for all nine integration responses, fail-closed on missing/malformed fields.
+
+### L findings (contract-amend + narrow cleanup)
+
+- **INTG-15/16/17/18** `ipc.md` §9e and `integrations.md` corrected: the consent token is a deliberate anti-replay exception, "every **successful** temp-mail response" carries the notice, `sent` means enqueued, `failed` is an error not a status, 429-only rate limiting, the privacy claim is scoped to the `ip`/`agent` query parameters, and the HTTPS/no-redirect/cap guarantees are stated as `ReqwestClient` + trusted production wiring, not of every injected `HttpClient`.
+- **INTG-19** `ScriptedHttp` exact URL/path/query/header/body steps with `assert_exhausted`; app integration tests retain their handles.
+- `docs/audits/FINDINGS.md`: the stale broad `INT` row is superseded by `INTG-1..19`, all `fixed` with this task's evidence.
+
+### Verification
+
+- `cargo test -p kiwi-integrations` — **82 passed, 0 failed** (71 unit + 11 integration flows).
+- `cargo test -p kiwi-app` — **203 passed, 0 failed**.
+- `cargo clippy -p kiwi-integrations --all-targets -- -D warnings` and `cargo clippy -p kiwi-app --all-targets -- -D warnings` — passed.
+- `cargo fmt -p kiwi-integrations -- --check` and `cargo fmt -p kiwi-app -- --check` — passed.
+- `npm run typecheck`, `npm test` (**32 passed, 4 files**), `npm run build` — passed in `kiwi-app`.
+- No live provider call was made; every flow replays `ScriptedHttp` fixtures or the rejecting transport.
+
+### Owner items / follow-ups (not guessed)
+
+- **T-321 (assigned next):** re-sweep `ipc.md` + integration docs so the consent boundary reads exactly as built (which operations prompt, which do not, and why), and reconcile ADR-011 with the anti-replay-token/native-dialog split.
+- `rfd` is a new dependency (owner-approved option 1). The dialog is parentless and OS-native; a manual smoke test on Windows/macOS/Linux (including cancel/Escape and a devtools-invoked send) is still required because CI is headless.
+- The provider's real `report_url` still embeds the slug, so it is omitted until the provider contract proves the URL is public/shareable (INTG-3 safe default).
+- The shared worktree contains concurrent work from other agents in several of the touched files; Agent 23 made no commit.
+
+### Handoff
+
+- Terminal DONE command sent: `orca terminal send --terminal term_c20c6737-9b80-4911-bcd2-38aa5113e4d7 --text 'DONE: Agent-23 T-286 — result' --enter --wait-submit 10 --json`; Orca returned `input_accepted` (`provider: unsupported`, delivery unobservable). The screen shows the DONE line in the prompt box queued behind the leader's current turn, so it was not resent.
+- Next: T-321 (consent-boundary documentation sweep).

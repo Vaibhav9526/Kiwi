@@ -110,15 +110,11 @@ pub(crate) async fn tempmail_create_impl(
     let mut slot = state.tempmail.lock().await;
     // Audit intent first: the next call allocates a public remote mailbox,
     // which cannot be undone by clearing local state.
-    state
-        .audit
-        .lock()
-        .await
-        .record(
-            "tempmail-create-intent",
-            "allocating a public disposable inbox via guerrillamail",
-            now_unix(),
-        )?;
+    state.audit.lock().await.record(
+        "tempmail-create-intent",
+        "allocating a public disposable inbox via guerrillamail",
+        now_unix(),
+    )?;
 
     let gm = GuerrillaMail::new(
         state.integrations_http.clone(),
@@ -143,14 +139,14 @@ pub(crate) async fn tempmail_create_impl(
             // candidate: retire it, then hand the caller the original
             // failure. The previous session (if any) stays usable.
             let forgotten = gm.forget_me().await.is_ok();
-            let _ = state.audit.lock().await.record(
+            state.audit.lock().await.record(
                 "tempmail-create-failed",
                 &format!(
                     "candidate abandoned: {e}; remote forget {}",
                     if forgotten { "ok" } else { "failed" }
                 ),
                 now_unix(),
-            );
+            )?;
             return Err(e);
         }
     };
@@ -167,14 +163,14 @@ pub(crate) async fn tempmail_create_impl(
         // replacement, and must not be silent.
         let ok = old.forget_me().await.is_ok();
         old_forgotten = Some(ok);
-        let _ = state.audit.lock().await.record(
+        state.audit.lock().await.record(
             "tempmail-replaced",
             &format!(
                 "previous session retired: remote forget {}",
                 if ok { "ok" } else { "failed" }
             ),
             now_unix(),
-        );
+        )?;
     }
     drop(slot);
     state.audit.lock().await.record(
@@ -378,15 +374,11 @@ pub(crate) async fn deliverability_begin_impl(
 ) -> CmdResult<DeliverabilityBeginView> {
     // Audit intent first: reserving a single-use address is an external,
     // un-undoable effect, and an intent that cannot be recorded aborts it.
-    state
-        .audit
-        .lock()
-        .await
-        .record(
-            "deliverability-begin-intent",
-            "reserving a single-use test address via email-spam-tester",
-            now_unix(),
-        )?;
+    state.audit.lock().await.record(
+        "deliverability-begin-intent",
+        "reserving a single-use test address via email-spam-tester",
+        now_unix(),
+    )?;
     let tester = spamtester(state)?;
     let res = tester.reserve_inbox().await.map_err(IpcError::from)?;
 
@@ -475,10 +467,11 @@ pub async fn kiwi_integrations_deliverability_send(
     message: ComposeInput,
 ) -> CmdResult<DeliverabilitySendView> {
     gate(state.inner()).await?;
+    let presented = zeroize::Zeroizing::new(consent_token);
     deliverability_send_impl(
         state.inner(),
         &test_id,
-        &consent_token,
+        presented.as_str(),
         &account_id,
         message,
     )
@@ -552,27 +545,22 @@ pub(crate) async fn deliverability_send_impl(
     forced.to = vec![address];
     forced.cc = Vec::new();
     forced.bcc = Vec::new();
-    let receipt = match send_impl_class(
-        state,
-        account_id,
-        forced,
-        None,
-        OutboxClass::SingleAttempt,
-    )
-    .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            // The capability is spent; the enqueue is not. Record why and
-            // surface the original failure — `enqueued` stays false.
-            let _ = state.audit.lock().await.record(
-                "deliverability-send-failed",
-                &format!("{test_id}: {} — {} (not enqueued)", e.code, e.message),
-                now_unix(),
-            );
-            return Err(e);
-        }
-    };
+    let receipt =
+        match send_impl_class(state, account_id, forced, None, OutboxClass::SingleAttempt).await {
+            Ok(r) => r,
+            Err(e) => {
+                // The capability is spent; the enqueue is not. Record why and
+                // surface the original failure — `enqueued` stays false. A
+                // failure record that cannot be written is itself surfaced:
+                // evidence is never silently dropped.
+                state.audit.lock().await.record(
+                    "deliverability-send-failed",
+                    &format!("{test_id}: {} — {} (not enqueued)", e.code, e.message),
+                    now_unix(),
+                )?;
+                return Err(e);
+            }
+        };
     {
         let mut sessions = state.deliverability.lock().await;
         if let Some(session) = sessions.get_mut(test_id) {
@@ -616,12 +604,7 @@ struct PollGuard<'a> {
 
 impl Drop for PollGuard<'_> {
     fn drop(&mut self) {
-        if let Ok(mut inflight) = self
-            .state
-            .deliverability_polling
-            .lock()
-            .map_err(|_| ())
-        {
+        if let Ok(mut inflight) = self.state.deliverability_polling.lock().map_err(|_| ()) {
             inflight.remove(self.test_id);
         }
     }
@@ -751,7 +734,8 @@ mod tests {
     use super::*;
     use crate::commands::accounts::add_account_impl;
     use crate::commands::send::tests::{acct_input, test_state};
-    use crate::state::{OutboxMeta, PollCooldowns, PROVIDER_429_COOLDOWN_MS};
+    use crate::send_consent::{FixedSendConsent, IntegrationDestinationKind};
+    use crate::state::{OutboxMeta, PROVIDER_429_COOLDOWN_MS, PollCooldowns};
     use kiwi_integrations::deliverability::MAX_CHECKS;
     use kiwi_integrations::http::{HttpRequest, HttpResponse, ScriptedHttp, Step};
 
@@ -762,8 +746,7 @@ mod tests {
 
     fn state_with(script: Vec<Step>, tag: &str) -> Fixture {
         let http = Arc::new(ScriptedHttp::new(script));
-        let state =
-            AppState::open_test_with_http(temp_dir(tag), http.clone()).expect("test state");
+        let state = AppState::open_test_with_http(temp_dir(tag), http.clone()).expect("test state");
         Fixture { state, http }
     }
 
@@ -809,6 +792,8 @@ mod tests {
 
     const ST_RESERVE: &str = r#"{"address":"drop-k7f2@in.email-spam-tester.example","slug":"fx-slug-9u2n4k","expires_at":1758307200}"#;
     const ST_STATUS_PENDING_202: &str = "{}";
+    const ST_STATUS_RECEIVED: &str =
+        r#"{"analysis_status":"received","checks_done":1,"checks_total":3}"#;
     const ST_STATUS_READY: &str =
         r#"{"analysis_status":"checks_ready","checks_done":3,"checks_total":3}"#;
     const ST_REPORT: &str = r#"{"score_ours":87.0,"score_compat":9.1,"complete":true,"report_url":"https://email-spam-tester.example/r/fx","subscores":{"auth":100000,"infra_spam":80000,"content":90000,"compliance":100000},"checks":[{"id":"spf","category":"auth","status":"pass","title":"SPF","summary":"passes","citations":{"standards":[{"title":"RFC 7208","url":"https://www.rfc-editor.org/rfc/rfc7208"}]}},{"id":"dkim","category":"auth","status":"fail","title":"DKIM","summary":"no signature","citations":{}},{"id":"links","category":"content","status":"warn","title":"Link density","summary":"heavy","citations":{}}]}"#;
@@ -845,6 +830,16 @@ mod tests {
         assert_eq!(msg.remote_images_stripped, 1);
         assert!(msg.public_inbox_notice.contains("PUBLIC"));
         assert!(audit_log(&f.state).contains("tempmail-create-intent"));
+
+        let ext = tempmail_extend_impl(&f.state).await.unwrap();
+        assert!(ext.extended && !ext.expired);
+        let d = tempmail_discard_impl(&f.state).await.unwrap();
+        assert!(d.discarded && d.remote_forgotten);
+        assert!(
+            tempmail_poll_impl(&f.state)
+                .await
+                .is_err_and(|e| e.code == "not-found")
+        );
         f.http.assert_exhausted();
     }
 
@@ -969,7 +964,10 @@ mod tests {
         assert!(failed.is_err_and(|e| e.code == "integration-error"));
 
         let poll = tempmail_poll_impl(&f.state).await.unwrap();
-        assert_eq!(poll.address.as_deref(), Some("itest01@guerrillamailblock.com"));
+        assert_eq!(
+            poll.address.as_deref(),
+            Some("itest01@guerrillamailblock.com")
+        );
         let log = audit_log(&f.state);
         assert!(log.contains("tempmail-create-failed"));
         assert!(log.contains("remote forget ok"));
@@ -1193,7 +1191,12 @@ mod tests {
         let f = state_with(
             vec![
                 Step::post("reserve", &["/api/v1/inbox"], 200, ST_RESERVE),
-                Step::get("report", &["/api/v1/tests/fx-slug-9u2n4k"], 200, leaked(body)),
+                Step::get(
+                    "report",
+                    &["/api/v1/tests/fx-slug-9u2n4k"],
+                    200,
+                    leaked(body),
+                ),
             ],
             "d-trunc",
         );
@@ -1269,7 +1272,13 @@ mod tests {
         let ordinary = crate::commands::send::send_impl(&f.state, &acct.id, compose(), None)
             .await
             .unwrap();
-        assert!(!f.state.single_attempt.lock().await.contains(&ordinary.queue_id));
+        assert!(
+            !f.state
+                .single_attempt
+                .lock()
+                .await
+                .contains(&ordinary.queue_id)
+        );
         let on_disk =
             std::fs::read_to_string(f.state.data_dir.join("outbox_single_attempt.json")).unwrap();
         assert!(on_disk.contains(&sent.queue_id));
@@ -1294,6 +1303,179 @@ mod tests {
         assert_eq!(meta.class, OutboxClass::Ordinary);
         assert_eq!(meta.attempts, 0);
         assert!(!f.state.single_attempt.lock().await.contains(&sent.queue_id));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_send_never_prompts_for_native_confirmation() {
+        let state = test_state("consent-ordinary");
+        let consent = Arc::new(FixedSendConsent::denying());
+        *state.send_consent.lock().unwrap() = consent.clone();
+        let acct = add_account_impl(&state, acct_input()).await.unwrap();
+        crate::commands::send::send_impl(&state, &acct.id, compose(), None)
+            .await
+            .unwrap();
+        assert!(consent.requests().is_empty());
+        assert_eq!(state.send_queue.lock().await.pending_count(), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn deliverability_send_denial_never_enqueues() {
+        let f = state_with(
+            vec![Step::post("reserve", &["/api/v1/inbox"], 200, ST_RESERVE)],
+            "consent-deny",
+        );
+        let consent = Arc::new(FixedSendConsent::denying());
+        *f.state.send_consent.lock().unwrap() = consent.clone();
+        let acct = add_account_impl(&f.state, acct_input()).await.unwrap();
+        let begin = deliverability_begin_impl(&f.state).await.unwrap();
+        let err = deliverability_send_impl(
+            &f.state,
+            &begin.test_id,
+            &begin.consent_token,
+            &acct.id,
+            compose(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(err.code, "consent-required");
+        assert_eq!(f.state.send_queue.lock().await.pending_count(), 0);
+        assert!(
+            f.state
+                .store
+                .lock()
+                .await
+                .outbox_list(10)
+                .unwrap()
+                .is_empty()
+        );
+        let sessions = f.state.deliverability.lock().await;
+        let session = &sessions[&begin.test_id];
+        assert!(session.consent_consumed);
+        assert!(!session.enqueued);
+        assert!(session.queue_id.is_none());
+        drop(sessions);
+        let requests = consent.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].destinations[0].kind,
+            IntegrationDestinationKind::DeliverabilityTest
+        );
+        assert_eq!(requests[0].destinations[0].address, begin.address);
+        let log = audit_log(&f.state);
+        assert!(log.contains("send-consent-denied"));
+        assert!(log.contains("deliverability-send-intent"));
+        f.http.assert_exhausted();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_send_to_temp_inbox_prompts_and_can_be_denied() {
+        let f = state_with(
+            vec![Step::get("init", &["f=get_email_address"], 200, GM_ADDR)],
+            "consent-temp",
+        );
+        let consent = Arc::new(FixedSendConsent::denying());
+        *f.state.send_consent.lock().unwrap() = consent.clone();
+        let acct = add_account_impl(&f.state, acct_input()).await.unwrap();
+        let mailbox = tempmail_create_impl(&f.state, None).await.unwrap();
+        let mut message = compose();
+        message.to = vec![mailbox.address.clone()];
+        let err = crate::commands::send::send_impl(&f.state, &acct.id, message, None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "consent-required");
+        assert_eq!(f.state.send_queue.lock().await.pending_count(), 0);
+        let requests = consent.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(
+            requests[0].destinations[0].kind,
+            IntegrationDestinationKind::TempInbox
+        );
+        f.http.assert_exhausted();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn integration_prompt_burst_is_denied_and_audited() {
+        let f = state_with(
+            vec![Step::get("init", &["f=get_email_address"], 200, GM_ADDR)],
+            "consent-burst",
+        );
+        let consent = Arc::new(FixedSendConsent::denying());
+        *f.state.send_consent.lock().unwrap() = consent.clone();
+        let acct = add_account_impl(&f.state, acct_input()).await.unwrap();
+        let mailbox = tempmail_create_impl(&f.state, None).await.unwrap();
+        for _ in 0..3 {
+            let mut message = compose();
+            message.to = vec![mailbox.address.clone()];
+            let err = crate::commands::send::send_impl(&f.state, &acct.id, message, None)
+                .await
+                .unwrap_err();
+            assert_eq!(err.code, "consent-required");
+        }
+        let mut message = compose();
+        message.to = vec![mailbox.address.clone()];
+        let err = crate::commands::send::send_impl(&f.state, &acct.id, message, None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "consent-throttled");
+        assert_eq!(consent.requests().len(), 3);
+        assert!(audit_log(&f.state).contains("send-consent-burst-denied"));
+        assert_eq!(f.state.send_queue.lock().await.pending_count(), 0);
+        f.http.assert_exhausted();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn ordinary_send_to_reserved_address_cannot_bypass_native_confirmation() {
+        let f = state_with(
+            vec![Step::post("reserve", &["/api/v1/inbox"], 200, ST_RESERVE)],
+            "consent-bypass",
+        );
+        let consent = Arc::new(FixedSendConsent::denying());
+        *f.state.send_consent.lock().unwrap() = consent.clone();
+        let acct = add_account_impl(&f.state, acct_input()).await.unwrap();
+        let begin = deliverability_begin_impl(&f.state).await.unwrap();
+        let mut message = compose();
+        message.to = vec![begin.address.clone()];
+        let err = crate::commands::send::send_impl(&f.state, &acct.id, message, None)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "consent-required");
+        assert_eq!(f.state.send_queue.lock().await.pending_count(), 0);
+        let requests = consent.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].destinations[0].address, begin.address);
+        assert_eq!(
+            requests[0].destinations[0].kind,
+            IntegrationDestinationKind::DeliverabilityTest
+        );
+        f.http.assert_exhausted();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn deliverability_send_approval_prompts_once_then_enqueues() {
+        let f = state_with(
+            vec![Step::post("reserve", &["/api/v1/inbox"], 200, ST_RESERVE)],
+            "consent-approve",
+        );
+        let consent = Arc::new(FixedSendConsent::approving());
+        *f.state.send_consent.lock().unwrap() = consent.clone();
+        let acct = add_account_impl(&f.state, acct_input()).await.unwrap();
+        let begin = deliverability_begin_impl(&f.state).await.unwrap();
+        let sent = deliverability_send_impl(
+            &f.state,
+            &begin.test_id,
+            &begin.consent_token,
+            &acct.id,
+            compose(),
+        )
+        .await
+        .unwrap();
+        assert!(sent.enqueued && sent.consent_consumed);
+        assert_eq!(consent.requests().len(), 1);
+        assert_eq!(
+            consent.requests()[0].destinations[0].kind,
+            IntegrationDestinationKind::DeliverabilityTest
+        );
+        f.http.assert_exhausted();
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1430,14 +1612,13 @@ mod tests {
                     "first",
                     &["/api/v1/tests/fx-slug-9u2n4k/status"],
                     200,
-                    ST_STATUS_PENDING_202,
-                )
-                .respond_headers(&[("retry-after", "5")]),
+                    ST_STATUS_RECEIVED,
+                ),
                 Step::get(
-                    "second",
+                    "limited",
                     &["/api/v1/tests/fx-slug-9u2n4k/status"],
-                    200,
-                    ST_STATUS_PENDING_202,
+                    429,
+                    "{}",
                 )
                 .respond_headers(&[("retry-after", "5")]),
             ],
@@ -1447,7 +1628,8 @@ mod tests {
         let first = deliverability_status_impl(&f.state, &begin.test_id)
             .await
             .unwrap();
-        assert_eq!(first.analysis_status, "pending");
+        assert_eq!(first.analysis_status, "received");
+        assert_eq!(first.checks_done, 1);
 
         let limited = deliverability_status_impl(&f.state, &begin.test_id)
             .await
@@ -1465,7 +1647,7 @@ mod tests {
         let cached = deliverability_status_impl(&f.state, &begin.test_id)
             .await
             .unwrap();
-        assert_eq!(cached.analysis_status, "pending");
+        assert_eq!(cached.analysis_status, "received");
         assert_eq!(cached.checks_done, first.checks_done);
         assert!(cached.retry_after_ms.is_some_and(|ms| ms <= hint));
         f.http.assert_exhausted();
@@ -1575,6 +1757,61 @@ mod tests {
             self.release.notified().await;
             self.inner.request(req).await
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tempmail_lifecycle_is_serialized() {
+        let entered = Arc::new(tokio::sync::Semaphore::new(0));
+        let release = Arc::new(tokio::sync::Notify::new());
+        let transport = Arc::new(SlowHttp {
+            inner: ScriptedHttp::new(vec![
+                Step::get("init", &["f=get_email_address"], 200, GM_ADDR),
+                Step::post("forget", &["f=forget_me"], 200, GM_FORGET),
+            ]),
+            entered: entered.clone(),
+            release: release.clone(),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let state = Arc::new(
+            AppState::open_test_with_http(temp_dir("tm-serial"), transport.clone()).unwrap(),
+        );
+
+        // create is parked inside the provider, holding the session lock.
+        let creating = {
+            let s = state.clone();
+            tokio::spawn(async move { tempmail_create_impl(&s, None).await })
+        };
+        entered
+            .acquire()
+            .await
+            .expect("create entered the transport")
+            .forget();
+
+        let discarding = {
+            let s = state.clone();
+            tokio::spawn(async move { tempmail_discard_impl(&s).await })
+        };
+        // The discard cannot interleave: it waits for create to finish, so
+        // it retires the session create just installed.
+        release.notify_one();
+        let created = creating.await.unwrap().unwrap();
+        assert_eq!(created.address, "itest01@guerrillamailblock.com");
+        entered
+            .acquire()
+            .await
+            .expect("discard reached the transport")
+            .forget();
+        release.notify_one();
+        let discarded = discarding.await.unwrap().unwrap();
+        assert!(discarded.discarded && discarded.remote_forgotten);
+
+        assert!(
+            tempmail_poll_impl(&state)
+                .await
+                .is_err_and(|e| e.code == "not-found"),
+            "the discard must have run after the create, not before it"
+        );
+        transport.inner.assert_exhausted();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

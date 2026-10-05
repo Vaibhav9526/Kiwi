@@ -248,6 +248,8 @@ pub(crate) async fn set_junk_impl(
         &format!("{account_id}: {flagged} flagged, {moved} moved"),
         now_unix(),
     )?;
+    // T-345: junk flag/mailbox moves change the unread figure.
+    crate::tray::refresh_tooltip(&state).await;
     Ok(SetJunkView {
         junk,
         flagged,

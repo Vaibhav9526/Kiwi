@@ -185,6 +185,9 @@ pub(crate) async fn update_message_impl(
         now_unix(),
     )?;
 
+    // T-345: a flag/mailbox change can move the global unread number.
+    crate::tray::refresh_tooltip(&state).await;
+
     Ok(MessageUpdateView {
         folder_id,
         uid,
@@ -251,6 +254,10 @@ async fn move_local(
     {
         store.store_body(dest_folder, uid, &bytes)?;
     }
+    // T-339: deferred-part descriptors + fetched payloads travel with the
+    // message — before delete_messages drops the source row (cascade) and
+    // its attachments dir.
+    store.copy_parts_state(src_folder, uid, dest_folder, uid)?;
     store.delete_messages(src_folder, &[uid])?;
     Ok(())
 }

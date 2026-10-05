@@ -31,6 +31,10 @@
     "--kiwi-ms-info": "#0b4db3",
     "--kiwi-ms-success": "#006b26",
     "--kiwi-ms-warning": "#8a4f00",
-    "--kiwi-ms-danger": "#b00020"
+    "--kiwi-ms-danger": "#b00020",
+    "--accent": "#b34700",
+    "--accent-hover": "#8f3a00",
+    "--accent-ink": "#ffffff",
+    "--selection": "#cfe0fb"
   }
 }

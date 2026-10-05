@@ -1,178 +1,202 @@
-# KIWI — Architecture
+# KIWI — Architecture (as-built, release/v0.2.0)
 
-> Owner: Lead Agent (Agent 1, Devin SWE-2). Status: Phase 0 — standalone pivot.
-> Master prompt: `prompt.md` (repo root). **Superseded note:** prompt.md §1–2
-> (modify Thunderbird) is replaced by the owner directive — KIWI is a
-> **completely independent email client built from scratch** (ADR-005).
-> Thunderbird = workflow/UX reference; Mailspring = productivity-feature
-> reference. Everything else in prompt.md still applies.
+> Owner: Lead Agent (Agent 1, Devin SWE-2). Status: Phase 2 — feature-complete standalone client.
+> Master prompt: `prompt.md`. **Pivot (ADR-005):** KIWI is a completely
+> independent email client built from scratch. Thunderbird = workflow/UX
+> reference; Mailspring = productivity reference. Nothing is forked.
 
-## 1. System overview
+## 1. Product identity
 
-**Product identity (owner-confirmed):** KIWI = full-featured desktop mail
-client + security platform in one. Mailspring-grade UI polish, MailFlow-complete
-feature set (via MPL-clean adaptation), and the security spine nobody else
-ships — deterministic transport evidence, endpoint trust + native lock,
-independent authenticator, PCAP forensics, org policy, tamper-evident audit.
-Working tagline: *"Email that proves its security"* — every claim is
-evidence-backed; AI explains but never asserts.
+KIWI = full-featured desktop mail client + security platform in one.
+Mailspring-grade UI polish, Thunderbird-complete feature set, and the
+security spine nobody else ships: deterministic transport evidence,
+endpoint trust + native lock, independent authenticator, PCAP forensics,
+org policy, tamper-evident audit.
 
-**Positioning guardrail (applies to every spec and surface):** feature parity
-never compromises the deterministic-security rules — no remote lookups without
-explicit opt-in, no plaintext secrets, `unsafe_code` stays forbidden, and every
-surface honors the lock state. Copy language is evidence-first: findings cite
-evidence, no fear-mongering, degradation states are described honestly.
+Tagline: *"Email that proves its security"* — every claim is evidence-backed;
+AI explains but never asserts. Fail-closed beats fabricated success on every
+surface (absent data renders absent, never a fake green).
 
-KIWI is a security-first desktop email platform: a native mail client
-(SMTP/IMAP/POP3, inbox, folders, compose, search, contacts, attachments,
-account management) plus a serious security platform: deterministic transport
-security analysis, endpoint trust + lock state, SecureMail identity, mobile
-authenticator, PCAP forensics, org/policy control plane, tamper-evident audit.
+## 2. System overview
 
 ```
-+--------------------------------- kiwi-app (Tauri 2) ---------------------------------+
-|  React+TS frontend (webview)  <— IPC (typed commands/events) —>  Rust core (src-tauri)|
-+------------------------------------------|--------------------------------------------+
-                                             |
-        +----------------+-----------------+----------------+------------------+
-        |                |                                   |                 |
-   kiwi-mail (Rust)  kiwi-core (Rust)                  kiwi-forensics      kiwi-admin
-   SMTP/IMAP/POP3    session security model            (Rust)              (Node/TS)
-   account/sync/     endpoint trust + lock state       PCAP ingest/parse   org/policy/RBAC
-   mail storage      SecureMail identity/sessions      TLS/cert/cipher     mail-flow metadata
-   TLS observation   device registration               rules + scoring     audit log
-        |                |                                   |                 |
-        +----------------+--------- SQLite (local-first) ----+-----------------+
-        |
-  mobile authenticator (React Native) — asymmetric challenge-response pairing
-        |
-  kiwi-admin-ui (React + TS, localhost only) — Phase 6+
+┌─────────────────────────── kiwi-app (Tauri 2) ────────────────────────────┐
+│  React+TS frontend (webview)                                              │
+│    views: mailbox compose contacts rules templates security-center        │
+│           settings(9 tabs) setup integrations  + plugins (Worker-isolated)│
+│          │                                                                │
+│          │ IPC — typed commands/events, every data op lock-gated          │
+│          ▼                                                                │
+│  Rust host (src-tauri):  state.rs AppState · commands/* (~25 modules)     │
+│    send/(enqueue+dispatch) · message/(render,update,delete,junk,snooze,   │
+│    unsubscribe,attachment) · pair · folders · import/export (mbox) ·      │
+│    security · rules · templates · contacts · storage · audit · notify ·   │
+│    send_consent (native rfd at integration boundary) · pairing_listen     │
+│    (dev-only LAN claim) · lock_matrix · e2e harness hooks                 │
+└──────────────────────────────┬────────────────────────────────────────────┘
+                               │ owns crates via typed calls
+        ┌──────────┬───────────┼───────────┬──────────┬──────────┬──────────┐
+        ▼          ▼           ▼           ▼          ▼          ▼          ▼
+   kiwi-mail   kiwi-core   kiwi-pair   kiwi-     kiwi-      kiwi-       kiwi-
+   SMTP·IMAP·  session     canonical  forensics mailauth   integrations sandbox
+   POP3·mime·  security    pairing    PCAP+     SPF·DKIM·  temp-mail·   WSL2
+   store·sync· model·trust engine     live sess DMARC      deliverab.   guest
+   rules·FTS·  device reg  (SQLite)   scoring   Hickory    (consented)   exec
+   mbox·search            authority            DNS resolver
+        └──────────┴───────┴─────┴─────────┴────┴──────────┴──────────┘
+                        SQLite (local-first, mail.db)
+        ┌──────────────────────────────────────────────────────────┐
+        ▼                                                          ▼
+   mobile/ (RN authenticator — scaffold,               kiwi-admin (Node/TS+PG)
+   contract-blocked pending R1-R8 ratification)        orgs·policies·mail-flow·audit
+   kiwi-admin-ui (React, localhost)                    docker-compose infra
 ```
 
-## 2. Repository layout (this checkout)
+## 3. Crate map (workspace, edition 2024)
 
-| Path | Contents | Owner |
-|------|----------|-------|
-| `prompt.md` | Original master prompt (§1–2 superseded by pivot) | Lead |
-| `images/` | Supplied KIWI brand assets — do NOT overwrite | Agent 5 (read-only for all) |
-| `source/` → `D:\kiwi-src` | Thunderbird/Firefox checkout — **READ-ONLY REFERENCE**, never shipped | Lead |
-| `kiwi-app/` | Tauri 2 app: `src-tauri/` Rust backend + React/TS frontend | Lead + Agent 5 |
-| `kiwi-mail/` | Rust: SMTP/IMAP/POP3 clients, TLS observation, account model, mail store, sync | Agent 2 |
-| `kiwi-core/` | Rust: session security model, trust engine, identity, device, policy | Agent 2 |
-| `kiwi-forensics/` | Rust: PCAP engine, analyzers, deterministic scoring | Agent 3 |
-| `kiwi-admin/` | Node/TS: org/policy service, mail-flow metadata, audit log | Agent 4 |
-| `kiwi-admin-ui/` | React+TS local admin UI (Phase 6+) | Agent 4 + Agent 5 |
-| `mobile/` | React Native authenticator (Phase 4+) | TBD by Lead |
-| `docs/` | Source-of-truth documentation | Lead owns; per-file owners in TASKS.md |
-| `docs/contracts/` | Stable internal API/interface contracts | Lead + owning agent |
-| `docs/agents/` | Per-agent briefs and status files | Each agent writes own status file only |
-| `tests/` | Shared test fixtures + tools | Agent 6 |
-| `artifacts/` | Logs/build artifacts (gitignored) | Lead |
-| `Cargo.toml` (root) | Cargo workspace: kiwi-mail, kiwi-core, kiwi-forensics, kiwi-app/src-tauri | Lead |
+| Crate | Responsibility | Key modules |
+|---|---|---|
+| `kiwi-mail` | The mail engine — all protocols + storage + rules | `smtp/`, `imap/`, `pop3`, `mime`, `store/`(schema,queries,outbox,threads,diagnostics), `sync`, `rules/`, `search` (FTS5+operators), `mbox` (rd import+export shared), `linkrisk`, `attachrisk`, `authrisk`, `authstamp`, `category`, `unsub`, `threading`, `transport` (TLS capture), `testutil/` (loopback scripted servers) |
+| `kiwi-core` | Security/session domain types | `SecuritySession` model, trust state machine, device identity, policy types |
+| `kiwi-pair` | **Canonical device/pairing authority** (T-269) | Persistent `PairEngine`: tickets, challenges, devices, revocation — atomic consume, TOFU evidence, restart-surviving |
+| `kiwi-forensics` | Deterministic reports | `pcap/` ingest+reassembly, `analyzers/`, `rules/`, `score`, `report/` (canonical bytes + self-verifying export envelope) |
+| `kiwi-mailauth` | Mail authentication | SPF/DKIM/DMARC verification + `dns.rs` (HickoryResolver production + MockResolver tests, bounded fail-closed) |
+| `kiwi-integrations` | External services (opt-in) | `tempmail/` (Guerrilla etc.), `deliverability/`, `http.rs` (bounded client), `secret.rs` — all behind consent boundary |
+| `kiwi-autoconfig` | Account auto-discovery | ISPDB fixtures + MX hints, provider autoconfig |
+| `kiwi-contacts` | Contact model | vCard import/export, address book |
+| `kiwi-sandbox` | Disposable guest exec | WSL2 provider, teardown-before-record honest absence |
+| `kiwi-app/src-tauri` | The app binary | `commands/` IPC surface, `state.rs`, `audit.rs` (hash-chained JSONL), `syncer.rs`, `notify.rs`, `pairing_listen.rs`, `send_consent.rs`, `observe.rs`, `e2e.rs` |
 
-**Hard boundary:** `source/` (Thunderbird) is reference-only — copy nothing
-that isn't clean-room compatible (MPL: study patterns, write our own code).
-Each agent works only in its directories (prompt.md §8 applies).
+TS-facing sidecars: `kiwi-admin` (Node/Drizzle/PG — org plane),
+`kiwi-admin-ui` (React localhost admin), `mobile/` (RN authenticator
+scaffold), `kiwi-app/src` (the renderer).
 
-## 3. Module boundaries & responsibilities
+## 4. IPC boundary (`src-tauri/src/commands/`)
 
-- **kiwi-mail** — the mail engine. Native protocol clients:
-  - `smtp` — send client: EHLO/STARTTLS upgrade, AUTH (PLAIN/LOGIN/XOAUTH2/
-    CRAM-MD5), MAIL/RCPT/DATA, pipelining, size limits.
-  - `imap` — receive client: capabilities, LOGIN/AUTHENTICATE, SELECT,
-    FETCH (envelope/flags/body-structure/UID), IDLE, folder ops.
-  - `pop3` — USER/PASS or APOP, LIST/UIDL/RETR/DELE, STLS.
-  - `transport` — TCP + `rustls` TLS with **full negotiated-parameter
-    capture** (TLS version, cipher suite, key-exchange group, ALPN, peer
-    cert chain) — this is where every `SecuritySession` observation begins.
-  - `account` — account model (SMTP+IMAP/POP3 creds, OAuth2 tokens),
-    per-account folders.
-  - `store` — local mail storage (SQLite: messages metadata, bodies,
-    attachments on disk; per-account namespaces).
-  - `sync` — folder sync engine, incremental via UIDVALIDITY/UIDs.
-  - `mime` — MIME build/parse (mail-parser for inbound; own builder for
-    outbound).
-- **kiwi-core** — unchanged: `SecuritySession` model, trust state machine
-  (trusted→degraded→locked), device registration/revocation, SecureMail
-  identity/sessions/recovery, lock policy.
-- **kiwi-forensics** — unchanged: PCAP ingest, TCP reassembly, protocol
-  reconstruction, TLS/cert/cipher rules, deterministic scoring, reports.
-  Now also consumes live `SecuritySession` events from kiwi-mail.
-- **kiwi-admin** — unchanged: orgs/domains/users/roles/devices, recipient
-  policies, mail-flow metadata (no bodies), hash-chained audit log, RBAC,
-  SQLite behind repository interfaces.
-- **kiwi-app** — Tauri shell. `src-tauri/` exposes typed IPC commands that
-  delegate to kiwi-mail/kiwi-core/kiwi-forensics/kiwi-admin; frontend is
-  React+TS (Vite). No business logic in the frontend beyond UI state.
-- **mobile authenticator** — Phase 4: keypair in platform keystore, QR/local
-  pairing, challenge-response bound to device+session+event, replay
-  protection, revocation.
-- **AI layer (optional)** — explanation/correlation only behind an
-  abstraction; never authoritative (SECURITY.md).
+Every renderer↔Rust call is a typed `kiwi_*` command registered in
+`lib.rs`, governed by three cross-cutting rules:
 
-## 4. Productivity features (Mailspring-inspired, native KIWI)
+- **Lock gate** — commands touching data require unlocked state;
+  exemptions are explicit (`unlock_challenge`, pair flow, prefs subset).
+  `lock_matrix.rs` (T-340) classifies the full surface.
+- **Consent boundary** — `send_consent.rs`: native `rfd` dialog fires in
+  the enqueue path only for integration-bound sends (deliverability/
+  temp-mail) — the renderer→external-service boundary. Ordinary sends
+  don't prompt (the user's Send click is the consent).
+- **Audit** — mutations write to `audit.jsonl` (hash-chained, genesis-
+  verified on open, re-anchored retention sweep, corruption surfaces as
+  `audit-corrupt` → tri-state UI). Counts/ids only, never payloads.
 
-Selected for implementation (assigned in TASKS.md):
+Command families: `accounts`, `autoconfig`, `contacts`, `devices`,
+`endpoint`, `export`/`import` (mbox), `folders` (local+IMAP CRUD by
+origin), `integrations`, `link` (click-gate+sandbox), `message/*`
+(render,update,delete,junk,snooze,unsubscribe,attachment), `oauth2`,
+`pair` (§9d canonical + `kiwi_*` aliases), `prefs`, `rules`, `sandbox`,
+`security` (sessions/findings/forensics export), `send/*` (enqueue,
+dispatch, undo, reschedule), `storage` (stats+compact), `templates`.
 
-- Unified inbox across accounts
-- Snooze / send-later scheduling
-- Undo send (delayed send queue)
-- Message templates/snippets
-- (deferred: read receipts/tracking — privacy-sensitive, needs owner sign-off)
+Contract: `docs/contracts/ipc.md` is normative; view types in
+`src-tauri/src/types/` serialize to camelCase; renderer parses via
+`kiwi.ts` + `ipc.ts` wrappers (unknown fields → honest absent, never
+crash).
 
-## 5. Thunderbird/Mailspring reference map
+## 5. Security chain
 
-Study `source/comm/` (Thunderbird) and Mailspring for behavior only:
+Message-link flow: **stamps → hints → click-gate → sandbox → evidence**
 
-| Capability | Reference | KIWI equivalent |
-|------------|-----------|-----------------|
-| SMTP client state machine | `comm/mailnews/compose/src/SmtpClient.sys.mjs` | `kiwi-mail::smtp` |
+- `linkrisk`/`attachrisk`/`authrisk`/`authstamp` attach evidence at ingest
+- `kiwi_link_click` → verdict allow|confirm|sandbox|deny
+- `kiwi_open_external` re-checks source risk (no bypass)
+- `kiwi-sandbox` opens HTTP(S)-only in the WSL2 guest; tears down before
+  record → `kiwi_sandbox_sessions` reports honest `completed` rows
+- Everything lands in the audit chain + per-message evidence
+
+Lock state: `PairEngine` + endpoint trust drive a native lock; the IPC
+layer enforces (T-340 matrix proves coverage). UI has a LockOverlay with
+pairing-QR exemption.
+
+## 6. Plugins (Worker-isolated, T-306)
+
+Plugin entries run in `blob:` Web Workers (CSP `worker-src self blob:`
+only — no `unsafe-eval`). Plugin context gets **no** DOM/localStorage/
+cookies/`__TAURI__`; fetch inherits `connect-src`; dedicated per-session
+ports replace the broadcast bus. Four capabilities have real bounded
+whitelist sinks; executable deny-proofs in the Node `worker_threads`
+harness (48/48). Install UX: sideload folder picker + validation +
+capability badges.
+
+## 7. Frontend (`kiwi-app/src`)
+
+React 18 + TS + Vite. eM-Client-style four-pane shell (`chrome.tsx`):
+folder tree + smart counts, tabbed+grouped message list (virtualized,
+quick-filter chips, multi-select, drag→folder, ctx-menus incl. Copy-to),
+thread-card reader (quote-collapse, in-reply-to jump, source view), agenda
+rail + security strip (trust chip tri-state incl. audit-integrity).
+
+Surfaces: compose (floating dock, templates, attachments w/ progress,
+contact autocomplete, signatures, undo-send), contacts, rules, templates,
+security-center (sessions/findings/audit log), integrations, settings
+(9 tabs incl. About+Storage), unified inbox, folder mgmt, import/export,
+device mgmt + real pairing QR. Themes: light/dark/high-contrast + sideload.
+Zero-dep CDP smoke suite (`scripts/ui-smoke.mjs`) = 25+ real-DOM checks,
+CI-wired.
+
+## 8. Async/auxiliary surfaces
+
+- **mobile/** — RN authenticator scaffold: keystore, protocol, QR,
+  PairingScreen/PendingApprovals. **Fail-closed honest**:
+  `UnavailableKeystore` rejects signing, `OfflineTransport` offline.
+  Production blocked on contract rulings R1–R8 (`docs/proposals/
+  t311-authenticator-rulings.md`).
+- **kiwi-admin** — Node/Drizzle org plane: orgs/domains/users/roles,
+  recipient-domain policies, mail-flow metadata (never bodies), audit.
+  PG via docker-compose.
+- **kiwi-admin-ui** — localhost React admin UI.
+- **pairing_listen.rs** — dev-only bounded HTTP POST /pair behind
+  `KIWI_PAIR_LISTEN`; production `wss://` pending R3.
+
+## 9. Data flow (canonical paths)
+
+- **Inbound:** IMAP IDLE/poll or POP3 UIDL → transport TLS capture →
+  mime parse → store (bodies/attachments on disk, meta+FTS in SQLite) →
+  risk stamps + auth stamps → rules apply → unread counts + notify
+- **Outbound:** compose → enqueue (undo window, send-later schedule,
+  consent boundary check) → outbox row (persisted, retry/held/lastError)
+  → dispatch → SMTP wire (XOAUTH2/plain) → IMAP `\Sent` APPEND → audits
+- **Security:** sessions→forensics report (canonical bytes) → self-
+  verifying SHA-256 export envelope → Security Center
+- **Pairing:** `pair_begin` (ticket+QR payload) → mobile scans → LAN/wss
+  claim → `claim_ticket_and_register` (atomic) → device row + TOFU →
+  challenges → lock/unlock
+
+## 10. Toolchain & release
+
+- Rust 1.98 workspace, Node 22/25, Python 3.14, Vite+React18, Tauri 2.
+- Canonical build: `npm run tauri build` (local @tauri-apps/cli 2.11.4 —
+  no global cargo-tauri). Verified artifacts: exe 30MB, NSIS 7.3MB, MSI
+  10.7MB — unsigned (SmartScreen caveat in `docs/RELEASING.md`), no
+  auto-update in alpha.
+- Gates: `cargo test --workspace` · `clippy -D warnings` · `fmt --check`
+  · `tsc --noEmit` · `vitest` · `vite build` · `npm run test:ui` (CDP
+  smoke, CI job). CI = `.github/workflows/ci.yml` (rust+admin+mobile+app
+  +statics+live-docker-infra+ui-smoke).
+- Local mirror: `scripts/gates.{ps1,sh}` (T-344).
+
+## 11. Hard boundaries
+
+- `source/` (Thunderbird), `reference/` (Mailspring) — **reference only**,
+  never shipped; copy-overlap CI gate enforces MPL-clean provenance.
+- AI/LLM — explanation only behind an abstraction; never authoritative.
+- No remote lookup without explicit opt-in; no plaintext secrets;
+  `unsafe_code` forbidden; every surface honors lock state.
+
+## 12. Reference map (study-don't-copy)
+
+| Capability | Thunderbird | KIWI |
+|---|---|---|
+| SMTP client | `comm/mailnews/compose/src/SmtpClient.sys.mjs` | `kiwi-mail::smtp` |
+| IMAP protocol | `comm/mailnews/imap/src/` | `kiwi-mail::imap` |
 | POP3 client | `comm/mailnews/local/src/Pop3Client.sys.mjs` | `kiwi-mail::pop3` |
-| IMAP protocol | `comm/mailnews/imap/src/` (C++) | `kiwi-mail::imap` |
-| Account/server model | `MsgIncomingServer.sys.mjs`, `nsMsgAccount*` | `kiwi-mail::account` |
-| Mailbox UI patterns | `comm/mail/base/` | `kiwi-app` frontend |
-| Compose UX | `comm/mail/components/compose/` | `kiwi-app` composer |
-| Productivity features | Mailspring (snooze/send-later/undo/templates) | `kiwi-mail` + `kiwi-app` |
-
-## 6. Build & toolchain (current status)
-
-- Host: Windows, `D:\` drive. Rust 1.98, Node 25, Python 3.14 present.
-- Cargo workspace at root: `kiwi-mail`, `kiwi-core`, `kiwi-forensics`,
-  (later `kiwi-app/src-tauri`).
-- `kiwi-admin`: npm/TypeScript; `kiwi-app` frontend: Vite + React + TS.
-- Thunderbird build toolchain (MozillaBuild) no longer needed — kept
-  installed harmlessly; `D:\kiwi-src` retained as reference only.
-
-## 7. Infrastructure layer (ADR-006/007/008 — owner directive 2026-09-20)
-
-Added before further feature development:
-
-- **Databases** — Drizzle ORM (TypeScript layer). PostgreSQL for
-  service/organization data (kiwi-admin); SQLite for local desktop state,
-  cache, prefs, temporary forensic data. All access behind repository
-  interfaces; migrations via Drizzle Kit; no plaintext secrets in either DB
-  (device-local secrets go to OS credential storage — Windows Credential
-  Manager/DPAPI). Rust crates keep rusqlite internally (kiwi-mail store) —
-  Drizzle governs the TS-facing persistence.
-- **Docker Compose** — reproducible local infra: PostgreSQL, kiwi-admin,
-  dev/test mail server. Health checks, persistent volumes, `.env.example`,
-  documented start/stop. The Tauri desktop app always runs natively — never
-  containerized. No Kubernetes.
-- **Sandbox** — disposable VM boundary (Firecracker where practical,
-  QEMU/KVM + prepared snapshot otherwise) for any active analysis of
-  untrusted attachments/documents/links. Prebuilt base image + snapshot/
-  revert; isolated FS, controlled egress, no host creds/keys/mailbox,
-  resource+time limits, proc/FS/network monitoring, auto-teardown.
-  Docker is infra, not the hostile-code boundary.
-- **Dependency rule (ADR-009)** — any new infra component requires a written
-  justification: need, alternatives, security, cost, testing strategy.
-
-### Execution order (owner directive)
-
-1. PG + Drizzle schema/migrations → 2. SQLite + Drizzle local layer →
-3. docker-compose for local infra → 4. interfaces between desktop,
-   services, DBs → 5. sandbox technology evaluation (host-OS-dependent) →
-6. sandbox base-image/snapshot strategy → 7. basic connectivity/migration/
-   health/sandbox-lifecycle tests → 8. document decisions → 9. feature work
-   proceeds on verified foundations. Unavailable components are isolated
-   behind interfaces — never block unrelated work.
+| Account model | `nsMsgAccount*` | `kiwi-mail::account` |
+| Mailbox UI | `comm/mail/base/` | `kiwi-app` views |
+| Productivity | Mailspring | native (rules/templates/snooze/undo/copy/dock) |

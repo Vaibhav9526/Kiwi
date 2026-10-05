@@ -97,3 +97,12 @@
   --kiwi-shadow: 0 18px 48px rgba(0, 0, 0, 0.3);
   --kiwi-shimmer: rgba(11, 77, 179, 0.08);
 }
+
+/* Canonical palette (dispatch 26c): high-visibility orange primary. */
+:root[data-theme="high-contrast"],
+[data-theme="high-contrast"] {
+  --accent: #b34700;
+  --accent-hover: #8f3a00;
+  --accent-ink: #ffffff;
+  --selection: #cfe0fb;
+}

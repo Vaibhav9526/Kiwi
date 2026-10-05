@@ -2,17 +2,20 @@
 //! OAuth2-capable mail provider. `client_id` is deployment config, never
 //! shipped: it arrives from app settings/environment (contract §9).
 //!
-//! Only public-client shapes exist here: no client secrets anywhere in the
-//! model (installed apps cannot hold secrets — PKCE and the device code
-//! carry the security).
+//! Public-client shapes: PKCE and the device code carry the security.
+//! `client_secret` is supported only because Google now *requires* one
+//! even for Desktop-app clients at the token endpoint — it is not a real
+//! secret (embedded clients cannot hold one), stays sourced from
+//! env/prefs, and is redacted from `Debug`.
 
 use super::{GrantKind, OAuthError};
 use crate::suggest::{AccountSuggestion, AuthKind};
+use zeroize::Zeroizing;
 
 /// A provider's fixed OAuth2 surface plus the deployment-supplied
 /// `client_id`. URLs are owned `String`s because the Microsoft endpoints
 /// embed a tenant path segment.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ProviderConfig {
     /// Stable id for credential keys / UI: `"google"`, `"microsoft"`.
     pub id: &'static str,
@@ -33,6 +36,31 @@ pub struct ProviderConfig {
     pub authorize_extra: Vec<(String, String)>,
     /// Public client id — supplied at runtime, not a secret.
     pub client_id: String,
+    /// Optional client secret — required only by providers that issue one
+    /// for installed-app clients (new Google Desktop clients do). Zeroized
+    /// and redacted from `Debug`; absent → field is simply not posted.
+    pub client_secret: Option<Zeroizing<String>>,
+}
+
+/// Redacted `Debug` — the client secret (when configured) never prints.
+impl std::fmt::Debug for ProviderConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderConfig")
+            .field("id", &self.id)
+            .field("display_name", &self.display_name)
+            .field("grant_kind", &self.grant_kind)
+            .field("authorize_url", &self.authorize_url)
+            .field("device_code_url", &self.device_code_url)
+            .field("token_url", &self.token_url)
+            .field("scopes", &self.scopes)
+            .field("authorize_extra", &self.authorize_extra)
+            .field("client_id", &self.client_id)
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "<redacted>"),
+            )
+            .finish()
+    }
 }
 
 /// The shipped provider registry. `client_id` is a parameter — the table
@@ -60,6 +88,7 @@ impl ProviderConfig {
                 ("prompt".to_string(), "consent".to_string()),
             ],
             client_id: client_id.to_string(),
+            client_secret: None,
         }
     }
 
@@ -100,6 +129,7 @@ impl ProviderConfig {
             ],
             authorize_extra: Vec::new(),
             client_id: client_id.to_string(),
+            client_secret: None,
         })
     }
 
@@ -111,6 +141,19 @@ impl ProviderConfig {
             "microsoft" => Ok(Self::microsoft(client_id)),
             _ => Err(OAuthError::InvalidConfig("provider")),
         }
+    }
+
+    /// Attach a client secret for providers that issue one for
+    /// installed-app clients (new Google Desktop clients require it at the
+    /// token endpoint). Empty/whitespace input is treated as absent —
+    /// a blank secret posted would itself be an endpoint error.
+    #[must_use]
+    pub fn with_client_secret(mut self, secret: &str) -> Self {
+        let s = secret.trim();
+        if !s.is_empty() {
+            self.client_secret = Some(Zeroizing::new(s.to_string()));
+        }
+        self
     }
 
     /// Space-joined scope parameter for form bodies.

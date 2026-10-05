@@ -17,6 +17,13 @@ export interface TrustState {
   /** 0–100, null when unreported. */
   score: number | null;
   requiredAction: string;
+  /**
+   * T-331: backend-owned audit-chain verdict carried on the security status
+   * payload. `true` verified, `false` failed verification, `null`/absent =
+   * not checked. `null` is honest absence and renders as nothing at all —
+   * never as a reassuring tick.
+   */
+  auditOk?: boolean | null;
 }
 
 export interface AccountInfo {
@@ -40,6 +47,8 @@ export interface MessageEnvelope {
   folderId: number;
   uid: number;
   from: string;
+  /** To-header addr list (MessageView.toAddrs — null/undefined = unknown). */
+  toAddrs?: string | null;
   subject: string;
   /** ISO timestamp. */
   date: string;
@@ -50,6 +59,11 @@ export interface MessageEnvelope {
   snippet: string;
   /** F2 inbox tab (backend `MessageView.category` slug; unknown → primary). */
   category: MessageCategory;
+  /** RFC822 Message-ID + reply chain (T-310) — resolved against the loaded
+   *  thread for the in-reply-to jump; null/[] = unknown. */
+  messageId?: string | null;
+  inReplyTo?: string | null;
+  references?: string[];
   /**
    * T-267 "Unreplied" smart folder: `true` when the envelope carries the
    * IMAP `\Answered` flag. `undefined` = unknown (demo fixtures, backends
@@ -152,6 +166,17 @@ export interface AppInfoView {
   org: { orgId: string; baseUrl: string } | null;
   accountCount: number;
   sessionsObserved: number;
+  /**
+   * T-345: whether a tray icon actually exists. `false`/`undefined` on
+   * platforms without a tray surface — the close-to-tray pref is then
+   * inert and settings must say so rather than let the toggle pretend.
+   */
+  trayAvailable?: boolean;
+  /**
+   * KIWI_DEV_PLAINTEXT=1 is set: loopback plaintext auth/transport tolerated
+   * for mail fixtures. Rendered as a visible DEV chip; never defaults on.
+   */
+  devPlaintext?: boolean;
 }
 
 export interface SignalView {
@@ -170,7 +195,29 @@ export interface SecurityStatusView {
   signals: SignalView[];
   sessionsObserved: number;
   deviceId: string;
+  /**
+   * T-331: backend-owned audit-chain integrity. `true` verified, `false`
+   * failed verification, `null`/absent = not checked yet — honest absence,
+   * which must never render as "fine".
+   */
+  auditOk?: boolean | null;
 }
+
+/**
+ * T-331 `kiwi_audit_integrity` — the cheap health probe (no row payloads).
+ * `state` is the honest tri-state the UI words from; `auditOk` mirrors it
+ * (`null` = unknown). A tampered chain is a *state*, not an exception: the
+ * backend already emitted `audit-corrupt` with no renderer handling it, so the
+ * failure was invisible.
+ */
+export interface AuditIntegrityView {
+  state: "ok" | "corrupt" | "unknown";
+  auditOk: boolean | null;
+}
+
+/** The one honest sentence for a failed chain verification (T-331). */
+export const AUDIT_CORRUPT_MESSAGE =
+  "audit log failed integrity verification — possible corruption or tampering";
 
 export interface AccountView {
   id: string;
@@ -188,7 +235,11 @@ export interface AccountView {
 export interface FolderView {
   id: number;
   accountId: string;
+  /** null for a root local folder; local children only. */
+  parentId: number | null;
   name: string;
+  /** Real store row: remote (sync), local (user-managed), or system. */
+  origin: "remote" | "local" | "system";
   /** null until a sync has selected the folder. */
   uidValidity: number | null;
   uidNext: number | null;
@@ -292,6 +343,132 @@ export type LinkRiskReason =
   | "unicodeHost"
   | "credentialsInUrl";
 
+/* ---------------- security session vocabulary (T-260) ---------------- */
+
+/**
+ * Session-view enum tokens (docs/contracts/security-session.md §2/§3).
+ * These are the *session-view* spellings, deliberately distinct from the
+ * forensics FSV-1 serde tags (`tls13`, `hostname_mismatch`, `x_o_auth2`).
+ */
+export type SessionTransport = "plaintext" | "starttls" | "tls";
+export type SessionTlsVersion = "ssl3" | "tls1.0" | "tls1.1" | "tls1.2" | "tls1.3" | "unknown";
+export type SessionKeyExchange =
+  | "x25519" | "secp256r1" | "secp384r1" | "secp521r1"
+  | "ffdhe2048" | "ffdhe3072" | "ffdhe4096"
+  | "static" | "unknown" | `other:${string}`;
+export type ChainValidationToken =
+  | "valid" | "invalid" | "untrusted" | "expired" | "hostname-mismatch" | "unknown";
+/**
+ * Provenance. `live-client` supersedes the pre-pivot `thunderbird-hook`.
+ * `unknown` is the safe-render form for a token this build doesn't know — it
+ * is NOT "clean" or any real provenance; it means the value was not recognized.
+ */
+export type SessionSourceToken =
+  | "live-client" | "forensic-pcap" | "test-fixture" | "unknown";
+
+/** `kiwi_forensics_export` receipt (T-320) — a self-verifying artifact. */
+export interface ForensicsExportView {
+  /** The user-chosen destination written (the user already knows it). */
+  path: string;
+  /** Size of the whole artifact on disk (envelope + report). */
+  bytes: number;
+  /** Lowercase hex SHA-256 of the canonical report payload, as embedded. */
+  sha256: string;
+  reportContractVersion: string;
+  /** Findings carried in the exported report (a count, never the list). */
+  findings: number;
+  generatedAtUnix: number;
+}
+
+/** `kiwi_session_detail` result — T-269 canonical shape (ipc.md §3). */
+export interface SecuritySessionView {
+  schemaVersion: number;
+  sessionId: string;
+  accountId: string | null;
+  deviceId: string | null;
+  protocol: "smtp" | "imap" | "pop3";
+  serverHost: string;
+  serverPort: number;
+  transport: SessionTransport;
+  tlsVersion: SessionTlsVersion | null;
+  keyExchangeGroup: SessionKeyExchange | null;
+  certChain: { presentedLen: number; validation: ChainValidationToken } | null;
+  starttlsOffered: boolean | null;
+  starttlsUsed: boolean;
+  authMechanism: string;
+  authSucceeded: boolean | null;
+  establishedUnix: number;
+  source: SessionSourceToken;
+}
+
+/**
+ * Safe-render parser for a session view. An unrecognized enum token degrades
+ * to its honest unknown form rather than being displayed verbatim or crashing
+ * a view: a future backend spelling must render as "unknown"/absent, never as
+ * a confident-looking wrong value.
+ */
+export function parseSecuritySession(raw: unknown): SecuritySessionView | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const r = raw as Record<string, unknown>;
+  const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+  const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+  const oneOf = <T extends string>(v: unknown, allowed: readonly T[], fallback: T): T =>
+    typeof v === "string" && (allowed as readonly string[]).includes(v) ? (v as T) : fallback;
+
+  const sessionId = str(r["sessionId"]);
+  const serverHost = str(r["serverHost"]);
+  if (!sessionId || !serverHost) return null;
+
+  const chain = r["certChain"] as Record<string, unknown> | null | undefined;
+  const certChain =
+    chain && typeof chain === "object"
+      ? {
+          presentedLen: num(chain["presentedLen"]) ?? 0,
+          validation: oneOf<ChainValidationToken>(
+            chain["validation"],
+            ["valid", "invalid", "untrusted", "expired", "hostname-mismatch", "unknown"],
+            "unknown",
+          ),
+        }
+      : null;
+
+  return {
+    schemaVersion: num(r["schemaVersion"]) ?? 1,
+    sessionId,
+    accountId: typeof r["accountId"] === "string" ? r["accountId"] : null,
+    deviceId: typeof r["deviceId"] === "string" ? r["deviceId"] : null,
+    protocol: oneOf(r["protocol"], ["smtp", "imap", "pop3"] as const, "imap"),
+    serverHost,
+    serverPort: num(r["serverPort"]) ?? 0,
+    transport: oneOf<SessionTransport>(r["transport"], ["plaintext", "starttls", "tls"], "plaintext"),
+    tlsVersion:
+      r["tlsVersion"] === null || r["tlsVersion"] === undefined
+        ? null
+        : oneOf<SessionTlsVersion>(
+            r["tlsVersion"],
+            ["ssl3", "tls1.0", "tls1.1", "tls1.2", "tls1.3", "unknown"],
+            "unknown",
+          ),
+    keyExchangeGroup:
+      typeof r["keyExchangeGroup"] === "string" && r["keyExchangeGroup"]
+        ? (r["keyExchangeGroup"] as SessionKeyExchange)
+        : null,
+    certChain,
+    starttlsOffered: typeof r["starttlsOffered"] === "boolean" ? r["starttlsOffered"] : null,
+    starttlsUsed: r["starttlsUsed"] === true,
+    // Open vocabulary: `other:<name>` is a server-supplied token, so a new
+    // mechanism must still render rather than be discarded.
+    authMechanism: str(r["authMechanism"]) ?? "unknown",
+    authSucceeded: typeof r["authSucceeded"] === "boolean" ? r["authSucceeded"] : null,
+    establishedUnix: num(r["establishedUnix"]) ?? 0,
+    source: oneOf<SessionSourceToken>(
+      r["source"],
+      ["live-client", "forensic-pcap", "test-fixture", "unknown"],
+      "unknown",
+    ),
+  };
+}
+
 export interface LinkRiskView {
   risk: LinkRisk;
   reasons: LinkRiskReason[];
@@ -338,10 +515,25 @@ export interface UpstreamAuthView {
 }
 
 export interface MessageAttachmentView {
+  /**
+   * Ordinal among the message's attachments — the `attachmentIndex`
+   * `downloadAttachment` resolves (T-339).
+   */
+  index: number;
   /** `null` when the MIME part carries no filename — never empty string. */
   filename: string | null;
   contentType: string;
+  /**
+   * Decoded size for complete bodies; for a deferred part this is the
+   * BODYSTRUCTURE *wire* octet count (encoded body — the decoded payload
+   * is smaller). 0 when unknown.
+   */
   size: number;
+  /**
+   * `false` marks a deferred part (T-339): saving it triggers a live
+   * `BODY.PEEK` fetch. Always `true` on fully-stored bodies.
+   */
+  fetched: boolean;
 }
 
 export interface MessagePatch {
@@ -355,6 +547,24 @@ export interface MessageUpdateView {
   uid: number;
   flags: string[];
   movedToFolderId: number | null;
+}
+
+/**
+ * `kiwi_thread_set_muted` receipt (T-341, Thunderbird "Ignore Thread").
+ *
+ * The echoed state means the caller never re-reads to learn whether its
+ * request took effect, and `changed` distinguishes a real transition from a
+ * redundant repeat that honestly did nothing.
+ */
+export interface ThreadMuteView {
+  /** Echo of the `conversationId` argument, verbatim. */
+  conversationId: string;
+  /** Mutes are per account, so the same subject elsewhere is a different thread. */
+  accountId: string;
+  /** State now in effect; both directions are idempotent. */
+  muted: boolean;
+  /** `false` when this call was a no-op (already in the requested state). */
+  changed: boolean;
 }
 
 export type LinkClickAction = "allow" | "requireConfirm" | "requireSandbox" | "deny";
@@ -372,6 +582,83 @@ export interface SandboxOpenView {
   /** Stable link/attachment risk reason codes carried into the session. */
   evidenceReasons: string[];
   report: Record<string, unknown> & { evidenceReasons?: string[] };
+}
+
+/** One recorded sandbox open (T-300) — an honest, bounded session row. */
+export interface SandboxSessionView {
+  sessionId: string;
+  kind: "link" | "attachment";
+  /**
+   * Sanitized display target: a URL with userinfo/query/fragment removed for
+   * links, or the `attachment:f<folderId>/u<uid>` coordinate for attachments.
+   * Never a host path, filename, or payload.
+   */
+  target: string;
+  /**
+   * `clean | noted | failed`, or `null` when no stored message evidence
+   * matched the target — absent evidence, never a fabricated "clean".
+   */
+  riskVerdict: "clean" | "noted" | "failed" | null;
+  /** Bounded stable evidence reason codes; never the matched target text. */
+  evidenceReasons: string[];
+  openedAtUnix: number;
+  /**
+   * `completed` — every T-266 open tears down before it is recorded, so there
+   * is no live guest. Reserved for a future live-session provider.
+   */
+  state: "completed";
+  /** `null` for a torn-down session; a future live provider may populate it. */
+  expiresAtUnix: number | null;
+}
+
+/**
+ * `kiwi_sandbox_sessions` receipt — newest first, bounded. `sessions` is
+ * `[]` when nothing has been opened; absence is never an error.
+ */
+export interface SandboxSessionsView {
+  sessions: SandboxSessionView[];
+}
+
+/**
+ * Tolerant parser for `kiwi_sandbox_sessions` (T-300). The renderer never
+ * trusts the row shape: unknown or corrupt sessions are dropped rather than
+ * rendered, and a malformed envelope collapses to `null` so the wrapper can
+ * report an honest empty list. `riskVerdict` must be a known value — an
+ * unrecognized verdict is treated as absent evidence, never as "clean".
+ */
+export function parseSandboxSessions(raw: unknown): SandboxSessionsView | null {
+  const optNum = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : undefined);
+  const optStr = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+  const verdict = (v: unknown): "clean" | "noted" | "failed" | null =>
+    v === "clean" || v === "noted" || v === "failed" ? v : null;
+  if (typeof raw !== "object" || raw === null) return null;
+  const sessions = (raw as Record<string, unknown>)["sessions"];
+  if (!Array.isArray(sessions)) return null;
+  const out: SandboxSessionView[] = [];
+  for (const entry of sessions) {
+    if (typeof entry !== "object" || entry === null) continue;
+    const r = entry as Record<string, unknown>;
+    const sessionId = optStr(r["sessionId"]);
+    const kind = r["kind"] === "link" || r["kind"] === "attachment" ? r["kind"] : null;
+    const target = optStr(r["target"]);
+    const openedAtUnix = optNum(r["openedAtUnix"]);
+    // `state` is a forward-compatible vocabulary; a torn-down session is the
+    // only honest value today, so anything else is dropped, not guessed.
+    if (!sessionId || !kind || !target || openedAtUnix === undefined) continue;
+    if (r["state"] !== "completed") continue;
+    const reasons = r["evidenceReasons"];
+    out.push({
+      sessionId,
+      kind,
+      target,
+      riskVerdict: verdict(r["riskVerdict"]),
+      evidenceReasons: Array.isArray(reasons) ? reasons.filter((x): x is string => typeof x === "string") : [],
+      openedAtUnix,
+      state: "completed",
+      expiresAtUnix: optNum(r["expiresAtUnix"]) ?? null,
+    });
+  }
+  return { sessions: out };
 }
 
 export interface AttachmentSavedView {
@@ -414,6 +701,94 @@ export interface Pop3PolicyView {
   deleteAfterDownload: boolean;
 }
 
+/**
+ * `kiwi_import_mbox` (T-309) — per-member failure inside an mbox import.
+ * `index` is the 1-based `From ` member ordinal (0 marks a file-level note);
+ * `detail` is bounded and never contains a body fragment or a filename.
+ */
+export interface MboxImportIssueView {
+  index: number;
+  detail: string;
+}
+
+/**
+ * `kiwi_import_mbox` report. Counts sum to the members processed
+ * (`min(messagesFound, MAX_MBOX_MESSAGES)`); `truncated` marks members left
+ * unprocessed past the cap. `ruleFailures` counts ingest-rule errors on
+ * imported rows only — the members still landed.
+ */
+export interface MboxImportView {
+  accountId: string;
+  folder: string;
+  folderId: number;
+  messagesFound: number;
+  imported: number;
+  skippedDuplicates: number;
+  skippedExpunged: number;
+  failed: number;
+  truncated: boolean;
+  ruleFailures: number;
+  issues: MboxImportIssueView[];
+}
+
+/**
+ * `kiwi_mailbox_export_mbox` report (T-316). `exported` counts members
+ * written to the file; `skipped` counts rows whose RFC822 body could not
+ * be obtained (omitted, never synthesized); `partial` flips whenever the
+ * file doesn't carry every row. Write is atomic (`.kiwi-part` + rename).
+ */
+export interface MboxExportView {
+  accountId: string;
+  folder: string;
+  folderId: number;
+  exported: number;
+  skipped: number;
+  bytes: number;
+  partial: boolean;
+  truncated: boolean;
+}
+
+/**
+ * `kiwi_audit_events` row (T-323/T-324). One real append-only JSONL record:
+ * `action` → `event`, `ts_unix` → `atUnix`, verbatim `detail` →
+ * `detailJson` (often plain text). The persisted schema has no actor or
+ * subject column, so both are explicit nulls — never synthesized.
+ */
+export interface AuditEventView {
+  event: string;
+  atUnix: number;
+  /** Real JSONL has no actor/subject columns; absence is explicit null. */
+  actor: string | null;
+  subjectId?: string | null;
+  detailJson?: string | null;
+}
+
+/**
+ * `kiwi_storage_stats` snapshot (T-330, ipc.md §8). Every field is a real
+ * measurement or explicit `null` — `0` and `null` are different facts:
+ * `dbBytes`/`attachmentBytes` null = unmeasurable, never an estimate.
+ * `integrityCheck` is SQLite's own PRAGMA result — only `"ok"` is a pass.
+ */
+export interface StorageStatsView {
+  dbBytes: number | null;
+  messageCount: number;
+  folderCount: number;
+  attachmentBytes: number | null;
+  auditCount: number;
+  schemaVersion: number;
+  integrityCheck: string;
+}
+
+/**
+ * `kiwi_storage_compact` receipt (T-330) — real mail.db length measured
+ * immediately before/after the VACUUM. `after > before` is possible and
+ * honest. Audited twice backend-side (`-requested` then `-compacted`).
+ */
+export interface StorageCompactView {
+  beforeDbBytes: number | null;
+  afterDbBytes: number | null;
+}
+
 /** `kiwi_message_unsubscribe` action selector (T-234). */
 export type UnsubscribeAction = "http" | "mailto";
 
@@ -446,6 +821,22 @@ export interface MoveResultView {
   srcFolderId: number;
   dstFolderId: number;
   moved: number;
+  /** src uid → dst uid for moved messages (uids are folder-scoped). */
+  uidMap: Record<string, number>;
+}
+
+/**
+ * `kiwi_copy_messages` result (T-325). Store-level duplicate only —
+ * never a server-side IMAP COPY; a copy of a synced-folder message is a
+ * local row the next reconcile treats as new (gap filed: real IMAP COPY
+ * belongs in the sync layer).
+ */
+export interface CopyResultView {
+  srcFolderId: number;
+  dstFolderId: number;
+  copied: number;
+  /** src uid → fresh local dst uid. */
+  uidMap: Record<string, number>;
 }
 
 /**
@@ -1243,16 +1634,20 @@ export interface DeliverabilitySendView {
   testId: string;
   queueId: string;
   notBeforeUnix: number;
+  consentConsumed: boolean;
+  enqueued: boolean;
+  singleAttempt: boolean;
 }
 
 export interface DeliverabilityStatusView {
   testId: string;
-  /** "pending" | "received" | "analyzing" | "checks_ready" | "failed" | unknown string */
+  /** "pending" | "received" | "analyzing" | "checks_ready" | unknown string. `failed` is an error, never a status. */
   analysisStatus: string;
   checksDone: number;
   checksTotal: number;
   ready: boolean;
   sent: boolean;
+  consentConsumed: boolean;
   retryAfterMs?: number;
 }
 
@@ -1289,9 +1684,10 @@ export interface DeliverabilityReportView {
   subscores: Record<string, number>;
   tallies: Record<string, DeliverabilityCategoryTally>;
   checks: DeliverabilityCheckView[];
-  /** ids of failed `auth` checks — the gate set. */
   authFailureIds: string[];
   authGate: "pass" | "fail" | "unknown";
+  checksTruncated: boolean;
+  evidenceComplete: boolean;
 }
 
 /* ---------------- mappers (backend → UI, never throw) ---------------- */
@@ -1335,6 +1731,8 @@ export function toTrustState(raw: unknown): TrustState {
     state,
     score: typeof r["score"] === "number" ? r["score"] : null,
     requiredAction: typeof r["requiredAction"] === "string" ? r["requiredAction"] : "none",
+    // T-331: only a real boolean counts; anything else stays null = unchecked.
+    auditOk: typeof r["auditOk"] === "boolean" ? r["auditOk"] : null,
   };
 }
 

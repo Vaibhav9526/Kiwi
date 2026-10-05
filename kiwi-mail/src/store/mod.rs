@@ -11,22 +11,26 @@
 
 use std::path::{Path, PathBuf};
 
-use rusqlite::Connection;
+use rusqlite::{Connection, params};
 
 use crate::attachrisk::AttachRiskEvidence;
 use crate::authrisk::AuthRisk;
 use crate::category::Category;
-use crate::error::Result;
+use crate::error::{MailError, Result};
 use crate::linkrisk::LinkRiskEvidence;
 use crate::rules::Rule;
 
 use schema::{DDL, SCHEMA_VERSION};
 
+mod diagnostics;
 mod outbox;
 mod queries;
 mod schema;
+mod threads;
 
+pub use diagnostics::{CompactReport, StorageStats};
 pub use outbox::OutboxRow;
+pub use threads::MAX_CONVERSATION_KEY_LEN;
 
 /// Canonical junk flag (F13/T-212): the keyword stored in a message's
 /// `flags` column and applied server-side as `+FLAGS (\Junk)`. Comparisons
@@ -160,11 +164,53 @@ impl UpstreamAuthEvidence {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FolderOrigin {
+    Remote,
+    Local,
+    System,
+}
+
+impl FolderOrigin {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Remote => "remote",
+            Self::Local => "local",
+            Self::System => "system",
+        }
+    }
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "remote" => Ok(Self::Remote),
+            "local" => Ok(Self::Local),
+            "system" => Ok(Self::System),
+            other => {
+                let _ = other;
+                Err(MailError::Store(rusqlite::Error::InvalidQuery))
+            }
+        }
+    }
+}
+
+/// Canonical real mailboxes reserved from local create/rename. These are
+/// store rows; UI smart views (Unread, Snoozed, Starred, categories) are not
+/// rows at all, so there is no id they could pass to folder deletion.
+pub const SYSTEM_FOLDER_NAMES: [&str; 6] = ["INBOX", "SENT", "TRASH", "DRAFTS", "JUNK", "ARCHIVE"];
+
+pub fn is_system_folder_name(name: &str) -> bool {
+    SYSTEM_FOLDER_NAMES
+        .iter()
+        .any(|candidate| name.eq_ignore_ascii_case(candidate))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FolderMeta {
     pub id: i64,
     pub account_id: String,
+    pub parent_id: Option<i64>,
     pub name: String,
+    pub origin: FolderOrigin,
     pub uid_validity: Option<u64>,
     pub uid_next: Option<u64>,
     pub highest_uid: u64,
@@ -200,6 +246,35 @@ pub struct NewMessageMeta {
     pub unsub_http: Option<String>,
     pub unsub_mailto: Option<String>,
     pub unsub_oneclick: bool,
+}
+
+/// One persisted deferred-attachment row (`message_parts`, T-339).
+///
+/// Presence of any row for a `(folder_id, uid)` marks the stored body as a
+/// *skeleton* — MIME headers and text leaves are real, but attachment
+/// payloads were never downloaded. Absence means the stored body (if any)
+/// is the complete message. `section` is the server-derived IMAP part
+/// specifier used for `BODY.PEEK[<section>]` on demand; callers never
+/// construct it from UI input. `size_bytes` is the *wire* octet count from
+/// BODYSTRUCTURE — the decoded payload is smaller for base64/qp parts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MessagePart {
+    /// Ordinal among the message's attachment leaves — the
+    /// `attachmentIndex` the IPC layer resolves.
+    pub part_index: u32,
+    /// IMAP section specifier ("2", "1.3", …).
+    pub section: String,
+    /// Filename from disposition/Content-Type params, if any.
+    pub name: Option<String>,
+    /// `media/subtype` lowercased.
+    pub mime: String,
+    /// Wire size in octets (encoded). `None` when BODYSTRUCTURE had none.
+    pub size_bytes: Option<u64>,
+    /// Content-Transfer-Encoding verbatim — drives decode at fetch time.
+    pub encoding: String,
+    /// True after the decoded payload durably landed under
+    /// `attachments/<folder_id>/<uid>/<part_index>`.
+    pub fetched: bool,
 }
 
 /// A stored rule plus its cumulative sync-time application health. The
@@ -350,13 +425,45 @@ pub(crate) fn migrate_conn(conn: &Connection, root: &Path) -> Result<()> {
             if v < 14 {
                 ensure_rule_failure_columns(conn)?;
             }
+            // Pre-v17 database: local folder management is a store-owned
+            // concern. Existing rows are preserved; only canonical mailbox
+            // names are classified as system, all others remain remote.
+            if v < 17 {
+                ensure_folder_management_columns(conn)?;
+            }
             // Pre-v16 database: existing queued sends have no recorded
             // failure reason — NULL is the honest state (nothing failed
             // yet, or the reason predates the column and is unknowable).
             if v < 16 {
                 ensure_outbox_error_column(conn)?;
             }
+            // Pre-v18 database: conversation mute (T-341). The column is added
+            // NULL-first and then backfilled from each row's own subject, so
+            // the grouping is derived from data actually in the database — no
+            // message is invented and no row is dropped.
+            //
+            // The index is created HERE, not in the DDL: on a legacy database
+            // the DDL's `CREATE TABLE IF NOT EXISTS messages` is a no-op, so
+            // the column does not exist until `ensure_conversation_key_column`
+            // adds it. An index in the DDL would run first and fail with
+            // "no such column". This block also runs for fresh databases
+            // (v0 < 18), where the column is already present from the DDL.
+            if v < 18 {
+                ensure_conversation_key_column(conn)?;
+                conn.execute_batch(
+                    "CREATE INDEX IF NOT EXISTS idx_messages_conversation
+                        ON messages(conversation_key)",
+                )?;
+                backfill_conversation_keys(conn)?;
+            }
         }
+        conn.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(account_id, parent_id)",
+        )?;
+        conn.execute_batch(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_folders_sibling_name
+             ON folders(account_id, COALESCE(parent_id, 0), name COLLATE NOCASE)",
+        )?;
         conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION}"))?;
     }
     Ok(())
@@ -425,6 +532,120 @@ fn ensure_rule_failure_columns(conn: &Connection) -> Result<()> {
          ALTER TABLE rules ADD COLUMN last_failure_unix INTEGER",
     )?;
     Ok(())
+}
+
+fn ensure_folder_management_columns(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare("PRAGMA table_info(folders)")?;
+    let cols = stmt
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if !cols.iter().any(|c| c == "parent_id") {
+        conn.execute_batch("ALTER TABLE folders ADD COLUMN parent_id INTEGER REFERENCES folders(id) ON DELETE RESTRICT")?;
+    }
+    if !cols.iter().any(|c| c == "origin") {
+        conn.execute_batch(
+            "ALTER TABLE folders ADD COLUMN origin TEXT NOT NULL DEFAULT 'remote'
+             CHECK (origin IN ('remote', 'local', 'system'))",
+        )?;
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS idx_folders_parent ON folders(account_id, parent_id)",
+    )?;
+    rebuild_folders_for_v17(conn)?;
+    Ok(())
+}
+
+fn rebuild_folders_for_v17(conn: &Connection) -> Result<()> {
+    // The old table's UNIQUE(account_id,name) is account-wide. Rebuild once
+    // to the requested per-parent case-insensitive identity while preserving
+    // ids (messages and all sibling tables reference them).
+    conn.execute_batch("PRAGMA foreign_keys = OFF")?;
+    conn.execute_batch(
+        "CREATE TABLE folders_v17 (
+             id           INTEGER PRIMARY KEY,
+             account_id   TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+             parent_id    INTEGER REFERENCES folders_v17(id) ON DELETE RESTRICT,
+             name         TEXT NOT NULL,
+             origin       TEXT NOT NULL CHECK (origin IN ('remote','local','system')),
+             uid_validity INTEGER,
+             uid_next     INTEGER,
+             highest_uid  INTEGER NOT NULL DEFAULT 0
+         );
+         INSERT INTO folders_v17
+             (id, account_id, parent_id, name, origin, uid_validity, uid_next, highest_uid)
+         SELECT id, account_id, parent_id, name, origin,
+                uid_validity, uid_next, highest_uid
+           FROM folders;
+         DROP TABLE folders;
+         ALTER TABLE folders_v17 RENAME TO folders;
+         PRAGMA foreign_keys = ON",
+    )?;
+    for name in SYSTEM_FOLDER_NAMES {
+        conn.execute(
+            "UPDATE folders SET origin = 'system' WHERE LOWER(name) = ?1",
+            [name.to_ascii_lowercase()],
+        )?;
+    }
+    Ok(())
+}
+
+/// T-341: add the `conversation_key` column idempotently. It is nullable on
+/// purpose — a subject with no signal has no conversation, and NULL is the
+/// honest value that suppresses nothing.
+fn ensure_conversation_key_column(conn: &Connection) -> Result<()> {
+    let mut stmt = conn.prepare("PRAGMA table_info(messages)")?;
+    let cols = stmt.query_map([], |r| r.get::<_, String>(1))?;
+    for col in cols {
+        if col? == "conversation_key" {
+            return Ok(());
+        }
+    }
+    conn.execute_batch(
+        "ALTER TABLE messages ADD COLUMN conversation_key TEXT;
+         CREATE INDEX IF NOT EXISTS idx_messages_conversation
+             ON messages(conversation_key)",
+    )?;
+    Ok(())
+}
+
+/// Derive `conversation_key` for every stored row that lacks one.
+///
+/// Batched by rowid so a large mailbox does not load every subject into memory
+/// at once. Only rows with a subject can produce a key; a row whose subject is
+/// NULL or folds to nothing keeps NULL forever, which is the honest answer
+/// (it is in no conversation, so nothing can suppress it).
+fn backfill_conversation_keys(conn: &Connection) -> Result<()> {
+    const BATCH: i64 = 500;
+    // Cursor, not "until empty": a row whose subject folds to nothing keeps
+    // NULL forever, so re-selecting "rows still missing a key" would spin on
+    // exactly those rows. Advancing past the last id seen terminates instead.
+    let mut cursor: i64 = 0;
+    loop {
+        let mut stmt = conn.prepare(
+            "SELECT id, subject FROM messages
+              WHERE id > ?1 AND conversation_key IS NULL AND subject IS NOT NULL
+              ORDER BY id LIMIT ?2",
+        )?;
+        let batch = stmt
+            .query_map(params![cursor, BATCH], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        drop(stmt);
+        let Some(last) = batch.last().map(|(id, _)| *id) else {
+            return Ok(());
+        };
+        for (id, subject) in &batch {
+            // A subject that folds to nothing stays NULL (no conversation).
+            if let Some(key) = crate::threading::normalize_subject(subject) {
+                conn.execute(
+                    "UPDATE messages SET conversation_key = ?2 WHERE id = ?1",
+                    params![id, key],
+                )?;
+            }
+        }
+        cursor = last;
+    }
 }
 
 /// T-298: `outbox.last_error` — sanitized reason for the most recent
@@ -697,6 +918,60 @@ mod tests {
         assert!(store.outbox_list(10).unwrap().is_empty());
     }
 
+    /// T-345: the tray tooltip count is `total_unseen` — the same unseen +
+    /// muted-conversation predicate as `folder_stats`, summed across every
+    /// folder. `outbox_count` feeds the quit guard, so both are pinned here.
+    #[test]
+    fn total_unseen_and_outbox_count_match_their_consumers() {
+        let store = MailStore::open_memory().unwrap();
+        store.upsert_account(&acct("a1")).unwrap();
+        let fid = store.ensure_folder("a1", "INBOX").unwrap();
+
+        let mut unseen = meta(1);
+        unseen.flags = vec![];
+        let seen = meta(2); // meta() defaults to \\Seen
+        let mut muted = meta(3);
+        muted.flags = vec![];
+        muted.subject = Some("Deploy".into());
+        store.upsert_message(fid, &unseen, 100).unwrap();
+        store.upsert_message(fid, &seen, 100).unwrap();
+        store.upsert_message(fid, &muted, 100).unwrap();
+        assert_eq!(store.total_unseen().unwrap(), 2);
+
+        // Muting "deploy" (normalized) drops that message from the total,
+        // matching folder_stats — the badge and the tooltip agree.
+        store
+            .set_conversation_muted("a1", "deploy", true, 100)
+            .unwrap();
+        assert_eq!(store.total_unseen().unwrap(), 1);
+        store
+            .set_conversation_muted("a1", "deploy", false, 100)
+            .unwrap();
+        assert_eq!(store.total_unseen().unwrap(), 2);
+
+        // The quit guard reads a real row count, not a probe of the file.
+        assert_eq!(store.outbox_count().unwrap(), 0);
+        store
+            .outbox_put(&OutboxRow {
+                queue_id: "q1".into(),
+                account_id: "a1".into(),
+                from_addr: "a@x".into(),
+                to_addrs: vec!["b@y".into()],
+                subject: "s".into(),
+                message_id: "<m@x>".into(),
+                mime: b"Subject: s\r\n\r\nbody".to_vec(),
+                not_before_unix: 200,
+                undo_window_until_unix: 0,
+                attempts: 0,
+                last_error: None,
+                created_unix: 100,
+            })
+            .unwrap();
+        assert_eq!(store.outbox_count().unwrap(), 1);
+        store.outbox_delete("q1").unwrap();
+        assert_eq!(store.outbox_count().unwrap(), 0);
+    }
+
     fn acct(id: &str) -> MailAccount {
         use crate::account::{AuthRef, IncomingAccount, IncomingProtocol, OutgoingAccount};
         use crate::transport::SocketSecurity;
@@ -838,6 +1113,144 @@ mod tests {
             .map(|f| f.name.clone())
             .collect();
         assert_eq!(names, vec!["INBOX", "Trash"]);
+    }
+
+    #[test]
+    fn copy_messages_remaps_uids_and_leaves_source() {
+        let store = MailStore::open_memory().unwrap();
+        seed_account(&store, "a1");
+        let src = store.ensure_folder("a1", "INBOX").unwrap();
+        let dst = store.ensure_folder("a1", "Local Keep").unwrap();
+        store.upsert_message(src, &meta(101), 100).unwrap();
+        store.upsert_message(src, &meta(102), 100).unwrap();
+        store.upsert_message(src, &meta(103), 100).unwrap();
+        store.upsert_message(dst, &meta(9), 100).unwrap(); // occupied uid
+        let src_body = store.store_body(src, 102, b"Subject: m\r\n\r\nb").unwrap();
+        store.store_attachment(src, 102, 0, b"payload").unwrap();
+        store
+            .update_flags(src, 102, &["\\Seen".into(), "\\Flagged".into()])
+            .unwrap();
+
+        // Fresh local uids in dst (max was 9): 101→10, 102→11; absent skipped.
+        let copied = store.copy_messages(src, dst, &[101, 102, 999]).unwrap();
+        assert_eq!(copied, vec![(101, 10), (102, 11)]);
+        // Source untouched: rows + payload remain.
+        assert_eq!(store.folder_uids(src).unwrap(), vec![101, 102, 103]);
+        assert!(src_body.exists());
+        assert_eq!(store.folder_uids(dst).unwrap(), vec![9, 10, 11]);
+        // Payload duplicated — both copies exist with identical bytes.
+        let dst_body = store.body_file(dst, 11).unwrap().unwrap();
+        assert!(dst_body.exists());
+        assert_eq!(
+            std::fs::read(&dst_body).unwrap(),
+            std::fs::read(&src_body).unwrap()
+        );
+        assert!(
+            store
+                .root
+                .join("attachments")
+                .join(dst.to_string())
+                .join("11")
+                .join("0")
+                .exists()
+        );
+        assert!(
+            store
+                .root
+                .join("attachments")
+                .join(src.to_string())
+                .join("102")
+                .join("0")
+                .exists(),
+            "src attachment dir must survive a copy"
+        );
+        // Envelope + flags preserved on the copy.
+        let m = store
+            .list_messages(dst, 10)
+            .unwrap()
+            .into_iter()
+            .find(|m| m.uid == 11)
+            .unwrap();
+        assert_eq!(m.subject.as_deref(), Some("s"));
+        assert_eq!(m.flags, vec!["\\Seen", "\\Flagged"]);
+    }
+
+    #[test]
+    fn copy_messages_carries_risk_and_auth_not_snooze() {
+        let store = MailStore::open_memory().unwrap();
+        seed_account(&store, "a1");
+        let src = store.ensure_folder("a1", "INBOX").unwrap();
+        let dst = store.ensure_folder("a1", "Local Keep").unwrap();
+        store.upsert_message(src, &meta(50), 100).unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO message_attachment_risk (folder_id, uid, risk, reasons_json)
+                 VALUES (?1, ?2, 'noted', '[]')",
+                params![src, 50],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "INSERT INTO message_auth (folder_id, uid, spf, auth_risk)
+             VALUES (?1, ?2, 'pass', 'clean')",
+                params![src, 50],
+            )
+            .unwrap();
+        store.set_snooze(src, &[50], 9999, 100).unwrap();
+
+        let copied = store.copy_messages(src, dst, &[50]).unwrap();
+        let (_, dst_uid) = copied[0];
+        // Evidence follows the copy.
+        let risk: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM message_attachment_risk
+                 WHERE folder_id = ?1 AND uid = ?2",
+                params![dst, dst_uid as i64],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(risk, 1);
+        let auth: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM message_auth WHERE folder_id = ?1 AND uid = ?2",
+                params![dst, dst_uid as i64],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(auth, 1);
+        // Source keeps its own evidence rows too.
+        let src_risk: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM message_attachment_risk
+                 WHERE folder_id = ?1 AND uid = 50",
+                params![src],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(src_risk, 1);
+        // Snooze does NOT carry — the copy isn't parked.
+        let dst_parked: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM snoozed WHERE folder_id = ?1 AND uid = ?2",
+                params![dst, dst_uid as i64],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let src_parked: i64 = store
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM snoozed WHERE folder_id = ?1 AND uid = 50",
+                params![src],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!((dst_parked, src_parked), (0, 1));
     }
 
     #[test]
@@ -1685,6 +2098,7 @@ mod tests {
                 r.get(0)
             })
             .unwrap();
+
         assert_eq!(rows, 0, "no historical risk is fabricated");
     }
 
@@ -1994,5 +2408,99 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn local_folder_crud_validates_ownership_and_fails_closed() {
+        let s = MailStore::open_memory().unwrap();
+        seed_account(&s, "a1");
+        seed_account(&s, "a2");
+        let inbox = s.ensure_folder("a1", "INBOX").unwrap();
+        let remote = s.ensure_folder("a1", "Projects/Remote").unwrap();
+        assert_eq!(
+            s.folder_meta(inbox).unwrap().unwrap().origin,
+            FolderOrigin::System
+        );
+        assert_eq!(
+            s.folder_meta(remote).unwrap().unwrap().origin,
+            FolderOrigin::Remote
+        );
+
+        let parent = s.create_local_folder("a1", None, "Local").unwrap();
+        assert_eq!(parent.origin, FolderOrigin::Local);
+        let child = s
+            .create_local_folder("a1", Some(parent.id), "Child")
+            .unwrap();
+        assert_eq!(child.parent_id, Some(parent.id));
+        for bad in ["", "  ", ".", "..", "a/b", "a\\b", "Trash"] {
+            assert!(s.create_local_folder("a1", None, bad).is_err(), "{bad:?}");
+        }
+        assert!(
+            s.create_local_folder("a1", Some(parent.id), "cHiLd")
+                .is_err()
+        );
+        assert!(
+            s.create_local_folder("a2", Some(parent.id), "Other")
+                .is_err()
+        );
+        assert!(
+            s.create_local_folder("a1", Some(inbox), "System child")
+                .is_err()
+        );
+        assert_eq!(
+            s.rename_local_folder(child.id, "Renamed").unwrap().name,
+            "Renamed"
+        );
+        assert!(s.rename_local_folder(child.id, "Trash").is_err());
+        assert!(s.rename_local_folder(remote, "Nope").is_err());
+        assert!(s.rename_local_folder(inbox, "Nope").is_err());
+        assert!(s.delete_local_folder(parent.id).is_err());
+        s.upsert_message(child.id, &meta(1), 0).unwrap();
+        assert!(s.delete_local_folder(child.id).is_err());
+        assert!(s.delete_local_folder(inbox).is_err());
+        assert!(s.delete_local_folder(remote).is_err());
+        s.delete_messages(child.id, &[1]).unwrap();
+        assert!(s.delete_local_folder(child.id).unwrap());
+        assert!(s.delete_local_folder(parent.id).unwrap());
+    }
+
+    #[test]
+    fn v16_to_v17_preserves_folders_and_classifies_origins() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE accounts (account_id TEXT PRIMARY KEY, display_name TEXT NOT NULL,
+                                    email TEXT NOT NULL, config_json TEXT NOT NULL);
+             CREATE TABLE folders (id INTEGER PRIMARY KEY,
+                                   account_id TEXT NOT NULL REFERENCES accounts(account_id) ON DELETE CASCADE,
+                                   name TEXT NOT NULL, uid_validity INTEGER, uid_next INTEGER,
+                                   highest_uid INTEGER NOT NULL DEFAULT 0, UNIQUE(account_id, name));
+             CREATE TABLE messages (id INTEGER PRIMARY KEY,
+                                    folder_id INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+                                    uid INTEGER NOT NULL, message_id TEXT, subject TEXT, from_addr TEXT,
+                                    to_addrs TEXT, date_unix INTEGER, size INTEGER, flags TEXT NOT NULL DEFAULT '',
+                                    has_attachments INTEGER NOT NULL DEFAULT 0, snippet TEXT, body_path TEXT,
+                                    fetched_at INTEGER NOT NULL, UNIQUE(folder_id, uid));
+             INSERT INTO accounts VALUES ('a1', 'A', 'a@x.test', '{}');
+             INSERT INTO folders (account_id, name) VALUES ('a1','INBOX'),('a1','Archive'),('a1','Project');
+             PRAGMA user_version = 16;",
+        ).unwrap();
+        let root = std::env::temp_dir().join(format!("kiwi-folder-v17-{}", std::process::id()));
+        migrate_conn(&conn, &root).unwrap();
+        let rows: Vec<(String, String)> = conn
+            .prepare("SELECT name, origin FROM folders ORDER BY name")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                ("Archive".into(), "system".into()),
+                ("INBOX".into(), "system".into()),
+                ("Project".into(), "remote".into()),
+            ]
+        );
     }
 }

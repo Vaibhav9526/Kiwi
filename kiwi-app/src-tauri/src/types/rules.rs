@@ -1,12 +1,41 @@
-//! Rule wire views — F1 inbox rules (T-228 types, T-233 IPC surface).
+//! Rule wire views — F1 inbox rules (T-228 types, T-233 IPC surface) and the
+//! F4 sender block list (T-203).
 //!
 //! `when`/`then` carry the `kiwi_mail::rules` serde DSL verbatim —
 //! `{"kind": …}` predicates, `{"do": …}` actions. The IPC layer adds no
 //! translation inside the spec; it only camelCases the envelope fields.
 
-use kiwi_mail::rules::{ApplyNowReport, Predicate, Rule, RuleAction};
+use kiwi_mail::rules::{ApplyNowReport, BlockedSender, Predicate, Rule, RuleAction};
 use kiwi_mail::store::RuleHit;
 use serde::{Deserialize, Serialize};
+
+/// One entry of an account's sender block list, as the renderer sees it.
+///
+/// A blocked sender *is* an `is_block` rule row; `ruleId` is that row's id so
+/// a UI can trace or pause it. `sender` is the normalized address, or `null`
+/// for a hand-authored block rule that is not a plain sender match — such a
+/// row is still listed, because it is still trashing mail, but the block list
+/// does not claim to own it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlockedSenderView {
+    pub rule_id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender: Option<String>,
+    pub enabled: bool,
+}
+
+impl From<BlockedSender> for BlockedSenderView {
+    fn from(b: BlockedSender) -> Self {
+        BlockedSenderView {
+            rule_id: b.rule_id,
+            name: b.name,
+            sender: b.sender,
+            enabled: b.enabled,
+        }
+    }
+}
 
 /// A rule as the renderer sees it. One shape serves both directions:
 /// `kiwi_rules_list` emits it, `kiwi_rules_upsert` consumes it (ids are

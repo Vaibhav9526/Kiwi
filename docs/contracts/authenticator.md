@@ -289,8 +289,9 @@ Only then: `canonicalChallengeBytes(...)` → keystore Ed25519 sign →
   (`ChallengeQueue`), FIFO, bounded (default 64), one outcome per
   challenge id, delivery attempts throttled (default ≥10 s apart).
 - **Deny degrades gracefully.** If a deny cannot be delivered, the phone
-  may drop it (desktop audits the timeout instead); denies are never
-  queued indefinitely.
+  may drop it (the desktop simply lets the challenge expire — §6.3: a
+  timeout is the absence of a decision, no audit row unless a late
+  response arrives); denies are never queued indefinitely.
 - **No implicit expiry on the wire.** Expiry is judged by challenge fields
   + local clock only; a queued approve that reaches the desktop after
   expiry simply fails `Expired` there and is audited — never partially
@@ -335,6 +336,13 @@ Desktop-side (kiwi-app, existing + Phase 4): `device-registered`,
 `device-paired`, `challenge-approved` (per event), `challenge-denied`,
 `challenge-verification-failed <ChallengeError name>`, `device-revoked`.
 All outcomes audited — including failures (rule 2: reproducible evidence).
+**Implemented (T-282):** `kiwi_submit_challenge` writes the approval
+rows before the bound post-action runs (evidence-before-effect), audits
+`challenge-verification-failed` with detail `err=<ChallengeError name>`
+(the §9d.9 IPC code stands in for engine failures with no ChallengeError)
+on every failed response, and records `challenge-denied` only for denies
+attributable to a live challenge — unattributable denies audit as failed
+responses, and silent timeouts write no row (§6.3).
 
 Mobile-side tests shipped with this task:
 
@@ -367,7 +375,8 @@ Fixtures are synthetic, generated in-test (rule 6 — no real credentials).
      (`system.rs:126`); contract now documents both accepted forms
      (§4.2). `x-tx:<txn>` required for recovery/elevated-action when
      those flows land (Agent 7).
-  4. Deny-vs-timeout audit wording: DONE (§6.3 rule above).
+  4. Deny-vs-timeout audit wording: RESOLVED — §6.3 is binding; §7's
+     "desktop audits the timeout" wording was reconciled to it (T-282).
 
 ## 11. Known limitations (honest-enforcement note)
 

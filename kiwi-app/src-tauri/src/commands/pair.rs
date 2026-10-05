@@ -333,11 +333,18 @@ pub(crate) async fn register_device_impl(
     Ok(view)
 }
 
-/// `kiwi_submit_challenge` compat path — delegates verification to
-/// `PairEngine::verify_response` (persisted consume+activate), then runs
-/// the bound action exactly as before: `unlock` → `attempt_unlock`;
-/// `device-pairing` activation already committed by the engine;
-/// `recovery`/`elevated-action` verify then report `unsupported-event`.
+/// `kiwi_submit_challenge` compat path — delegates to `PairEngine`
+/// (`verify_response` = persisted consume+activate for approves;
+/// `deny_response` = the §6.3 no-consume decision path). Every outcome is
+/// audited BEFORE it leaves the boundary (authenticator.md §9 —
+/// evidence-before-effect): `challenge-approved` (+ `device-paired` when
+/// pairing activation committed), `challenge-denied`, or
+/// `challenge-verification-failed` carrying the `ChallengeError` name.
+/// `recovery`/`elevated-action` refuse `unsupported-event` BEFORE
+/// verification — a capability is never consumed for a post-action that
+/// cannot run (T270-02). A silent timeout is the absence of a decision:
+/// no row is written until a late response arrives, which audits
+/// `err=Expired` (§6.3 / ADR-013 R7).
 pub(crate) async fn submit_challenge_impl(
     state: &AppState,
     input: ChallengeResponseInput,
@@ -347,6 +354,44 @@ pub(crate) async fn submit_challenge_impl(
     bounded("sessionId", &input.session_id, 128)?;
     let event = crate::types::parse_challenge_event(&input.event)
         .ok_or_else(|| IpcError::invalid("unknown challenge event"))?;
+    // §6.2 — the decision is explicit; the pre-T-282 wire had no field,
+    // so absent means approve. Deny carries no signature at all.
+    let deny = match input.decision.as_deref() {
+        None | Some("approve") => false,
+        Some("deny") => true,
+        Some(_) => return Err(IpcError::invalid("decision must be approve|deny")),
+    };
+    if matches!(
+        event,
+        ChallengeEvent::Recovery | ChallengeEvent::ElevatedAction
+    ) {
+        return Err(IpcError::new(
+            "unsupported-event",
+            "this challenge event's flow is not wired yet",
+        ));
+    }
+    if deny {
+        let resp = ChallengeResponse {
+            challenge_id: input.challenge_id.clone(),
+            device_id: input.device_id.clone(),
+            session_id: input.session_id.clone(),
+            event,
+            signature: Vec::new(), // §6.3 — denies are unsigned
+        };
+        if let Err(e) = state.pair.lock().await.deny_response(&resp, now_unix()) {
+            return Err(audit_challenge_failure(state, e, event).await);
+        }
+        state.audit.lock().await.record(
+            "challenge-denied",
+            &format!(
+                "event={} device={}",
+                crate::types::challenge_event(event),
+                input.device_id
+            ),
+            now_unix(),
+        )?;
+        return Ok(status_view(state).await); // no authorization conferred
+    }
     let signature = STANDARD
         .decode(input.signature_b64.as_bytes())
         .map_err(|_| IpcError::invalid("signatureB64 is not valid base64"))?;
@@ -362,35 +407,72 @@ pub(crate) async fn submit_challenge_impl(
         event,
         signature,
     };
-    state.pair.lock().await.verify_response(&resp, now_unix())?;
+    if let Err(e) = state.pair.lock().await.verify_response(&resp, now_unix()) {
+        return Err(audit_challenge_failure(state, e, event).await);
+    }
 
     // Verified + consumed + (for pairing) activated — atomically, in the
-    // engine. Run the bound post-action.
-    let audit_detail = match event {
-        ChallengeEvent::Unlock => {
-            state
-                .trust
-                .lock()
-                .await
-                .attempt_unlock(&state.policy, true)?;
-            "authenticator-approved unlock".to_string()
-        }
-        ChallengeEvent::DevicePairing => {
-            format!("device paired: {}", input.device_id)
-        }
-        ChallengeEvent::Recovery | ChallengeEvent::ElevatedAction => {
-            return Err(IpcError::new(
-                "unsupported-event",
-                "challenge verified but this event's flow is not wired yet",
-            ));
-        }
-    };
-    state
-        .audit
-        .lock()
-        .await
-        .record("challenge-verified", &audit_detail, now_unix())?;
+    // engine. The approval rows land BEFORE the bound post-action runs:
+    // an approval that happened is evidence even if its effect fails.
+    state.audit.lock().await.record(
+        "challenge-approved",
+        &format!(
+            "event={} device={}",
+            crate::types::challenge_event(event),
+            input.device_id
+        ),
+        now_unix(),
+    )?;
+    if event == ChallengeEvent::DevicePairing {
+        state
+            .audit
+            .lock()
+            .await
+            .record("device-paired", &input.device_id, now_unix())?;
+    }
+    if event == ChallengeEvent::Unlock {
+        state
+            .trust
+            .lock()
+            .await
+            .attempt_unlock(&state.policy, true)?;
+    }
     Ok(status_view(state).await)
+}
+
+/// §9/§6.3 — audit a failed response BEFORE the error leaves the
+/// boundary. `err` carries the kiwi-core `ChallengeError` name; engine
+/// failures with no `ChallengeError` (revoked device, store/IO, …) carry
+/// their fixed §9d.9 IPC code. A failed audit write supersedes the
+/// verification error — a broken evidence chain is fail-closed, never
+/// silently unaudited.
+async fn audit_challenge_failure(
+    state: &AppState,
+    e: kiwi_pair::PairError,
+    event: ChallengeEvent,
+) -> IpcError {
+    let reason = if let kiwi_pair::PairError::Challenge(ce) = &e {
+        format!("{ce:?}")
+    } else {
+        String::new()
+    };
+    let ipc = IpcError::from(e);
+    let reason = if reason.is_empty() {
+        ipc.code.to_string()
+    } else {
+        reason
+    };
+    match state.audit.lock().await.record(
+        "challenge-verification-failed",
+        &format!(
+            "err={reason} event={}",
+            crate::types::challenge_event(event)
+        ),
+        now_unix(),
+    ) {
+        Ok(()) => ipc,
+        Err(audit_err) => audit_err,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -473,6 +555,7 @@ mod tests {
                     session_id: chal.session_id,
                     event: "device-pairing".into(),
                     signature_b64: STANDARD.encode(sig),
+                    decision: None,
                 },
             )
             .await
@@ -745,5 +828,356 @@ mod tests {
             });
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -- T-282: AUTH-1 outcome auditing (authenticator.md §6.3/§9) --------
+
+    fn read_audit(state: &AppState) -> String {
+        std::fs::read_to_string(state.data_dir.join("audit.jsonl")).unwrap_or_default()
+    }
+
+    fn response(
+        chal: &ChallengeView,
+        device_id: &str,
+        signature_b64: String,
+        decision: Option<&str>,
+    ) -> ChallengeResponseInput {
+        ChallengeResponseInput {
+            challenge_id: chal.challenge_id.clone(),
+            device_id: device_id.into(),
+            session_id: chal.session_id.clone(),
+            event: chal.event.clone(),
+            signature_b64,
+            decision: decision.map(str::to_string),
+        }
+    }
+
+    /// Pending device → signed device-pairing approve → active. Returns
+    /// the device id; `signer` stays the caller's authenticator stand-in.
+    fn seed_active(state: &AppState, label: &str, signer: &kiwi_pair::DeviceSigner) -> String {
+        let device_id = seed_pending(state, label, &signer.public_key());
+        futures_block(async {
+            let chal = issue_challenge_impl(state, &device_id, ChallengeEvent::DevicePairing)
+                .await
+                .unwrap();
+            let canonical = STANDARD.decode(&chal.canonical_bytes_b64).unwrap();
+            let sig = signer.sign(&canonical);
+            submit_challenge_impl(
+                state,
+                response(&chal, &device_id, STANDARD.encode(sig), None),
+            )
+            .await
+            .unwrap();
+        });
+        device_id
+    }
+
+    /// §6.3 — an explicit deny is audited `challenge-denied`, confers no
+    /// authorization (device stays pending, lock state untouched), and
+    /// NEVER consumes the challenge: a later valid approve still lands and
+    /// audits `challenge-approved` + `device-paired`.
+    #[test]
+    fn deny_is_audited_unconsumed_and_still_approvable() {
+        let state = test_state();
+        let signer = kiwi_pair::DeviceSigner::from_seed(&[9u8; 32]);
+        futures_block(async {
+            let dev_id = seed_pending(&state, "auth", &signer.public_key());
+            let chal = issue_challenge_impl(&state, &dev_id, ChallengeEvent::DevicePairing)
+                .await
+                .unwrap();
+
+            // Deny — no signature at all (§6.3), explicit decision.
+            submit_challenge_impl(
+                &state,
+                response(&chal, &dev_id, String::new(), Some("deny")),
+            )
+            .await
+            .unwrap();
+            let audit = read_audit(&state);
+            assert!(audit.contains("\"challenge-denied\""), "audit: {audit}");
+            assert!(audit.contains("event=device-pairing"));
+            assert!(!audit.contains("challenge-approved"));
+            assert!(!audit.contains("device-paired"));
+            // Denial authorized nothing — the device is still pending.
+            let dev = state
+                .pair
+                .lock()
+                .await
+                .store()
+                .get_device(&dev_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(dev.status, "pending");
+            // …and the challenge was not consumed.
+            let row = state
+                .pair
+                .lock()
+                .await
+                .store()
+                .get_challenge(&chal.challenge_id)
+                .unwrap()
+                .unwrap();
+            assert!(!row.consumed);
+
+            // Re-approvable: a real signed approve still verifies.
+            let canonical = STANDARD.decode(&chal.canonical_bytes_b64).unwrap();
+            let sig = signer.sign(&canonical);
+            submit_challenge_impl(&state, response(&chal, &dev_id, STANDARD.encode(sig), None))
+                .await
+                .unwrap();
+            let audit = read_audit(&state);
+            assert!(audit.contains("\"challenge-approved\""));
+            assert!(audit.contains("\"device-paired\""));
+        });
+    }
+
+    /// §9 — every failed response audits `challenge-verification-failed`
+    /// carrying the kiwi-core ChallengeError name, BEFORE the IPC error
+    /// leaves the boundary. Covers invalid signature, unknown id, and
+    /// replay of a consumed challenge.
+    #[test]
+    fn verify_failures_are_audited_with_reason() {
+        let state = test_state();
+        let signer = kiwi_pair::DeviceSigner::from_seed(&[3u8; 32]);
+        futures_block(async {
+            let dev_id = seed_pending(&state, "auth", &signer.public_key());
+            let chal = issue_challenge_impl(&state, &dev_id, ChallengeEvent::DevicePairing)
+                .await
+                .unwrap();
+
+            assert_eq!(
+                code_of(
+                    submit_challenge_impl(
+                        &state,
+                        response(&chal, &dev_id, STANDARD.encode([0u8; 64]), None)
+                    )
+                    .await
+                ),
+                "invalid-signature"
+            );
+            assert_eq!(
+                code_of(
+                    submit_challenge_impl(
+                        &state,
+                        ChallengeResponseInput {
+                            challenge_id: "chal-ghost".into(),
+                            ..response(&chal, &dev_id, STANDARD.encode([0u8; 64]), None)
+                        }
+                    )
+                    .await
+                ),
+                "unknown-challenge"
+            );
+            // A bad decision value is rejected at the boundary — it never
+            // reaches the engine and writes no row.
+            assert_eq!(
+                code_of(
+                    submit_challenge_impl(
+                        &state,
+                        response(&chal, &dev_id, STANDARD.encode([0u8; 64]), Some("maybe"))
+                    )
+                    .await
+                ),
+                "invalid-input"
+            );
+
+            let audit = read_audit(&state);
+            assert!(audit.contains("\"challenge-verification-failed\""));
+            assert!(audit.contains("err=InvalidSignature"));
+            assert!(audit.contains("err=UnknownChallenge"));
+            assert!(!audit.contains("maybe"));
+
+            // Real approve → replaying the same response is consumed.
+            let canonical = STANDARD.decode(&chal.canonical_bytes_b64).unwrap();
+            let sig = signer.sign(&canonical);
+            submit_challenge_impl(&state, response(&chal, &dev_id, STANDARD.encode(sig), None))
+                .await
+                .unwrap();
+            assert_eq!(
+                code_of(
+                    submit_challenge_impl(
+                        &state,
+                        response(&chal, &dev_id, STANDARD.encode(sig), None)
+                    )
+                    .await
+                ),
+                "already-consumed"
+            );
+            let audit = read_audit(&state);
+            assert!(audit.contains("err=AlreadyConsumed"));
+            assert!(audit.contains("\"challenge-approved\""));
+            assert!(audit.contains("\"device-paired\""));
+        });
+    }
+
+    /// §6.3 + ADR-013 R7 — a silent timeout writes NO audit row (absence
+    /// of a decision). Only a late response is audited, and it audits as
+    /// `challenge-verification-failed err=Expired` → IPC `challenge-expired`
+    /// — whether it was an approve or a deny. A late deny must never be
+    /// recorded as `challenge-denied`.
+    #[test]
+    fn silent_timeout_no_row_late_response_audited_expired() {
+        let state = test_state();
+        let signer = kiwi_pair::DeviceSigner::from_seed(&[4u8; 32]);
+        futures_block(async {
+            let dev_id = seed_pending(&state, "auth", &signer.public_key());
+            // Issue directly with a past clock — the row is already expired.
+            let chal = state
+                .pair
+                .lock()
+                .await
+                .issue_challenge(
+                    ChallengeSpec {
+                        challenge_id: new_id("chal"),
+                        device_id: dev_id.clone(),
+                        session_id: state.boot_session_id.clone(),
+                        event: ChallengeEvent::DevicePairing,
+                        nonce: kiwi_pair::os_nonce().unwrap(),
+                    },
+                    now_unix() - 200,
+                    kiwi_pair::CHALLENGE_TTL_SECS,
+                )
+                .unwrap();
+            let audit = read_audit(&state);
+            assert!(
+                !audit.contains("challenge-"),
+                "silent expiry must not write rows: {audit}"
+            );
+
+            let view = ChallengeView::from(&chal);
+            // Late approve — verified into Expired.
+            let sig = signer.sign(&chal.canonical_bytes());
+            assert_eq!(
+                code_of(
+                    submit_challenge_impl(
+                        &state,
+                        response(&view, &dev_id, STANDARD.encode(sig), None)
+                    )
+                    .await
+                ),
+                "challenge-expired"
+            );
+            // Late deny — a response, not a decision about a live challenge.
+            assert_eq!(
+                code_of(
+                    submit_challenge_impl(
+                        &state,
+                        response(&view, &dev_id, String::new(), Some("deny"))
+                    )
+                    .await
+                ),
+                "challenge-expired"
+            );
+            let audit = read_audit(&state);
+            assert_eq!(audit.matches("err=Expired").count(), 2);
+            assert!(!audit.contains("\"challenge-denied\""));
+            assert!(!audit.contains("\"challenge-approved\""));
+        });
+    }
+
+    /// T270-02 / evidence-before-effect — `recovery`/`elevated-action`
+    /// are refused `unsupported-event` BEFORE verification: a correctly
+    /// signed response never consumes its challenge and writes no
+    /// verification row (no outcome was reached).
+    #[test]
+    fn unsupported_event_is_refused_before_consume() {
+        let state = test_state();
+        let signer = kiwi_pair::DeviceSigner::from_seed(&[6u8; 32]);
+        let dev_id = seed_active(&state, "auth", &signer);
+        futures_block(async {
+            let chal = issue_challenge_impl(&state, &dev_id, ChallengeEvent::Recovery)
+                .await
+                .unwrap();
+            let canonical = STANDARD.decode(&chal.canonical_bytes_b64).unwrap();
+            let sig = signer.sign(&canonical);
+            assert_eq!(
+                code_of(
+                    submit_challenge_impl(
+                        &state,
+                        response(&chal, &dev_id, STANDARD.encode(sig), None)
+                    )
+                    .await
+                ),
+                "unsupported-event"
+            );
+            let row = state
+                .pair
+                .lock()
+                .await
+                .store()
+                .get_challenge(&chal.challenge_id)
+                .unwrap()
+                .unwrap();
+            assert!(!row.consumed, "unsupported event must not consume");
+            assert!(
+                !read_audit(&state).contains("challenge-verification-failed"),
+                "no verification was attempted — no failure row"
+            );
+        });
+    }
+
+    /// §6.3 — a deny for an unknown or consumed challenge is a failed
+    /// response, audited `challenge-verification-failed` (never
+    /// `challenge-denied`); deny with a foreign binding fails
+    /// `binding-mismatch`.
+    #[test]
+    fn deny_of_dead_challenge_is_failure_not_denial() {
+        let state = test_state();
+        let signer = kiwi_pair::DeviceSigner::from_seed(&[8u8; 32]);
+        let dev_id = seed_active(&state, "auth", &signer);
+        futures_block(async {
+            // Unknown id
+            let chal = issue_challenge_impl(&state, &dev_id, ChallengeEvent::Unlock)
+                .await
+                .unwrap();
+            assert_eq!(
+                code_of(
+                    submit_challenge_impl(
+                        &state,
+                        ChallengeResponseInput {
+                            challenge_id: "chal-ghost".into(),
+                            ..response(&chal, &dev_id, String::new(), Some("deny"))
+                        }
+                    )
+                    .await
+                ),
+                "unknown-challenge"
+            );
+            // Foreign device id — binding mismatch, not a denial.
+            assert_eq!(
+                code_of(
+                    submit_challenge_impl(
+                        &state,
+                        response(&chal, "dev-foreign", String::new(), Some("deny"))
+                    )
+                    .await
+                ),
+                "binding-mismatch"
+            );
+            // Lock so the approve's bound post-action (attempt_unlock)
+            // has a locked endpoint to act on, then deny the consumed id.
+            state.trust.lock().await.force_lock();
+            let canonical = STANDARD.decode(&chal.canonical_bytes_b64).unwrap();
+            let sig = signer.sign(&canonical);
+            submit_challenge_impl(&state, response(&chal, &dev_id, STANDARD.encode(sig), None))
+                .await
+                .unwrap();
+            assert_eq!(
+                code_of(
+                    submit_challenge_impl(
+                        &state,
+                        response(&chal, &dev_id, String::new(), Some("deny"))
+                    )
+                    .await
+                ),
+                "already-consumed"
+            );
+            let audit = read_audit(&state);
+            assert!(!audit.contains("\"challenge-denied\""));
+            assert!(audit.contains("err=UnknownChallenge"));
+            assert!(audit.contains("err=BindingMismatch"));
+            assert!(audit.contains("err=AlreadyConsumed"));
+            assert!(audit.contains("\"challenge-approved\""));
+        });
     }
 }

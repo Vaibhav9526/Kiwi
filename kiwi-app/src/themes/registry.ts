@@ -9,9 +9,31 @@ import { validateThemeManifest, varsToCss } from "./types";
 import lightManifestJson from "./stock/light/manifest.json";
 import darkManifestJson from "./stock/dark/manifest.json";
 import highContrastManifestJson from "./stock/high-contrast/manifest.json";
+import lightBlueManifestJson from "./stock/light-blue/manifest.json";
+import lightOrangeManifestJson from "./stock/light-orange/manifest.json";
+import darkBlueManifestJson from "./stock/dark-blue/manifest.json";
+import darkOledManifestJson from "./stock/dark-oled/manifest.json";
+import sepiaManifestJson from "./stock/sepia/manifest.json";
+import liquidGlassManifestJson from "./stock/liquid-glass/manifest.json";
+import mailspringTaigaManifestJson from "./stock/mailspring-taiga/manifest.json";
+import mailspringUbuntuManifestJson from "./stock/mailspring-ubuntu/manifest.json";
+import mailspringLessIsMoreManifestJson from "./stock/mailspring-less-is-more/manifest.json";
+import mailspringDarkManifestJson from "./stock/mailspring-dark/manifest.json";
+import mailspringDarksideManifestJson from "./stock/mailspring-darkside/manifest.json";
 import "./stock/light/theme.css";
 import "./stock/dark/theme.css";
 import "./stock/high-contrast/theme.css";
+import "./stock/light-blue/theme.css";
+import "./stock/light-orange/theme.css";
+import "./stock/dark-blue/theme.css";
+import "./stock/dark-oled/theme.css";
+import "./stock/sepia/theme.css";
+import "./stock/liquid-glass/theme.css";
+import "./stock/mailspring-taiga/theme.css";
+import "./stock/mailspring-ubuntu/theme.css";
+import "./stock/mailspring-less-is-more/theme.css";
+import "./stock/mailspring-dark/theme.css";
+import "./stock/mailspring-darkside/theme.css";
 
 export const INSTALLED_THEMES_KEY = "kiwi.themes.installed";
 /** Fired on `window` after install/remove so pickers refresh. */
@@ -23,7 +45,22 @@ interface InstalledTheme {
   css: string;
 }
 
-const STOCK_THEMES: ThemeManifest[] = [lightManifestJson, darkManifestJson, highContrastManifestJson]
+const STOCK_THEMES: ThemeManifest[] = [
+  lightManifestJson,
+  lightBlueManifestJson,
+  lightOrangeManifestJson,
+  sepiaManifestJson,
+  liquidGlassManifestJson,
+  mailspringTaigaManifestJson,
+  mailspringUbuntuManifestJson,
+  mailspringLessIsMoreManifestJson,
+  darkManifestJson,
+  darkBlueManifestJson,
+  darkOledManifestJson,
+  mailspringDarkManifestJson,
+  mailspringDarksideManifestJson,
+  highContrastManifestJson,
+]
   .map((j) => validateThemeManifest(j))
   .filter((r): r is { ok: true; manifest: ThemeManifest } => r.ok)
   .map((r) => r.manifest);

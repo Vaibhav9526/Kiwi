@@ -5,6 +5,7 @@
 //! Deterministic only: no AI is consulted anywhere in this crate.
 
 pub mod challenge;
+pub mod dev;
 pub mod device;
 pub mod identity;
 pub mod policy;

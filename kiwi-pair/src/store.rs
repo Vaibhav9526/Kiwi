@@ -496,6 +496,40 @@ impl PairStore {
         Ok(true)
     }
 
+    /// Open (unexpired, unconsumed) challenges for one device — the phone's
+    /// `pullChallenges` source over the USB/LAN dev channel. Bounded: the
+    /// caller caps `limit` (dev listener clamps to 64); ordering is newest
+    /// first so a fresh approval surfaces without paging.
+    pub fn open_challenges(
+        &self,
+        device_id: &str,
+        now: i64,
+        limit: u32,
+    ) -> Result<Vec<ChallengeRow>> {
+        let cap = limit.min(64) as i64;
+        let mut stmt = self.conn.prepare(
+            "SELECT challenge_id,device_id,session_id,event,nonce,
+                    issued_unix,expires_unix,consumed
+             FROM challenges
+             WHERE device_id=?1 AND consumed=0 AND expires_unix>?2
+             ORDER BY issued_unix DESC LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![device_id, now, cap], |r| {
+            Ok(ChallengeRow {
+                challenge_id: r.get(0)?,
+                device_id: r.get(1)?,
+                session_id: r.get(2)?,
+                event: r.get(3)?,
+                nonce: r.get(4)?,
+                issued_unix: r.get(5)?,
+                expires_unix: r.get(6)?,
+                consumed: r.get::<_, i64>(7)? != 0,
+            })
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
     pub fn get_challenge(&self, challenge_id: &str) -> Result<Option<ChallengeRow>> {
         self.conn
             .query_row(

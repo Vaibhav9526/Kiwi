@@ -22,7 +22,7 @@
   --kiwi-ms-text: #23262a;
   --kiwi-ms-text-heading: #1f2430;
   --kiwi-ms-text-secondary: #57606b;
-  --kiwi-ms-text-muted: #7d8794;
+  --kiwi-ms-text-muted: #6b7480;
   --kiwi-ms-link: #2f6fd6;
 
   /* ---- borders ---- */
@@ -80,7 +80,7 @@
   --kiwi-secure: #157a44;
   --kiwi-secure-bg: #e0f2e8;
   --kiwi-secure-border: rgba(21, 122, 68, 0.45);
-  --kiwi-warning: #9a6206;
+  --kiwi-warning: #8a5605;
   --kiwi-warning-bg: #faf0d4;
   --kiwi-warning-border: rgba(154, 98, 6, 0.45);
   --kiwi-danger: #c93c3c;
@@ -94,4 +94,13 @@
   --kiwi-hover-bg: rgba(47, 111, 214, 0.06);
   --kiwi-shadow: 0 18px 48px rgba(15, 23, 42, 0.18);
   --kiwi-shimmer: rgba(47, 111, 214, 0.07);
+}
+
+/* Canonical palette (dispatch 26c): eM orange primary action. */
+:root[data-theme="light"],
+[data-theme="light"] {
+  --accent: #e8781e;
+  --accent-hover: #cf6a12;
+  --accent-ink: #2a1800;
+  --selection: #dbe8fa;
 }

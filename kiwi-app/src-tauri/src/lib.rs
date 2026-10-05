@@ -17,11 +17,14 @@ mod discovery_net;
 #[cfg(test)]
 mod e2e;
 mod error;
+mod notify;
 mod observe;
 mod pairing_listen;
+mod send_consent;
 mod signals;
 mod state;
 mod syncer;
+mod tray;
 mod types;
 
 use tauri::Manager;
@@ -31,6 +34,9 @@ use commands::autoconfig::*;
 use commands::contacts::*;
 use commands::devices::*;
 use commands::endpoint::*;
+use commands::export::*;
+use commands::folders::*;
+use commands::import::*;
 use commands::integrations::*;
 use commands::link::kiwi_link_click;
 use commands::mail::*;
@@ -42,15 +48,22 @@ use commands::rules::*;
 use commands::sandbox::*;
 use commands::security::*;
 use commands::send::*;
+use commands::storage::*;
 use commands::system::*;
 use commands::templates::*;
+use commands::thread::*;
 
 /// IPC contract version — bump on breaking changes (ipc.md §1).
 pub const IPC_CONTRACT_VERSION: &str = "kiwi.ipc/1";
 
+// NOTE: no DWMWA_WINDOW_CORNER_PREFERENCE hack — the crate forbids unsafe,
+/// and a decorated window (titleBarStyle Overlay) keeps Win11's native
+/// rounded corners + frame shadow from DWM anyway. Only relevant if
+/// decorations ever go off.
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             // Data dir: app_data_dir when resolvable, else a temp dir (dev).
             let dir = match app.path().app_data_dir() {
@@ -59,6 +72,21 @@ pub fn run() {
             };
             let state = state::AppState::open(dir)
                 .map_err(|e| -> Box<dyn std::error::Error> { Box::new(e) })?;
+            // T-329: the OS-notification sink for sync-time new-mail dings.
+            *state.notifier.lock().unwrap() = Some(std::sync::Arc::new(notify::TauriNotifier(
+                app.handle().clone(),
+            )));
+            // T-345: the system tray — icon + menu (Show/Hide, Compose,
+            // Quit) + the tooltip sink. `install` returning false means the
+            // platform has no tray surface: `tray_live` stays false, X keeps
+            // quit semantics, and `kiwi_app_info.trayAvailable` reports it.
+            if tray::install(app)? {
+                state
+                    .tray_live
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                *state.tray_tip.lock().unwrap() =
+                    Some(std::sync::Arc::new(tray::TrayTooltip(app.handle().clone())));
+            }
             app.manage(std::sync::Arc::new(state));
             // Background outbox dispatcher (undo-send grace + send-later).
             let handle = app.handle().clone();
@@ -76,12 +104,18 @@ pub fn run() {
             }
             Ok(())
         })
+        // T-345: the main window's X routes through the tray decision —
+        // hide-to-tray only while `kiwi.trayOnClose` is on AND a tray
+        // icon actually exists; everything else keeps plain close=quit.
+        .on_window_event(tray::handle_window_event)
         .invoke_handler(tauri::generate_handler![
             // system / lock path (exempt)
             kiwi_ping,
             kiwi_app_info,
             kiwi_security_status,
             kiwi_lock,
+            kiwi_dev_unlock,
+            tray::kiwi_confirm_quit,
             kiwi_request_challenge,
             kiwi_submit_challenge,
             // pairing engine (§9d — canonical names; kiwi_* above are aliases)
@@ -106,6 +140,9 @@ pub fn run() {
             kiwi_oauth2_status,
             // mail read (gated)
             kiwi_list_folders,
+            kiwi_folder_create,
+            kiwi_folder_rename,
+            kiwi_folder_delete,
             kiwi_list_messages,
             kiwi_search_messages,
             kiwi_get_message,
@@ -113,10 +150,13 @@ pub fn run() {
             kiwi_sync_account,
             kiwi_sync_status,
             kiwi_set_pop3_policy,
+            kiwi_import_mbox,
+            kiwi_mailbox_export_mbox,
             // message actions (gated)
             kiwi_update_message,
             kiwi_delete_messages,
             kiwi_move_messages,
+            kiwi_copy_messages,
             kiwi_download_attachment,
             kiwi_render_body,
             kiwi_set_remote_content,
@@ -124,6 +164,7 @@ pub fn run() {
             // sandbox-open (gated, fail closed)
             kiwi_sandbox_open_link,
             kiwi_sandbox_open_attachment,
+            kiwi_sandbox_sessions,
             kiwi_link_click,
             // snooze (gated — T-255, F-feature)
             kiwi_message_snooze,
@@ -137,12 +178,23 @@ pub fn run() {
             kiwi_schedule_send,
             kiwi_list_outbox,
             kiwi_flush_outbox,
+            // storage diagnostics (gated — T-330: measured db size/health + VACUUM)
+            kiwi_storage_stats,
+            kiwi_storage_compact,
+            // conversation mute (gated — T-341, Thunderbird "Ignore Thread")
+            kiwi_thread_set_muted,
+            kiwi_thread_list_muted,
             // security data (gated)
             kiwi_security_findings,
             kiwi_security_events,
+            kiwi_audit_events,
+            // audit integrity (ungated — see commands/security.rs)
+            kiwi_audit_integrity,
             kiwi_finding_detail,
             kiwi_session_detail,
             kiwi_security_report,
+            // forensic report file export (gated — T-320, self-verifying)
+            kiwi_forensics_export,
             // devices + org binding (gated)
             kiwi_register_device,
             kiwi_list_devices,
@@ -181,6 +233,9 @@ pub fn run() {
             kiwi_rules_apply_now,
             kiwi_rules_hits,
             kiwi_rules_preview,
+            kiwi_blocklist_list,
+            kiwi_blocklist_block,
+            kiwi_blocklist_unblock,
             // message templates (gated — T-288)
             kiwi_templates_list,
             kiwi_templates_create,

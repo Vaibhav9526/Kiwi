@@ -15,8 +15,12 @@
  * Usage:
  *   node scripts/ui-smoke.mjs [--url http://127.0.0.1:1420] [--port 1421]
  *                          [--browser edge|chrome|/path/to/exe] [--keep]
+ * Env:
+ *   KIWI_SMOKE_BROWSER         same as --browser (absolute path or a PATH name)
+ *   KIWI_SMOKE_REQUIRE_BROWSER =1  a missing browser FAILs (CI) instead of SKIPping
  * Exit 0 = all checks pass/skipped; exit 1 = any FAIL. A final
- * `SMOKE_JSON{...}` line carries the machine-readable result for CI.
+ * `SMOKE_JSON{...}` line carries the machine-readable result for CI
+ * (`browserAbsent: true` marks a run that never got a browser).
  */
 import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -32,17 +36,36 @@ const arg = (name, def) => {
 const URL_ARG = arg("url", null);
 const VITE_PORT = Number(arg("port", "1421"));
 const BROWSER_ARG = arg("browser", process.env.KIWI_SMOKE_BROWSER ?? "auto");
+// CI sets this: there a missing browser is a broken gate and must FAIL. The
+// default is an honest SKIP (exit 0) so a developer on a machine without
+// Chrome/Edge gets "SKIP", never a fake PASS.
+const REQUIRE_BROWSER = process.env.KIWI_SMOKE_REQUIRE_BROWSER === "1";
 const KEEP = args.includes("--keep");
 const PER_CHECK_TIMEOUT = 12000;
 const BOOT_TIMEOUT = 30000;
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const results = [];
-function report(id, status, detail = "") {
-  results.push({ id, status, detail });
+function report(id, status, detail = "", kind = "smoke") {
+  results.push({ id, status, detail, kind });
   const tag = status === "pass" ? "PASS" : status === "fail" ? "FAIL" : "SKIP";
   console.log(`${tag}  ${id}${detail ? ` — ${detail}` : ""}`);
 }
+
+function summarize(url, extra = {}) {
+  const pass = results.filter((r) => r.status === "pass").length;
+  const fail = results.filter((r) => r.status === "fail").length;
+  const skipp = results.filter((r) => r.status === "skip").length;
+  const summary = { suite: "ui-smoke", url, pass, fail, skip: skipp, results,
+    flows: results.filter((r) => r.kind === "flow"), ...extra };
+  console.log(`SMOKE_JSON${JSON.stringify(summary)}`);
+  console.log(`ui-smoke: ${pass} pass, ${fail} fail, ${skipp} skip`);
+  return { pass, fail, skipp };
+}
+
+// No usable Chrome/Edge/Chromium on this machine. Distinct from a browser
+// that started but then misbehaved — a real launch failure is a hard FAIL.
+class BrowserUnavailable extends Error {}
 
 // ---------------------------------------------------------------- vite --
 
@@ -100,7 +123,8 @@ function findBrowser() {
     const hit = BROWSER_CANDIDATES[kind].find((p) => existsSync(p));
     if (hit) return hit;
   }
-  throw new Error("no browser found — set --browser or KIWI_SMOKE_BROWSER");
+  throw new BrowserUnavailable(
+    "no browser found — set --browser/KIWI_SMOKE_BROWSER to a Chrome/Edge/Chromium binary");
 }
 
 let browserProc = null;
@@ -117,17 +141,29 @@ async function launchBrowser() {
     "--disable-extensions",
     "about:blank",
   ], { stdio: ["ignore", "ignore", "ignore"] });
+  // ENOENT / immediate exit == "no browser here", not "the app is broken".
+  const gone = new Promise((resolve) => {
+    browserProc.once("error", (e) =>
+      resolve(new BrowserUnavailable(`${exe} could not be started: ${e.message}`)));
+    browserProc.once("exit", (code, signal) =>
+      resolve(new BrowserUnavailable(`${exe} exited before the CDP port opened (code=${code} signal=${signal})`)));
+  });
   const portFile = join(profileDir, "DevToolsActivePort");
-  const deadline = Date.now() + 15000;
-  while (Date.now() < deadline) {
-    if (existsSync(portFile)) {
-      const [port] = readFileSync(portFile, "utf8").split("\n");
-      const ver = await (await fetch(`http://127.0.0.1:${port.trim()}/json/version`)).json();
-      return { wsUrl: ver.webSocketDebuggerUrl, exe };
+  const ready = (async () => {
+    const deadline = Date.now() + 15000;
+    while (Date.now() < deadline) {
+      if (existsSync(portFile)) {
+        const [port] = readFileSync(portFile, "utf8").split("\n");
+        const ver = await (await fetch(`http://127.0.0.1:${port.trim()}/json/version`)).json();
+        return { wsUrl: ver.webSocketDebuggerUrl, exe };
+      }
+      await sleep(250);
     }
-    await sleep(250);
-  }
-  throw new Error("browser did not open a DevTools port");
+    throw new Error("browser did not open a DevTools port");
+  })();
+  const winner = await Promise.race([ready, gone]);
+  if (winner instanceof BrowserUnavailable) throw winner;
+  return winner;
 }
 
 // ----------------------------------------------------------------- CDP --
@@ -203,10 +239,13 @@ const ctxMenu = (sel) =>
 // -------------------------------------------------------------- checks --
 
 async function runChecks(cdp, sid) {
-  const check = async (id, desc, fn) => {
-    try { const detail = await fn(); report(id, "pass", `${desc}${detail ? ` (${detail})` : ""}`); }
-    catch (e) { report(id, "fail", `${desc} — ${e instanceof Error ? e.message : e}`); }
+  const check = async (id, desc, fn, kind = "smoke") => {
+    try { const detail = await fn(); report(id, "pass", `${desc}${detail ? ` (${detail})` : ""}`, kind); }
+    catch (e) { report(id, "fail", `${desc} — ${e instanceof Error ? e.message : e}`, kind); }
   };
+  // T-314: flow checks assert real-DOM state CHANGES (prefill, flips,
+  // persistence roundtrips) — never mere element presence.
+  const flow = (id, desc, fn) => check(id, desc, fn, "flow");
   const skip = (id, desc, why) => report(id, "skip", `${desc} — ${why}`);
 
   await check("boot", "app shell boots", async () => {
@@ -236,15 +275,47 @@ async function runChecks(cdp, sid) {
     return "reader card populated";
   });
 
+  await flow("quickfilter", "filter chips narrow the loaded list honestly", async () => {
+    // Flatten to list mode so .em-row count == visible message count.
+    await cdp.eval(sid, `(() => { const b=[...document.querySelectorAll('[role=switch]')].find(x=>x.getAttribute('aria-checked')==='true'); if(b) b.click(); })()`);
+    await waitFor(cdp, sid, `[...document.querySelectorAll('[role=switch]')].every(x=>x.getAttribute('aria-checked')==='false')`);
+    const total = await cdp.eval(sid, qsa(".em-row"));
+    // 'From sender' first (unfiltered): the selected row always matches its
+    // own sender, so ≥1 row is guaranteed and ≤total is the honest bound.
+    await cdp.eval(sid, `[...document.querySelectorAll('.em-chip')].find(x=>x.textContent.trim().startsWith('From sender'))?.click()`);
+    await new Promise((r) => setTimeout(r, 150));
+    const senderRows = await cdp.eval(sid, qsa(".em-row"));
+    if (senderRows < 1 || senderRows > total) throw new Error(`sender chip gave ${senderRows} rows of ${total}`);
+    await cdp.eval(sid, `document.querySelector('.em-chip-clear')?.click()`);
+    await waitFor(cdp, sid, `${qsa(".em-row")} === ${total}`);
+    const chipTxt = `(() => { const c=[...document.querySelectorAll('.em-chip')].find(x=>x.textContent.trim().startsWith('Unread')); if(!c) return -1; c.click(); return parseInt(c.querySelector('.em-chip-n')?.textContent||'-1'); })()`;
+    const expected = await cdp.eval(sid, chipTxt);
+    if (expected < 1) throw new Error("Unread chip missing or count<1");
+    if (!(await waitFor(cdp, sid, `${qsa(".em-row")} === ${expected} && (document.querySelector('.em-filterbar-status')?.textContent||'').includes('${expected} of ${total} shown')`)))
+      throw new Error(`rows did not narrow to ${expected}`);
+    if (expected >= total) throw new Error(`no filtering happened (${expected}==${total})`);
+    // Clear restores the full list and empties the status line.
+    await cdp.eval(sid, `document.querySelector('.em-chip-clear')?.click()`);
+    if (!(await waitFor(cdp, sid, `${qsa(".em-row")} === ${total} && (document.querySelector('.em-filterbar-status')?.textContent||'')===''`)))
+      throw new Error("clear did not restore rows");
+    // Restore threads mode for subsequent checks.
+    await cdp.eval(sid, `document.querySelector('[role=switch]')?.click()`);
+    return `${expected}/${total} unread, sender→${senderRows}, clear restores`;
+  });
+
   await check("ctxmenu", "right-click row → context menu", async () => {
     if (!(await cdp.eval(sid, ctxMenu(".em-row")))) throw new Error("no row to open menu on");
     if (!(await waitFor(cdp, sid, qs(".em-ctx[role=menu]"), 4000))) throw new Error("menu did not open");
     const items = await cdp.eval(sid, qsa(".em-ctx-item"));
+    // T-332: Move-to + Copy-to share the same real folder submenu.
+    const moveCopy = await cdp.eval(sid,
+      `[...document.querySelectorAll('.em-ctx-item')].filter(b=>/^(Move|Copy) to$/.test(b.textContent.trim())).map(b=>({t:b.textContent.trim(),d:b.disabled}))`);
+    if (moveCopy.length !== 2) throw new Error("Move to/Copy to pair missing");
     await cdp.eval(sid, keyOn(".em-ctx", "Escape")); // Escape handled via onKeyDown on the menu root
     const closed = await waitFor(cdp, sid, `!${qs(".em-ctx")}`, 3000);
     if (!closed) throw new Error("menu did not dismiss on Escape");
     if (items < 5) throw new Error(`only ${items} items`);
-    return `${items} items, Esc dismisses`;
+    return `${items} items, Esc dismisses${moveCopy.every((i) => i.d) ? " (move/copy demo-disabled)" : ""}`;
   });
 
   await check("compose", "compose route + fields", async () => {
@@ -255,6 +326,38 @@ async function runChecks(cdp, sid) {
     const hasAcct = await cdp.eval(sid, qs("section[aria-label='Compose message'] select"));
     if (!hasTo || !hasBody) throw new Error(`fields missing (to=${hasTo} body=${hasBody})`);
     return `recipient+body fields${hasAcct ? ", account select" : ""}`;
+  });
+
+  await check("disposable", "T-342: disposable sidebar promo → #/disposable, honest demo gating", async () => {
+    // Sidebar promo: section + row + "+ New" quick-action render next to the
+    // mailboxes — no fabricated unread chip without a real session.
+    await cdp.eval(sid, "window.location.hash = '#/mail'");
+    if (!(await waitFor(cdp, sid, qs("nav.em-folders .em-dispo")))) throw new Error("no disposable sidebar section");
+    const demoMode = await cdp.eval(sid, `/demo data/i.test(document.body.innerText)`);
+    const newBtn = await cdp.eval(sid,
+      `(()=>{const b=document.querySelector('.em-dispo-new'); return b?{disabled:b.disabled,title:b.title||''}:null})()`);
+    if (!newBtn) throw new Error('"+ New" quick-action missing');
+    if (demoMode && !newBtn.disabled) throw new Error('"+ New" enabled in demo — would fabricate a session');
+    if (demoMode && !newBtn.title) throw new Error("demo-disabled +New has no honest title");
+    // Row navigates to the first-class view; notice + honest empty state.
+    await cdp.eval(sid, `[...document.querySelectorAll('.em-dispo [role=treeitem]')].find(r=>/Disposable Inbox/.test(r.textContent))?.click()`);
+    if (!(await waitFor(cdp, sid, `location.hash.includes('disposable') && ${qs(".kiwi-dispo")}`, 4000)))
+      throw new Error("row did not route to #/disposable view");
+    const notice = await cdp.eval(sid,
+      `(document.querySelector('.kiwi-dispo [role=note]')?.textContent||'')`);
+    if (!/public|anyone/i.test(notice)) throw new Error("public-inbox notice not rendered");
+    if (demoMode) {
+      const demoNote = await cdp.eval(sid,
+        `(document.querySelector('.kiwi-dispo')?.innerText||'')`);
+      if (!/backend|demo/i.test(demoNote)) throw new Error("demo gating copy missing");
+      const fabricated = await cdp.eval(sid, qsa(".kiwi-dispo-row, .kiwi-dispo [role=option]"));
+      if (fabricated > 0) throw new Error(`${fabricated} fabricated message rows in demo`);
+      const createDisabled = await cdp.eval(sid,
+        `[...document.querySelectorAll('.kiwi-dispo button')].filter(b=>/Create disposable address/.test(b.textContent)).every(b=>b.disabled)`);
+      if (!createDisabled) throw new Error("view create button not demo-disabled");
+    }
+    await cdp.eval(sid, "window.location.hash = '#/mail'");
+    return `section+row+route ok, notice verbatim, ${demoMode ? "demo-gated honestly (no fabrication)" : "live-mode controls enabled"}`;
   });
 
   await check("settings-tabs", "settings mounts every section", async () => {
@@ -272,6 +375,32 @@ async function runChecks(cdp, sid) {
     return `${names.length} sections: ${names.join(", ")}`;
   });
 
+  await check("about", "About tab — real version + honest diagnostics", async () => {
+    await cdp.eval(sid,
+      `[...document.querySelectorAll("button[role=tab]")].find(b=>b.textContent.trim()==="About")?.click()`);
+    if (!(await waitFor(cdp, sid, `document.querySelector("[role=tabpanel] h1")?.textContent?.trim()==="About"`, 4000)))
+      throw new Error("About section did not mount");
+    const text = await cdp.eval(sid, `document.querySelector("[role=tabpanel]").textContent ?? ""`);
+    if (!/v\d+\.\d+\.\d+/.test(text)) throw new Error("no build version rendered");
+    if (!/Diagnostics/.test(text)) throw new Error("no diagnostics dl");
+    if (!/Keyboard shortcuts/.test(text)) throw new Error("no shortcut reference");
+    if (!/Mozilla Public License/.test(text)) throw new Error("no license line");
+    // Backend-only stats must be omitted in demo — not fabricated.
+    const demoMode = await cdp.eval(sid, `/demo data/i.test(document.body.innerText)`);
+    if (demoMode && /Backend.*kiwi\.ipc|Sessions observed/i.test(text))
+      throw new Error("backend stats rendered without a backend");
+    // T-333 storage section: heading present; in demo it must say the stats
+    // need a backend, and no fabricated numbers render.
+    if (!/Storage/.test(text)) throw new Error("storage section missing");
+    if (demoMode) {
+      if (!/need the backend|no store to measure/i.test(text))
+        throw new Error("storage rows rendered without a backend");
+      if (/Database size/.test(text) === false && /integrity_check|integrity check.*ok/i.test(text))
+        throw new Error("fabricated integrity result in demo");
+    }
+    return `version + dl + shortcuts + license all render${demoMode ? "; backend+storage rows honestly absent in demo" : ""}`;
+  });
+
   await check("devices", "Identity → Devices surface honest in demo", async () => {
     await cdp.eval(sid,
       `[...document.querySelectorAll("button[role=tab]")].find(b=>b.textContent.trim()==="Identity")?.click()`);
@@ -285,6 +414,58 @@ async function runChecks(cdp, sid) {
     const text = await cdp.eval(sid, `document.querySelector("[role=tabpanel]").textContent`);
     const honest = /needs the (Tauri )?backend|No paired devices/i.test(text);
     return `pair button ${pairBtn.disabled ? "disabled" : "live"}; empty-state ${honest ? "honest" : "UNCLEAR"}`;
+  });
+
+  await check("notify-pref", "OS-notify toggle bound to kiwi.notify, honest in demo", async () => {
+    await cdp.eval(sid, "window.location.hash = '#/settings'");
+    await waitFor(cdp, sid, `${qsa("button[role=tab]")} >= 5`);
+    await cdp.eval(sid,
+      `[...document.querySelectorAll("button[role=tab]")].find(b=>b.textContent.trim()==="General")?.click()`);
+    if (!(await waitFor(cdp, sid, `document.querySelector("[role=tabpanel] h1")?.textContent?.trim()==="General"`, 4000)))
+      throw new Error("General section did not mount");
+    const sel = await cdp.eval(sid,
+      `[...document.querySelectorAll("[role=tabpanel] select")].some(s=>s.closest("label")?.textContent.includes("OS notifications"))`);
+    if (!sel) throw new Error("OS notifications select missing");
+    const demoMode = await cdp.eval(sid, `/demo data|Demo mode/i.test(document.body.innerText)`);
+    if (demoMode) {
+      const note = await cdp.eval(sid,
+        `/no OS-notification channel/i.test(document.querySelector("[role=tabpanel]")?.textContent ?? "")`);
+      if (!note) throw new Error("no honest no-channel note in demo");
+    }
+    return `select present${demoMode ? ", no-channel note shown" : ""}`;
+  });
+
+  await check("mbox-io", "import/export seams render + demo-gated", async () => {
+    // Accounts tab: export card renders even with no accounts; in demo it
+    // must say the backend is required rather than offering a dead action.
+    await cdp.eval(sid, "window.location.hash = '#/settings'");
+    await waitFor(cdp, sid, `${qsa("button[role=tab]")} >= 5`);
+    await cdp.eval(sid,
+      `[...document.querySelectorAll("button[role=tab]")].find(b=>b.textContent.trim()==="Accounts")?.click()`);
+    if (!(await waitFor(cdp, sid, `document.querySelector("[role=tabpanel] h1")?.textContent?.trim()==="Accounts"`, 4000)))
+      throw new Error("Accounts section did not mount");
+    const text = await cdp.eval(sid, `document.querySelector("[role=tabpanel]")?.textContent ?? ""`);
+    if (!/Export folder/i.test(text)) throw new Error("export card missing");
+    const demoMode = await cdp.eval(sid, `/demo data|Demo mode/i.test(document.body.innerText)`);
+    if (demoMode && !/needs the backend/i.test(text))
+      throw new Error("export offered without a backend (demo)");
+    // Folder ctx menu → "Export to mbox…" must exist on account rows and be
+    // disabled-with-reason in demo.
+    await cdp.eval(sid, "window.location.hash = '#/mail'");
+    await waitFor(cdp, sid, qs(".em-rows"), 5000);
+    if (!(await cdp.eval(sid, ctxMenu(".em-accounts .em-tree-item"))))
+      throw new Error("no account folder row to right-click");
+    if (!(await waitFor(cdp, sid,
+      `[...document.querySelectorAll(".em-ctx-item")].some(b=>/Export to mbox/.test(b.textContent))`, 4000)))
+      throw new Error("ctx menu lacks 'Export to mbox…'");
+    const disabled = await cdp.eval(sid,
+      `[...document.querySelectorAll(".em-ctx-item")].find(b=>/Export to mbox/.test(b.textContent))?.disabled`);
+    if (demoMode && !disabled) throw new Error("export ctx item enabled in demo");
+    await cdp.eval(sid, keyOn(".em-ctx", "Escape"));
+    // Leave the browser back on Settings — the next check clicks its tabs.
+    await cdp.eval(sid, "window.location.hash = '#/settings'");
+    await waitFor(cdp, sid, `${qsa("button[role=tab]")} >= 5`);
+    return `export card + ctx item present${demoMode ? ", demo-disabled with reason" : ""}`;
   });
 
   await check("theme", "theme switch applies data-theme", async () => {
@@ -328,6 +509,340 @@ async function runChecks(cdp, sid) {
     if (!/locked/i.test(title ?? "")) throw new Error("overlay present but no lock title");
     return "locked — overlay rendered with title";
   });
+
+  await check("audit-log", "Security Center audit section honest-pending", async () => {
+    // Poll-tolerant eval: a throw during route transition is transient, not a
+    // failure — only the final settled value is asserted.
+    const waitSafe = async (expr, ms) => {
+      const t = Date.now();
+      while (Date.now() - t < ms) {
+        try { if (await cdp.eval(sid, expr)) return true; } catch { /* transient */ }
+        await sleep(200);
+      }
+      return false;
+    };
+    await cdp.eval(sid, "window.location.hash = '#/security'");
+    if (!(await waitSafe(`!!document.querySelector("section[aria-label='KIWI Security event center']")`, 5000)))
+      throw new Error("security center did not mount");
+    if (!(await waitSafe(
+      `[...document.querySelectorAll("h2")].some(h=>/App audit log/i.test(h.textContent))`, 4000)))
+      throw new Error("audit log heading missing");
+    // The kiwi_audit_events read IPC is backend-pending — the section must
+    // say so, and never render a fabricated table.
+    if (!(await waitSafe(
+      `[...document.querySelectorAll(".kiwi-banner")].some(b=>/backend-pending|queued/i.test(b.textContent))`, 4000)))
+      throw new Error("no honest pending state");
+    const fakeRows = await cdp.eval(sid,
+      `[...document.querySelectorAll("table")].some(t=>/audit trail/i.test(t.caption?.textContent||"") && t.querySelector("tbody tr td code"))`);
+    if (fakeRows) throw new Error("audit rows rendered without a backend");
+    return "heading + pending banner, zero fabricated rows";
+  });
+
+  await check("audit-strip", "strip audit chip shows the real state — demo can only be unchecked, never green", async () => {
+    // T-338: the indicator is backend-verdict-only. Demo has no backend audit
+    // file to verify, so the honest render is "unchecked" — 'ok' or silence
+    // here would both be fabricated claims, and 'corrupt' needs evidence.
+    const state = await cdp.eval(sid,
+      `document.querySelector("[data-audit-integrity]")?.getAttribute("data-audit-integrity") ?? "missing"`);
+    if (state !== "unchecked")
+      throw new Error(`demo strip must read unchecked (no backend verdict), got ${state}`);
+    const pillClass = await cdp.eval(sid,
+      `document.querySelector("[data-audit-integrity]")?.className ?? ""`);
+    if (/secure|danger/.test(pillClass)) throw new Error(`unchecked pill carries a verdict class: ${pillClass}`);
+    const title = await cdp.eval(sid,
+      `document.querySelector("[data-audit-integrity]")?.getAttribute("title") ?? ""`);
+    if (!/not yet verified/i.test(title)) throw new Error("unchecked pill lacks the honest not-verified wording");
+    return `chip=unchecked (neutral, titled '${title}') — no false-green, no evidenceless corrupt`;
+  });
+
+  // ---------------- T-314 flows — state-change assertions ----------------
+
+  await flow("rail", "agenda rail toggles collapsed↔expanded", async () => {
+    await cdp.eval(sid, "window.location.hash = '#/mail'");
+    await waitFor(cdp, sid, qs(".em-rows"), 5000);
+    const wasCollapsed = await cdp.eval(sid, qs("aside.em-rail-collapsed"));
+    const toggle = `document.querySelector(".em-rail button, .em-rail-collapsed button")?.click()`;
+    await cdp.eval(sid, toggle);
+    if (!(await waitFor(cdp, sid, wasCollapsed ? qs("aside.em-rail:not(.em-rail-collapsed)") : qs("aside.em-rail-collapsed"), 4000)))
+      throw new Error("rail did not toggle");
+    await cdp.eval(sid, toggle); // restore
+    await waitFor(cdp, sid, wasCollapsed ? qs("aside.em-rail-collapsed") : qs("aside.em-rail:not(.em-rail-collapsed)"), 4000);
+    return wasCollapsed ? "collapsed→expanded→restored" : "expanded→collapsed→restored";
+  });
+
+  await flow("ctxmark", "context-menu mark read/unread flips the row", async () => {
+    await cdp.eval(sid, "window.location.hash = '#/mail'");
+    await waitFor(cdp, sid, `${qsa(".em-row")} > 0`, 5000);
+    const probe = `(()=>{const el=document.querySelector('.em-row');return {id:el.id||'',unread:el.classList.contains('is-unread')}})()`;
+    const before = await cdp.eval(sid, probe);
+    if (!(await cdp.eval(sid, ctxMenu(".em-row")))) throw new Error("no row");
+    if (!(await waitFor(cdp, sid, qs(".em-ctx[role=menu]"), 4000))) throw new Error("menu did not open");
+    const label = before.unread ? "Mark as read" : "Mark as unread";
+    const clicked = await cdp.eval(sid,
+      `(()=>{const it=[...document.querySelectorAll('.em-ctx-item')].find(x=>x.textContent.trim()===${JSON.stringify(label)});if(!it)return false;it.click();return true})()`);
+    if (!clicked) throw new Error(`menu item "${label}" absent`);
+    const flipExpr = `(()=>{const el=document.getElementById(${JSON.stringify("ID")}) || document.querySelectorAll('.em-row')[0];return el.classList.contains('is-unread')})()`.replace("ID", before.id.replace(/'/g, ""));
+    if (!(await waitFor(cdp, sid, `${flipExpr} === ${!before.unread}`, 4000)))
+      throw new Error("row .is-unread did not flip");
+    // Restore original state via the same path.
+    await cdp.eval(sid, ctxMenu(".em-row"));
+    await waitFor(cdp, sid, qs(".em-ctx[role=menu]"), 4000);
+    await cdp.eval(sid,
+      `(()=>{const it=[...document.querySelectorAll('.em-ctx-item')].find(x=>{const t=x.textContent.trim();return t==='Mark as read'||t==='Mark as unread'});it?.click();return !!it})()`);
+    await waitFor(cdp, sid, `${flipExpr} === ${before.unread}`, 4000);
+    return `${before.unread ? "unread→read→restored" : "read→unread→restored"}`;
+  });
+
+  await flow("reply-prefill", "Reply seeds composer to/subject/quote", async () => {
+    await cdp.eval(sid, "window.location.hash = '#/mail'");
+    await waitFor(cdp, sid, `${qsa(".em-row")} > 0`, 5000);
+    await cdp.eval(sid, "document.querySelector('.em-row').click()");
+    await waitFor(cdp, sid, qs(".em-reader .em-card-actions"), 5000);
+    await cdp.eval(sid, "document.querySelector('.em-reader .em-card-actions .ms-btn[title^=\"Reply\"]')?.click()");
+    if (!(await waitFor(cdp, sid, qs("section[aria-label='Compose message']"), 5000))) throw new Error("compose did not open");
+    const subject = await cdp.eval(sid,
+      `[...document.querySelectorAll("section[aria-label='Compose message'] input")].find(i=>(i.previousSibling?.textContent||'').includes('Subject')||(i.parentElement?.textContent||'').includes('Subject'))?.value || ''`);
+    if (!/^re:/i.test(subject)) throw new Error(`subject not seeded with Re: (got "${subject.slice(0, 30)}")`);
+    const toChip = await cdp.eval(sid,
+      `(document.querySelector("section[aria-label='Compose message'] p[aria-label='Recipients']")?.textContent||'')`);
+    if (!/To:\s*\S/.test(toChip)) throw new Error(`no To: chip seeded (${toChip.slice(0, 40)})`);
+    const body = await cdp.eval(sid,
+      `document.querySelector("section[aria-label='Compose message'] textarea")?.value || ''`);
+    const quoted = /wrote:|^> /m.test(body);
+    // Demo mode has no message-body IPC — quote is honestly absent there;
+    // live mode seeds "On … wrote:" + "> " lines from the real body.
+    return `Re:+To chip${quoted ? "+quote" : " (quote gated: demo carries no body)"}`;
+  });
+
+  await flow("demo-send", "compose → demo send → undo roundtrip", async () => {
+    await cdp.eval(sid, "window.location.hash = '#/compose'");
+    if (!(await waitFor(cdp, sid, qs("section[aria-label='Compose message']"), 5000))) throw new Error("compose missing");
+    // Commit a recipient via the To input + its Add button.
+    await cdp.eval(sid, `(()=>{
+      const i=document.getElementById('compose-to');
+      const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
+      set.call(i,'smoke@example.test'); i.dispatchEvent(new Event('input',{bubbles:true}));
+      [...i.closest('.em-field').querySelectorAll('button')].find(b=>b.textContent.trim()==='Add')?.click();
+    })()`);
+    if (!(await waitFor(cdp, sid, `document.querySelector("p[aria-label='Recipients']").textContent.includes('smoke@example.test')`, 4000)))
+      throw new Error("recipient chip never committed");
+    await cdp.eval(sid, `document.querySelector("section[aria-label='Compose message'] .em-send")?.click()`);
+    if (!(await waitFor(cdp, sid, `document.body.textContent.includes('Demo: sending')`, 5000)))
+      throw new Error("demo send toast did not appear");
+    await cdp.eval(sid, `[...document.querySelectorAll('.kiwi-toast .kiwi-btn-primary')].find(b=>b.textContent.includes('Undo'))?.click()`);
+    if (!(await waitFor(cdp, sid, `document.body.textContent.includes('back to draft')`, 5000)))
+      throw new Error("undo did not restore draft state");
+    return "demo send→undo→'back to draft' honest";
+  });
+
+  await flow("pref-roundtrip", "theme pref survives a real page reload", async () => {
+    await cdp.eval(sid, "window.location.hash = '#/settings'");
+    await waitFor(cdp, sid, `${qsa("button[role=tab]")} >= 5`, 5000);
+    await cdp.eval(sid, `[...document.querySelectorAll("button[role=tab]")].find(b=>b.textContent.trim()==="Appearance")?.click()`);
+    await waitFor(cdp, sid, qs("[role=radiogroup][aria-label='Color theme']"), 4000);
+    const clickTheme = (re) =>
+      `[...document.querySelectorAll("[role=radiogroup] label")].find(l=>${re}.test(l.textContent))?.querySelector("input")?.click()`;
+    await cdp.eval(sid, clickTheme("/\\bdark\\b/i"));
+    if (!(await waitFor(cdp, sid, `document.documentElement.getAttribute("data-theme")==="dark"`, 4000)))
+      throw new Error("dark did not apply pre-reload");
+    await cdp.send("Page.reload", {}, sid);
+    if (!(await waitFor(cdp, sid, qs("header.em-chrome"), BOOT_TIMEOUT))) throw new Error("app did not reboot after reload");
+    const persisted = await waitFor(cdp, sid, `document.documentElement.getAttribute("data-theme")==="dark"`, 5000);
+    if (!persisted) {
+      await cdp.eval(sid, clickTheme("/\\bdefault\\b/i")).catch(() => {});
+      throw new Error("theme pref did not survive reload");
+    }
+    await cdp.eval(sid, "window.location.hash = '#/settings'");
+    await waitFor(cdp, sid, `${qsa("button[role=tab]")} >= 5`, 5000);
+    await cdp.eval(sid, `[...document.querySelectorAll("button[role=tab]")].find(b=>b.textContent.trim()==="Appearance")?.click()`);
+    await waitFor(cdp, sid, qs("[role=radiogroup][aria-label='Color theme']"), 4000);
+    await cdp.eval(sid, clickTheme("/\\bdefault\\b/i"));
+    await waitFor(cdp, sid, `document.documentElement.getAttribute("data-theme")==="light"`, 4000);
+    return "dark→reload→still dark→restored";
+  });
+
+  await flow("dragdrop", "drag row → folder tree drop reaches the move path", async () => {
+    await cdp.eval(sid, "window.location.hash = '#/mail'");
+    await waitFor(cdp, sid, `${qsa(".em-row")} > 0`, 5000);
+    // Synthetic HTML5 DnD on real DOM nodes — Chromium constructs
+    // DataTransfer natively; Input.dispatchDragEvent is flaky in-page.
+    const srcKey = await cdp.eval(sid, `(()=>{
+      const dt = new DataTransfer();
+      const row = document.querySelector('.em-row[draggable]');
+      if (!row) return '';
+      row.dispatchEvent(new DragEvent('dragstart',{bubbles:true,cancelable:true,dataTransfer:dt}));
+      window.__dragDt = dt;
+      return (dt.types.find(t=>t.startsWith('application/x-kiwi-src-'))||'').replace('application/x-kiwi-src-','');
+    })()`);
+    if (!srcKey) throw new Error("dragstart carried no payload/source token");
+    const F = `.em-accounts .em-tree-item[data-folder-key]`;
+    // Same-folder denial: demo composite keys use slugs (demo1:inbox) while
+    // envelope ids carry numeric fids, so the real srcKey may match no row.
+    // Exercise the denial logic honestly — hand a fresh DataTransfer the
+    // token that matches the row we're hovering.
+    const denied = await cdp.eval(sid, `(()=>{
+      const el=document.querySelector('${F}');
+      if(!el) return 'no-rows';
+      const dt2=new DataTransfer();
+      dt2.setData('application/x-kiwi-messages','{"ids":[]}');
+      dt2.setData('application/x-kiwi-src-'+el.dataset.folderKey.replaceAll(':','_').toLowerCase(),'1');
+      el.dispatchEvent(new DragEvent('dragover',{bubbles:true,cancelable:true,dataTransfer:dt2}));
+      window.__denyRow = el; window.__denyDt = dt2;
+      return 'dispatched';
+    })()`);
+    if (denied !== "dispatched") throw new Error(`no folder rows (${denied})`);
+    // Chromium resets dropEffect to 'none' after synthetic dispatch (no live
+    // DnD session), so the honest observable is the React-state affordance:
+    // em-drop-denied class + aria-dropeffect="none".
+    const deniedOk = await waitFor(cdp, sid,
+      `window.__denyRow?.classList.contains('em-drop-denied') && window.__denyRow?.getAttribute('aria-dropeffect')==='none'`, 3000);
+    await cdp.eval(sid, `window.__denyRow?.dispatchEvent(new DragEvent('dragleave',{bubbles:true,dataTransfer:window.__denyDt}))`);
+    if (!deniedOk) throw new Error("same-folder hover never denied (class+aria)");
+    // Different folder → move affordance → drop hits the real handler.
+    const dst = await cdp.eval(sid, `(()=>{
+      const el=[...document.querySelectorAll('${F}')].find(r=>r.dataset.folderKey.replaceAll(':','_').toLowerCase()!=='${srcKey}');
+      if(!el) return 'no-dst';
+      el.dispatchEvent(new DragEvent('dragover',{bubbles:true,cancelable:true,dataTransfer:window.__dragDt}));
+      window.__dropRow = el;
+      return el.dataset.folderKey;
+    })()`);
+    if (dst === "no-dst") throw new Error("no destination folder row");
+    const painted = await waitFor(cdp, sid,
+      `window.__dropRow?.classList.contains('em-drop-target') && window.__dropRow?.getAttribute('aria-dropeffect')==='move'`, 3000);
+    if (!painted) throw new Error("drop target never painted affordance");
+    await cdp.eval(sid, `window.__dropRow.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:window.__dragDt}))`);
+    // Demo: the real moveToFolder answers with the honest backend-required
+    // toast. Live would produce 'Moved N to X'. Either proves the route.
+    const demoToast = await waitFor(cdp, sid, `document.body.textContent.includes('Demo mode — move') || document.body.textContent.includes('Moved ')`, 5000);
+    if (!demoToast) throw new Error("drop produced no move-path outcome");
+    return `drag→deny same-folder→drop→${await cdp.eval(sid, `document.body.textContent.includes('Demo mode') ? 'demo honest toast' : 'live move'`) }`;
+  });
+
+  await flow("unified", "All Inboxes merges demo accounts w/ own-account badges", async () => {
+    await cdp.eval(sid, "window.location.hash = '#/mail/all-inboxes'");
+    await waitFor(cdp, sid, `${qsa(".em-row")} > 0`, 5000);
+    // Category tabs partition the merge — the acc-demo-2 fixture lives on
+    // Newsletters, so collect badge texts across every tab (union).
+    const tabs = await cdp.eval(sid,
+      `[...document.querySelectorAll('.em-list-tabs button')].map(b=>b.textContent.trim())`);
+    const accts = new Set();
+    for (const tab of tabs) {
+      await cdp.eval(sid,
+        `[...document.querySelectorAll('.em-list-tabs button')].find(b=>b.textContent.trim()===${JSON.stringify(tab)})?.click()`);
+      await waitFor(cdp, sid, `${qsa(".em-rows")} >= 0`, 2000);
+      await new Promise((r) => setTimeout(r, 250));
+      for (const t of await cdp.eval(sid,
+        `[...document.querySelectorAll('.em-row .em-row-acct')].map(b=>b.textContent.trim())`))
+        accts.add(t);
+    }
+    // ≥2 distinct account badges, OR a merged thread's "N accounts" chip.
+    const merged = accts.size >= 2 || [...accts].some((t) => /^([2-9]|\d\d) accounts$/.test(t));
+    if (!merged) {
+      const dbg = await cdp.eval(sid,
+        `[...document.querySelectorAll('.em-row')].map(r=>({s:r.querySelector('.em-row-subject')?.textContent,a:r.querySelector('.em-row-acct')?.textContent||null}))`);
+      throw new Error(`expected multi-account badges, got ${JSON.stringify([...accts])} rows=${JSON.stringify(dbg)}`);
+    }
+    // Per-account folder view must NOT badge (account context is obvious).
+    await cdp.eval(sid, "window.location.hash = '#/mail/acc-demo-1:inbox'");
+    await waitFor(cdp, sid, `${qsa(".em-row")} > 0`, 5000);
+    const leaked = await cdp.eval(sid, qsa(".em-row .em-row-acct"));
+    if (leaked > 0) throw new Error("account badges leak into single-account folder view");
+    await cdp.eval(sid, "window.location.hash = '#/mail'");
+    return `${accts.size} distinct account badges across category tabs, none on per-account view`;
+  });
+
+  await flow("folder-mgmt", "folder ctx menu exposes real CRUD entries (demo-disabled)", async () => {
+    const demoMode = await cdp.eval(sid, `/demo data/i.test(document.body.innerText)`);
+    // Right-click a real account-folder row → New subfolder / Rename / Delete.
+    await cdp.eval(sid, `(()=>{const el=[...document.querySelectorAll('.em-accounts .em-tree-item')][0];
+      el.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:12,clientY:12}));})()`);
+    await waitFor(cdp, sid, `${qsa(".em-ctx-item")} >= 5`);
+    const items = await cdp.eval(sid, `[...document.querySelectorAll('.em-ctx-item')].map(b=>({t:b.textContent.trim(),d:b.disabled}))`);
+    for (const want of ["New subfolder", "Rename", "Delete"]) {
+      const it = items.find((i) => i.t.startsWith(want));
+      if (!it) throw new Error(`ctx menu missing "${want}"`);
+      if (demoMode && !it.d) throw new Error(`"${want}" enabled in demo`);
+    }
+    await cdp.eval(sid, keyOn(".em-ctx", "Escape"));
+    // T-323-aux: Trash/Junk rows gain "Empty X…" (demo-disabled honestly).
+    const emptied = await cdp.eval(sid, `(()=>{const el=[...document.querySelectorAll('.em-accounts .em-tree-item')]
+      .find(r=>/trash|junk|spam/i.test(r.getAttribute('aria-label')||''));
+      if(!el)return 'no-trash';
+      el.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:12,clientY:12}));
+      return 'ctx';})()`);
+    if (emptied === "ctx") {
+      await waitFor(cdp, sid, `${qsa(".em-ctx-item")} >= 5`);
+      const emptyDisabled = await cdp.eval(sid,
+        `[...document.querySelectorAll('.em-ctx-item')].find(b=>/^Empty /.test(b.textContent.trim()))?.disabled ?? null`);
+      if (emptyDisabled === null) throw new Error("Trash ctx menu missing Empty item");
+      if (demoMode && !emptyDisabled) throw new Error("Empty enabled in demo");
+      await cdp.eval(sid, keyOn(".em-ctx", "Escape"));
+    }
+    // Account head → root-level "New folder…".
+    await cdp.eval(sid, `(()=>{const el=document.querySelector('.em-account-head');
+      el.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,clientX:12,clientY:12}));})()`);
+    await waitFor(cdp, sid, `${qsa(".em-ctx-item")} >= 1`);
+    const root = await cdp.eval(sid, `[...document.querySelectorAll('.em-ctx-item')].map(b=>({t:b.textContent.trim(),d:b.disabled}))`);
+    if (!root.some((i) => i.t.startsWith("New folder"))) throw new Error("account ctx missing New folder");
+    if (demoMode && root.every((i) => !i.d)) throw new Error("account ctx items enabled in demo");
+    await cdp.eval(sid, keyOn(".em-ctx", "Escape"));
+    // Live create→rename→delete is exercised by the backend's own tests;
+    // the demo surface can only prove presence + honest gating.
+    return `${items.length} folder items + account-head New folder${demoMode ? " — demo-disabled honestly" : ""}`;
+  });
+
+  await flow("compose-dock", "floating dock opens/minimizes/restores/sends (T-343)", async () => {
+    await cdp.eval(sid, "window.location.hash = '#/mail'");
+    await waitFor(cdp, sid, `${qsa(".em-row")} > 0`, 5000);
+    // Ctrl+N is a real entry point (window-level keymap) → dock opens.
+    await cdp.eval(sid, "window.dispatchEvent(new KeyboardEvent('keydown',{key:'n',ctrlKey:true,bubbles:true}))");
+    if (!(await waitFor(cdp, sid, qs(".em-dock section[aria-label='Compose message']"), 5000)))
+      throw new Error("dock did not open on Ctrl+N");
+    const headBtns = await cdp.eval(sid, qsa(".em-dock-head .em-iconbtn"));
+    if (headBtns !== 3) throw new Error(`dock header should have 3 controls, got ${headBtns}`);
+    // Subject preview is live in the header.
+    await cdp.eval(sid, `(()=>{
+      const i=document.querySelector(".em-dock input#compose-subject")||[...document.querySelectorAll(".em-dock input")].find(x=>(x.closest(".em-field")?.textContent||"").includes("Subject"));
+      const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set;
+      set.call(i,"Dock smoke subject"); i.dispatchEvent(new Event("input",{bubbles:true}));
+    })()`);
+    if (!(await waitFor(cdp, sid, `document.querySelector(".em-dock-title")?.textContent.includes("Dock smoke subject")`, 4000)))
+      throw new Error("dock header did not show live subject preview");
+    // Minimize → dock hidden + chip appears carrying the subject.
+    await cdp.eval(sid, "document.querySelector('.em-dock-head .em-iconbtn[aria-label^=Minimize]')?.click()");
+    if (!(await waitFor(cdp, sid, `!!document.querySelector(".em-dock-chip") && !!document.querySelector(".em-dock").closest("[hidden]")`, 4000)))
+      throw new Error("minimize did not collapse dock to a chip");
+    const chipText = await cdp.eval(sid, `document.querySelector(".em-dock-chip-label")?.textContent || ""`);
+    if (!chipText.includes("Dock smoke subject")) throw new Error(`chip missing subject preview (got "${chipText}")`);
+    // Escape on a field inside a restored dock also minimizes (never destroys).
+    await cdp.eval(sid, "document.querySelector('.em-dock-chip-label')?.click()");
+    if (!(await waitFor(cdp, sid, `!document.querySelector(".em-dock").closest("[hidden]")`, 4000)))
+      throw new Error("chip restore did not re-expand the dock");
+    await cdp.eval(sid, `document.querySelector(".em-dock input")?.dispatchEvent(new KeyboardEvent("keydown",{key:"Escape",bubbles:true}))`);
+    if (!(await waitFor(cdp, sid, `!!document.querySelector(".em-dock").closest("[hidden]")`, 4000)))
+      throw new Error("Escape did not minimize the dock");
+    // Restore → draft survived (subject still there) → send path.
+    await cdp.eval(sid, "document.querySelector('.em-dock-chip-label')?.click()");
+    if (!(await waitFor(cdp, sid, `!document.querySelector(".em-dock").closest("[hidden]")`, 4000)))
+      throw new Error("second restore failed");
+    const survived = await cdp.eval(sid, `document.querySelector(".em-dock input#compose-subject")?.value || [...document.querySelectorAll(".em-dock input")].find(x=>(x.closest(".em-field")?.textContent||"").includes("Subject"))?.value || ""`);
+    if (!String(survived).includes("Dock smoke subject")) throw new Error("draft content lost across minimize/restore");
+    await cdp.eval(sid, `(()=>{
+      const i=document.querySelector(".em-dock input#compose-to")||[...document.querySelectorAll(".em-dock input")].find(x=>(x.closest(".em-field")?.textContent||"").includes("To"));
+      const set=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,"value").set;
+      set.call(i,"dock@example.test"); i.dispatchEvent(new Event("input",{bubbles:true}));
+      [...i.closest(".em-field").querySelectorAll("button")].find(b=>b.textContent.trim()==="Add")?.click();
+    })()`);
+    if (!(await waitFor(cdp, sid, `document.querySelector(".em-dock p[aria-label='Recipients']")?.textContent.includes("dock@example.test")`, 4000)))
+      throw new Error("recipient chip never committed inside dock");
+    await cdp.eval(sid, `document.querySelector(".em-dock .em-send")?.click()`);
+    if (!(await waitFor(cdp, sid, `document.body.textContent.includes("Demo: sending")`, 5000)))
+      throw new Error("dock send did not reach the demo path");
+    // Dock stays open during the undo grace; closes only on real finish.
+    if (!(await waitFor(cdp, sid, `!document.querySelector(".em-dock-layer")`, 16000)))
+      throw new Error("dock did not close after send completed");
+    return "open→min(chip+subject)→restore→Esc-min→send→auto-close";
+  });
 }
 
 // ----------------------------------------------------------------- main --
@@ -336,7 +851,23 @@ async function main() {
   let url = URL_ARG;
   if (!url) url = await bootVite(VITE_PORT);
   console.log(`ui-smoke: serving ${url}`);
-  const { wsUrl, exe } = await launchBrowser();
+  let launched;
+  try {
+    launched = await launchBrowser();
+  } catch (e) {
+    if (!(e instanceof BrowserUnavailable)) throw e;
+    if (REQUIRE_BROWSER) {
+      report("browser", "fail", `required but unavailable — ${e.message}`);
+      const s = summarize(url, { browserAbsent: true });
+      process.exitCode = s.fail > 0 ? 1 : 0;
+      return;
+    }
+    report("browser", "skip", `no usable browser — ${e.message}`);
+    const s = summarize(url, { browserAbsent: true });
+    process.exitCode = s.fail > 0 ? 1 : 0;
+    return;
+  }
+  const { wsUrl, exe } = launched;
   console.log(`ui-smoke: browser ${exe}`);
   const cdp = await Cdp.connect(wsUrl);
   const sid = await cdp.newPage(url);
@@ -348,13 +879,8 @@ async function main() {
   } finally {
     cdp.close();
   }
-  const pass = results.filter((r) => r.status === "pass").length;
-  const fail = results.filter((r) => r.status === "fail").length;
-  const skipp = results.filter((r) => r.status === "skip").length;
-  const summary = { suite: "ui-smoke", url, pass, fail, skip: skipp, results };
-  console.log(`SMOKE_JSON${JSON.stringify(summary)}`);
-  console.log(`ui-smoke: ${pass} pass, ${fail} fail, ${skipp} skip`);
-  process.exitCode = fail > 0 ? 1 : 0;
+  const s = summarize(url, { browser: exe });
+  process.exitCode = s.fail > 0 ? 1 : 0;
 }
 
 main().catch((e) => {

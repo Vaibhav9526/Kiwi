@@ -1,0 +1,500 @@
+// Ported from Mailspring app/src/components/menu.tsx
+// Seams: 'mailspring-exports' DOMUtils -> './ms-exports'; `setImmediate` is a
+// Node/Electron global — the vendor uses it as a post-render macrotask, which
+// is `setTimeout(fn, 0)` in a browser (shimmed below). Strict-TS: ctor params
+// typed, `_prevProps` renamed (unused under noUnusedParameters), querySelector
+// results cast for the kit's typed DOMUtils, `adjustment ?? 0` where the vendor
+// relied on `undefined` flowing into scrollTop (NaN writes were ignored).
+import classNames from 'classnames';
+import _ from 'underscore';
+import React, { HTMLProps } from 'react';
+import ReactDOM from 'react-dom';
+import { DOMUtils } from './ms-exports';
+
+// KIWI seam: Electron exposes Node's setImmediate; a 0ms timeout is the
+// equivalent macrotask in the browser.
+const setImmediate = (fn: () => void): void => {
+  window.setTimeout(fn, 0);
+};
+
+export interface MenuItemProps {
+  id?: string;
+  onMouseDown?: (event: React.MouseEvent<HTMLDivElement, MouseEvent>) => void;
+  divider?: string | boolean;
+  selected?: boolean;
+  checked?: boolean;
+  content?: any;
+  role?: string;
+  // When true, overrides aria-selected to false regardless of `selected`.
+  // Used in combobox popup mode where aria-activedescendant is the sole
+  // mechanism for announcing the active item, and aria-selected mutations
+  // would cause double-announcements.
+  suppressAriaSelected?: boolean;
+}
+
+export interface MenuNameEmailContentProps {
+  name?: string;
+  email?: string;
+}
+
+export interface MenuProps extends HTMLProps<any> {
+  className?: string;
+  footerComponents?: React.ReactNode;
+  headerComponents?: React.ReactNode;
+  itemContext?: any;
+  itemContent: (...args: any[]) => any;
+  itemKey: (...args: any[]) => any;
+  itemChecked?: (...args: any[]) => any;
+  items: any[];
+  onSelect: (item: any) => any;
+  onExpand?: (item: any) => any;
+  onEscape?: (...args: any[]) => any;
+  onActiveDescendantChange?: (id: string | null) => void;
+  defaultSelectedIndex?: number;
+  listboxId?: string;
+}
+
+interface MenuState {
+  selectedIndex: number;
+  selectedItemKey: string | null;
+  prevItems: any[] | null;
+}
+
+/*
+Public: `MenuItem` components can be provided to the {Menu} by the `itemContent` function.
+MenuItem's props allow you to display dividers as well as standard items.
+
+Section: Component Kit
+*/
+class MenuItem extends React.Component<MenuItemProps> {
+  static displayName = 'MenuItem';
+
+  /*
+    Public: React `props` supported by MenuItem:
+
+     - `divider` (optional) Pass a {Boolean} to render the menu item as a section divider.
+     - `key` (optional) Pass a {String} to be the React key to optimize rendering lists of items.
+     - `selected` (optional) Pass a {Boolean} to specify whether the item is selected.
+     - `checked` (optional) Pass a {Boolean} to specify whether the item is checked.
+    */
+  render() {
+    if (this.props.divider) {
+      const dividerLabel = _.isString(this.props.divider) ? this.props.divider : '';
+      return <div className="item divider">{dividerLabel}</div>;
+    } else {
+      const className = classNames({
+        item: true,
+        selected: this.props.selected,
+        checked: this.props.checked,
+      });
+      return (
+        <div
+          id={this.props.id}
+          role={this.props.role}
+          aria-selected={
+            this.props.role === 'option' && !this.props.suppressAriaSelected
+              ? this.props.selected
+              : undefined
+          }
+          className={className}
+          onMouseDown={this.props.onMouseDown}
+        >
+          {this.props.content}
+        </div>
+      );
+    }
+  }
+}
+
+/*
+Public: React component for a {Menu} item that displays a name and email address.
+
+Section: Component Kit
+*/
+class MenuNameEmailContent extends React.Component<MenuNameEmailContentProps> {
+  static displayName = 'MenuNameEmailContent';
+
+  /*
+    Public: React `props` supported by MenuNameEmailContent:
+
+     - `name` (optional) The {String} name to be displayed.
+     - `email` (optional) The {String} email address to be displayed.
+    */
+  render() {
+    if (this.props.name && this.props.name !== this.props.email) {
+      return (
+        <span>
+          <span className="primary">{this.props.name}</span>
+          <span className="secondary">{`(${this.props.email})`}</span>
+        </span>
+      );
+    } else {
+      return <span className="primary">{this.props.email}</span>;
+    }
+  }
+}
+
+/*
+Public: React component for multi-section Menus with key binding
+
+The Menu component allows you to display a list of items. Menu takes care of
+several important things, ensuring that your menu is consistent with the rest
+of the N1 application and offers a near-native experience:
+
+- Keyboard Interaction with the Up and Down arrow keys, Enter to select
+- Maintaining selection across content changes
+- Highlighted state
+
+Menus are often, but not always, used in conjunction with {Popover} to display
+a floating "popup" menu. See `template-picker.jsx` for an example.
+
+The Menu also exposes "header" and "footer" regions you can fill with arbitrary
+components by providing the `headerComponents` and `footerComponents` props.
+These items are nested within `.header-container`. and `.footer-container`,
+and you can customize their appearance by providing CSS selectors scoped to your
+component's Menu instance:
+
+```css
+.template-picker .menu .header-container {
+  height: 100px;
+}
+```
+
+Section: Component Kit
+*/
+export class Menu extends React.Component<MenuProps, MenuState> {
+  static displayName = 'Menu';
+
+  static Item = MenuItem;
+  static NameEmailContent = MenuNameEmailContent;
+
+  /*
+    Public: React `props` supported by Menu:
+
+     - `className` (optional) The {String} class name applied to the Menu
+
+     - `itemContent` A {Function} that returns a {MenuItem}, {String}, or
+       React component for the given `item`.
+
+       If you return a {MenuItem}, your item is injected into the list directly.
+
+       If you return a string or React component, the result is placed within a
+       {MenuItem}, resulting in the following DOM:
+       `<div className="item [selected]">{your content}</div>`.
+
+       To create dividers and other special menu items, return an instance of:
+
+       <Menu.Item divider="Label">
+
+     - `itemKey` A {Function} that returns a unique string key for the given `item`.
+       Keys are important for efficient React rendering when `items` is changed, and a
+       key function is required.
+
+     - `itemChecked` A {Function} that returns true if the given item should be shown
+       with a checkmark. If you don't provide an implementation for `itemChecked`, no
+       checkmarks are ever shown.
+
+     - `items` An {Array} of arbitrary objects the menu should display.
+
+     - `onSelect` A {Function} called with the selected item when the user clicks
+       an item in the menu or confirms their selection with the Enter key.
+
+     - `onExpand` A {Function} called with the selected item when the user presses
+       Tab or right arrow.
+
+     - `onEscape` A {Function} called when a user presses escape in the input.
+
+     - `defaultSelectedIndex` The index of the item first selected if there
+     was no other previous index. Defaults to 0. Set to -1 if you want
+     nothing selected.
+
+    */
+  static defaultProps = { onEscape() {} };
+
+  _mounted = false;
+
+  constructor(props: MenuProps) {
+    super(props);
+    const selectedIndex = this.props.defaultSelectedIndex || 0;
+    this.state = {
+      selectedIndex,
+      selectedItemKey:
+        selectedIndex >= 0 && selectedIndex < props.items.length
+          ? props.itemKey(props.items[selectedIndex])
+          : null,
+      prevItems: props.items,
+    };
+  }
+
+  // Compute selectedIndex before render to prevent accessing items[selectedIndex]
+  // when the index is out of bounds (e.g., after items array shrinks)
+  // Also preserve selection by key when items change to avoid flash of wrong selection
+  static getDerivedStateFromProps(props: MenuProps, state: MenuState) {
+    const maxIndex = props.items.length - 1;
+    let newSelectedIndex = state.selectedIndex;
+    let newSelectedItemKey = state.selectedItemKey;
+
+    // Detect if items array has changed
+    const itemsChanged = state.prevItems !== props.items;
+
+    if (itemsChanged && state.selectedItemKey !== null && props.items.length > 0) {
+      // Try to find the previously selected item by key in the new items array
+      const newItemIndex = props.items.findIndex(
+        (item) => props.itemKey(item) === state.selectedItemKey
+      );
+
+      if (newItemIndex !== -1) {
+        // Found the item in new array, update index to point to it
+        newSelectedIndex = newItemIndex;
+      } else {
+        // Item not found in new array, fall back to bounds checking
+        if (newSelectedIndex > maxIndex) {
+          newSelectedIndex = props.defaultSelectedIndex != null ? props.defaultSelectedIndex : 0;
+          newSelectedIndex = Math.min(newSelectedIndex, maxIndex);
+        }
+      }
+    } else if (itemsChanged && state.selectedItemKey === null && props.items.length > 0) {
+      // Items went from empty to non-empty with no previous selection — select the default
+      const defaultIdx = props.defaultSelectedIndex != null ? props.defaultSelectedIndex : 0;
+      newSelectedIndex = Math.min(defaultIdx, maxIndex);
+    } else if (!itemsChanged) {
+      // Items didn't change, just do bounds checking
+      if (newSelectedIndex >= 0 && newSelectedIndex > maxIndex) {
+        newSelectedIndex = props.defaultSelectedIndex != null ? props.defaultSelectedIndex : 0;
+        newSelectedIndex = Math.min(newSelectedIndex, maxIndex);
+      }
+    }
+
+    // Ensure selectedIndex is never negative unless explicitly set to -1
+    if (newSelectedIndex < -1) {
+      newSelectedIndex = -1;
+    }
+
+    // Update selectedItemKey to match current selection
+    if (newSelectedIndex >= 0 && newSelectedIndex < props.items.length) {
+      newSelectedItemKey = props.itemKey(props.items[newSelectedIndex]);
+    } else {
+      newSelectedItemKey = null;
+    }
+
+    // Return new state if anything changed
+    if (
+      newSelectedIndex !== state.selectedIndex ||
+      newSelectedItemKey !== state.selectedItemKey ||
+      itemsChanged
+    ) {
+      return {
+        selectedIndex: newSelectedIndex,
+        selectedItemKey: newSelectedItemKey,
+        prevItems: props.items,
+      };
+    }
+
+    return null;
+  }
+
+  // Public: Returns the currently selected item.
+  //
+  getSelectedItem = () => {
+    return this.props.items[this.state.selectedIndex];
+  };
+
+  // TODO this is a hack, refactor
+  clearSelection = () => {
+    setImmediate(() => {
+      if (this._mounted === false) {
+        return;
+      }
+      this.setState({ selectedIndex: -1, selectedItemKey: null });
+    });
+  };
+
+  componentDidMount() {
+    this._mounted = true;
+  }
+
+  componentWillUnmount() {
+    this._mounted = false;
+  }
+
+  componentDidUpdate(_prevProps: MenuProps, prevState: MenuState) {
+    // Scroll selected item into view
+    if ((this.props.items || []).length === 0) {
+      return;
+    }
+    const el = ReactDOM.findDOMNode(this) as HTMLElement;
+    const item = el.querySelector('.selected') as Element;
+    const container = el.querySelector('.content-container') as HTMLElement;
+    const adjustment = DOMUtils.scrollAdjustmentToMakeNodeVisibleInContainer(item, container);
+    if (adjustment !== 0) {
+      container.scrollTop += adjustment ?? 0;
+    }
+
+    // Notify parent when the active completion changes so the combobox input
+    // can update aria-activedescendant and screen readers announce the new item.
+    if (
+      prevState.selectedItemKey !== this.state.selectedItemKey &&
+      this.props.onActiveDescendantChange
+    ) {
+      const activeId =
+        this.props.listboxId &&
+        this.state.selectedItemKey !== null &&
+        this.state.selectedIndex >= 0 &&
+        this.state.selectedIndex < this.props.items.length
+          ? `${this.props.listboxId}-option-${this.state.selectedItemKey}`
+          : null;
+      this.props.onActiveDescendantChange(activeId);
+    }
+  }
+
+  render() {
+    const hc = this.props.headerComponents || <span />;
+    const fc = this.props.footerComponents || <span />;
+    const className = this.props.className ? this.props.className : '';
+    return (
+      <div onKeyDown={this.onKeyDown} className={`menu ${className}`} tabIndex={-1}>
+        <div className="header-container">{hc}</div>
+        {this._contentContainer()}
+        <div className="footer-container">{fc}</div>
+      </div>
+    );
+  }
+
+  onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (this.props.items.length === 0) {
+      return;
+    }
+    event.stopPropagation();
+    if (['Enter', 'Return'].includes(event.key)) {
+      this._onEnter();
+    } else {
+      if (
+        this.props.onExpand !== undefined &&
+        (event.key === 'Tab' || event.key === 'ArrowRight')
+      ) {
+        this._onExpand();
+        event.preventDefault();
+        return;
+      }
+    }
+    if (event.key === 'Escape') {
+      this._onEscape();
+    } else if (event.key === 'ArrowUp' || (event.key === 'Tab' && event.shiftKey)) {
+      this._onShiftSelectedIndex(-1);
+      event.preventDefault();
+    } else if (event.key === 'ArrowDown' || event.key === 'Tab') {
+      this._onShiftSelectedIndex(1);
+      event.preventDefault();
+    }
+  };
+
+  _onExpand = () => {
+    const item = this.props.items[this.state.selectedIndex];
+    if (item != null) {
+      this.props.onExpand!(item);
+    }
+  };
+
+  _contentContainer = () => {
+    const seenItemKeys: Record<string, any> = {};
+
+    const items = (this.props.items || []).map((item, i) => {
+      const content = this.props.itemContent(item);
+      if (React.isValidElement(content) && content.type === MenuItem) {
+        return content;
+      }
+
+      const onMouseDown = (event: React.MouseEvent<HTMLDivElement>) => {
+        event.preventDefault();
+        const key = this.props.itemKey(item);
+        this.setState({ selectedIndex: i, selectedItemKey: key });
+        if (this.props.onSelect) {
+          return this.props.onSelect(item);
+        }
+      };
+
+      const key = this.props.itemKey(item);
+      if (!key) {
+        console.warn('Menu parent did not return an itemKey for item', item);
+      }
+      if (seenItemKeys[key]) {
+        console.warn({ 'Menu items have colliding keys': item }, seenItemKeys[key]);
+      }
+      seenItemKeys[key] = item;
+
+      return (
+        <MenuItem
+          key={key}
+          id={this.props.listboxId ? `${this.props.listboxId}-option-${key}` : undefined}
+          role={this.props.listboxId ? 'option' : undefined}
+          onMouseDown={onMouseDown}
+          checked={this.props.itemChecked && this.props.itemChecked(item)}
+          content={content}
+          selected={this.state.selectedIndex === i}
+          suppressAriaSelected={!!this.props.onActiveDescendantChange}
+        />
+      );
+    });
+
+    const contentClass = classNames({
+      'content-container': true,
+      empty: items.length === 0,
+    });
+
+    return (
+      <div
+        id={this.props.listboxId}
+        role={this.props.listboxId ? 'listbox' : undefined}
+        className={contentClass}
+      >
+        {items}
+      </div>
+    );
+  };
+
+  _onShiftSelectedIndex = (delta: number) => {
+    if (this.props.items.length === 0) {
+      return;
+    }
+
+    let index = this.state.selectedIndex + delta;
+
+    let isDivider = true;
+    while (isDivider) {
+      const item = this.props.items[index];
+      if (!item) {
+        break;
+      }
+
+      const itemContext = this.props.itemContent(item, this.props.itemContext).props || {};
+
+      if (itemContext.divider) {
+        if (delta > 0) {
+          index += 1;
+        } else if (delta < 0) {
+          index -= 1;
+        }
+      } else {
+        isDivider = false;
+      }
+    }
+
+    index = Math.max(0, Math.min(this.props.items.length - 1, index));
+
+    // Update the selected index and key
+    const selectedItem = this.props.items[index];
+    const selectedItemKey = selectedItem ? this.props.itemKey(selectedItem) : null;
+    this.setState({ selectedIndex: index, selectedItemKey });
+  };
+
+  _onEnter = () => {
+    const item = this.props.items[this.state.selectedIndex];
+    if (item != null) {
+      this.props.onSelect(item);
+    }
+  };
+
+  _onEscape = () => {
+    this.props.onEscape!();
+  };
+}

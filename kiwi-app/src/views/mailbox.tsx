@@ -19,15 +19,15 @@
  * rows (avatar, unread dot, bold sender, category pill, snippet).
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import type { CSSProperties, MouseEvent as ReactMouseEvent } from "react";
 import type { AttachRiskView, FindingInfo, FolderView, MessageBodyView, MessageEnvelope, MessagePatch, MessageSourceView, OutboxItem, RenderedBodyView, SearchHit, Severity, SnoozePreset, UnsubscribeInfo } from "../kiwi";
 import { severityLabel } from "../kiwi";
-import type { MessageCategory } from "../kiwi";
 import { listen } from "@tauri-apps/api/event";
 import { api, isTauri } from "../ipc";
 import { loadPref, savePref } from "../prefs";
 import { loadLocalBook, saveLocalBook, upsertLocal } from "../contacts";
 import { navigate } from "../router";
+import { requestCompose } from "./compose";
 import { SecurityPill } from "../components/security";
 import { PaneSplitter } from "../components/chrome";
 import { ContextMenu } from "../components/contextmenu";
@@ -37,11 +37,9 @@ import { buildThreads, displaySubject } from "../threading";
 import type { Thread } from "../threading";
 import {
   IconArchive,
-  IconCheck,
   IconChevronDown,
   IconChevronRight,
   IconChevronUp,
-  IconClose,
   IconFilter,
   IconMail,
   IconOutbox,
@@ -51,8 +49,15 @@ import {
   IconReply,
   IconReplyAll,
   IconStar,
-  IconTrash,
 } from "../components/shell-icons";
+// Mailspring thread-list row port (skin port — KIWI keeps its list
+// container, selection, pick and date-group machinery; the row item layer
+// is Mailspring's ListTabularItem + narrow `Item` column verbatim).
+import { ListTabularRows } from "../ms/ms-list-tabular";
+import { KIWI_ROW_COLUMNS, MS_ROW_HEIGHT, msRowEntry } from "../ms/ms-thread-row";
+import type { MsRowEntry, MsRowViewCtx } from "../ms/ms-thread-row";
+import { setThreadListPerspective } from "../ms/ms-thread";
+import type { MsThread } from "../ms/ms-thread";
 
 /** Short timestamp for rows: time today, "Day m/d" otherwise. */
 function formatDateShort(iso: string): string {
@@ -92,15 +97,6 @@ function avatarTint(seed: string): string {
   for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) | 0;
   return AVATAR_TINTS[Math.abs(h) % AVATAR_TINTS.length];
 }
-
-/** T-201 category → eM-style colored pill (News=blue/Personal=orange/Logs=green). */
-const CATEGORY_PILL: Record<MessageCategory, { label: string; cls: string } | null> = {
-  primary: { label: "Personal", cls: "em-cat-personal" },
-  newsletters: { label: "News", cls: "em-cat-news" },
-  social: { label: "Social", cls: "em-cat-social" },
-  notifications: { label: "Logs", cls: "em-cat-logs" },
-  other: { label: "Other", cls: "em-cat-other" },
-};
 
 export interface MailboxProps {
   folder: string;
@@ -148,10 +144,12 @@ export interface MailboxProps {
   onCancelSend: (queueId: string) => void;
   onScheduleSend: (queueId: string, sendAtUnix: number) => void;
   onOutboxRefresh: () => void;
-  /** T-299: per-account folder lists — the real Move-to submenu source. */
+  /** T-299: per-account folder lists — the real Move-to/Copy-to submenu source. */
   folderLists: Record<string, FolderView[]>;
   onSnooze: (ids: string[], preset: SnoozePreset) => void;
   onMoveToFolder: (ids: string[], dstFolderId: number) => void;
+  /** T-332: kiwi_copy_messages — local duplicate into dst, picked-aware. */
+  onCopyToFolder: (ids: string[], dstFolderId: number) => void;
 }
 
 export function MailboxView(props: MailboxProps) {
@@ -167,11 +165,49 @@ export function MailboxView(props: MailboxProps) {
     [allMessages, catTab],
   );
   const otherCount = useMemo(() => allMessages.filter((m) => (m.category ?? "primary") !== "primary").length, [allMessages]);
-  const selected = messages.find((m) => m.id === selectedId) ?? messages[0];
+  const preFilterSelected = messages.find((m) => m.id === selectedId) ?? messages[0];
+
+  // T-313 quick-filter chips — client-side view filtering over the rows
+  // already fetched for this folder+tab. Chips AND-combine; `sender`
+  // captures the selected row's From address when toggled on. Resets on
+  // folder switch (folder-keyed state is wrong across folders — flags
+  // survive but the sender address doesn't transfer meaningfully).
+  type Chip = "unread" | "starred" | "attach" | "sender";
+  const [chips, setChips] = useState<Set<Chip>>(new Set());
+  const [senderFilter, setSenderFilter] = useState<string | null>(null);
+  useEffect(() => {
+    setChips(new Set());
+    setSenderFilter(null);
+  }, [folder]);
+  const toggleChip = (c: Chip) => {
+    setChips((prev) => {
+      const next = new Set(prev);
+      if (next.has(c)) next.delete(c);
+      else next.add(c);
+      return next;
+    });
+    if (c === "sender") {
+      setSenderFilter((prev) => (prev ? null : (preFilterSelected?.from ?? null)));
+    }
+  };
+  const filtered = useMemo(() => {
+    if (chips.size === 0) return messages;
+    return messages.filter((m) => {
+      if (chips.has("unread") && !m.unread) return false;
+      if (chips.has("starred") && !m.starred) return false;
+      if (chips.has("attach") && !m.hasAttachments) return false;
+      if (chips.has("sender") && senderFilter && m.from !== senderFilter) return false;
+      return true;
+    });
+  }, [messages, chips, senderFilter]);
+  const selected = filtered.find((m) => m.id === selectedId) ?? filtered[0];
 
   // Bulk selection (T-162): explicit id list + range anchor. Cleared on
   // folder/tab change (ids are folder-scoped) and after move actions.
   const [picked, setPicked] = useState<string[]>([]);
+  // Two-step row delete (was per-RowShell; now the ported rows are
+  // memoized ListTabularItems, so the armed id is hoisted here).
+  const [armedDel, setArmedDel] = useState<string | null>(null);
   const anchorRef = useRef<string | null>(null);
   const headingRef = useRef<HTMLHeadingElement | null>(null);
   const selectAllRef = useRef<HTMLInputElement | null>(null);
@@ -182,16 +218,17 @@ export function MailboxView(props: MailboxProps) {
   const listW = usePaneWidth("kiwi.pane.list", 320, 280, 600);
   useEffect(() => {
     setPicked([]);
+    setArmedDel(null);
     anchorRef.current = null;
   }, [folder, catTab]);
 
   const togglePick = (id: string, range: boolean) => {
     if (range && anchorRef.current) {
-      const a = messages.findIndex((m) => m.id === anchorRef.current);
-      const b = messages.findIndex((m) => m.id === id);
+      const a = filtered.findIndex((m) => m.id === anchorRef.current);
+      const b = filtered.findIndex((m) => m.id === id);
       if (a >= 0 && b >= 0) {
         const [lo, hi] = a < b ? [a, b] : [b, a];
-        const span = messages.slice(lo, hi + 1).map((m) => m.id);
+        const span = filtered.slice(lo, hi + 1).map((m) => m.id);
         setPicked((prev) => Array.from(new Set([...prev, ...span])));
         return;
       }
@@ -200,7 +237,7 @@ export function MailboxView(props: MailboxProps) {
     setPicked((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   };
 
-  const allPicked = messages.length > 0 && picked.length >= messages.length;
+  const allPicked = filtered.length > 0 && picked.length >= filtered.length;
   useEffect(() => {
     if (selectAllRef.current) {
       selectAllRef.current.indeterminate = picked.length > 0 && !allPicked;
@@ -225,15 +262,17 @@ export function MailboxView(props: MailboxProps) {
   const ctxEnvs = ctxIds.map((id) => allMessages.find((m) => m.id === id)).filter((m): m is MessageEnvelope => !!m);
   const ctxSingle = ctxEnvs.length === 1 ? ctxEnvs[0] : null;
   const ctxAccount = ctxEnvs.length > 0 && ctxEnvs.every((m) => m.accountId === ctxEnvs[0].accountId) ? ctxEnvs[0].accountId : null;
-  const ctxMoveFolders = ctxAccount
+  // T-332: shared destination list for Move-to AND Copy-to — same
+  // construction rules (account-matched, current folder excluded).
+  const ctxDstFolders = ctxAccount
     ? (props.folderLists[ctxAccount] ?? []).filter((f) => !(ctxSingle && ctxSingle.folderId === f.id))
     : [];
   const backendTip = "Needs the Tauri backend";
   const ctxEntries: CtxEntry[] = ctxMenu
     ? [
-        { label: "Reply", icon: "reply", disabled: !ctxSingle, title: ctxSingle ? undefined : "Select a single message", onSelect: () => navigate({ name: "compose" }) },
-        { label: "Reply All", icon: "reply-all", disabled: !ctxSingle, title: ctxSingle ? undefined : "Select a single message", onSelect: () => navigate({ name: "compose" }) },
-        { label: "Forward", icon: "forward", disabled: !ctxSingle, title: ctxSingle ? undefined : "Select a single message", onSelect: () => navigate({ name: "compose" }) },
+        { label: "Reply", icon: "reply", disabled: !ctxSingle, title: ctxSingle ? undefined : "Select a single message", onSelect: () => seedCompose("reply", ctxSingle!, ctxSingle!.id === selectedId ? props.body : null) },
+        { label: "Reply All", icon: "reply-all", disabled: !ctxSingle, title: ctxSingle ? undefined : "Select a single message", onSelect: () => seedCompose("replyAll", ctxSingle!, ctxSingle!.id === selectedId ? props.body : null) },
+        { label: "Forward", icon: "forward", disabled: !ctxSingle, title: ctxSingle ? undefined : "Select a single message", onSelect: () => seedCompose("forward", ctxSingle!, ctxSingle!.id === selectedId ? props.body : null) },
         "divider",
         ...(ctxSingle
           ? ([
@@ -266,9 +305,20 @@ export function MailboxView(props: MailboxProps) {
         {
           label: "Move to",
           icon: "folder",
-          disabled: props.demo || ctxMoveFolders.length === 0,
-          title: props.demo ? backendTip : ctxMoveFolders.length === 0 ? "No other folders on this account" : undefined,
-          submenu: ctxMoveFolders.map((f) => ({ label: f.name, onSelect: () => props.onMoveToFolder(ctxIds, f.id) })),
+          disabled: props.demo || ctxDstFolders.length === 0,
+          title: props.demo ? backendTip : ctxDstFolders.length === 0 ? "No other folders on this account" : undefined,
+          submenu: ctxDstFolders.map((f) => ({ label: f.name, onSelect: () => props.onMoveToFolder(ctxIds, f.id) })),
+        },
+        {
+          label: "Copy to",
+          icon: "folder",
+          disabled: props.demo || ctxDstFolders.length === 0,
+          title: props.demo
+            ? backendTip
+            : ctxDstFolders.length === 0
+              ? "No other folders on this account"
+              : "Duplicates into a local copy — never an IMAP server COPY",
+          submenu: ctxDstFolders.map((f) => ({ label: f.name, onSelect: () => props.onCopyToFolder(ctxIds, f.id) })),
         },
         "divider",
         { label: "Mark as junk", icon: "flag", disabled: props.demo, title: props.demo ? backendTip : undefined, onSelect: () => props.onBulkSpam(ctxIds) },
@@ -323,7 +373,26 @@ export function MailboxView(props: MailboxProps) {
   // Conversation threads (T-165): grouped from the visible list, newest
   // activity first. Thread rows carry the count badge; the reader stacks
   // the thread's messages as cards.
-  const threads = useMemo(() => buildThreads(messages), [messages]);
+  const threads = useMemo(() => buildThreads(filtered), [filtered]);
+
+  // Mailspring seam: the ported row components read the focused
+  // perspective for sent/inbox timestamp choice and quick-action gating —
+  // publish KIWI's current folder view here (per folder/account set).
+  useEffect(() => {
+    const accountIds = [...new Set(allMessages.map((m) => m.accountId))];
+    setThreadListPerspective({
+      isSent: () => folder === "sent",
+      isInbox: () => folder === "inbox" || folder === "all-inboxes",
+      accountIds,
+      // Row quick actions stay visible everywhere (the trash action arms
+      // the KIWI two-step delete; archive runs onArchive) — same as the
+      // pre-port row buttons.
+      canArchiveThreads: () => true,
+      canMoveThreadsTo: () => true,
+      categories: () => [],
+      name: folderLabel,
+    });
+  }, [folder, folderLabel, allMessages]);
   const [threadMode, setThreadMode] = useState(() => loadPref("kiwi.threadMode", "threads"));
   useEffect(() => savePref("kiwi.threadMode", threadMode), [threadMode]);
   const [groupsOpen, setGroupsOpen] = useState<Record<string, boolean>>({});
@@ -334,9 +403,9 @@ export function MailboxView(props: MailboxProps) {
     const flat: RowEntry[] =
       threadMode === "threads"
         ? threads.map((t) => ({ kind: "thread", t }))
-        : messages.map((m) => ({ kind: "msg", m }));
+        : filtered.map((m) => ({ kind: "msg", m }));
     return flat;
-  }, [threadMode, threads, messages]);
+  }, [threadMode, threads, filtered]);
   const [todayRows, olderRows] = useMemo(() => {
     const now = new Date();
     const today: RowEntry[] = [];
@@ -372,9 +441,9 @@ export function MailboxView(props: MailboxProps) {
   }, [folder]);
 
   const stepSelection = (dir: 1 | -1) => {
-    if (!selected || messages.length === 0) return;
-    const i = messages.findIndex((m) => m.id === selected.id);
-    const next = messages[(i + dir + messages.length) % messages.length];
+    if (!selected || filtered.length === 0) return;
+    const i = filtered.findIndex((m) => m.id === selected.id);
+    const next = filtered[(i + dir + filtered.length) % filtered.length];
     if (next) navigate({ name: "mail", folder, messageId: next.id });
   };
 
@@ -392,7 +461,7 @@ export function MailboxView(props: MailboxProps) {
             <small className="em-pane-sub">
               {searching
                 ? `(${searchHits.length} hit(s) — “${props.searchQuery.trim()}”)`
-                : `(${folder === "outbox" ? props.outbox.length : `${messages.length} of ${allMessages.length}`})`}
+                : `(${folder === "outbox" ? props.outbox.length : chips.size > 0 ? `${filtered.length} of ${messages.length} filtered` : `${messages.length} of ${allMessages.length}`})`}
             </small>
           </h1>
           {folder === "outbox" && (
@@ -440,11 +509,11 @@ export function MailboxView(props: MailboxProps) {
                     setPicked([]);
                     anchorRef.current = null;
                   } else {
-                    setPicked(messages.map((m) => m.id));
-                    anchorRef.current = messages[messages.length - 1]?.id ?? null;
+                    setPicked(filtered.map((m) => m.id));
+                    anchorRef.current = filtered[filtered.length - 1]?.id ?? null;
                   }
                 }}
-                aria-label={allPicked ? `Deselect all ${messages.length} messages` : `Select all ${messages.length} messages in folder`}
+                aria-label={allPicked ? `Deselect all ${filtered.length} shown messages` : `Select all ${filtered.length} shown messages`}
               />
               <button
                 type="button"
@@ -465,6 +534,58 @@ export function MailboxView(props: MailboxProps) {
               >
                 <IconFilter size={13} />
               </button>
+            </span>
+          </div>
+        )}
+        {folder !== "outbox" && !searching && allMessages.length > 0 && (
+          <div className="em-filterbar" role="group" aria-label="Quick filters — narrow the loaded list">
+            {(
+              [
+                { id: "unread", label: "Unread", count: messages.filter((m) => m.unread).length },
+                { id: "starred", label: "Starred", count: messages.filter((m) => m.starred).length },
+                { id: "attach", label: "Attachments", count: messages.filter((m) => m.hasAttachments).length },
+              ] as { id: Chip; label: string; count: number }[]
+            ).map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                className={`em-chip${chips.has(c.id) ? " is-on" : ""}`}
+                aria-pressed={chips.has(c.id)}
+                onClick={() => toggleChip(c.id)}
+              >
+                {c.label} <span className="em-chip-n">{c.count}</span>
+              </button>
+            ))}
+            <button
+              type="button"
+              className={`em-chip${chips.has("sender") ? " is-on" : ""}`}
+              aria-pressed={chips.has("sender")}
+              disabled={!preFilterSelected}
+              title={
+                preFilterSelected
+                  ? chips.has("sender")
+                    ? `Showing only mail from ${senderFilter}`
+                    : `Show only mail from ${preFilterSelected.from}`
+                  : "Select a message first — filters to its sender"
+              }
+              onClick={() => toggleChip("sender")}
+            >
+              From sender
+            </button>
+            {chips.size > 0 && (
+              <button
+                type="button"
+                className="em-chip em-chip-clear"
+                onClick={() => {
+                  setChips(new Set());
+                  setSenderFilter(null);
+                }}
+              >
+                Clear
+              </button>
+            )}
+            <span role="status" className="em-filterbar-status">
+              {chips.size > 0 ? `${filtered.length} of ${messages.length} shown` : ""}
             </span>
           </div>
         )}
@@ -545,7 +666,7 @@ export function MailboxView(props: MailboxProps) {
                 <small>{props.messagesError}</small>
               </div>
             )}
-            {messages.length === 0 && !props.messagesLoading && !props.hasAccounts && !props.demo && (
+            {filtered.length === 0 && !props.messagesLoading && !props.hasAccounts && !props.demo && (
               <div className="kiwi-empty">
                 <span className="kiwi-empty-icon em-empty-icon" aria-hidden="true">
                   <IconMail size={28} />
@@ -559,22 +680,44 @@ export function MailboxView(props: MailboxProps) {
                 </button>
               </div>
             )}
-            {messages.length === 0 && !props.messagesLoading && (props.hasAccounts || props.demo) && (
+            {filtered.length === 0 && !props.messagesLoading && (props.hasAccounts || props.demo) && (
               <div className="kiwi-empty">
                 <span className="kiwi-empty-icon em-empty-icon" aria-hidden="true">
                   <IconMail size={28} />
                 </span>
-                <strong>Nothing here</strong>
-                <br />
-                <small>
-                  {allMessages.length === 0
-                    ? "No messages in this folder yet."
-                    : `No ${catTab === "primary" ? "Primary" : "Other"} messages in the loaded list.`}
-                </small>
+                {chips.size > 0 && allMessages.length > 0 ? (
+                  <>
+                    <strong>No matches</strong>
+                    <br />
+                    <small>Nothing in {folderLabel} passes the active filter chips.</small>
+                    <br />
+                    <button
+                      type="button"
+                      className="ms-btn"
+                      style={{ marginTop: "0.5rem" }}
+                      onClick={() => {
+                        setChips(new Set());
+                        setSenderFilter(null);
+                      }}
+                    >
+                      Clear filters
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <strong>Nothing here</strong>
+                    <br />
+                    <small>
+                      {allMessages.length === 0
+                        ? "No messages in this folder yet."
+                        : `No ${catTab === "primary" ? "Primary" : "Other"} messages in the loaded list.`}
+                    </small>
+                  </>
+                )}
               </div>
             )}
             <div
-              className="em-rows"
+              className="em-rows thread-list"
               ref={rowsRef}
               role="listbox"
               aria-label="Messages. j/k or arrows move, Enter opens the reader, s stars, e archives, Delete deletes, r replies, u toggles read. Ctrl-click toggles selection, Shift-click range-selects."
@@ -604,7 +747,7 @@ export function MailboxView(props: MailboxProps) {
                 else if (e.key === "Delete") {
                   e.preventDefault();
                   props.onBulkDelete([selected.id], isTrash, isTrash ? "Deleted permanently" : "Moved to Trash");
-                } else if (e.key === "r") navigate({ name: "compose" });
+                } else if (e.key === "r") requestCompose();
               }}
             >
               <DateGroup
@@ -613,12 +756,16 @@ export function MailboxView(props: MailboxProps) {
                 open={groupsOpen["today"] ?? true}
                 onToggle={() => setGroupsOpen((m) => ({ ...m, today: !(m["today"] ?? true) }))}
                 folder={folder}
+                draftsView={folder === "drafts"}
                 currentId={selected?.id}
                 picked={picked}
+                armedDelId={armedDel}
                 onTogglePick={togglePick}
                 onToggleStar={props.onToggleStar}
                 onArchive={(id) => props.onArchive(id, true)}
                 onDelete={(id) => props.onBulkDelete([id], false, "Deleted message")}
+                onArmTrash={setArmedDel}
+                onDisarmTrash={() => setArmedDel(null)}
                 onRowContext={openRowMenu}
               />
               <DateGroup
@@ -627,12 +774,16 @@ export function MailboxView(props: MailboxProps) {
                 open={groupsOpen["older"] ?? true}
                 onToggle={() => setGroupsOpen((m) => ({ ...m, older: !(m["older"] ?? true) }))}
                 folder={folder}
+                draftsView={folder === "drafts"}
                 currentId={selected?.id}
                 picked={picked}
+                armedDelId={armedDel}
                 onTogglePick={togglePick}
                 onToggleStar={props.onToggleStar}
                 onArchive={(id) => props.onArchive(id, true)}
                 onDelete={(id) => props.onBulkDelete([id], false, "Deleted message")}
+                onArmTrash={setArmedDel}
+                onDisarmTrash={() => setArmedDel(null)}
                 onRowContext={openRowMenu}
               />
             </div>
@@ -667,10 +818,10 @@ export function MailboxView(props: MailboxProps) {
           } else if (e.ctrlKey || e.metaKey || e.altKey) return;
           else if (!selected) return;
           else if (e.key === "r" || e.key === "a" || e.key === "f") {
-            // Reply / reply-all / forward all open the composer — the
-            // compose route owns prefill when it exists.
+            // Reply / reply-all / forward seed the composer via the
+            // sessionStorage handoff (to/subject/quote — T-314).
             e.preventDefault();
-            navigate({ name: "compose" });
+            seedCompose(e.key === "r" ? "reply" : e.key === "a" ? "replyAll" : "forward", selected, selected.id === selectedId ? props.body : null);
           }
         }}
       >
@@ -755,6 +906,7 @@ export function MailboxView(props: MailboxProps) {
                     m={m}
                     isSelected={m.id === selected.id}
                     folder={folder}
+                    threadMessages={selectedThread?.messages ?? [selected]}
                     body={m.id === selected.id ? props.body : null}
                     bodyLoading={m.id === selected.id && props.bodyLoading}
                     bodyError={m.id === selected.id ? props.bodyError : null}
@@ -805,12 +957,16 @@ function DateGroup({
   open,
   onToggle,
   folder,
+  draftsView,
   currentId,
   picked,
+  armedDelId,
   onTogglePick,
   onToggleStar,
   onArchive,
   onDelete,
+  onArmTrash,
+  onDisarmTrash,
   onRowContext,
 }: {
   label: string;
@@ -818,15 +974,65 @@ function DateGroup({
   open: boolean;
   onToggle: () => void;
   folder: string;
+  draftsView: boolean;
   currentId?: string;
   picked: string[];
+  armedDelId: string | null;
   onTogglePick: (id: string, range: boolean) => void;
   onToggleStar: (id: string) => void;
   onArchive: (id: string) => void;
   onDelete: (id: string) => void;
+  onArmTrash: (rowId: string) => void;
+  onDisarmTrash: () => void;
   onRowContext: (e: ReactMouseEvent, ids: string[]) => void;
 }) {
   if (rows.length === 0) return null;
+  // View context for the ported row layer — KIWI callbacks/state stamped
+  // onto each MsThread's `__kiwi` seam by msRowEntry.
+  const ctx: MsRowViewCtx = {
+    folder,
+    draftsView,
+    currentId,
+    picked,
+    armedDelId,
+    onTogglePick,
+    onToggleStar,
+    onArchive,
+    onDelete,
+    onArmTrash,
+    onDisarmTrash,
+    onRowContext,
+    // T-335: aggregate views (folder key has no `acct:id` colon shape)
+    // tag each row with its OWN account — merged rows stay truthful.
+    acctTagFor: (entry) => {
+      if (folder.includes(":")) return undefined;
+      if (entry.kind === "msg") {
+        return { label: entry.m.accountEmail, color: avatarTint(entry.m.accountEmail) };
+      }
+      const accts = [...new Set(entry.t.messages.map((m) => m.accountId))];
+      const emails = [...new Set(entry.t.messages.map((m) => m.accountEmail))];
+      return accts.length === 1
+        ? { label: emails[0], color: avatarTint(emails[0]) }
+        : { label: `${accts.length} accounts`, color: "var(--kiwi-text-secondary, #666)" };
+    },
+    avatarFor: (seed) => ({
+      initial: senderName(seed).slice(0, 1).toUpperCase() || "?",
+      color: avatarTint(seed),
+    }),
+  };
+  const rendered = open
+    ? rows.flatMap((r, idx) => {
+        const entry: MsRowEntry | null =
+          r.kind === "msg" && r.m
+            ? { kind: "msg", m: r.m }
+            : r.kind === "thread" && r.t
+              ? { kind: "thread", t: r.t }
+              : null;
+        if (!entry) return [];
+        const { item, itemProps } = msRowEntry(entry, ctx);
+        return [{ item, idx, itemProps }];
+      })
+    : [];
   return (
     <div className="em-date-group">
       <button type="button" className="em-group-head" aria-expanded={open} onClick={onToggle}>
@@ -835,36 +1041,32 @@ function DateGroup({
         </span>
         {label}
       </button>
-      {open &&
-        rows.map((r) =>
-          r.kind === "msg" && r.m ? (
-            <MessageRow
-              key={r.m.id}
-              m={r.m}
-              folder={folder}
-              currentId={currentId}
-              isPicked={picked.includes(r.m.id)}
-              onTogglePick={onTogglePick}
-              onToggleStar={onToggleStar}
-              onArchive={onArchive}
-              onDelete={onDelete}
-              onContextMenu={(e) => onRowContext(e, [r.m!.id])}
-            />
-          ) : r.t ? (
-            <ThreadRow
-              key={r.t.key}
-              thread={r.t}
-              folder={folder}
-              currentId={currentId}
-              picked={picked}
-              onTogglePick={onTogglePick}
-              onToggleStar={onToggleStar}
-              onArchive={onArchive}
-              onDelete={onDelete}
-              onContextMenu={(e) => onRowContext(e, r.t!.messages.map((m) => m.id))}
-            />
-          ) : null,
-        )}
+      {open && (
+        <ListTabularRows
+          rows={rendered}
+          columns={KIWI_ROW_COLUMNS}
+          itemHeight={MS_ROW_HEIGHT}
+          innerStyles={{
+            height: rendered.length * MS_ROW_HEIGHT,
+            backgroundSize: `100% ${MS_ROW_HEIGHT}px`,
+          }}
+          onClick={(item: MsThread, e: ReactMouseEvent) => {
+            const k = item.__kiwi;
+            if (e.ctrlKey || e.metaKey) {
+              e.preventDefault();
+              k.onPick(false);
+              return;
+            }
+            if (e.shiftKey) {
+              e.preventDefault();
+              k.onPick(true);
+              return;
+            }
+            if ((e.target as HTMLElement).closest("button,input")) return;
+            navigate({ name: "mail", folder, messageId: k.navId });
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -939,335 +1141,62 @@ function SearchHitRow({ hit }: { hit: SearchHit }) {
   );
 }
 
-function RowShell({
-  id,
-  selected,
-  unread,
-  folder,
-  navId,
-  sender,
-  date,
-  subject,
-  count,
-  hasAttachments,
-  category,
-  snippet,
-  checkbox,
-  onPick,
-  onToggleStar,
-  starred,
-  onArchive,
-  onDelete,
-  onCtxMenu,
-  label,
-}: {
-  id: string;
-  selected: boolean;
-  unread: boolean;
-  folder: string;
-  navId: string;
-  sender: string;
-  date: string;
-  subject: string;
-  count: number;
-  hasAttachments: boolean;
-  category: MessageCategory;
-  snippet: string;
-  checkbox: ReactNode;
-  starred: boolean;
-  onPick: (id: string, range: boolean) => void;
-  onToggleStar: (id: string) => void;
-  onArchive: (id: string) => void;
-  onDelete: (id: string) => void;
-  onCtxMenu?: (e: ReactMouseEvent) => void;
-  label: string;
-}) {
-  const [confirmDel, setConfirmDel] = useState(false);
-  useEffect(() => setConfirmDel(false), [id]);
-  const pill = CATEGORY_PILL[category ?? "primary"];
-  return (
-    <article
-      id={id}
-      role="option"
-      className={`em-row${unread ? " is-unread" : ""}${selected ? " is-selected" : ""}`}
-      aria-selected={selected}
-      aria-label={label}
-      onClick={(e) => {
-        if (e.ctrlKey || e.metaKey) {
-          e.preventDefault();
-          onPick(navId, false);
-          return;
-        }
-        if (e.shiftKey) {
-          e.preventDefault();
-          onPick(navId, true);
-          return;
-        }
-        if ((e.target as HTMLElement).closest("button,input")) return;
-        navigate({ name: "mail", folder, messageId: navId });
-      }}
-      onContextMenu={(e) => {
-        // Row-level menu (T-299): suppress the browser menu, let the
-        // handler decide targets. Buttons/inputs keep native behavior.
-        if ((e.target as HTMLElement).closest("button,input")) return;
-        onCtxMenu?.(e);
-      }}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") navigate({ name: "mail", folder, messageId: navId });
-      }}
-      tabIndex={0}
-    >
-      <span className={`em-dot${unread ? " is-unread" : ""}`} aria-hidden="true" />
-      {checkbox}
-      <span className="em-avatar" aria-hidden="true" style={{ background: avatarTint(sender) }}>
-        {senderName(sender).slice(0, 1).toUpperCase() || "?"}
-      </span>
-      <span className="em-row-text">
-        <span className="em-row-line em-row-top">
-          <span className="em-row-sender" title={sender}>
-            {sender}
-          </span>
-          <time className="em-row-date" title={date}>
-            {formatDateShort(date)}
-          </time>
-        </span>
-        <span className="em-row-line">
-          <span className="em-row-subject" title={subject}>
-            {subject}
-          </span>
-          <span className="em-row-marks">
-            {hasAttachments && (
-              <span title="Has attachments" aria-label="Has attachments">
-                <IconPaperclip size={11} />
-              </span>
-            )}
-            {count > 1 && (
-              <span className="em-thread-badge" title={`${count} messages in this conversation`} aria-label={`${count} messages`}>
-                {count}
-                <IconChevronDown size={9} />
-              </span>
-            )}
-          </span>
-        </span>
-        <span className="em-row-line em-row-sub">
-          {pill && (
-            <span className={`em-cat-pill ${pill.cls}`} aria-label={`Category: ${pill.label}`}>
-              {pill.label}
-            </span>
-          )}
-          <span className="em-row-snippet" title={snippet}>
-            {snippet}
-          </span>
-        </span>
-      </span>
-      <span className="em-quick" role="toolbar" aria-label={`Quick actions for: ${subject}`}>
-        <button
-          type="button"
-          className={`em-iconbtn${starred ? " is-starred" : ""}`}
-          aria-pressed={starred}
-          aria-label={starred ? `Unstar message: ${subject}` : `Star message: ${subject}`}
-          title={starred ? "Unstar (s)" : "Star (s)"}
-          onClick={(e) => {
-            e.stopPropagation();
-            onToggleStar(id);
-          }}
-        >
-          <IconStar size={13} />
-        </button>
-        <button
-          type="button"
-          className="em-iconbtn"
-          onClick={(e) => {
-            e.stopPropagation();
-            onArchive(id);
-          }}
-          title="Archive (e)"
-          aria-label={`Archive message: ${subject}`}
-        >
-          <IconArchive size={13} />
-        </button>
-        {confirmDel ? (
-          <>
-            <button
-              type="button"
-              className="em-iconbtn"
-              onClick={(e) => {
-                e.stopPropagation();
-                setConfirmDel(false);
-                onDelete(id);
-              }}
-              title="Confirm delete"
-              aria-label={`Confirm delete: ${subject}`}
-            >
-              <IconCheck size={13} />
-            </button>
-            <button
-              type="button"
-              className="em-iconbtn"
-              onClick={(e) => {
-                e.stopPropagation();
-                setConfirmDel(false);
-              }}
-              title="Keep message"
-              aria-label="Keep message"
-            >
-              <IconClose size={11} />
-            </button>
-          </>
-        ) : (
-          <button
-            type="button"
-            className="em-iconbtn"
-            onClick={(e) => {
-              e.stopPropagation();
-              setConfirmDel(true);
-            }}
-            title="Delete…"
-            aria-label={`Delete message: ${subject}`}
-          >
-            <IconTrash size={13} />
-          </button>
-        )}
-      </span>
-    </article>
-  );
-}
-
-function MessageRow({
-  m,
-  folder,
-  currentId,
-  isPicked,
-  onTogglePick,
-  onToggleStar,
-  onArchive,
-  onDelete,
-  onContextMenu,
-}: {
-  m: MessageEnvelope;
-  folder: string;
-  currentId?: string;
-  isPicked: boolean;
-  onTogglePick: (id: string, range: boolean) => void;
-  onToggleStar: (id: string) => void;
-  onArchive: (id: string) => void;
-  onDelete: (id: string) => void;
-  onContextMenu: (e: ReactMouseEvent) => void;
-}) {
-  return (
-    <RowShell
-      id={m.id}
-      navId={m.id}
-      selected={m.id === currentId}
-      unread={m.unread}
-      folder={folder}
-      sender={m.from}
-      date={m.date}
-      subject={m.subject}
-      count={1}
-      hasAttachments={m.hasAttachments}
-      category={m.category ?? "primary"}
-      snippet={m.snippet}
-      starred={m.starred}
-      onPick={onTogglePick}
-      onToggleStar={onToggleStar}
-      onArchive={onArchive}
-      onDelete={onDelete}
-      onCtxMenu={onContextMenu}
-      label={`${m.unread ? "Unread" : "Read"} from ${m.from}: ${m.subject}. Account trust ${severityLabel(m.trust)}.${isPicked ? " Selected for bulk actions." : ""}`}
-      checkbox={
-        <input
-          type="checkbox"
-          className="em-row-check"
-          data-checked={isPicked}
-          checked={isPicked}
-          onClick={(e) => e.stopPropagation()}
-          onChange={(e) => {
-            e.stopPropagation();
-            onTogglePick(m.id, e.nativeEvent instanceof MouseEvent && e.nativeEvent.shiftKey);
-          }}
-          aria-label={`Select message from ${m.from}: ${m.subject}`}
-        />
-      }
-    />
-  );
-}
-
-function ThreadRow({
-  thread,
-  folder,
-  currentId,
-  picked,
-  onTogglePick,
-  onToggleStar,
-  onArchive,
-  onDelete,
-  onContextMenu,
-}: {
-  thread: Thread;
-  folder: string;
-  currentId?: string;
-  picked: string[];
-  onTogglePick: (id: string, range: boolean) => void;
-  onToggleStar: (id: string) => void;
-  onArchive: (id: string) => void;
-  onDelete: (id: string) => void;
-  onContextMenu: (e: ReactMouseEvent) => void;
-}) {
-  const newest = thread.messages[thread.messages.length - 1];
-  const allPicked = thread.messages.every((m) => picked.includes(m.id));
-  const ids = thread.messages.map((m) => m.id);
-  const toggleAll = () => {
-    // Thread pick = every member id (bulk actions act on the whole thread).
-    for (const id of ids) {
-      if (allPicked === !picked.includes(id)) onTogglePick(id, false);
-    }
-  };
-  return (
-    <RowShell
-      id={`thread-${thread.key.replace(/\W/g, "-")}`}
-      navId={newest.id}
-      selected={thread.messages.some((m) => m.id === currentId)}
-      unread={thread.unreadCount > 0}
-      folder={folder}
-      sender={thread.participants.slice(0, 3).join(", ") + (thread.participants.length > 3 ? ` +${thread.participants.length - 3}` : "")}
-      date={thread.latestDate}
-      subject={thread.subject}
-      count={thread.messages.length}
-      hasAttachments={thread.messages.some((m) => m.hasAttachments)}
-      category={newest.category ?? "primary"}
-      snippet={newest.snippet}
-      starred={thread.starredAny}
-      onPick={(_id, _range) => toggleAll()}
-      onToggleStar={() => onToggleStar(newest.id)}
-      onArchive={() => onArchive(newest.id)}
-      onDelete={() => onDelete(newest.id)}
-      onCtxMenu={onContextMenu}
-      label={`Conversation: ${thread.subject}. ${thread.messages.length} messages, ${thread.unreadCount} unread.${allPicked ? " Selected for bulk actions." : ""}`}
-      checkbox={
-        <input
-          type="checkbox"
-          className="em-row-check"
-          data-checked={allPicked}
-          checked={allPicked}
-          onClick={(e) => e.stopPropagation()}
-          onChange={(e) => {
-            e.stopPropagation();
-            toggleAll();
-          }}
-          aria-label={`Select all ${thread.messages.length} messages in conversation ${thread.subject}`}
-        />
-      }
-    />
-  );
-}
 
 /* ---------------- reader: stacked message cards ---------------- */
+
+/** T-310: normalize an RFC822 Message-ID header for matching. */
+/** T-314: one-shot compose handoff — the composer consumes `kiwi.replySeed`
+ *  on mount (same pattern as the contacts `kiwi.composeTo` Write handoff).
+ *  Quote attaches ONLY when `body` is provably this message's (callers pass
+ *  null when it belongs to another envelope — never fabricate a quote).
+ *  Storage denied → the composer still opens, just unseeded. */
+export type ComposeSeedMode = "reply" | "replyAll" | "forward";
+export function seedCompose(mode: ComposeSeedMode, m: MessageEnvelope, body: MessageBodyView | null): void {
+  const addr = (s: string) => (s.match(/<([^>]+)>/)?.[1] ?? s).trim();
+  const seed: { to: string[]; cc: string[]; subject: string; quote: string | null } = { to: [], cc: [], subject: "", quote: null };
+  if (mode === "forward") {
+    seed.subject = /^fwd?:/i.test(m.subject) ? m.subject : `Fwd: ${m.subject}`;
+  } else {
+    seed.to = [addr(m.from)];
+    if (mode === "replyAll" && body) {
+      const self = m.accountEmail.toLowerCase();
+      const seen = new Set([addr(m.from).toLowerCase(), self]);
+      for (const raw of [...body.to, ...body.cc]) {
+        const a = addr(raw);
+        const k = a.toLowerCase();
+        if (a && !seen.has(k)) {
+          seen.add(k);
+          seed.cc.push(a);
+        }
+      }
+    }
+    seed.subject = /^re:/i.test(m.subject) ? m.subject : `Re: ${m.subject}`;
+  }
+  const text = body?.textBody;
+  if (text) {
+    const quoted = text
+      .split(/\r?\n/)
+      .map((l) => `> ${l}`)
+      .join("\n");
+    seed.quote = `On ${m.date}, ${m.from} wrote:\n${quoted}\n`;
+  }
+  try {
+    window.sessionStorage.setItem("kiwi.replySeed", JSON.stringify(seed));
+  } catch {
+    // storage denied — composer opens blank, nothing lost.
+  }
+  requestCompose(); // T-343: opens the floating dock (or #/compose as fallback)
+}
+
+function normMsgId(s: string | null | undefined): string {
+  return (s ?? "").trim().replace(/^<|>$/g, "").trim().toLowerCase();
+}
 
 function MessageCard({
   m,
   isSelected,
   folder,
+  threadMessages,
   body,
   bodyLoading,
   bodyError,
@@ -1289,6 +1218,8 @@ function MessageCard({
   m: MessageEnvelope;
   isSelected: boolean;
   folder: string;
+  /** T-310: loaded thread members — for the in-reply-to jump resolution. */
+  threadMessages: MessageEnvelope[];
   body: MessageBodyView | null;
   bodyLoading: boolean;
   bodyError: string | null;
@@ -1333,7 +1264,7 @@ function MessageCard({
           <button
             type="button"
             className="em-iconbtn"
-            onClick={() => navigate({ name: "compose" })}
+            onClick={() => seedCompose("reply", m, body)}
             title="Reply (r)"
             aria-label={`Reply to ${m.from}`}
           >
@@ -1364,6 +1295,27 @@ function MessageCard({
               </span>
             )}
           </p>
+          {/* T-310: in-reply-to jump — resolves the message's chain header
+              against the loaded thread's real Message-IDs; nothing renders
+              when the parent isn't in view. */}
+          {(() => {
+            const wanted = normMsgId(m.inReplyTo) || normMsgId(m.references?.[m.references.length - 1]);
+            if (!wanted) return null;
+            const parent = threadMessages.find((t) => normMsgId(t.messageId) === wanted && t.id !== m.id);
+            if (!parent) return null;
+            return (
+              <p className="em-card-to" style={{ marginTop: 0 }}>
+                <button
+                  type="button"
+                  className="em-quote-toggle"
+                  onClick={() => navigate({ name: "mail", folder, messageId: parent.id })}
+                  title={`Message-ID ${parent.messageId}`}
+                >
+                  ← In reply to {senderName(parent.from)}
+                </button>
+              </p>
+            );
+          })()}
           <UnsubscribeChip
             unsub={m.unsub}
             accountId={m.accountId}
@@ -1388,6 +1340,7 @@ function MessageCard({
           ) : body ? (
             <>
               <AttachmentList
+                key={m.id}
                 body={body}
                 demo={demo}
                 attachNote={attachNote}
@@ -1412,7 +1365,7 @@ function MessageCard({
             <p className="em-card-snippet">{m.snippet}</p>
           )}
           <div className="em-card-actions">
-            <button type="button" className="ms-btn" onClick={() => navigate({ name: "compose" })} title="Reply (r)">
+            <button type="button" className="ms-btn" onClick={() => seedCompose("reply", m, body)} title="Reply (r)">
               <IconReply size={12} /> Reply
             </button>
             <button
@@ -1676,10 +1629,12 @@ function AttachmentList({
         </p>
       )}
       {body.attachments.map((a, i) => (
-        <p key={`${a.filename}-${i}`}>
+        <p key={`${a.filename}-${a.index}-${i}`}>
           <small>
             <IconPaperclip size={11} /> {a.filename ?? "(unnamed attachment)"}{" "}
-            <span style={{ color: "var(--kiwi-text-secondary)" }}>({a.contentType}, {a.size} B)</span>
+            <span style={{ color: "var(--kiwi-text-secondary)" }}>
+              ({a.contentType}, {a.size} B{!a.fetched ? ", downloaded on save" : ""})
+            </span>
           </small>
           {!demo && (
             <>
@@ -1688,14 +1643,14 @@ function AttachmentList({
                 <small>Save to: </small>
                 <input
                   type="text"
-                  value={destPaths[i] ?? a.filename ?? ""}
-                  onChange={(e) => setDestPaths((m) => ({ ...m, [i]: e.target.value }))}
+                  value={destPaths[a.index] ?? a.filename ?? ""}
+                  onChange={(e) => setDestPaths((m) => ({ ...m, [a.index]: e.target.value }))}
                   placeholder={a.filename ?? undefined}
                   style={{ width: "16rem" }}
                   aria-label={`Save destination for ${a.filename ?? "attachment"}`}
                 />
               </label>{" "}
-              <button type="button" disabled={attachBusy} onClick={() => onSaveAttachment(i, destPaths[i] ?? a.filename ?? "attachment")}>
+              <button type="button" disabled={attachBusy} onClick={() => onSaveAttachment(a.index, destPaths[a.index] ?? a.filename ?? "attachment")}>
                 {attachBusy ? "Saving…" : "Save"}
               </button>{" "}
               <button
@@ -2007,6 +1962,76 @@ function displayUrl(raw: string): string {
   }
 }
 
+/**
+ * T-310 — quoted-content split for text/plain bodies. Conservative: a
+ * region only collapses when the quote marker is unambiguous — an
+ * "On … wrote:" preamble or a `>`-prefixed run — AND the region runs to
+ * end-of-message with at most a signature/`>` tail after it. Interleaved
+ * quoting (a quote run followed by more real text) is left fully visible:
+ * hiding it risks hiding real content.
+ */
+function splitQuotedText(text: string): { head: string; quoted: string | null; sig: string | null } {
+  const lines = text.split("\n");
+  const isQuote = (l: string) => /^>/.test(l.trim());
+  const isPreamble = (l: string) => /^On .{1,300}wrote:?\s*$/im.test(l.trim());
+  const isSigMark = (l: string) => /^--\s*$/.test(l);
+  let qStart = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i] ?? "";
+    if (isPreamble(l)) {
+      // The preamble only counts when what follows is really quoted
+      // material — at least one `>` line or nothing at all (bare trailer).
+      const rest = lines.slice(i + 1);
+      if (rest.some(isQuote) || rest.every((x) => x.trim() === "")) {
+        qStart = i;
+        break;
+      }
+      return { head: text, quoted: null, sig: null }; // stray "wrote:" text
+    }
+    if (isQuote(l)) {
+      // Accept only a quote run that extends to EOM, tolerating blanks and
+      // a trailing signature block — anything else interleaved means a
+      // human mixed quote and reply; collapse nothing.
+      let j = i;
+      while (j < lines.length && (isQuote(lines[j] ?? "") || (lines[j] ?? "").trim() === "")) j++;
+      const tail = lines.slice(j);
+      const tailIsBlank = tail.every((x) => x.trim() === "");
+      const tailIsSig = tail.length > 0 && isSigMark(tail[0] ?? "");
+      const runLen = j - i;
+      if (runLen >= 2 && (tailIsBlank || tailIsSig)) {
+        qStart = i;
+        break;
+      }
+      return { head: text, quoted: null, sig: null }; // ambiguous — collapse nothing
+    }
+  }
+  if (qStart < 0) return { head: text, quoted: null, sig: null };
+  const headLines = lines.slice(0, qStart);
+  const quoted = lines.slice(qStart).join("\n").replace(/\n+$/, "");
+  if (!headLines.join("\n").trim() || quoted.split("\n").length < 2) {
+    return { head: text, quoted: null, sig: null };
+  }
+  // Signature: RFC 3676 "-- " delimiter inside the head only.
+  let sigIdx = -1;
+  for (let i = headLines.length - 1; i >= 0; i--) {
+    if (/^--\s*$/.test(headLines[i] ?? "")) {
+      sigIdx = i;
+      break;
+    }
+  }
+  if (sigIdx >= 0) {
+    return {
+      head: headLines.slice(0, sigIdx).join("\n").replace(/\n+$/, ""),
+      sig: headLines.slice(sigIdx).join("\n"),
+      quoted,
+    };
+  }
+  return { head: headLines.join("\n"), quoted, sig: null };
+}
+
+/** Unambiguous quote containers in *already-sanitized* rendered HTML. */
+const QUOTE_SEL = 'blockquote, .gmail_quote, [class*="gmail_quote"], .moz-cite-prefix, [type="cite"]';
+
 function BodyPane({
   body,
   rendered,
@@ -2034,6 +2059,63 @@ function BodyPane({
   const [showSource, setShowSource] = useState(false);
   const [gate, setGate] = useState<LinkGate | null>(null);
   useEffect(() => setGate(null), [accountId, folderId, uid]);
+
+  // T-310: quote collapse. `quoteOpen` resets per message (toggle persists
+  // for the open only — no pref). `quoteCount` = DOM nodes tagged in the
+  // sanitized HTML; the text path uses `splitQuotedText`.
+  const [quoteOpen, setQuoteOpen] = useState(false);
+  const [quoteCount, setQuoteCount] = useState(0);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    setQuoteOpen(false);
+  }, [accountId, folderId, uid]);
+  useEffect(() => {
+    const root = bodyRef.current;
+    if (!root || !rendered?.html) {
+      setQuoteCount(0);
+      return;
+    }
+    // Top-level quote containers only (nested blockquotes ride their
+    // ancestor). A preceding "On … wrote:" preamble element collapses with
+    // its quote.
+    const tops = [...root.querySelectorAll<HTMLElement>(QUOTE_SEL)].filter(
+      (q) => !q.parentElement?.closest(QUOTE_SEL),
+    );
+    const targets: HTMLElement[] = [];
+    for (const q of tops) {
+      const prev = q.previousElementSibling;
+      if (prev && /^On .{1,300}wrote:?\s*$/im.test((prev.textContent ?? "").trim())) {
+        targets.push(prev as HTMLElement);
+      }
+      targets.push(q);
+    }
+    if (targets.length === 0) {
+      setQuoteCount(0);
+      return;
+    }
+    // Conservative: refuse to collapse when the quote is the ENTIRE body
+    // (nothing would stay visible) — only collapse when real content
+    // remains above/around it.
+    const remainingText = [...root.children]
+      .filter((el) => !targets.includes(el as HTMLElement))
+      .map((el) => (el.textContent ?? "").trim())
+      .join("");
+    if (!remainingText) {
+      setQuoteCount(0);
+      return;
+    }
+    for (const t of targets) t.setAttribute("data-kiwi-quote", "");
+    setQuoteCount(targets.length);
+    return () => {
+      for (const t of targets) t.removeAttribute("data-kiwi-quote");
+    };
+  }, [rendered?.html, accountId, folderId, uid]);
+
+  const textParts = useMemo(
+    () => splitQuotedText(body.textBody ?? ""),
+    [body.textBody],
+  );
+  const textQuoted = textParts.quoted;
 
   const openExternal = async (url: string) => {
     try {
@@ -2132,13 +2214,28 @@ function BodyPane({
               {gate.phase === "error" && <small>Link check failed — {gate.text}. Nothing was opened.</small>}
             </div>
           )}
+          {quoteCount > 0 && (
+            <p style={{ margin: "0.2rem 0" }}>
+              <button
+                type="button"
+                className="em-quote-toggle"
+                onClick={() => setQuoteOpen((o) => !o)}
+                aria-expanded={quoteOpen}
+              >
+                {quoteOpen ? "Hide quoted text" : `Show quoted text (${quoteCount})`}
+              </button>
+            </p>
+          )}
           <div
-            className="kiwi-rendered-body"
+            ref={bodyRef}
+            className={`kiwi-rendered-body${!quoteOpen ? " em-quotes-collapsed" : ""}`}
             onClick={onBodyClick}
             // Sanitized server-side by kiwi_render_body (ammonia strict
             // allowlist: no scripts/forms/iframes; remote images stripped
             // unless the per-account opt-in is on). Never raw htmlBody.
             // Clicks are gated through kiwi_link_click before any open.
+            // T-310: quote nodes are tagged with data-kiwi-quote by a
+            // post-mount DOM pass (presentation only — sanitize untouched).
             dangerouslySetInnerHTML={{ __html: rendered.html }}
           />
           {(rendered.remoteImagesStripped > 0 || remoteAllowed) && !demo && (
@@ -2164,7 +2261,29 @@ function BodyPane({
         </>
       ) : (
         <>
-          <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "inherit" }}>{body.textBody}</pre>
+          <pre style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "inherit" }}>
+            {textParts.head}
+            {textParts.sig && <span className="em-sig">{`\n${textParts.sig}`}</span>}
+          </pre>
+          {textQuoted && (
+            <>
+              <p style={{ margin: "0.2rem 0" }}>
+                <button
+                  type="button"
+                  className="em-quote-toggle"
+                  onClick={() => setQuoteOpen((o) => !o)}
+                  aria-expanded={quoteOpen}
+                >
+                  {quoteOpen ? "Hide quoted text" : "Show quoted text"}
+                </button>
+              </p>
+              {quoteOpen && (
+                <pre className="em-quote-region" style={{ whiteSpace: "pre-wrap", wordBreak: "break-word", fontFamily: "inherit" }}>
+                  {textQuoted}
+                </pre>
+              )}
+            </>
+          )}
           {body.htmlBody && !rendered && !renderLoading && !demo && (
             <p style={{ color: "var(--kiwi-text-secondary)" }}>
               <small>No HTML variant rendered for this message (text-only or unfetched).</small>

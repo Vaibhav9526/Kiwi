@@ -136,13 +136,13 @@
 
 .ms-btn:disabled {
   cursor: not-allowed;
-  opacity: 0.55;
+  opacity: 0.65;
 }
 
 .ms-btn-primary {
-  background: var(--kiwi-ms-accent);
+  background: var(--accent, var(--kiwi-ms-accent));
   border-color: transparent;
-  color: #1c1204;
+  color: var(--accent-ink, #1c1204);
   font-weight: 700;
 }
 
@@ -151,7 +151,7 @@
 }
 
 .ms-btn-primary:hover:not(:disabled) {
-  background: var(--kiwi-ms-accent-active);
+  background: var(--accent-hover, var(--kiwi-ms-accent-active));
   border-color: transparent;
 }
 
@@ -329,7 +329,7 @@
   width: 3px;
   align-self: stretch;
   min-height: 2rem;
-  border-radius: 2px;
+  border-radius: var(--kiwi-radius-pill);
 }
 
 .ms-account-meta {
@@ -603,11 +603,14 @@
 .ms-composer-modal {
   background: var(--kiwi-ms-surface);
   border: 1px solid var(--kiwi-ms-border);
-  border-radius: var(--kiwi-ms-radius-large);
+  border-radius: var(--kiwi-radius-large);
   box-shadow: var(--kiwi-ms-shadow-modal);
   width: min(760px, 100%);
   max-height: calc(100vh - 220px);
   overflow: auto;
+  /* Field rows bleed into the padding by design (negative-margin hairlines);
+     clip the x-axis so that bleed can never summon a horizontal scrollbar. */
+  overflow-x: clip;
   padding: 16px 18px;
 }
 
@@ -623,30 +626,62 @@
   margin: 0 auto 0 0;
 }
 
-/* ---------- tabbed preferences ---------- */
+/* ---------- tabbed preferences (Mailspring pattern: left rail + cards) ---------- */
 
+/* .ms-prefs is the plain max-width container other views (Security Center)
+ * reuse; the rail+content split lives on .ms-prefs-layout so reusers keep
+ * their original flow layout. */
 .ms-prefs {
   max-width: 900px;
+}
+
+.ms-prefs-layout {
+  display: flex;
+  gap: 24px;
+  max-width: 1100px;
+  align-items: flex-start;
 }
 
 .ms-tabs {
   display: flex;
   gap: 2px;
-  justify-content: center;
-  border-bottom: 1px solid var(--kiwi-ms-border);
+}
+
+.ms-prefs-rail {
+  flex-direction: column;
+  flex: 0 0 176px;
+  position: sticky;
+  top: 0;
+  padding-top: 6px;
+}
+
+.ms-rail-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
   margin-bottom: 14px;
+}
+
+.ms-rail-label {
+  padding: 4px 10px 6px;
+  font-size: 11px;
+  font-weight: var(--kiwi-ms-weight-semibold, 600);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--em-text-faint, var(--kiwi-ms-text-muted));
 }
 
 .ms-tab {
   background: transparent;
   border: 1px solid transparent;
-  border-bottom: none;
-  border-radius: var(--kiwi-ms-radius-base) var(--kiwi-ms-radius-base) 0 0;
+  border-radius: var(--kiwi-ms-radius-base);
   color: var(--kiwi-ms-text-secondary);
   cursor: pointer;
   font: inherit;
   font-size: var(--kiwi-ms-text-small);
-  padding: 8px 14px;
+  padding: 7px 10px;
+  text-align: left;
+  width: 100%;
 }
 
 .ms-tab:hover {
@@ -658,8 +693,73 @@
   color: var(--kiwi-ms-text);
   font-weight: var(--kiwi-ms-weight-semibold);
   background: var(--kiwi-ms-surface);
-  border-color: var(--kiwi-ms-border);
-  box-shadow: inset 0 2px 0 var(--kiwi-ms-accent);
+  box-shadow: inset 2px 0 0 var(--accent, var(--kiwi-ms-accent));
+}
+
+/* Content column: single stacked card. Direct children become rows —
+ * consistent padding, hairline dividers, controls right-aligned where the
+ * row is a label wrapping its control. Cards/banners keep their own chrome
+ * (inset margin instead of full-bleed row). */
+.ms-prefs-content {
+  flex: 1;
+  min-width: 0;
+  max-width: 760px;
+  background: var(--kiwi-ms-surface);
+  border: 1px solid var(--kiwi-ms-border);
+  border-radius: var(--kiwi-radius-card, var(--kiwi-ms-radius-large, 12px));
+  padding: 0;
+  overflow: hidden;
+}
+
+.ms-prefs-content > h1 {
+  margin: 0;
+  padding: 16px 18px 10px;
+  font-size: 1.15rem;
+  border-bottom: 1px solid var(--kiwi-ms-divider, var(--em-hairline, #eef0f3));
+}
+
+.ms-prefs-content > p,
+.ms-prefs-content > ul,
+.ms-prefs-content > ol,
+.ms-prefs-content > h2,
+.ms-prefs-content > h3,
+.ms-prefs-content > details,
+.ms-prefs-content > fieldset {
+  margin: 0;
+  padding: 11px 18px;
+  border-bottom: 1px solid var(--kiwi-ms-divider, var(--em-hairline, #eef0f3));
+}
+
+.ms-prefs-content > :last-child {
+  border-bottom: none;
+}
+
+/* Label-wrapping-control rows: label text left, last control right. */
+.ms-prefs-content > p > label {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+.ms-prefs-content > p > label > :last-child:not(:first-child) {
+  margin-left: auto;
+}
+
+/* Section sub-headers inside a pane read as muted group labels. */
+.ms-prefs-content > h2,
+.ms-prefs-content > h3 {
+  font-size: 0.8rem;
+  font-weight: var(--kiwi-ms-weight-semibold, 600);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--em-group-head, var(--kiwi-ms-text-secondary));
+  background: var(--kiwi-ms-surface-2, transparent);
+}
+
+/* Nested chrome keeps its card look but sits inset inside the pane card. */
+.ms-prefs-content > .kiwi-card,
+.ms-prefs-content > .kiwi-banner {
+  margin: 10px 16px;
 }
 
 /* ---------- switch primitive (role=switch buttons) ---------- */
@@ -767,7 +867,7 @@
 .ms-reader::-webkit-scrollbar-thumb,
 .ms-content::-webkit-scrollbar-thumb {
   background: var(--kiwi-ms-border-strong);
-  border-radius: 6px;
+  border-radius: var(--kiwi-radius-pill);
   border: 2px solid transparent;
   background-clip: content-box;
 }
@@ -825,7 +925,7 @@
 }
 
 .ms-policy-strip.warn {
-  color: var(--kiwi-ms-warning);
+  color: var(--kiwi-warning);
   border-color: var(--kiwi-ms-warning);
   background: color-mix(in srgb, var(--kiwi-ms-warning) 8%, var(--kiwi-ms-surface));
 }
@@ -1017,6 +1117,7 @@
 :root,
 [data-theme="light"][data-shell="mailspring"] {
   --em-pane-border: #e1e5ea;
+  --em-hairline: #eef0f3;
   --em-pane-bg: #ffffff;
   --em-pane-alt: #f7f8fa;
   --em-pane-titlebar: #fcfcfd;
@@ -1026,25 +1127,28 @@
   --em-select-focus: #c9e3f8;
   --em-unread-dot: #3b82c4;
   --em-sender-blue: #2f6fb0;
-  --em-link: #3b82c4;
-  --em-orange: #f5a623;
-  --em-orange-hover: #e5960f;
-  --em-orange-ink: #4a3200;
+  --em-link: #3370b8;
+  --em-orange: var(--accent, #f5a623);
+  --em-orange-hover: var(--accent-hover, #e5960f);
+  --em-orange-ink: var(--accent-ink, #4a3200);
   --em-hover: #eef1f5;
-  --em-text-dim: #69707c;
-  --em-text-faint: #98a0ab;
-  --em-group-head: #6a7280;
+  /* A25 UI-sweep: dim/faint bumped to clear WCAG AA 4.5:1 on pane surfaces —
+     faint was decorative-minted but is used on informative text (counts,
+     dates, hints, agenda times). Keep the text > dim > faint hierarchy. */
+  --em-text-dim: #5a616e;
+  --em-text-faint: #667080;
+  --em-group-head: #5a6470;
   --em-avatar-text: #ffffff;
   --em-card-bg: #ffffff;
   --em-menu-bg: #ffffff;
   --em-tab-line: #e1e5ea;
   --em-star: #f5a623;
-  /* category pills (T-201 hooks) */
-  --em-cat-news: #2f6fb0;
+  /* category pills (T-201 hooks) — fg tokens tuned for AA on their bg tints */
+  --em-cat-news: #2e68a8;
   --em-cat-news-bg: #e2effb;
-  --em-cat-personal: #b4690a;
+  --em-cat-personal: #9a5b00;
   --em-cat-personal-bg: #fdeacc;
-  --em-cat-logs: #2e7d32;
+  --em-cat-logs: #27712b;
   --em-cat-logs-bg: #e2f2e4;
   --em-cat-social: #6d4fc2;
   --em-cat-social-bg: #ece6fa;
@@ -1054,6 +1158,7 @@
 
 [data-theme="dark"][data-shell="mailspring"] {
   --em-pane-border: #26262e;
+  --em-hairline: #1e1e26;
   --em-pane-bg: #131318;
   --em-pane-alt: #17171d;
   --em-pane-titlebar: #141419;
@@ -1064,12 +1169,12 @@
   --em-unread-dot: #f2c063;
   --em-sender-blue: #8ab4e8;
   --em-link: #f2c063;
-  --em-orange: #eaa132;
-  --em-orange-hover: #f2b64c;
-  --em-orange-ink: #1c1204;
+  --em-orange: var(--accent, #eaa132);
+  --em-orange-hover: var(--accent-hover, #f2b64c);
+  --em-orange-ink: var(--accent-ink, #1c1204);
   --em-hover: #1d1d26;
   --em-text-dim: #a9a7bd;
-  --em-text-faint: #5e5c72;
+  --em-text-faint: #84829a;
   --em-group-head: #8a8899;
   --em-avatar-text: #ffffff;
   --em-card-bg: #17171f;
@@ -1101,6 +1206,10 @@
   align-items: center;
   gap: 8px;
   height: 40px;
+  /* The window is undecorated (decorations: false): the OS no longer paints
+     caption buttons over this row, so the right pad shrinks to a normal gap
+     and .em-wincontrols owns the right edge. The 138px that used to reserve
+     room for the native captions is gone. */
   padding: 0 8px;
   background: var(--em-pane-titlebar);
   border-bottom: 1px solid var(--em-pane-border);
@@ -1119,7 +1228,7 @@
   margin: 0 auto;
   background: var(--em-pane-alt);
   border: 1px solid var(--em-pane-border);
-  border-radius: 999px;
+  border-radius: var(--kiwi-radius-pill);
   padding: 3px 12px;
   color: var(--em-text-dim);
 }
@@ -1178,6 +1287,53 @@
   padding: 1px 8px;
   white-space: nowrap;
 }
+/* ---------- window caption controls (undecorated window) ----------
+ * Win11 caption metrics: 46px wide, full titlebar height, square (no radius —
+ * the cluster butts against the window's top-right corner). Hover fills mix
+ * against the button's own `currentColor`, so they read correctly on light and
+ * dark; close carries the danger red the themes already define. */
+.em-wincontrols {
+  flex: none;
+  display: flex;
+  align-items: stretch;
+  align-self: stretch;
+  margin-left: 4px;
+}
+
+.em-winbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 46px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  color: var(--em-text-dim);
+  cursor: default;
+}
+.em-winbtn:hover {
+  background: color-mix(in srgb, currentColor 12%, transparent);
+  color: var(--em-text);
+}
+.em-winbtn:active {
+  background: color-mix(in srgb, currentColor 20%, transparent);
+}
+.em-winbtn:focus-visible {
+  outline: 1px solid var(--kiwi-ms-accent);
+  outline-offset: -2px;
+}
+/* Close keeps Win11's red wash + white glyph on hover. */
+.em-winbtn-close:hover {
+  background: var(--kiwi-ms-danger);
+  color: #ffffff;
+}
+.em-winbtn-close:active {
+  background: color-mix(in srgb, var(--kiwi-ms-danger) 82%, #000000);
+  color: #ffffff;
+}
+
+
 
 /* ---------- chrome: toolbar split buttons ---------- */
 
@@ -1215,12 +1371,12 @@
 }
 
 .em-tool:disabled {
-  opacity: 0.45;
+  opacity: 0.62;
   cursor: not-allowed;
 }
 
 .em-tool.is-disabled {
-  opacity: 0.45;
+  opacity: 0.62;
 }
 
 .em-tool.is-disabled .em-tool-main,
@@ -1269,7 +1425,7 @@ span.em-tool {
 
 .em-tool-main:disabled,
 .em-tool-caret:disabled {
-  opacity: 0.45;
+  opacity: 0.62;
   cursor: not-allowed;
 }
 
@@ -1394,8 +1550,221 @@ span.em-tool-primary {
 }
 
 .em-iconbtn.is-active {
-  color: var(--em-link);
+  /* A25 UI-sweep: --em-link on --em-select tint ≈4.1:1 — blend toward ink
+     so the active marker stays blue but clears AA on its tinted chip. */
+  color: color-mix(in srgb, var(--em-link) 78%, var(--kiwi-ms-text));
   background: var(--em-select);
+}
+
+/* ---------- Gmail-style compose footer ---------- */
+/* Solid accent Send pill + split chevron, hairline top rule, icon row. */
+
+.em-compose-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--em-pane-border, var(--kiwi-border-soft, #e5e0d5));
+}
+
+.em-send-wrap {
+  align-self: center;
+}
+
+.em-send-split {
+  display: inline-flex;
+  border-radius: var(--kiwi-radius-pill, 999px);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
+}
+
+.em-send,
+.em-send-chev {
+  border: none;
+  background: var(--accent, var(--em-orange, var(--kiwi-brand)));
+  color: var(--accent-ink, var(--em-orange-ink, #1c1204));
+  font: inherit;
+  font-weight: var(--kiwi-ms-weight-semibold, 600);
+  cursor: pointer;
+}
+
+.em-send {
+  padding: 7px 16px 7px 20px;
+  border-radius: var(--kiwi-radius-pill, 999px) 0 0 var(--kiwi-radius-pill, 999px);
+}
+
+.em-send-chev {
+  display: inline-flex;
+  align-items: center;
+  padding: 7px 10px 7px 8px;
+  border-left: 1px solid rgba(0, 0, 0, 0.2);
+  border-radius: 0 var(--kiwi-radius-pill, 999px) var(--kiwi-radius-pill, 999px) 0;
+}
+
+.em-send:hover:not(:disabled),
+.em-send-chev:hover:not(:disabled) {
+  background: var(--accent-hover, var(--em-orange-hover));
+}
+
+.em-send:disabled,
+.em-send-chev:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.em-compose-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 1px;
+  margin-left: 2px;
+}
+
+.em-compose-tools .em-iconbtn {
+  border-radius: var(--kiwi-radius-circle, 50%);
+}
+
+.em-compose-tools .em-fmt {
+  width: auto;
+  padding: 0 7px;
+  font-size: var(--kiwi-ms-text-small, 0.8rem);
+  font-weight: 600;
+}
+
+.em-compose-trash {
+  margin-left: auto;
+}
+
+.em-compose-trash:hover:not(:disabled) {
+  color: var(--kiwi-danger, #b3261e);
+}
+
+/* Footer menus open upward — the compose surface sits at the window bottom. */
+.em-compose-footer .em-menu {
+  top: auto;
+  bottom: calc(100% + 5px);
+}
+
+/* Gmail-style header fields: hairline-separated rows, muted label cell,
+   chips inline, borderless inputs — the card reads as one surface, not a
+   stack of boxed form controls. */
+.em-compose-fields {
+  margin: 0 -0.85rem 0.4rem;
+  border-top: 1px solid var(--em-hairline, rgba(0, 0, 0, 0.06));
+}
+.em-field {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 34px;
+  padding: 0 0.85rem;
+  border-bottom: 1px solid var(--em-hairline, rgba(0, 0, 0, 0.06));
+}
+.em-field-label {
+  flex: 0 0 52px;
+  font-size: 12px;
+  color: var(--kiwi-ms-text-secondary, #5f6368);
+}
+.em-field-label label {
+  cursor: text;
+}
+.em-field-input,
+.em-field input[type="text"],
+.em-field select {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 7px 0;
+  font: inherit;
+  color: inherit;
+  outline: none;
+  box-shadow: none;
+}
+.em-field input[type="text"]:focus,
+.em-field select:focus {
+  box-shadow: none;
+  border-color: transparent;
+}
+.em-field-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 3px;
+  margin: 0;
+  min-width: 0;
+}
+.em-addr-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 4px 1px 8px;
+  border-radius: 12px;
+  background: var(--em-surface-2, #f1f3f4);
+  border: 1px solid var(--em-hairline, rgba(0, 0, 0, 0.06));
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+.em-addr-chip button {
+  border: 0;
+  background: transparent;
+  padding: 0 2px;
+  cursor: pointer;
+  color: var(--kiwi-ms-text-secondary, #5f6368);
+  display: inline-flex;
+  align-items: center;
+  border-radius: 50%;
+}
+.em-addr-chip button:hover {
+  color: var(--kiwi-danger, #b3261e);
+}
+.em-field-add {
+  border: 0;
+  background: transparent;
+  padding: 4px 6px;
+  font-size: 12px;
+  color: var(--kiwi-ms-text-secondary, #5f6368);
+  cursor: pointer;
+  border-radius: 4px;
+}
+.em-field-add:hover {
+  background: var(--em-surface-2, #f1f3f4);
+  color: inherit;
+}
+.em-field-link {
+  border: 0;
+  background: transparent;
+  padding: 4px 6px;
+  font-size: 12px;
+  color: var(--kiwi-ms-text-secondary, #5f6368);
+  cursor: pointer;
+  border-radius: 4px;
+  margin-left: auto;
+}
+.em-field-link:hover {
+  background: var(--em-surface-2, #f1f3f4);
+  color: inherit;
+}
+.em-field-input-wrap {
+  position: relative;
+  min-width: 10rem;
+}
+.em-field-input-wrap input {
+  width: 100%;
+}
+/* Suggestion popover inside a field row anchors under the input. */
+.em-field-input-wrap ul[role="listbox"] {
+  min-width: 16rem;
+}
+
+/* Disposable inbox: single comfortable column, not a spread form. */
+.kiwi-dispo {
+  max-width: 640px;
+}
+.kiwi-dispo .kiwi-empty input {
+  min-width: 12rem;
 }
 
 .em-iconbtn.is-starred,
@@ -1751,9 +2120,9 @@ span.em-tool-primary {
   grid-template-columns: 8px auto 30px minmax(0, 1fr);
   align-items: center;
   column-gap: 4px;
-  padding: 7px 8px 7px 6px;
+  padding: 10px 8px 10px 6px;
   border: none;
-  border-bottom: 1px solid var(--em-pane-border);
+  border-bottom: 1px solid var(--em-hairline);
   border-radius: 0;
   background: transparent;
   cursor: pointer;
@@ -1880,7 +2249,7 @@ span.em-tool-primary {
   align-items: center;
   font-size: var(--kiwi-ms-text-tiny);
   font-weight: var(--kiwi-ms-weight-medium);
-  border-radius: var(--kiwi-ms-radius-small);
+  border-radius: var(--kiwi-radius-pill);
   padding: 0 5px;
   line-height: 1.6;
 }
@@ -2112,7 +2481,7 @@ span.em-tool-primary {
   font-size: 0.72rem;
   font-weight: 600;
   padding: 1px 7px;
-  border-radius: 999px;
+  border-radius: var(--kiwi-radius-pill);
   border: 1px solid var(--kiwi-ms-accent);
   color: var(--kiwi-ms-accent);
   background: color-mix(in srgb, var(--kiwi-ms-accent) 10%, var(--kiwi-ms-surface));
@@ -2121,7 +2490,7 @@ span.em-tool-primary {
 .em-outbox-sending,
 .em-outbox-retry {
   border-color: var(--kiwi-ms-warning);
-  color: var(--kiwi-ms-warning);
+  color: var(--kiwi-warning);
   background: color-mix(in srgb, var(--kiwi-ms-warning) 10%, var(--kiwi-ms-surface));
 }
 
@@ -2144,7 +2513,7 @@ span.em-tool-primary {
   font-size: 0.78rem;
   padding: 2px 6px;
   border: 1px solid var(--kiwi-ms-border);
-  border-radius: 6px;
+  border-radius: var(--kiwi-radius-sm);
   background: var(--kiwi-ms-surface);
   color: var(--kiwi-ms-text);
 }
@@ -2274,9 +2643,9 @@ summary:focus-visible {
 }
 
 .em-security-demo {
-  color: var(--kiwi-ms-warning);
+  color: var(--kiwi-warning);
   border: 1px solid var(--kiwi-ms-warning);
-  border-radius: 3px;
+  border-radius: var(--kiwi-radius-sm);
   padding: 0 3px;
   font-size: var(--kiwi-ms-text-smaller);
 }
@@ -2415,6 +2784,16 @@ summary:focus-visible {
   font-size: var(--kiwi-ms-text-smaller);
   color: var(--em-text-dim);
   user-select: none;
+}
+
+/* KIWI_DEV_PLAINTEXT fixture-mode chip — always visible while the env is set. */
+.dev-plaintext-chip {
+  font-weight: 600;
+  color: var(--kiwi-warning);
+  background: var(--kiwi-warning-bg);
+  border: 1px solid var(--kiwi-warning-border);
+  border-radius: var(--kiwi-radius-sm, 4px);
+  padding: 0 6px;
 }
 
 .em-status-icons {
@@ -2581,7 +2960,7 @@ summary:focus-visible {
   justify-content: center;
   gap: 0.5rem;
   border: 2px dashed var(--kiwi-ms-accent, #4a6fa5);
-  border-radius: 8px;
+  border-radius: var(--kiwi-radius-md);
   background: var(--em-card-bg, rgba(255, 255, 255, 0.94));
   color: var(--kiwi-ms-accent, #4a6fa5);
   font-weight: 600;
@@ -2598,7 +2977,7 @@ summary:focus-visible {
   padding: 4px;
   background: var(--em-card-bg, #fff);
   border: 1px solid var(--kiwi-ms-border, #d8d4cc);
-  border-radius: 8px;
+  border-radius: var(--kiwi-radius-md);
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
   font: inherit;
   outline: none;
@@ -2616,7 +2995,7 @@ summary:focus-visible {
   box-sizing: border-box;
   padding: 5px 10px;
   border: none;
-  border-radius: 5px;
+  border-radius: var(--kiwi-radius-sm);
   background: transparent;
   color: var(--kiwi-ms-text, inherit);
   font: inherit;
@@ -2677,4 +3056,837 @@ summary:focus-visible {
   left: calc(100% - 4px);
   top: -4px;
   min-width: 160px;
+}
+
+/* T-310: quoted-text collapse — presentation over already-sanitized output.
+   DOM nodes are tagged data-kiwi-quote by a post-mount pass in BodyPane;
+   the class on .kiwi-rendered-body hides them. Nothing is re-parsed. */
+.em-quotes-collapsed [data-kiwi-quote] {
+  display: none;
+}
+button.em-quote-toggle {
+  background: none;
+  border: 1px solid var(--kiwi-border, #d5d5d5);
+  border-radius: var(--kiwi-radius-sm);
+  padding: 1px 8px;
+  font: inherit;
+  font-size: 0.82rem;
+  color: var(--kiwi-text-secondary, #666);
+  cursor: pointer;
+}
+button.em-quote-toggle:hover {
+  color: var(--kiwi-text, #222);
+  border-color: var(--kiwi-text-secondary, #888);
+}
+/* RFC 3676 "-- " signature tail — visually de-emphasized (text bodies). */
+.em-sig {
+  color: var(--kiwi-text-secondary, #666);
+  opacity: 0.72;
+}
+pre.em-quote-region {
+  margin-top: 0.2rem;
+  color: var(--kiwi-text-secondary, #666);
+}
+
+/* T-313: quick-filter chips — client-side narrowing of the loaded list. */
+.em-filterbar {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.6rem;
+  border-bottom: 1px solid var(--kiwi-border, #ddd);
+  flex-wrap: wrap;
+}
+.em-chip {
+  font: inherit;
+  font-size: 0.8rem;
+  padding: 0.12rem 0.55rem;
+  border: 1px solid var(--kiwi-border, #ccc);
+  border-radius: var(--kiwi-radius-pill);
+  background: transparent;
+  color: var(--kiwi-text-secondary, #555);
+  cursor: pointer;
+}
+.em-chip:hover:not(:disabled) {
+  border-color: var(--kiwi-accent, #3b6ea5);
+  color: var(--kiwi-text, #222);
+}
+.em-chip:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.em-chip.is-on {
+  background: var(--kiwi-accent, #3b6ea5);
+  border-color: var(--kiwi-accent, #3b6ea5);
+  color: #fff;
+}
+.em-chip-n {
+  opacity: 0.75;
+  font-size: 0.85em;
+}
+.em-chip-clear {
+  border-style: dashed;
+}
+.em-filterbar-status {
+  margin-left: auto;
+  font-size: 0.78rem;
+  color: var(--kiwi-text-secondary, #666);
+}
+
+/* T-317: drag messages → folder tree. Highlight real drop targets during
+ * a message drag; denied (same-folder/smart-view) targets stay inert. */
+.em-row.em-dragging {
+  opacity: 0.55;
+}
+.em-tree-item.em-drop-target {
+  outline: 2px solid var(--kiwi-accent, #3b6ea5);
+  outline-offset: -2px;
+  background: color-mix(in srgb, var(--kiwi-accent, #3b6ea5) 12%, transparent);
+}
+.em-tree-item.em-drop-denied {
+  opacity: 0.55;
+}
+
+/* T-335: owning-account chip on aggregate rows (All Inboxes / smarts) */
+.em-row-acct {
+  font-size: 0.62rem;
+  line-height: 1.1;
+  padding: 0 4px;
+  border: 1px solid var(--kiwi-text-secondary, #666);
+  border-radius: var(--kiwi-radius-sm);
+  max-width: 9em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+
+/* T-343: Gmail-style floating compose dock. Pure chrome — the composer
+   inside is the real ComposeView (same draft/send lifecycle). Radius uses
+   A25's T-342 global tokens when they land (--kiwi-radius-lg/large), with
+   the spec'd ~16px as fallback since those names aren't defined yet. */
+.em-dock-layer {
+  position: fixed;
+  inset: 0;
+  pointer-events: none; /* children opt back in; clicks pass to the mail UI */
+  z-index: 45; /* above panes, below the modal composer/palette layers */
+}
+.em-dock-layer[hidden] {
+  display: none;
+}
+.em-dock {
+  position: absolute;
+  right: 1rem;
+  bottom: 0;
+  width: min(510px, calc(100vw - 2rem));
+  max-height: min(72vh, 640px);
+  display: flex;
+  flex-direction: column;
+  background: var(--kiwi-surface, #fff);
+  border: 1px solid var(--kiwi-border, #d7d7d7);
+  border-radius: var(--kiwi-radius-lg, var(--kiwi-radius-large, 16px)) var(--kiwi-radius-lg, var(--kiwi-radius-large, 16px)) 0 0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.16), 0 8px 24px rgba(0, 0, 0, 0.1);
+  pointer-events: auto;
+  overflow: hidden;
+}
+.em-dock-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0.4rem 0.5rem 0.4rem 0.85rem;
+  background: var(--kiwi-surface-2, #f3f3f3);
+  border-bottom: 1px solid var(--kiwi-border, #d7d7d7);
+}
+.em-dock-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.82rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.em-dock > section {
+  flex: 1 1 auto;
+  min-height: 0; /* required or the flex child overflows instead of scrolling */
+  overflow-y: auto;
+  padding: 0.6rem 0.85rem 0.85rem;
+  font-size: 0.85rem;
+}
+.em-dock > section textarea {
+  min-height: 9rem;
+}
+.em-dock-chips {
+  position: absolute;
+  right: 1rem; /* chips-only state: anchor at the edge */
+  bottom: 0;
+  display: flex;
+  flex-direction: row-reverse; /* newest chip closest to the dock */
+  gap: 0.4rem;
+  align-items: flex-end;
+  pointer-events: auto;
+}
+/* With a dock expanded, chips sit left of it. Class-driven (`.has-open`)
+   because a sibling selector can't see past the per-dock wrapper divs. */
+.em-dock-layer.has-open .em-dock-chips {
+  right: calc(1rem + min(510px, 100vw - 2rem) + 0.5rem);
+}
+.em-dock-chip {
+  display: inline-flex;
+  align-items: stretch;
+  max-width: 14rem;
+  background: var(--kiwi-surface, #fff);
+  border: 1px solid var(--kiwi-border, #d7d7d7);
+  border-radius: var(--kiwi-radius-md, 8px) var(--kiwi-radius-md, 8px) 0 0;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
+  overflow: hidden;
+}
+.em-dock-chip-label {
+  border: 0;
+  background: transparent;
+  padding: 0.45rem 0.2rem 0.45rem 0.7rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  max-width: 10rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  color: inherit;
+}
+.em-dock-chip-x {
+  border: 0;
+  background: transparent;
+  padding: 0.45rem 0.5rem;
+  cursor: pointer;
+  color: var(--kiwi-text-secondary, #666);
+  display: inline-flex;
+  align-items: center;
+}
+.em-dock-chip-x:hover {
+  color: var(--kiwi-danger, #b3261e);
+}
+.em-dock-discard {
+  margin-left: auto;
+  color: var(--kiwi-text-secondary, #666);
+}
+.em-dock-discard:hover {
+  color: var(--kiwi-danger, #b3261e);
+}
+.em-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---------- T-342 disposable-inbox promo (sidebar) + inbox view ---------- */
+
+/* Sidebar section — sits under the mailboxes (Mailspring userSection idiom):
+   one tree row + a quiet "+ New disposable" quick action aligned to the
+   indented row label. */
+.em-dispo {
+  margin-top: 6px;
+  padding-top: 4px;
+  border-top: 1px solid var(--em-pane-border);
+}
+.em-dispo-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 0 4px 2px;
+}
+.em-dispo-title {
+  font-size: var(--kiwi-ms-text-smaller);
+  font-weight: var(--kiwi-ms-weight-semibold);
+  color: var(--em-group-head);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.em-dispo-new {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+  padding: 1px 6px;
+  border: 1px solid transparent;
+  border-radius: var(--kiwi-radius-sm);
+  background: transparent;
+  color: var(--em-text-dim);
+  font: inherit;
+  font-size: var(--kiwi-ms-text-smaller);
+  cursor: pointer;
+}
+.em-dispo-new:hover:not(:disabled) {
+  background: var(--em-hover);
+  color: var(--kiwi-ms-text);
+}
+
+/* The view's inbox idiom: summary list | reader, matching .em-rows rows. */
+.kiwi-toolbar-gap {
+  flex: 1;
+}
+.kiwi-dispo-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+.kiwi-dispo-split {
+  display: grid;
+  grid-template-columns: minmax(220px, 34%) minmax(0, 1fr);
+  gap: 0.7rem;
+  align-items: start;
+}
+.kiwi-dispo-list {
+  flex: none;
+  max-height: 62vh;
+  background: var(--kiwi-ms-list-bg, var(--kiwi-surface));
+  border: 1px solid var(--kiwi-ms-border, var(--kiwi-border-soft));
+  border-radius: var(--kiwi-radius-card);
+  padding: 4px;
+}
+.kiwi-dispo-row.is-active {
+  background: var(--em-select, var(--kiwi-ms-list-hover));
+}
+.kiwi-dispo-reader {
+  min-height: 12rem;
+  max-height: 62vh;
+  overflow-y: auto;
+  background: var(--kiwi-surface);
+  border: 1px solid var(--kiwi-border-soft);
+  border-radius: var(--kiwi-radius-card);
+  padding: 0.8rem 0.9rem;
+}
+@media (max-width: 720px) {
+  .kiwi-dispo-split {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* T-342 density pass: the palette's bare "no matches" line gets the same
+   icon+muted idiom as the other empty states, sized down for the dialog. */
+.kiwi-palette-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  padding: 0.9rem 0.5rem;
+  color: var(--em-text-dim, var(--kiwi-text-secondary));
+  font-size: var(--kiwi-ms-text-smaller, 0.8rem);
+}
+.kiwi-palette-empty svg {
+  opacity: 0.55;
+}
+
+/* ---------- provider quick-pick cards (setup step 0) ---------- */
+/* Gmail/eM-style branded entry: card = icon mark + name + subtitle. */
+
+.em-provider-cards {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.em-provider-card {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  column-gap: 10px;
+  align-items: center;
+  text-align: left;
+  padding: 12px 14px;
+  background: var(--kiwi-ms-surface, var(--kiwi-surface));
+  border: 1px solid var(--kiwi-ms-border, var(--kiwi-border));
+  border-radius: var(--kiwi-radius-card, 12px);
+  cursor: pointer;
+}
+
+.em-provider-card:hover:not(:disabled) {
+  border-color: var(--accent, var(--kiwi-ms-accent));
+  background: var(--em-hover, var(--kiwi-hover-bg));
+}
+
+.em-provider-card[aria-pressed="true"] {
+  border-color: var(--accent, var(--kiwi-ms-accent));
+  box-shadow: inset 2px 0 0 var(--accent, var(--kiwi-ms-accent));
+}
+
+.em-provider-mark {
+  grid-row: 1 / 3;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--kiwi-radius-md, 8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 1.05rem;
+}
+
+.em-provider-google {
+  background: #fff;
+  border: 1px solid #e2e5ea;
+  color: #4285f4;
+}
+
+.em-provider-microsoft {
+  background: #fff;
+  border: 1px solid #e2e5ea;
+}
+
+[data-theme="dark"] .em-provider-google,
+[data-theme="dark"] .em-provider-microsoft {
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.em-provider-name {
+  font-weight: 600;
+  color: var(--kiwi-ms-text, var(--kiwi-text));
+}
+
+.em-provider-sub {
+  font-size: var(--kiwi-ms-text-small, 0.8rem);
+  color: var(--em-text-dim, var(--kiwi-text-secondary));
+  font-weight: 400;
+}
+
+/* ---------- onboarding split card (add-account wizard) ---------- */
+/* OnlyPipe-pattern: gradient+grain hero left, form body right. */
+
+.em-setup {
+  display: flex;
+  justify-content: center;
+  padding: 28px 20px;
+}
+
+.em-setup-card {
+  display: grid;
+  grid-template-columns: 340px minmax(0, 1fr);
+  width: min(980px, 100%);
+  min-height: 560px;
+  border-radius: var(--kiwi-radius-large, 16px);
+  overflow: hidden;
+  border: 1px solid var(--em-pane-border, rgba(0, 0, 0, 0.08));
+  box-shadow: 0 24px 64px rgba(30, 20, 4, 0.22), 0 4px 16px rgba(30, 20, 4, 0.1);
+}
+
+/* Hero: layered warm gradient + film grain (SVG turbulence, no asset). */
+.em-setup-hero {
+  position: relative;
+  background:
+    radial-gradient(130% 90% at 20% 8%, rgba(255, 214, 140, 0.55), transparent 55%),
+    radial-gradient(120% 100% at 85% 15%, rgba(229, 128, 204, 0.35), transparent 60%),
+    radial-gradient(150% 120% at 50% 105%, rgba(122, 40, 6, 0.55), transparent 65%),
+    linear-gradient(160deg, #3d2404 0%, #7a3c06 38%, #a4508b 78%, #3d1650 100%);
+  color: #fff;
+}
+
+.em-setup-hero::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+  opacity: 0.16;
+  mix-blend-mode: overlay;
+  pointer-events: none;
+}
+
+.em-setup-hero-inner {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 40px 34px;
+}
+
+.em-setup-logo {
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  font-size: 0.95rem;
+  opacity: 0.92;
+  margin-bottom: auto;
+}
+
+.em-setup-title {
+  font-size: 1.9rem;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  margin: 0 0 10px;
+}
+
+.em-setup-sub {
+  font-size: 0.85rem;
+  line-height: 1.5;
+  opacity: 0.82;
+  margin: 0 0 30px;
+}
+
+.em-setup-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.em-setup-steps li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.78);
+  background: rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(6px);
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.em-setup-steps li.is-active {
+  background: rgba(255, 255, 255, 0.92);
+  color: #2b1a05;
+  font-weight: 700;
+}
+
+.em-setup-steps li.is-done {
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.em-setup-num {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  font-weight: 700;
+  background: rgba(255, 255, 255, 0.16);
+  flex: none;
+}
+
+.em-setup-steps li.is-active .em-setup-num {
+  background: #2b1a05;
+  color: #ffd68c;
+}
+
+/* Form body */
+.em-setup-body {
+  padding: 34px 38px;
+  background: var(--kiwi-surface, #fffdf7);
+  min-width: 0;
+}
+
+.em-setup-body-title {
+  margin: 0 0 18px;
+  font-size: 1.35rem;
+  letter-spacing: -0.01em;
+}
+
+.em-setup-or {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 14px 0;
+  color: var(--kiwi-text-secondary, #8d8672);
+  font-size: 0.78rem;
+}
+
+.em-setup-or::before,
+.em-setup-or::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--em-hairline, var(--kiwi-border-soft, #e8e1cf));
+}
+
+/* Wizard body rows breathe a little more inside the card. */
+.em-setup-body p {
+  margin: 0 0 12px;
+}
+
+.em-setup-body input[type="email"],
+.em-setup-body input[type="text"],
+.em-setup-body input[type="password"],
+.em-setup-body select {
+  border-radius: var(--kiwi-radius-md, 8px);
+  padding: 9px 12px;
+}
+
+@media (max-width: 720px) {
+  .em-setup-card { grid-template-columns: 1fr; }
+  .em-setup-hero-inner { padding: 26px 24px; }
+  .em-setup-logo { margin-bottom: 20px; }
+  .em-setup-title { font-size: 1.4rem; }
+}
+
+/* Easy sign-in: stacked labels, full-width inputs (matches the hero card). */
+.em-setup-body .em-quickform > p > label {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--kiwi-ms-text-secondary, var(--kiwi-text-secondary));
+}
+.em-setup-body .em-quickform > p > label input,
+.em-setup-body .em-quickform > p > label select {
+  display: block;
+  width: 100%;
+  margin-top: 5px;
+  font-weight: 400;
+  color: var(--kiwi-text);
+}
+.em-setup-body .em-provider-cards .em-provider-card {
+  padding: 10px 14px;
+}
+
+/* ---------- professional polish: shared pane primitive ----------------
+ * .ms-pane is the .ms-prefs-content contract without the tab rail: one
+ * stacked card whose direct children become hairline-divided rows —
+ * muted group headers, right-aligned controls where a row lays out as
+ * label→control. Used by Security Center, Contacts, Search, Filters and
+ * Disposable; the same row rule extends to view wrappers embedded inside
+ * a prefs pane (RulesView/FiltersView/IntegrationsView roots). */
+
+.em-view-title {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 1.25rem;
+  font-weight: var(--kiwi-ms-weight-semibold, 600);
+  margin: 0.1rem 0 0.8rem;
+}
+.em-view-title small {
+  font-size: 0.72em;
+  font-weight: 400;
+  color: var(--kiwi-ms-text-secondary, var(--kiwi-text-secondary));
+}
+
+.ms-pane {
+  background: var(--kiwi-ms-surface, var(--kiwi-surface));
+  border: 1px solid var(--kiwi-ms-border, var(--kiwi-border-soft));
+  border-radius: var(--kiwi-radius-card, var(--kiwi-ms-radius-large, 12px));
+  padding: 0;
+  overflow: hidden;
+  margin-bottom: 0.9rem;
+}
+
+.ms-pane > h1,
+.ms-pane > .ms-pane-title {
+  margin: 0;
+  padding: 14px 18px 10px;
+  font-size: 1.12rem;
+  font-weight: var(--kiwi-ms-weight-semibold, 600);
+  border-bottom: 1px solid var(--kiwi-ms-divider, var(--em-hairline, #eef0f3));
+}
+
+/* Direct children are rows. Embedded-view roots (bare <div>/<section>
+   wrappers) count too; card chrome, banners, empty states, dialogs and
+   full-bleed scroll regions keep their own look. */
+.ms-pane > p,
+.ms-pane > ul,
+.ms-pane > ol,
+.ms-pane > h2,
+.ms-pane > h3,
+.ms-pane > details,
+.ms-pane > fieldset,
+.ms-pane > section,
+.ms-pane > pre,
+.ms-pane > table,
+.ms-pane > div:not(.kiwi-card):not(.kiwi-banner):not(.kiwi-empty):not(.kiwi-dialog-backdrop):not(.em-card):not(.em-dock-layer):not(.em-contacts-list):not(.em-rules-list),
+.ms-prefs-content > div:not(.kiwi-card):not(.kiwi-banner):not(.kiwi-empty):not(.kiwi-dialog-backdrop):not(.em-card),
+.ms-prefs-content > section:not([role="tabpanel"]),
+.ms-prefs-content > table,
+.ms-prefs-content > pre {
+  margin: 0;
+  padding: 11px 18px;
+  border-bottom: 1px solid var(--kiwi-ms-divider, var(--em-hairline, #eef0f3));
+}
+
+.ms-pane > :last-child {
+  border-bottom: none;
+}
+
+/* h2/h3 inside a pane read as muted group labels, like prefs sections. */
+.ms-pane > h2:not(.ms-pane-title),
+.ms-pane > h3 {
+  font-size: 0.8rem;
+  font-weight: var(--kiwi-ms-weight-semibold, 600);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--em-group-head, var(--kiwi-ms-text-secondary, var(--kiwi-text-secondary)));
+  background: var(--kiwi-ms-surface-2, transparent);
+}
+
+/* Nested chrome keeps its card look, inset inside the pane. */
+.ms-pane > .kiwi-card,
+.ms-pane > .kiwi-banner {
+  margin: 10px 16px;
+}
+
+/* Tables sit flush — the first/last cell carries the row indent. */
+.ms-pane > table,
+.ms-prefs-content > table {
+  padding: 0;
+}
+.ms-pane > table tr > :first-child,
+.ms-prefs-content > table tr > :first-child {
+  padding-left: 18px;
+}
+.ms-pane > table tr > :last-child,
+.ms-prefs-content > table tr > :last-child {
+  padding-right: 18px;
+}
+
+/* Filter/tool rows inside a pane are rows too; the last control docks right. */
+.ms-pane > .ms-filterbar > :last-child {
+  margin-left: auto;
+}
+
+/* In-list .kiwi-row items lose their card chrome and become hairline rows. */
+.ms-pane .kiwi-row {
+  border: none;
+  border-bottom: 1px solid var(--kiwi-ms-divider, var(--em-hairline, #eef0f3));
+  border-radius: 0;
+  padding: 9px 18px;
+  background: transparent;
+  box-shadow: none;
+}
+.ms-pane .kiwi-row:last-child { border-bottom: none; }
+.ms-pane .kiwi-row:hover { background: var(--kiwi-ms-list-hover, var(--kiwi-hover-bg)); }
+.ms-pane .kiwi-row[aria-selected="true"] {
+  background: var(--em-select, var(--kiwi-surface));
+  box-shadow: inset 2px 0 0 var(--accent, var(--kiwi-ms-accent));
+}
+
+/* Muted section-description rows (the standard's quiet explainer text). */
+.em-pane-desc {
+  color: var(--kiwi-ms-text-secondary, var(--kiwi-text-secondary));
+  font-size: var(--kiwi-ms-text-small, 0.85rem);
+}
+
+/* <hr> inside a prefs pane is just the hairline; no double gap. */
+.ms-prefs-content > hr {
+  margin: 0;
+  border: 0;
+  border-top: 1px solid var(--kiwi-ms-divider, var(--em-hairline, #eef0f3));
+}
+
+/* A view embedded inside a prefs pane keeps a quiet local title — the
+   pane's own h1 already says which section it is. */
+.ms-prefs-content .em-view-title {
+  font-size: 1rem;
+  margin: 0 0 0.5rem;
+}
+
+/* ---------- per-view polish ---------- */
+
+/* Contacts: rail (list card) + detail card, like the prefs rail split. */
+.em-contacts {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  max-width: 1100px;
+}
+.em-contacts-rail {
+  flex: 0 0 320px;
+  position: sticky;
+  top: 12px;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 150px);
+}
+.em-contacts-rail > h1 {
+  font-size: 1.02rem;
+  padding: 13px 18px 9px;
+}
+.em-contacts-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0;
+}
+.em-contacts-detail {
+  flex: 1;
+  min-width: 0;
+}
+.em-contact-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.em-contact-head .em-contact-name {
+  font-size: 1.05rem;
+  font-weight: var(--kiwi-ms-weight-semibold, 600);
+}
+.em-contact-lines {
+  list-style: none;
+  padding-left: 0;
+}
+.em-contact-lines li {
+  padding: 3px 0;
+}
+@media (max-width: 760px) {
+  .em-contacts { flex-direction: column; }
+  .em-contacts-rail { flex: none; width: 100%; position: static; max-height: 40vh; }
+}
+
+/* Search / Filters / Security Center: comfortable single column. */
+.em-search-view,
+.em-filters {
+  max-width: 900px;
+}
+.em-security {
+  max-width: 1050px;
+}
+
+/* Filters: rules become hairline rows inside the pane. */
+.ms-pane > ol.em-rules-list {
+  padding: 0;
+}
+.em-rule-row {
+  padding: 10px 18px;
+  border-bottom: 1px solid var(--kiwi-ms-divider, var(--em-hairline, #eef0f3));
+}
+.em-rule-row:last-child { border-bottom: none; }
+.em-rule-row-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.em-rule-row-head .em-rule-actions {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 0.25rem;
+}
+.em-rule-editor {
+  margin-top: 0.6rem;
+  border-top: 1px solid var(--kiwi-ms-divider, var(--em-hairline, #eef0f3));
+  padding-top: 0.6rem;
+}
+
+/* Disposable: wider once the split list+reader is on screen. */
+.kiwi-dispo:has(.kiwi-dispo-split) {
+  max-width: 1000px;
+}
+.kiwi-dispo .ms-pane > .kiwi-dispo-head {
+  padding: 11px 18px;
+}
+
+/* Search result list inside a pane scrolls rather than pushing the page. */
+.em-search-results .kiwi-empty {
+  padding: 2rem 1rem;
 }

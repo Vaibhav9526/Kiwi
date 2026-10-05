@@ -207,7 +207,15 @@ mod tests {
     use kiwi_mail::transport::SocketSecurity;
     use kiwi_mail::{account::IncomingProtocol, unsub::UnsubscribeInfo};
 
-    fn state_with(script: Vec<Step>, tag: &str) -> AppState {
+    /// The scripted transport handle is retained so every test can assert
+    /// the fixture replayed in full: a request that silently stopped being
+    /// issued must fail the test, not pass on a half-replayed script.
+    struct Fixture {
+        state: AppState,
+        http: Arc<ScriptedHttp>,
+    }
+
+    fn state_with(script: Vec<Step>, tag: &str) -> Fixture {
         let dir = std::env::temp_dir().join(format!(
             "kiwi-unsub-{tag}-{}-{}",
             std::process::id(),
@@ -216,7 +224,9 @@ mod tests {
                 .map(|d| d.as_nanos())
                 .unwrap_or(0)
         ));
-        AppState::open_test_with_http(dir, Arc::new(ScriptedHttp::new(script))).unwrap()
+        let http = Arc::new(ScriptedHttp::new(script));
+        let state = AppState::open_test_with_http(dir, http.clone()).unwrap();
+        Fixture { state, http }
     }
 
     /// Seed a POP3 account (no live connection path), an INBOX folder, and
@@ -287,7 +297,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn http_one_click_posts_rfc8058_body() {
-        let state = state_with(
+        let Fixture { state, http } = state_with(
             vec![Step {
                 expect_body: Some(b"List-Unsubscribe=One-Click"),
                 ..Step::post("unsub", &["unsubscribe.example"], 200, "ok")
@@ -312,11 +322,12 @@ mod tests {
         assert!(v.executed);
         assert_eq!(v.http_status, Some(200));
         assert!(v.queue_id.is_none());
+        http.assert_exhausted();
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn http_plain_url_needs_consent_then_posts() {
-        let state = state_with(
+        let Fixture { state, http } = state_with(
             vec![Step::post("unsub", &["unsubscribe.example"], 202, "")],
             "consent",
         );
@@ -339,12 +350,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(v.http_status, Some(202));
+        http.assert_exhausted();
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn http_refuses_insecure_stored_url() {
         // A tampered/legacy `http://` row must never reach the transport.
-        let state = state_with(vec![], "insecure");
+        let Fixture { state, http } = state_with(vec![], "insecure");
         let (acct, fid, uid) = seed(
             &state,
             Some(offer(Some("http://unsubscribe.example/x"), None, true)),
@@ -354,11 +366,12 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code, "invalid-input");
+        http.assert_exhausted();
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn mailto_requires_consent_and_enqueues() {
-        let state = state_with(vec![], "mailto");
+        let Fixture { state, http } = state_with(vec![], "mailto");
         let (acct, fid, uid) =
             seed(&state, Some(offer(None, Some("leave@list.example"), false))).await;
         let denied = unsubscribe_impl(&state, &acct, fid, uid, "mailto", false)
@@ -380,11 +393,12 @@ mod tests {
         let meta = metas.get(v.queue_id.as_deref().unwrap()).unwrap();
         assert_eq!(meta.to, vec!["leave@list.example".to_string()]);
         assert_eq!(meta.subject, "unsubscribe");
+        http.assert_exhausted();
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn missing_offer_is_not_found() {
-        let state = state_with(vec![], "missing");
+        let Fixture { state, http } = state_with(vec![], "missing");
         let (acct, fid, uid) = seed(&state, None).await;
         let err = unsubscribe_impl(&state, &acct, fid, uid, "http", true)
             .await
@@ -394,27 +408,30 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code, "not-found");
+        http.assert_exhausted();
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn bad_action_is_invalid_input() {
-        let state = state_with(vec![], "badact");
+        let Fixture { state, http } = state_with(vec![], "badact");
         let (acct, fid, uid) = seed(&state, Some(offer(None, None, false))).await;
         let err = unsubscribe_impl(&state, &acct, fid, uid, "smoke-signal", true)
             .await
             .unwrap_err();
         assert_eq!(err.code, "invalid-input");
+        http.assert_exhausted();
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn locked_gate_blocks() {
-        let state = state_with(vec![], "locked");
+        let Fixture { state, http } = state_with(vec![], "locked");
         let (acct, fid, uid) = seed(&state, Some(offer(None, None, true))).await;
         state.trust.lock().await.force_lock();
         let err = kiwi_message_unsubscribe_impl_gate(&state, &acct, fid, uid)
             .await
             .unwrap_err();
         assert_eq!(err.code, "locked");
+        http.assert_exhausted();
     }
 
     /// The `#[tauri::command]` wrapper itself is the gate site — exercise it.

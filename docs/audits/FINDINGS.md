@@ -48,25 +48,25 @@ provenance, not remediation assignments.
 | FOR-12 | L | Confidence sort order is undocumented and differs from the stated ordering. | `contract-drift-1.md:158` | T-245 | fixed |
 | FOR-I | I | Large undocumented forensics public API surface. | `contract-drift-1.md:224` | T-245/contract owner | open |
 | AUTH-1 | H | Challenge verification failures and pairing outcomes are not fully audited. Ownership: `submit_challenge` failure audits belong to A11's T-269 (pair-engine landing) — in-flight, pair code untouched by T-272 per Lead direction. | `contract-drift-1.md:69` | T-188/T-194; A11/T-269 in-flight | open |
-| AUTH-2 | M | Mobile deny responses do not carry the documented decision field and can look like invalid signatures. | `contract-drift-1.md:104` | T-194/T-188 | open |
-| AUTH-4 | M | Mobile authenticator public-key pin checks prefix/length but not key encoding/size. | `contract-drift-1.md:105` | T-194/T-188 | open |
+| AUTH-2 | M | Mobile deny responses do not carry the documented decision field and can look like invalid signatures. Both halves landed: T-194 mobile `buildChallengeResponseData` always emits `decision`, T-282 desktop `ChallengeResponseInput.decision` consumes it (deny audited, no consume); wire casing integration remains tracked by AUTH-3. | `contract-drift-1.md:104`; `mobile/src/protocol/canonical.ts:175-194`; `kiwi-app/src-tauri/src/types/system.rs:88-103`; `agent-26-status.md:64-92` | T-194/T-188 | fixed |
+| AUTH-4 | M | Mobile authenticator public-key pin checks prefix/length but not key encoding/size. QR pin now requires `ed25519:` + canonical padded std Base64 decoding to exactly 32 bytes and re-encoding byte-for-byte; mock hello enforces the plain-32-byte device key rule. | `contract-drift-1.md:105`; `mobile/src/protocol/qr.ts:53-73`; `mobile/src/mock/mock-desktop.ts:103-112`; `agent-26-status.md:64-92` | T-194/T-188 | fixed (mobile side) |
 | AUTH-5 | M | QR endpoint accepts plaintext transport despite TLS requirement. | `contract-drift-1.md:106` | T-194/T-188 | open |
-| AUTH-6 | M | Approval screen skips binding in the identity-null case and does not re-gate expiry on tap. | `contract-drift-1.md:107` | T-194 | open |
-| AUTH-7 | M | Approval screen freezes its clock at mount, making expiry/throttle checks stale. | `contract-drift-1.md:108` | T-194 | open |
-| AUTH-8 | M | Challenge queue has no expiry/TTL eviction despite contract wording. | `contract-drift-1.md:109` | T-194 | open |
-| AUTH-9 | M | Test-only soft HSM is functional behind a ceremonial gate. | `contract-drift-1.md:110` | T-194 | open |
-| AUTH-10 | L | QR validity does not enforce the documented five-minute maximum. | `contract-drift-1.md:191` | T-194 | open |
-| AUTH-11 | L | Expired local ledger decision is supported but never recorded. | `contract-drift-1.md:192` | T-194 | open |
-| AUTH-12 | L | Replay ledger pruning is not wired to the documented one-hour policy. | `contract-drift-1.md:193` | T-194 | open |
-| AUTH-13 | L | Authenticator status lacks documented desktop label/transaction fields. | `contract-drift-1.md:194` | T-194 | open |
-| AUTH-14 | L | Untrusted schema version is interpolated into unbounded parse-error text. | `contract-drift-1.md:195` | T-194 | open |
-| AUTH-15 | L | Mobile app registration name differs from documented authenticator name. | `contract-drift-1.md:196` | T-194 | open |
-| AUTH-16 | L | Test fixture session-id form conflicts with reserved `x-tx:` recovery semantics. | `contract-drift-1.md:197` | T-194 | open |
+| AUTH-6 | M | Approval screen skips binding in the identity-null case and does not re-gate expiry on tap. Binding gate is now mandatory at review AND tap; no-identity disables the whole screen. | `contract-drift-1.md:107`; `mobile/src/protocol/approval.ts:140-165`; `mobile/tests/protocol/approval.test.ts`; `agent-26-status.md:64-92` | T-194 | fixed |
+| AUTH-7 | M | Approval screen freezes its clock at mount, making expiry/throttle checks stale. Service reads the injected live clock at review and at tap; the screen tick only keeps the displayed countdown honest. | `contract-drift-1.md:108`; `mobile/src/protocol/approval.ts:144-148`; `mobile/src/screens/PendingApprovalsScreen.tsx:52-55`; `agent-26-status.md:64-92` | T-194 | fixed |
+| AUTH-8 | M | Challenge queue has no expiry/TTL eviction despite contract wording. Deny entries now expire after the 300 s deny TTL and surface as `dropped`; backlog and completed-id guard are bounded (64/256). | `contract-drift-1.md:109`; `mobile/src/protocol/queue.ts:7,57-59`; `mobile/tests/protocol/queue.test.ts`; `agent-26-status.md:64-92` | T-194 | fixed |
+| AUTH-9 | M | Test-only soft HSM is functional behind a ceremonial gate. Gate is now enforced: only `src/mock` and tests construct it (isolation test over the src graph), the header states reachability honestly, and it is wired only into the bannered mock mode; no protocol/screen module imports it. | `contract-drift-1.md:110`; `mobile/src/keystore/soft-hsm.ts:1-18`; `mobile/tests/isolation/mock-isolation.test.ts`; `agent-26-status.md:64-92` | T-194 | fixed |
+| AUTH-10 | L | QR validity does not enforce the documented five-minute maximum. Parser now rejects `expires - issued > 300` and any already-expired ticket, whatever the producer claims. | `contract-drift-1.md:191`; `mobile/src/protocol/qr.ts:16-17,84-90`; `agent-26-status.md:64-92` | T-194 | fixed |
+| AUTH-11 | L | Expired local ledger decision is supported but never recorded. Expiry at review or tap now records `expired` in the ledger and the decision history (never `deny`), deduped by challenge id. | `contract-drift-1.md:192`; `mobile/src/protocol/approval.ts:145-147,168-178`; `mobile/tests/protocol/approval.test.ts`; `agent-26-status.md:64-92` | T-194 | fixed |
+| AUTH-12 | L | Replay ledger pruning is not wired to the documented one-hour policy. `LEDGER_PRUNE_SECS = 3600` runs on every `record()` before capacity checks and on `isConsumed()` paths — the policy is wired, not aspirational. | `contract-drift-1.md:193`; `mobile/src/protocol/replay.ts:30-40,45-52`; `mobile/tests/protocol/replay.test.ts`; `agent-26-status.md:64-92` | T-194 | fixed |
+| AUTH-13 | L | Authenticator status lacks documented desktop label/transaction fields. T-194 now shows issued + expiry times, session/transaction id and desktop endpoint; the desktop-label field does not exist in either payload — contract-data gap for the contract owner. | `contract-drift-1.md:194`; `mobile/src/screens/PendingApprovalsScreen.tsx:170-172,236-241`; `agent-26-status.md:64-92` | T-194 | open (label = contract gap) |
+| AUTH-14 | L | Untrusted schema version is interpolated into unbounded parse-error text. Parse entry caps the raw container at 4096 chars, throws fixed messages only (raw text never echoed), and all UI-surfaced errors pass a 200-char bound. | `contract-drift-1.md:195`; `mobile/src/protocol/canonical.ts:126-133`; `mobile/src/protocol/approval.ts:73-76`; `agent-26-status.md:64-92` | T-194 | fixed |
+| AUTH-15 | L | Mobile app registration name differs from documented authenticator name. Root now registers under `displayName` "KIWI Authenticator" (authenticator.md §7 scaffold map); `name` stays the RN package identifier. | `contract-drift-1.md:196`; `mobile/index.js:1-8`; `agent-26-status.md:64-92` | T-194 | fixed |
+| AUTH-16 | L | Test fixture session-id form conflicts with reserved `x-tx:` recovery semantics. Production parse now enforces session/event grammar (`boot-<...>` for unlock/device-pairing, `x-tx:<txn>` for recovery/elevated-action) and the fixture is `boot-test-0001`. | `contract-drift-1.md:197`; `mobile/src/protocol/canonical.ts:95-105`; `mobile/tests/helpers/protocol.ts`; `agent-26-status.md:64-92` | T-194 | fixed |
 | AUTH-I | I | Phase-4 pairing/keystore/live transport surfaces remain intentionally unimplemented. | `contract-drift-1.md:229` | T-194 | open |
 | SS-1 | H | Locked trust evaluation could report no required action. | `contract-drift-1.md:70`; `agent-20-status.md:182-195` | T-239 | fixed |
-| SS-2 | M | `ThunderbirdHook` serializes as `live-client`, not documented `thunderbird-hook`. | `contract-drift-1.md:128` | Lead/contract owner | open |
+| SS-2 | M | `ThunderbirdHook` serialized as `live-client`, not documented `thunderbird-hook`. | `contract-drift-1.md:128`; T-260 re-verified at HEAD | T-260 | fixed (contract amended to `live-client`: KIWI is a standalone client, so a live observation has no Thunderbird hook behind it; spelling pinned by `types::tests`) |
 | SS-3 | M | Device transitions permit undocumented paths, including suspended-to-active. | `contract-drift-1.md:129` | T-194/T-188 | open |
-| SS-4 | L | No serde derives enforce the security-session version-skew invariant. | `contract-drift-1.md:206` | T-194/contract owner | open |
+| SS-4 | L | No serde derives enforce the security-session version-skew invariant. | `contract-drift-1.md:206`; T-260 clarified security-session.md §1 | T-260 (doc-clarified) / T-194 (codified) | open — invariant now names where tolerance actually lives (view boundary; no derived `Deserialize` in kiwi-core) |
 | SS-5 | L | Medium signals can degrade regardless of score. | `contract-drift-1.md:207` | T-194 | open |
 | SS-6 | L | Locked state can report a fresh score of 100, misleading telemetry. | `contract-drift-1.md:208` | T-194 | open |
 | SS-7 | L | Repeated-auth-failure indicator fires on a single failed attempt. | `contract-drift-1.md:209` | T-194 | open |
@@ -178,7 +178,25 @@ provenance, not remediation assignments.
 | UIS-21 | L | UI event row uses `id`/`tsUnix` while contract names `eventId`/`timestamp`. | `contract-drift-1.md:233` | T-237/contract owner | in-flight |
 | UIS-22 | I | Additional frontend routes/components are undocumented implementation surface. | `contract-drift-1.md:234` | T-145/contract owner | open |
 | INT-6 | L | Contract index omitted existing contract files; Agent 20 reports the index now lists all 14. | `contract-drift-1.md:216`; `agent-20-status.md:98-103` | T-237 | fixed |
-| INT | I | Integrations contract is absent while code cites it; integration seams and consent gates remain. | `contract-drift-1.md:235` | T-226 | open |
+| INTG-1 | H | "Consent is non-bypassable" was stronger than the implementation: the token was renderer-replayable and ordinary `kiwi_send_message` bypassed the integration boundary entirely. | `integrations-drift-1.md:67-73` | T-286 | fixed |
+| INTG-2 | M | Secret-bearing public types were not uniformly redacted or zeroized. | `integrations-drift-1.md:75-79` | T-286 | fixed |
+| INTG-3 | M | `report_url` could contradict the slug-never-crosses-IPC rule. | `integrations-drift-1.md:81-85` | T-286 | fixed |
+| INTG-4 | M | In-band provider errors could surface as apparent success. | `integrations-drift-1.md:87-91` | T-286 | fixed |
+| INTG-5 | M | Auth hard-gate failed open on unknown/truncated checks. | `integrations-drift-1.md:93-97` | T-286 | fixed |
+| INTG-6 | M | Sanitized temp mail still permitted external navigation. | `integrations-drift-1.md:99-103` | T-286 | fixed |
+| INTG-7 | M | `sent=true` could survive a failed enqueue. | `integrations-drift-1.md:105-109` | T-286 | fixed |
+| INTG-8 | M | Normal SMTP retry could duplicate into a single-use address. | `integrations-drift-1.md:111-115` | T-286 | fixed |
+| INTG-9 | M | Rate-limit hints were lost and UI polling amplified failures. | `integrations-drift-1.md:117-121` | T-286 | fixed |
+| INTG-10 | M | Temp-mail create/replacement could orphan remote public mailboxes. | `integrations-drift-1.md:123-127` | T-286 | fixed |
+| INTG-11 | M | Audit writes occurred after irreversible external/state effects. | `integrations-drift-1.md:129-133` | T-286 | fixed |
+| INTG-12 | M | Offline isolation and live constructors were convention-only. | `integrations-drift-1.md:135-139` | T-286 | fixed |
+| INTG-13 | M | Frontend consent/notice/polling/rendering had no automated gate. | `integrations-drift-1.md:141-145` | T-286 | fixed |
+| INTG-14 | L | Frontend trusted compile-time IPC types without runtime validation. | `integrations-drift-1.md:147-151` | T-286 | fixed |
+| INTG-15 | L | IPC/secret/notice wording was internally contradictory. | `integrations-drift-1.md:153-157` | T-286 | fixed |
+| INTG-16 | L | Error/status comments and reachable states drifted. | `integrations-drift-1.md:159-163` | T-286 | fixed |
+| INTG-17 | L | "Real IP is never sent" was too broad. | `integrations-drift-1.md:165-169` | T-286 | fixed |
+| INTG-18 | L | Transport guarantees did not apply to every public `HttpClient`. | `integrations-drift-1.md:171-175` | T-286 | fixed |
+| INTG-19 | L | Scripted request assertions were weaker than the contract wording. | `integrations-drift-1.md:177-181` | T-286 | fixed |
 
 ## Queue and ownership summary
 
@@ -189,7 +207,9 @@ provenance, not remediation assignments.
   FOR-7/8/9); T-271 (IPC-5, IPC-16 listener, FOR-6 §1 reconciliation,
   FOR-11/12 contract amends); T-230/T-195 ACFG-1/2 and IPC-10; T-251
   ACFG-7/8/9 parser hardening and contract exceptions; T-258 verified
-  MAUTH-2/3 resolved.
+  MAUTH-2/3 resolved; T-278 audit + T-286 closure of INTG-1..19 (native
+  integration-bound send confirmation, crate/app/frontend hardening,
+  contract amendments).
 - **In-flight:** T-193/T-250 admin residual findings; T-231/T-145 UI
   wrapper work; T-266 sandbox-open IPC (build churn observed during
   T-271); T-267 4-pane rebuild (App.tsx/chrome/Icon tsc churn).
@@ -225,10 +245,19 @@ IPC-16, FOR-1..9 (incl. 6, 11, 12), MAUTH-2, MAUTH-3, UIS-5, UIS-6.
   `analyze_capture` (capture) and `kiwi_security_report` (live, auth
   only — `SecuritySession` lacks resumption/unknown-transport state) via
   shared `report::session_limitation_codes`; §8 documents conditions.
-- **AUTH-1** — still no `challenge-denied`/`verification-failed`/
-  `device-paired` audit rows in `commands/system.rs` (grep-verified).
-  Owned by A11's T-269 (pair-engine landing, in-flight); T-272 did not
-  touch pair code per Lead direction.
+- **AUTH-1** — *resolved T-282* (A11): `submit_challenge_impl`
+  (commands/pair.rs) now audits `challenge-approved` + `device-paired` on
+  success (rows land before the bound post-action — evidence-before-
+  effect), `challenge-denied` on an attributable deny (no consume, no
+  authorization), and `challenge-verification-failed err=<ChallengeError
+  name>` on every failed engine response — including late-response
+  `err=Expired`; silent timeouts write no row (§6.3/ADR-013 R7 wording
+  reconciled). `PairEngine::deny_response` added. IPC `decision` field
+  landed (AUTH-2's desktop half — mobile deny UX/transport remains
+  Phase-4); `recovery`/`elevated-action` now refuse `unsupported-event`
+  before verification so a capability is never consumed for an
+  un-runnable action (closes T270-02's consume-then-fail). Evidence:
+  5 new tests in `commands/pair.rs`.
 - **UIS-13/14/17** — wrappers landed T-272 (IPC-15); the UI surfaces
   consuming them remain with the UIS owners.
 - **UIS-21** — `kiwi.ts` still reads `id`/`tsUnix` event keys.

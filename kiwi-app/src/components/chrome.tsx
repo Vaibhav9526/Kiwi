@@ -9,15 +9,26 @@
  * All glyphs are stub stroke icons — TODO(icon) swap to components/icons (T-268).
  */
 import { useEffect, useRef, useState } from "react";
-import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode } from "react";
+import type {
+  CSSProperties,
+  DragEvent as ReactDragEvent,
+  KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent,
+  ReactNode,
+} from "react";
 import type { Severity, SnoozePreset, TrustState } from "../kiwi";
-import { severityGlyph, severityLabel } from "../kiwi";
-import { Icon, SEVERITY_ICON } from "./icons/index";
+import { AUDIT_CORRUPT_MESSAGE, severityGlyph, severityLabel } from "../kiwi";
+import { Icon, SEVERITY_ICON, type IconName } from "./icons/index";
 import { navigate } from "../router";
+import { requestCompose } from "../views/compose";
 import { loadPref, savePref } from "../prefs";
 import { ContextMenu } from "./contextmenu";
+import { OutlineView, type IOutlineViewItem } from "../ms/outline-view";
+import OutlineViewItem from "../ms/outline-view-item";
+import "../ms/ms-outline.css";
 import { usePaneWidth } from "../state/panes";
 import { useTheme } from "../themes";
+import { WindowControls } from "./window-controls";
 import {
   IconArchive,
   IconBolt,
@@ -27,52 +38,94 @@ import {
   IconCollapseRight,
   IconCommand,
   IconContacts,
-  IconDrafts,
   IconFlag,
-  IconFolder,
   IconForward,
   IconHelp,
-  IconInbox,
-  IconJunk,
   IconLock,
   IconMail,
   IconMenu,
   IconMore,
-  IconOutbox,
   IconPlus,
   IconRefresh,
   IconReply,
   IconReplyAll,
   IconSearch,
-  IconSent,
   IconSettings,
   IconSnooze,
-  IconStar,
   IconTasks,
   IconTrash,
-  IconUnread,
-  IconUnreplied,
   IconUser,
 } from "./shell-icons";
 
-export function TrustChip({ trust, locked }: TrustState) {
+export function TrustChip({ trust, locked, auditOk }: TrustState) {
+  /*
+   * T-331 + T-338: audit-chain health rides the same security strip as a
+   * three-state indicator. `false` gets a persistent danger pill — a tampered
+   * log must be visible from the mailbox, not only after the user opens
+   * Security. `true` renders a quiet verified pill (a real backend claim).
+   * `null` — never checked / could not check — renders "unchecked": honest
+   * absence that must never look green, and never be silent in a way that is
+   * indistinguishable from verified. The value is backend-owned only
+   * (`kiwi_security_status.auditOk`); there is no renderer-side guess.
+   */
+  const auditChip =
+    auditOk === false ? (
+      <button
+        type="button"
+        className="kiwi-pill danger"
+        data-audit-integrity="corrupt"
+        aria-label={`KIWI audit: ${AUDIT_CORRUPT_MESSAGE}. Activate to open the Security view.`}
+        onClick={() => navigate({ name: "security" })}
+        title={AUDIT_CORRUPT_MESSAGE}
+      >
+        ✕ Audit: unverified
+      </button>
+    ) : auditOk === true ? (
+      <button
+        type="button"
+        className="kiwi-pill secure"
+        data-audit-integrity="ok"
+        aria-label="KIWI audit: log chain verified. Activate to open the Security view."
+        onClick={() => navigate({ name: "security" })}
+        title="Audit log chain verified"
+      >
+        ✓ Audit: verified
+      </button>
+    ) : (
+      <button
+        type="button"
+        className="kiwi-pill unknown"
+        data-audit-integrity="unchecked"
+        aria-label="KIWI audit: integrity not yet verified. Activate to open the Security view."
+        onClick={() => navigate({ name: "security" })}
+        title="Audit log integrity not yet verified"
+      >
+        Audit: unchecked
+      </button>
+    );
   if (locked) {
     return (
-      <span className="kiwi-pill locked" role="status">
-        <IconLock size={11} /> KIWI: Locked
+      <span className="em-trust" style={{ display: "inline-flex", gap: "6px" }}>
+        <span className="kiwi-pill locked" role="status">
+          <IconLock size={11} /> KIWI: Locked
+        </span>
+        {auditChip}
       </span>
     );
   }
   return (
-    <button
-      type="button"
-      className={`kiwi-pill ${trust}`}
-      aria-label={`KIWI trust: ${severityLabel(trust)}. Activate to open the Security view.`}
-      onClick={() => navigate({ name: "security" })}
-      title={trust === "unknown" ? "No connection data yet" : `Trust: ${severityLabel(trust)}`}
-    >
-      {severityGlyph(trust)} KIWI: {severityLabel(trust)}
-    </button>
+    <span className="em-trust" style={{ display: "inline-flex", gap: "6px" }}>
+      <button
+        type="button"
+        className={`kiwi-pill ${trust}`}
+        aria-label={`KIWI trust: ${severityLabel(trust)}. Activate to open the Security view.`}
+        onClick={() => navigate({ name: "security" })}
+        title={trust === "unknown" ? "No connection data yet" : `Trust: ${severityLabel(trust)}`}
+      >
+        {severityGlyph(trust)} KIWI: {severityLabel(trust)}
+      </button>
+      {auditChip}
+    </span>
   );
 }
 
@@ -87,7 +140,7 @@ export interface MenuItem {
 /** `null` renders a separator. */
 export type MenuEntry = MenuItem | { section: string } | null;
 
-function useDismissable(open: boolean, close: () => void) {
+export function useDismissable(open: boolean, close: () => void) {
   const ref = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
     if (!open) return;
@@ -153,7 +206,7 @@ function HamburgerMenu({
   const ref = useDismissable(open, () => setOpen(false));
   const entries: MenuEntry[] = [
     { section: "File" },
-    { label: "New message", hint: "Ctrl+N", run: () => navigate({ name: "compose" }) },
+    { label: "New message", hint: "Ctrl+N", run: requestCompose },
     { label: "Get new messages", hint: "F5", run: onSync },
     { label: "Add account…", run: () => navigate({ name: "setup" }) },
     { label: "Lock mailbox now", run: onLock },
@@ -290,7 +343,7 @@ export function TopBar(props: TopBarProps) {
   ];
   return (
     <header className="em-chrome">
-      <div className="em-titlebar">
+      <div className="em-titlebar" data-tauri-drag-region>
         <HamburgerMenu onSync={onSync} onLock={props.onLock} onOpenShortcuts={props.onOpenShortcuts} />
         <div className="em-search" role="search">
           <IconSearch size={13} className="em-search-icon" />
@@ -336,15 +389,19 @@ export function TopBar(props: TopBarProps) {
           </button>
           <TrustChip {...trust} />
         </div>
+        {/* Custom caption controls — the window is undecorated
+            (decorations: false), so this cluster IS the titlebar's
+            min/max/close. See window-controls.tsx. */}
+        <WindowControls />
       </div>
       <div className="em-toolbar" role="toolbar" aria-label="Mail toolbar">
         <ToolBtn
           icon={<IconPlus size={13} />}
           label="New"
           primary
-          onClick={() => navigate({ name: "compose" })}
+          onClick={requestCompose}
           menu={[
-            { label: "New message", hint: "Ctrl+N", run: () => navigate({ name: "compose" }) },
+            { label: "New message", hint: "Ctrl+N", run: requestCompose },
             { label: "New contact", run: () => navigate({ name: "contacts" }) },
             { label: "New task", run: () => window.dispatchEvent(new CustomEvent("kiwi-agenda-new")) },
           ]}
@@ -439,73 +496,52 @@ export interface FolderSection {
   trust: Severity;
   muted: boolean;
   unread: number;
-  items: { id: string; label: string; unread: number }[];
+  items: {
+    id: string;
+    label: string;
+    unread: number;
+    /** T-322 folder-management gates (absent in demo → ops disabled). */
+    folderId?: number;
+    origin?: "remote" | "local" | "system";
+    parentId?: number | null;
+    exists?: number;
+  }[];
 }
 
-const SMART_ICONS: Record<string, (p: { size?: number }) => ReactNode> = {
-  "all-inboxes": (p) => <IconInbox {...p} />,
-  outbox: (p) => <IconOutbox {...p} />,
-  sent: (p) => <IconSent {...p} />,
-  trash: (p) => <IconTrash {...p} />,
-  drafts: (p) => <IconDrafts {...p} />,
-  junk: (p) => <IconJunk {...p} />,
-  unread: (p) => <IconUnread {...p} />,
-  flagged: (p) => <IconFlag {...p} />,
-  unreplied: (p) => <IconUnreplied {...p} />,
-  snoozed: (p) => <IconSnooze {...p} />,
+/** T-322: folder ops the pane can request — App owns the IPC + refresh. */
+export type FolderOp =
+  | { kind: "create"; accountId: string; parentId: number | null; name: string }
+  | { kind: "rename"; accountId: string; folderId: number; newName: string }
+  | { kind: "delete"; accountId: string; folderId: number }
+  /** T-323-aux: permanently remove every message IN the folder (the folder
+   *  row itself stays) — list→kiwi_delete_messages loop, no new IPC. */
+  | { kind: "empty"; accountId: string; folderId: number };
+
+/** Smart-folder id → Icon registry name — the ported OutlineViewItem resolves
+ *  icons by name through the RetinaImg→Icon adapter. */
+const SMART_ICON_NAMES: Record<string, IconName> = {
+  "all-inboxes": "inbox",
+  outbox: "outbox",
+  sent: "send",
+  trash: "trash",
+  drafts: "compose",
+  junk: "blocked",
+  unread: "mail-open",
+  flagged: "flag",
+  unreplied: "unreplied",
+  snoozed: "snooze",
 };
 
-/** Folder-name → outline icon (live folders arrive as free names). */
-function folderIcon(label: string): ReactNode {
-  if (/inbox/i.test(label)) return <IconInbox size={13} />;
-  if (/sent/i.test(label)) return <IconSent size={13} />;
-  if (/trash|deleted|bin/i.test(label)) return <IconTrash size={13} />;
-  if (/draft/i.test(label)) return <IconDrafts size={13} />;
-  if (/junk|spam/i.test(label)) return <IconJunk size={13} />;
-  if (/archive/i.test(label)) return <IconArchive size={13} />;
-  if (/outbox/i.test(label)) return <IconOutbox size={13} />;
-  return <IconFolder size={13} />;
-}
-
-function FolderRow({
-  id,
-  label,
-  count,
-  icon,
-  active,
-  indent,
-  onContextMenu,
-}: {
-  id: string;
-  label: string;
-  count: number;
-  icon: ReactNode;
-  active: boolean;
-  indent?: boolean;
-  onContextMenu?: (e: ReactMouseEvent) => void;
-}) {
-  return (
-    <button
-      type="button"
-      role="treeitem"
-      className="em-tree-item"
-      aria-selected={active}
-      aria-label={`${label}${count > 0 ? `, ${count} unread` : ""}`}
-      onClick={() => navigate({ name: "mail", folder: id })}
-      onContextMenu={onContextMenu}
-    >
-      {indent && <span className="em-tree-indent" aria-hidden="true" />}
-      <span className="em-tree-icon" aria-hidden="true">
-        {icon}
-      </span>
-      <span className="em-tree-label">{label}</span>
-      {count > 0 && (
-        <span className="em-tree-count" aria-hidden="true">
-          {count}
-        </span>
-      )}
-    </button>
-  );
+/** Folder-name → Icon registry name (live folders arrive as free names). */
+function folderIconName(label: string): IconName {
+  if (/inbox/i.test(label)) return "inbox";
+  if (/sent/i.test(label)) return "send";
+  if (/trash|deleted|bin/i.test(label)) return "trash";
+  if (/draft/i.test(label)) return "compose";
+  if (/junk|spam/i.test(label)) return "blocked";
+  if (/archive/i.test(label)) return "archive";
+  if (/outbox/i.test(label)) return "outbox";
+  return "folder";
 }
 
 export function FolderPane({
@@ -516,7 +552,11 @@ export function FolderPane({
   outboxCount,
   foldersError,
   demo,
+  disposable,
   onMarkAllRead,
+  onDropMessages,
+  onExportMbox,
+  onFolderOp,
 }: {
   smartFolders: { id: string; label: string }[];
   smartUnread: Record<string, number>;
@@ -525,38 +565,254 @@ export function FolderPane({
   outboxCount: number;
   foldersError?: string | null;
   demo?: boolean;
+  /** T-342: disposable-inbox sidebar promo — real session state from the
+   *  shared useTempMail hook (unread badge + create quick-action). */
+  disposable?: {
+    unread: number;
+    active: boolean;
+    canCreate: boolean;
+    busy: boolean;
+    onNew: () => void;
+  };
   /** T-299: right-click folder menu — real folder ops only (mark-all-read
    *  loops kiwi_update_message server-side). */
   onMarkAllRead?: (folderId: string) => void;
+  /** T-318: "Export to mbox…" — key is the composite "accountId:folderId";
+   *  account-folder rows only (smart rows never open the menu). */
+  onExportMbox?: (folderKey: string, label: string) => void;
+  /** T-317: drop target for message drags — ids are envelope ids, the key
+   *  is this row's composite "accountId:folderId". Account folders only;
+   *  smart rows get no handler, so dropping on them is impossible. */
+  onDropMessages?: (ids: string[], folderKey: string) => void;
+  /** T-322: folder CRUD — resolves to an error string shown in the dialog,
+   *  or null on success (App refreshes + toasts). */
+  onFolderOp?: (op: FolderOp) => Promise<string | null>;
 }) {
   const [favOpen, setFavOpen] = useState(true);
   const [open, setOpen] = useState<Record<string, boolean>>({});
-  const [ctx, setCtx] = useState<{ x: number; y: number; id: string; label: string; unread: number } | null>(null);
+  const [ctx, setCtx] = useState<{
+    x: number;
+    y: number;
+    id: string;
+    label: string;
+    unread: number;
+    folderId?: number;
+    origin?: "remote" | "local" | "system";
+    parentId?: number | null;
+    exists?: number;
+    hasChildren?: boolean;
+  } | null>(null);
+  /** Right-click on an account head → root-level "New folder…". */
+  const [acctCtx, setAcctCtx] = useState<{ x: number; y: number; accountId: string; email: string } | null>(null);
+  /** T-322 dialog — one small modal for create/rename/delete. */
+  const [dlg, setDlg] = useState<{
+    kind: "create" | "rename" | "delete" | "empty";
+    accountId: string;
+    folderId?: number;
+    parentId?: number | null;
+    label: string;
+    /** T-323-aux: stored-row count shown in the empty confirm. */
+    count?: number;
+  } | null>(null);
+  const [dlgName, setDlgName] = useState("");
+  const [dlgErr, setDlgErr] = useState<string | null>(null);
+  const [dlgBusy, setDlgBusy] = useState(false);
+  const submitFolderOp = async () => {
+    if (!dlg || !onFolderOp) return;
+    setDlgErr(null);
+    if (dlg.kind === "empty") {
+      setDlgBusy(true);
+      const err = await onFolderOp({ kind: "empty", accountId: dlg.accountId, folderId: dlg.folderId! });
+      setDlgBusy(false);
+      if (err) {
+        setDlgErr(err);
+        return;
+      }
+    } else if (dlg.kind !== "delete") {
+      const name = dlgName.trim();
+      if (!name) {
+        setDlgErr("Enter a folder name.");
+        return;
+      }
+      setDlgBusy(true);
+      const err = await onFolderOp(
+        dlg.kind === "create"
+          ? { kind: "create", accountId: dlg.accountId, parentId: dlg.parentId ?? null, name }
+          : { kind: "rename", accountId: dlg.accountId, folderId: dlg.folderId!, newName: name },
+      );
+      setDlgBusy(false);
+      if (err) {
+        setDlgErr(err);
+        return;
+      }
+    } else {
+      setDlgBusy(true);
+      const err = await onFolderOp({ kind: "delete", accountId: dlg.accountId, folderId: dlg.folderId! });
+      setDlgBusy(false);
+      if (err) {
+        setDlgErr(err);
+        return;
+      }
+    }
+    setDlg(null);
+  };
+
+  /* T-358: the rows are the ported Mailspring outline-view chain. The kiwi
+   * drag protocol below is verbatim from the old FolderRow — the source
+   * folder's key rides inside a dataTransfer TYPE (getData is unreadable
+   * during dragover), so same-folder denial is honest at hover time. */
+  const srcToken = (folderKey: string) =>
+    `application/x-kiwi-src-${folderKey.replace(/:/g, "_").toLowerCase()}`;
+  const hasMessageDrag = (e: ReactDragEvent) => e.dataTransfer.types.includes("application/x-kiwi-messages");
+  const canCtx = !!(onMarkAllRead || onExportMbox || onFolderOp);
+
+  /** Collapse bookkeeping shared by section heads and nested folders —
+   *  `open` is keyed by account id (sections) or folder key (items). */
+  const toggleKey = (key: string) => setOpen((m) => ({ ...m, [key]: !(m[key] ?? true) }));
+
+  /** Section heads toggle on click (the old head-button behavior) while the
+   *  ported "Show/Hide" collapse-button keeps its own activation — the guard
+   *  keeps a collapse-button click from double-toggling through the head. */
+  const headToggleProps = (toggle: () => void, expanded: boolean) => ({
+    role: "button" as const,
+    tabIndex: 0,
+    "aria-expanded": expanded,
+    onClick: (e: ReactMouseEvent<HTMLDivElement>) => {
+      if ((e.target as HTMLElement).closest(".collapse-button, .add-item-button")) return;
+      toggle();
+    },
+    onKeyDown: (e: ReactKeyboardEvent<HTMLDivElement>) => {
+      if ((e.target as HTMLElement).closest(".collapse-button, .add-item-button")) return;
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        toggle();
+      }
+    },
+  });
+
+  /** FolderSection.items is a flat list — rebuild the real tree on
+   *  parentId→folderId so nested local folders render inside their parent's
+   *  .item-children group (orphans stay at the root level). */
+  const folderItems = (s: FolderSection): IOutlineViewItem[] => {
+    const numericIds = new Set(s.items.map((f) => f.folderId).filter((id): id is number => id != null));
+    const childrenOf = new Map<number, FolderSection["items"]>();
+    const roots: FolderSection["items"] = [];
+    for (const f of s.items) {
+      if (f.parentId != null && numericIds.has(f.parentId)) {
+        const list = childrenOf.get(f.parentId) ?? [];
+        list.push(f);
+        childrenOf.set(f.parentId, list);
+      } else {
+        roots.push(f);
+      }
+    }
+    const toItem = (f: FolderSection["items"][number]): IOutlineViewItem => {
+      const selected = activeFolder === f.id;
+      return {
+        id: f.id,
+        name: f.label,
+        iconName: folderIconName(f.label),
+        className: "em-tree-item",
+        children: (f.folderId != null ? (childrenOf.get(f.folderId) ?? []) : []).map(toItem),
+        count: f.unread,
+        selected,
+        collapsed: !(open[f.id] ?? true),
+        onCollapseToggled: (item) => toggleKey(item.id as string),
+        onSelect: () => navigate({ name: "mail", folder: f.id }),
+        shouldAcceptDrop: onDropMessages
+          ? (_item: IOutlineViewItem, e: ReactDragEvent) =>
+              hasMessageDrag(e) && !e.dataTransfer.types.includes(srcToken(f.id))
+          : undefined,
+        shouldDenyDrop: onDropMessages
+          ? (_item: IOutlineViewItem, e: ReactDragEvent) =>
+              hasMessageDrag(e) && e.dataTransfer.types.includes(srcToken(f.id))
+          : undefined,
+        onDrop: onDropMessages
+          ? (_item: IOutlineViewItem, e: ReactDragEvent) => {
+              const raw = e.dataTransfer.getData("application/x-kiwi-messages");
+              if (!raw) return;
+              e.preventDefault();
+              try {
+                const { ids } = JSON.parse(raw) as { ids?: string[] };
+                if (!Array.isArray(ids) || ids.length === 0) return;
+                // Honest no-op when every dragged id already lives here.
+                const dstKey = f.id.toLowerCase();
+                const movable = ids.filter(
+                  (i) => i.split(":").slice(0, 2).join(":").toLowerCase() !== dstKey,
+                );
+                if (movable.length > 0) onDropMessages(movable, f.id);
+              } catch {
+                // Malformed payload — not a kiwi drag; ignore.
+              }
+            }
+          : undefined,
+        onContextMenu: canCtx
+          ? (_item: IOutlineViewItem, e: MouseEvent | ReactMouseEvent) => {
+              e.preventDefault();
+              setCtx({
+                x: e.clientX,
+                y: e.clientY,
+                id: f.id,
+                label: f.label,
+                unread: f.unread,
+                folderId: f.folderId,
+                origin: f.origin,
+                parentId: f.parentId,
+                exists: f.exists,
+                hasChildren: s.items.some((i) => i.parentId != null && i.parentId === f.folderId),
+              });
+            }
+          : undefined,
+        rowAttrs: {
+          "aria-selected": selected ? "true" : "false",
+          "aria-label": `${f.label}${f.unread > 0 ? `, ${f.unread} unread` : ""}`,
+          "data-folder-key": onDropMessages ? f.id : undefined,
+        },
+      };
+    };
+    return roots.map(toItem);
+  };
+
+  const smartItems: IOutlineViewItem[] = smartFolders.map((f) => {
+    const selected = activeFolder === f.id;
+    const count = f.id === "outbox" ? outboxCount : (smartUnread[f.id] ?? 0);
+    return {
+      id: f.id,
+      name: f.label,
+      iconName: SMART_ICON_NAMES[f.id] ?? "folder",
+      className: "em-tree-item",
+      children: [],
+      count,
+      selected,
+      onSelect: () => navigate({ name: "mail", folder: f.id }),
+      rowAttrs: {
+        "aria-selected": selected ? "true" : "false",
+        "aria-label": `${f.label}${count > 0 ? `, ${count} unread` : ""}`,
+      },
+    };
+  });
+
   return (
     <nav className="em-folders" aria-label="Accounts and folders">
       <h1 className="em-pane-title">Mail</h1>
-      <button type="button" className="em-group-head" aria-expanded={favOpen} onClick={() => setFavOpen((o) => !o)}>
-        <span className={`em-disclosure${favOpen ? " is-open" : ""}`} aria-hidden="true">
-          <IconChevronRight size={11} />
-        </span>
-        <IconStar size={13} />
-        Favorites
-      </button>
-      {favOpen && (
-        <div role="tree" aria-label="Favorites" className="em-group">
-          {smartFolders.map((f) => (
-            <FolderRow
-              key={f.id}
-              id={f.id}
-              label={f.label}
-              icon={(SMART_ICONS[f.id] ?? (() => <IconFolder size={13} />))({ size: 13 })}
-              count={f.id === "outbox" ? outboxCount : (smartUnread[f.id] ?? 0)}
-              active={activeFolder === f.id}
-              indent
-            />
-          ))}
-        </div>
-      )}
+      <OutlineView
+        title="Favorites"
+        collapsed={!favOpen}
+        onCollapseToggled={() => setFavOpen((o) => !o)}
+        headingProps={{
+          className: "em-group-head em-fav-head",
+          ...headToggleProps(() => setFavOpen((o) => !o), favOpen),
+        }}
+        headingContent={
+          <>
+            <span className={`em-disclosure${favOpen ? " is-open" : ""}`} aria-hidden="true">
+              <IconChevronRight size={11} />
+            </span>
+            <Icon name="star" size={13} className="em-fav-star" />
+          </>
+        }
+        items={smartItems}
+      />
       {foldersError && (
         <p className="em-folders-error" role="alert">
           <Icon name="alert-triangle" size={11} /> <small>{foldersError}</small>
@@ -570,55 +826,90 @@ export function FolderPane({
           </button>
         </div>
       )}
-      <div role="tree" aria-label="Accounts" className="em-accounts">
+      <div className="em-accounts" role="group" aria-label="Accounts">
         {accountSections.map((s) => {
           const expanded = open[s.id] ?? true;
           return (
             <div key={s.id} className="em-account-group">
-              <button
-                type="button"
-                className="em-group-head em-account-head"
-                aria-expanded={expanded}
-                onClick={() => setOpen((m) => ({ ...m, [s.id]: !expanded }))}
-                title={s.muted ? `${s.email} (muted — unread excluded from counts)` : s.email}
-              >
-                <span className={`em-disclosure${expanded ? " is-open" : ""}`} aria-hidden="true">
-                  <IconChevronRight size={11} />
-                </span>
-                <span className="em-avatar" aria-hidden="true" style={{ background: s.color }}>
-                  {(s.displayName || s.email || "?").slice(0, 1).toUpperCase()}
-                </span>
-                <span className="em-tree-label">{s.email}</span>
-                {s.unread > 0 && (
-                  <span className="em-tree-count" aria-hidden="true">
-                    {s.unread}
-                  </span>
-                )}
-              </button>
-              {expanded &&
-                s.items.map((f) => (
-                  <FolderRow
-                    key={f.id}
-                    id={f.id}
-                    label={f.label}
-                    icon={folderIcon(f.label)}
-                    count={f.unread}
-                    active={activeFolder === f.id}
-                    indent
-                    onContextMenu={
-                      onMarkAllRead
-                        ? (e) => {
-                            e.preventDefault();
-                            setCtx({ x: e.clientX, y: e.clientY, id: f.id, label: f.label, unread: f.unread });
-                          }
-                        : undefined
-                    }
-                  />
-                ))}
+              <OutlineView
+                title={s.email}
+                collapsed={!expanded}
+                onCollapseToggled={() => toggleKey(s.id)}
+                headingProps={{
+                  className: "em-group-head em-account-head",
+                  title: s.muted ? `${s.email} (muted — unread excluded from counts)` : s.email,
+                  onContextMenu: onFolderOp
+                    ? (e) => {
+                        e.preventDefault();
+                        setAcctCtx({ x: e.clientX, y: e.clientY, accountId: s.id, email: s.email });
+                      }
+                    : undefined,
+                  ...headToggleProps(() => toggleKey(s.id), expanded),
+                }}
+                headingContent={
+                  <>
+                    <span className={`em-disclosure${expanded ? " is-open" : ""}`} aria-hidden="true">
+                      <IconChevronRight size={11} />
+                    </span>
+                    <span className="em-avatar" aria-hidden="true" style={{ background: s.color }}>
+                      {(s.displayName || s.email || "?").slice(0, 1).toUpperCase()}
+                    </span>
+                    {s.unread > 0 && (
+                      <span className="em-tree-count" aria-hidden="true">
+                        {s.unread}
+                      </span>
+                    )}
+                  </>
+                }
+                items={folderItems(s)}
+              />
             </div>
           );
         })}
       </div>
+      {disposable && (
+        /* T-342: Disposable Inbox promoted to a sidebar section under the
+           mailboxes (Mailspring userSection idiom). The row opens the
+           inbox view; "+ New" mints an address then opens it. Lifecycle
+           management stays in Settings → Integrations. */
+        <div className="em-dispo">
+          <div className="em-dispo-head">
+            <span className="em-dispo-title">Disposable</span>
+            <button
+              type="button"
+              className="em-dispo-new"
+              disabled={!disposable.canCreate || disposable.busy}
+              title={
+                !disposable.canCreate
+                  ? "Needs the Tauri backend — demo has no provider session"
+                  : "Create a new disposable address"
+              }
+              onClick={disposable.onNew}
+            >
+              <Icon name="plus" size={11} /> New
+            </button>
+          </div>
+          <div role="tree" aria-label="Disposable inbox" className="em-group">
+            <OutlineViewItem
+              isFirst={!disposable.active}
+              item={{
+                id: "disposable",
+                name: "Disposable Inbox",
+                iconName: "clock",
+                className: "em-tree-item",
+                children: [],
+                count: disposable.unread,
+                selected: disposable.active,
+                onSelect: () => navigate({ name: "disposable" }),
+                rowAttrs: {
+                  "aria-selected": disposable.active ? "true" : "false",
+                  "aria-label": `Disposable Inbox${disposable.unread > 0 ? `, ${disposable.unread} unread` : ""}`,
+                },
+              }}
+            />
+          </div>
+        </div>
+      )}
       {ctx && (
         <ContextMenu
           x={ctx.x}
@@ -632,8 +923,219 @@ export function FolderPane({
               title: demo ? "Needs the Tauri backend" : ctx.unread === 0 ? `${ctx.label} has no unread messages` : undefined,
               onSelect: () => onMarkAllRead?.(ctx.id),
             },
+            {
+              label: "Export to mbox…",
+              icon: "download",
+              disabled: demo || !onExportMbox,
+              title: demo
+                ? "Needs the Tauri backend — demo folders are fixtures"
+                : `Write ${ctx.label} to a .mbox file (kiwi_mailbox_export_mbox)`,
+              onSelect: () => onExportMbox?.(ctx.id, ctx.label),
+            },
+            {
+              label: "New subfolder…",
+              icon: "folder",
+              disabled: demo || ctx.origin !== "local",
+              title: demo
+                ? "Needs the Tauri backend"
+                : ctx.origin !== "local"
+                  ? "Only local folders can hold subfolders — remote/system folders are server-owned"
+                  : `Create a local folder inside ${ctx.label} (kiwi_folder_create)`,
+              onSelect: () => {
+                const accountId = ctx.id.split(":")[0];
+                setDlgName("");
+                setDlgErr(null);
+                setDlg({ kind: "create", accountId, parentId: ctx.folderId, label: ctx.label });
+              },
+            },
+            {
+              label: "Rename…",
+              icon: "compose",
+              disabled: demo || ctx.origin !== "local",
+              title: demo
+                ? "Needs the Tauri backend"
+                : ctx.origin === "system"
+                  ? "System mailboxes can't be renamed"
+                  : ctx.origin === "remote"
+                    ? "Remote folders are managed on the mail server — local rename is not synced"
+                    : `Rename ${ctx.label} (kiwi_folder_rename)`,
+              onSelect: () => {
+                const accountId = ctx.id.split(":")[0];
+                setDlgName(ctx.label);
+                setDlgErr(null);
+                setDlg({ kind: "rename", accountId, folderId: ctx.folderId, label: ctx.label });
+              },
+            },
+            // T-323-aux: Empty Trash/Junk — only meaningful on the dump
+            // folders; hidden elsewhere like the eM/Thunderbird idiom.
+            // Empties MESSAGES (kiwi_delete_messages loop) — the folder
+            // row itself is untouched.
+            ...(/trash|junk|spam|deleted/i.test(ctx.label)
+              ? [
+                  {
+                    label: `Empty ${ctx.label}…`,
+                    icon: "trash" as const,
+                    danger: true,
+                    disabled: demo || ctx.exists == null || ctx.exists === 0 || ctx.folderId == null,
+                    title: demo
+                      ? "Needs the Tauri backend"
+                      : ctx.folderId == null || ctx.exists == null
+                        ? "Folder counts unavailable — can't confirm what would be deleted"
+                        : ctx.exists === 0
+                          ? `${ctx.label} is already empty`
+                          : `Permanently delete all ${ctx.exists} message${ctx.exists === 1 ? "" : "s"} in ${ctx.label}`,
+                    onSelect: () => {
+                      const accountId = ctx.id.split(":")[0];
+                      setDlgErr(null);
+                      setDlg({ kind: "empty", accountId, folderId: ctx.folderId, label: ctx.label, count: ctx.exists });
+                    },
+                  },
+                ]
+              : []),
+            {
+              label: "Delete",
+              icon: "trash",
+              danger: true,
+              disabled: demo || ctx.origin !== "local" || (ctx.exists ?? 0) > 0 || !!ctx.hasChildren,
+              title: demo
+                ? "Needs the Tauri backend"
+                : ctx.origin !== "local"
+                  ? "Only local folders can be deleted — remote/system folders are server-owned"
+                  : ctx.hasChildren
+                    ? `${ctx.label} has subfolders — delete them first`
+                    : (ctx.exists ?? 0) > 0
+                      ? `${ctx.label} still holds ${ctx.exists} message${ctx.exists === 1 ? "" : "s"} — empty it first`
+                      : `Delete ${ctx.label} (kiwi_folder_delete)`,
+              onSelect: () => {
+                const accountId = ctx.id.split(":")[0];
+                setDlgErr(null);
+                setDlg({ kind: "delete", accountId, folderId: ctx.folderId, label: ctx.label });
+              },
+            },
           ]}
         />
+      )}
+      {acctCtx && (
+        <ContextMenu
+          x={acctCtx.x}
+          y={acctCtx.y}
+          onClose={() => setAcctCtx(null)}
+          entries={[
+            {
+              label: "New folder…",
+              icon: "folder",
+              disabled: demo,
+              title: demo
+                ? "Needs the Tauri backend"
+                : `Create a root local folder in ${acctCtx.email} (kiwi_folder_create)`,
+              onSelect: () => {
+                setDlgName("");
+                setDlgErr(null);
+                setDlg({ kind: "create", accountId: acctCtx.accountId, parentId: null, label: acctCtx.email });
+              },
+            },
+          ]}
+        />
+      )}
+      {dlg && (
+        <div
+          className="ms-composer-backdrop"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget && !dlgBusy) setDlg(null);
+          }}
+        >
+          <div
+            className="ms-composer-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={
+              dlg.kind === "delete"
+                ? `Delete folder ${dlg.label}`
+                : dlg.kind === "empty"
+                  ? `Empty ${dlg.label}`
+                  : dlg.kind === "rename"
+                    ? `Rename folder ${dlg.label}`
+                    : `New folder in ${dlg.label}`
+            }
+            style={{ width: "min(400px, 100%)" }}
+            onKeyDown={(e) => {
+              if (e.key === "Escape" && !dlgBusy) setDlg(null);
+              if (e.key === "Enter" && (e.target as HTMLElement).tagName !== "BUTTON") void submitFolderOp();
+            }}
+          >
+            <div className="ms-composer-head">
+              <h1>
+                {dlg.kind === "delete"
+                  ? `Delete “${dlg.label}”?`
+                  : dlg.kind === "empty"
+                    ? `Empty ${dlg.label}?`
+                    : dlg.kind === "rename"
+                      ? `Rename “${dlg.label}”`
+                      : `New folder in ${dlg.label}`}
+              </h1>
+              <button
+                type="button"
+                className="ms-btn"
+                onClick={() => setDlg(null)}
+                disabled={dlgBusy}
+                aria-label="Close dialog"
+              >
+                <Icon name="close" size={12} />
+              </button>
+            </div>
+            {dlg.kind === "delete" ? (
+              <p>
+                Permanently remove the local folder <b>{dlg.label}</b>? This only removes the store row —
+                the folder must already be empty.
+              </p>
+            ) : dlg.kind === "empty" ? (
+              <p>
+                Permanently delete {dlg.count ?? 0} message{dlg.count === 1 ? "" : "s"}?{" "}
+                <b>This cannot be undone.</b>
+              </p>
+            ) : (
+              <p>
+                <label htmlFor="folder-op-name">Folder name</label>
+                <br />
+                <input
+                  id="folder-op-name"
+                  type="text"
+                  value={dlgName}
+                  onChange={(e) => setDlgName(e.target.value)}
+                  maxLength={255}
+                  style={{ width: "100%" }}
+                  disabled={dlgBusy}
+                  autoFocus
+                />
+                <br />
+                <small style={{ color: "var(--kiwi-text-secondary)" }}>
+                  Local folder — never created on the mail server.
+                </small>
+              </p>
+            )}
+            {dlgErr && (
+              <div className="kiwi-banner error" role="alert">
+                <small>{dlgErr}</small>
+              </div>
+            )}
+            <p style={{ marginBottom: 0 }}>
+              <button type="button" onClick={() => void submitFolderOp()} disabled={dlgBusy}>
+                {dlgBusy
+                  ? "Working…"
+                  : dlg.kind === "delete"
+                    ? "Delete"
+                    : dlg.kind === "empty"
+                      ? "Empty"
+                      : dlg.kind === "rename"
+                        ? "Rename"
+                        : "Create"}
+              </button>{" "}
+              <button type="button" onClick={() => setDlg(null)} disabled={dlgBusy}>
+                Cancel
+              </button>
+            </p>
+          </div>
+        </div>
       )}
     </nav>
   );
@@ -679,6 +1181,8 @@ export interface AgendaSecurity {
   unreplied?: number | null;
   /** Active paired devices (kiwi_list_devices); null in demo/none loaded. */
   activeDevices?: number | null;
+  /** Recorded sandbox opens (kiwi_sandbox_sessions, T-300); null in demo. */
+  sandboxOpens?: number | null;
   demo?: boolean;
 }
 
@@ -692,6 +1196,8 @@ function SecuritySummaryCard({ security }: { security: AgendaSecurity }) {
   if (security.unreplied != null) rows.push({ icon: "mail-open", label: "Unreplied", value: security.unreplied });
   if (security.activeDevices != null)
     rows.push({ icon: "device", label: "Active devices", value: security.activeDevices });
+  if (security.sandboxOpens != null)
+    rows.push({ icon: "shield", label: "Sandbox opens", value: security.sandboxOpens });
   return (
     <section className="em-security-card" aria-label="Security summary">
       <div className="em-security-head">
@@ -716,8 +1222,6 @@ function SecuritySummaryCard({ security }: { security: AgendaSecurity }) {
           ))}
         </ul>
       )}
-      {/* Gap (honest absence): pending sandbox-open sessions have no list
-          IPC yet — the row appears once a real source exists. */}
       <button type="button" className="em-security-link" onClick={() => navigate({ name: "security" })}>
         Security Center →
       </button>

@@ -8,7 +8,12 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use crate::error::{MailError, Result};
 
 /// Hard caps on remote input — no unbounded buffering of peer data.
-pub const MAX_LINE: usize = 16 * 1024;
+/// 256 KiB: RFC 3501 sets no line-length cap and real servers (Gmail's
+/// LIST/CAPABILITY/FETCH envelopes on large mailboxes) legitimately emit
+/// lines well past 16 KiB; literals `{N}` bound only string payloads, not
+/// atom lists. Still a hard bound — a hostile peer filling memory fails
+/// closed at 256 KiB.
+pub const MAX_LINE: usize = 256 * 1024;
 pub const MAX_BLOCK: usize = 64 * 1024 * 1024;
 
 /// Read a single CRLF/LF-terminated line (terminator stripped).

@@ -5,7 +5,7 @@ use serde::Serialize;
 use kiwi_mail::attachrisk::{AttachRisk, AttachRiskReason};
 use kiwi_mail::authrisk::AuthRisk;
 use kiwi_mail::linkrisk::{LinkRisk, LinkRiskReason};
-use kiwi_mail::store::{FolderMeta, FolderStats, MessageMeta};
+use kiwi_mail::store::{FolderMeta, FolderOrigin, FolderStats, MessageMeta};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -13,7 +13,9 @@ pub struct FolderView {
     /// Mail-store row id — the `folderId` argument for other commands.
     pub id: i64,
     pub account_id: String,
+    pub parent_id: Option<i64>,
     pub name: String,
+    pub origin: &'static str,
     pub uid_validity: Option<u64>,
     pub uid_next: Option<u64>,
     pub highest_uid: u64,
@@ -285,7 +287,13 @@ impl FolderView {
         Self {
             id: f.id,
             account_id: f.account_id.clone(),
+            parent_id: f.parent_id,
             name: f.name.clone(),
+            origin: match f.origin {
+                FolderOrigin::Remote => "remote",
+                FolderOrigin::Local => "local",
+                FolderOrigin::System => "system",
+            },
             uid_validity: f.uid_validity,
             uid_next: f.uid_next,
             highest_uid: f.highest_uid,
@@ -298,9 +306,18 @@ impl FolderView {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AttachmentView {
+    /// Ordinal among the message's attachments — the `attachmentIndex`
+    /// `kiwi_download_attachment` resolves (T-339).
+    pub index: u32,
     pub filename: Option<String>,
     pub content_type: String,
+    /// Decoded size for complete bodies; for a deferred part this is the
+    /// BODYSTRUCTURE *wire* octet count (the encoded body — the decoded
+    /// payload is smaller). 0 when unknown.
     pub size: usize,
+    /// `false` marks a deferred part (T-339): saving it triggers a live
+    /// `BODY.PEEK` fetch. Always `true` on fully-stored bodies.
+    pub fetched: bool,
 }
 
 /// Full message body view (reader, KIWI-UI-017). HTML is delivered raw from
@@ -350,6 +367,68 @@ pub struct MessageSourceView {
     pub uid: u64,
     pub source: String,
     pub bytes: u64,
+    pub truncated: bool,
+}
+
+/// One per-message failure inside an mbox import — the ordinal in the file
+/// plus a bounded reason. `index: 0` marks a file-level note (leading junk
+/// before the first separator). Never a body fragment or a filename.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MboxImportIssueView {
+    /// 1-based member index inside the mbox file.
+    pub index: u64,
+    pub detail: String,
+}
+
+/// `kiwi_import_mbox` report (T-309). `imported + skippedDuplicates +
+/// skippedExpunged + failed` equals the members processed
+/// (`min(messagesFound, MAX_MBOX_MESSAGES)`); `issues` is the bounded failure
+/// detail (cap `MAX_IMPORT_ISSUES`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MboxImportView {
+    pub account_id: String,
+    pub folder: String,
+    pub folder_id: i64,
+    /// `From ` separators found (parsed or not).
+    pub messages_found: u64,
+    /// Stored as real rows.
+    pub imported: u64,
+    /// Same `Message-ID` already present on the account — skipped, not
+    /// re-imported.
+    pub skipped_duplicates: u64,
+    /// Thunderbird `Expunged` (deleted, uncompacted) members — skipped
+    /// deliberately; importing them would resurrect deleted mail.
+    pub skipped_expunged: u64,
+    /// Parse/store failures — each one also listed in `issues` (bounded).
+    pub failed: u64,
+    /// Members beyond `MAX_MBOX_MESSAGES` were not parsed at all.
+    pub truncated: bool,
+    /// Ingest-rule failures on imported rows (like `ruleFailures` on sync);
+    /// never counted in `failed` — the message itself landed.
+    pub rule_failures: u64,
+    pub issues: Vec<MboxImportIssueView>,
+}
+
+/// `kiwi_mailbox_export_mbox` report (T-316). `exported + skipped` equals
+/// the rows processed (`min(rows, MAX_EXPORT_MESSAGES)`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MboxExportView {
+    pub account_id: String,
+    pub folder: String,
+    pub folder_id: i64,
+    /// Members written to the mbox file.
+    pub exported: u64,
+    /// Rows with no obtainable RFC822 body (envelope-only, or the body
+    /// could not be loaded) — omitted from the file, counted here.
+    pub skipped: u64,
+    /// Bytes written to the destination file.
+    pub bytes: u64,
+    /// `skipped > 0 || truncated` — the file does not carry every row.
+    pub partial: bool,
+    /// Rows beyond `MAX_EXPORT_MESSAGES` were not read.
     pub truncated: bool,
 }
 

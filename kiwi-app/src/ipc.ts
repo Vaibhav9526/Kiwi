@@ -16,10 +16,13 @@ import type {
   AccountView,
   AppInfoView,
   AttachmentSavedView,
+  AuditEventView,
+  AuditIntegrityView,
   AutoconfigSuggestion,
   ChallengeView,
   ContactInput,
   ContactView,
+  CopyResultView,
   DeleteResultView,
   DeliverabilityBeginView,
   DeliverabilityReportView,
@@ -27,9 +30,12 @@ import type {
   DeliverabilityStatusView,
   DeviceView,
   FindingDetailView,
+  ForensicsExportView,
   FolderView,
   MailChangedEvent,
   LinkClickVerdict,
+  MboxExportView,
+  MboxImportView,
   MessageBodyView,
   MessagePatch,
   MessageRef,
@@ -51,15 +57,20 @@ import type {
   RulesApplyView,
   RuleView,
   SearchHit,
+  SecuritySessionView,
   SandboxOpenView,
+  SandboxSessionsView,
   SecurityStatusView,
   SendReceipt,
   SetJunkView,
   SnoozePreset,
   SnoozeResultView,
   SnoozedMessageView,
+  StorageCompactView,
+  StorageStatsView,
   SyncStatusView,
   TagCountView,
+  ThreadMuteView,
   RenderedTemplateView,
   TemplateInput,
   TemplateView,
@@ -75,7 +86,7 @@ import type {
   VCardImportView,
   VerifyResult,
 } from "./kiwi";
-import { parseAutoconfigSuggestion, parseContact, parseOAuth2Begin, parseOAuth2Poll, parseOAuth2Status, parseSearchHit } from "./kiwi";
+import { parseAutoconfigSuggestion, parseContact, parseOAuth2Begin, parseOAuth2Poll, parseOAuth2Status, parseSandboxSessions, parseSearchHit, parseSecuritySession } from "./kiwi";
 import {
   decodeDeliverabilityBeginView,
   decodeDeliverabilityReportView,
@@ -164,6 +175,31 @@ export function onMailChanged(handler: (ev: MailChangedEvent) => void): Promise<
   return listen<MailChangedEvent>("kiwi://mail-changed", (e) => handler(e.payload));
 }
 
+/**
+ * T-345: tray Compose — the backend raised the window and emitted
+ * `kiwi://tray-compose`; the renderer owns the navigation to compose.
+ */
+export function onTrayCompose(handler: () => void): Promise<UnlistenFn> {
+  if (!isTauri()) {
+    return Promise.reject(new BackendUnavailableError("kiwi://tray-compose", "not in Tauri webview"));
+  }
+  return listen<null>("kiwi://tray-compose", () => handler());
+}
+
+/**
+ * T-345: tray Quit with sends still queued — `kiwi://confirm-quit`
+ * carries `{pending}` so the renderer can confirm honestly. Confirming
+ * calls `api.confirmQuit()` (exempt — quitting leaks nothing).
+ */
+export function onQuitRequested(handler: (pending: number) => void): Promise<UnlistenFn> {
+  if (!isTauri()) {
+    return Promise.reject(new BackendUnavailableError("kiwi://confirm-quit", "not in Tauri webview"));
+  }
+  return listen<{ pending?: unknown }>("kiwi://confirm-quit", (e) =>
+    handler(typeof e.payload?.pending === "number" ? e.payload.pending : 0),
+  );
+}
+
 /* ---------------- system / lock path (exempt) ---------------- */
 
 export const api = {
@@ -178,6 +214,22 @@ export const api = {
   },
   lock(): Promise<SecurityStatusView> {
     return call<SecurityStatusView>("kiwi_lock");
+  },
+  /**
+   * DEV SEAM (KIWI_DEV_PLAINTEXT=1): clears a Locked state without an
+   * authenticator signature so fixture development is not bricked while
+   * mobile pairing is scaffold-only. `unsupported-event` without the env;
+   * audited; exempt from the lock gate.
+   */
+  devUnlock(): Promise<SecurityStatusView> {
+    return call<SecurityStatusView>("kiwi_dev_unlock");
+  },
+  /**
+   * T-345: confirmed quit — the exit half of `kiwi://confirm-quit`.
+   * Exempt: quitting a locked app leaks nothing.
+   */
+  confirmQuit(): Promise<void> {
+    return call<void>("kiwi_confirm_quit");
   },
   /** Canonical §9d unlock path — backend fixes `event:"unlock"` and owns
    *  challenge id / nonce / session / TTL; renderer supplies only deviceId. */
@@ -195,6 +247,9 @@ export const api = {
     sessionId: string;
     event: string;
     signatureB64: string;
+    /** §6.3 decision — absent means approve; "deny" is unsigned, audited
+     *  `challenge-denied`, and never consumes the challenge. */
+    decision?: "approve" | "deny";
   }): Promise<SecurityStatusView> {
     // Called only by flows holding a real authenticator signature — the UI
     // never signs. Exposed for completeness; unused by current views.
@@ -406,6 +461,16 @@ export const api = {
   async listFolders(accountId: string): Promise<FolderView[]> {
     return asArray<FolderView>(await call<unknown>("kiwi_list_folders", { accountId }));
   },
+  /** T-319: local store folder only; no IMAP server CREATE is implied. */
+  createFolder(accountId: string, name: string, parentId?: number | null): Promise<FolderView> {
+    return call<FolderView>("kiwi_folder_create", { accountId, parentId: parentId ?? null, name });
+  },
+  renameFolder(accountId: string, folderId: number, newName: string): Promise<FolderView> {
+    return call<FolderView>("kiwi_folder_rename", { accountId, folderId, newName });
+  },
+  deleteFolder(accountId: string, folderId: number): Promise<{ folderId: number }> {
+    return call<{ folderId: number }>("kiwi_folder_delete", { accountId, folderId });
+  },
   async listMessages(accountId: string, folderId: number, limit?: number): Promise<MessageView[]> {
     return asArray<MessageView>(await call<unknown>("kiwi_list_messages", { accountId, folderId, limit }));
   },
@@ -429,6 +494,34 @@ export const api = {
 
   updateMessage(accountId: string, folderId: number, uid: number, patch: MessagePatch): Promise<MessageUpdateView> {
     return call<MessageUpdateView>("kiwi_update_message", { accountId, folderId, uid, patch });
+  },
+
+  /* ---------------- conversation mute (gated, T-341) ---------------- */
+
+  /**
+   * `kiwi_thread_set_muted(conversationId, muted)` — Thunderbird's
+   * "Ignore Thread". While muted, the conversation's messages leave folder
+   * unseen counts (and the derived smart-folder badges) and raise no
+   * notification; unmuting restores both immediately.
+   *
+   * `conversationId` is the list view's own thread key
+   * (`` `${accountId}\n${normalizedSubject}` ``), so the caller passes back
+   * exactly what it renders. That key is subject folding, not RFC 5322
+   * References threading — see docs/contracts/ipc.md.
+   *
+   * `changed: false` means the thread was already in that state: a redundant
+   * repeat, not a silent failure.
+   */
+  threadSetMuted(conversationId: string, muted: boolean): Promise<ThreadMuteView> {
+    return call<ThreadMuteView>("kiwi_thread_set_muted", { conversationId, muted });
+  },
+  /**
+   * `kiwi_thread_list_muted(accountId)` — that account's muted conversation
+   * keys, sorted. Lets the list render a thread as muted from backend truth
+   * rather than a client cache that a restart would lose.
+   */
+  threadListMuted(accountId: string): Promise<string[]> {
+    return call<string[]>("kiwi_thread_list_muted", { accountId });
   },
   downloadAttachment(
     accountId: string,
@@ -456,6 +549,20 @@ export const api = {
   setPop3Policy(accountId: string, deleteAfterDownload: boolean): Promise<Pop3PolicyView> {
     return call<Pop3PolicyView>("kiwi_set_pop3_policy", { accountId, deleteAfterDownload });
   },
+  /** T-309: import a Berkeley-mbox file into an account folder (default the
+   * local `Import` folder). Report counts are honest — duplicates/expunged/
+   * failed members are skipped and counted, never silently dropped. */
+  importMbox(accountId: string, path: string, folder?: string): Promise<MboxImportView> {
+    return call<MboxImportView>("kiwi_import_mbox", { accountId, path, folder });
+  },
+  /**
+   * `kiwi_mailbox_export_mbox` (T-316) — mirror of the importer. Lock-gated,
+   * atomic write (`.kiwi-part` + rename), honest `partial`/`skipped`/`bytes`.
+   * Contract: docs/contracts/ipc.md §6j.
+   */
+  mailboxExportMbox(folderId: number, destPath: string): Promise<MboxExportView> {
+    return call<MboxExportView>("kiwi_mailbox_export_mbox", { folderId, destPath });
+  },
   linkClick(accountId: string, folderId: number, uid: number, url: string): Promise<LinkClickVerdict> {
     return call<LinkClickVerdict>("kiwi_link_click", { accountId, folderId, uid, url });
   },
@@ -464,6 +571,15 @@ export const api = {
   },
   sandboxOpenAttachment(folderId: number, uid: number, filename: string): Promise<SandboxOpenView> {
     return call<SandboxOpenView>("kiwi_sandbox_open_attachment", { folderId, uid, filename });
+  },
+  /**
+   * T-300: bounded record of completed sandbox opens, newest first — the
+   * Agenda security card's pending-sessions row. Resolves to `{sessions: []}`
+   * when nothing has been opened (absence is not an error).
+   */
+  async sandboxSessions(): Promise<SandboxSessionsView> {
+    const raw = await call<unknown>("kiwi_sandbox_sessions", {});
+    return parseSandboxSessions(raw) ?? { sessions: [] };
   },
 
   /**
@@ -507,6 +623,20 @@ export const api = {
     uids: number[],
   ): Promise<MoveResultView> {
     return call<MoveResultView>("kiwi_move_messages", { accountId, srcFolderId, dstFolderId, uids });
+  },
+  /**
+   * Local duplicate of `uids` into `dstFolderId` under fresh local uids —
+   * the Copy-to sibling of move (T-325). NOT a server-side IMAP COPY: a
+   * copy of a synced-folder message is a local-only row. Smart/system
+   * destinations are refused.
+   */
+  copyMessages(
+    accountId: string,
+    srcFolderId: number,
+    dstFolderId: number,
+    uids: number[],
+  ): Promise<CopyResultView> {
+    return call<CopyResultView>("kiwi_copy_messages", { accountId, srcFolderId, dstFolderId, uids });
   },
 
   /* ---------------- snooze (gated, T-255) ---------------- */
@@ -651,8 +781,58 @@ export const api = {
   async securityEvents(limit?: number): Promise<Record<string, unknown>[]> {
     return asArray<Record<string, unknown>>(await call<unknown>("kiwi_security_events", { limit }));
   },
-  sessionDetail(sessionId: string): Promise<Record<string, unknown>> {
-    return call<Record<string, unknown>>("kiwi_session_detail", { sessionId });
+  /**
+   * T-323/T-324: real app-audit rows from audit.jsonl — NOT transport
+   * sessions. Newest first; beforeUnix is an exclusive keyset cursor.
+   */
+  async auditEvents(beforeUnix?: number, limit?: number): Promise<AuditEventView[]> {
+    return asArray<AuditEventView>(await call<unknown>("kiwi_audit_events", { beforeUnix, limit }));
+  },
+  /**
+   * T-330/T-333: storage diagnostics + compact. Stats are real measurements
+   * (null = unmeasurable, never estimated); compact runs VACUUM and refuses
+   * `sync-in-flight` with a retry hint — callers show that message verbatim.
+   */
+  storageStats(): Promise<StorageStatsView> {
+    return call<StorageStatsView>("kiwi_storage_stats");
+  },
+  storageCompact(): Promise<StorageCompactView> {
+    return call<StorageCompactView>("kiwi_storage_compact");
+  },
+  /**
+   * T-331: audit-chain health without reading rows. Ungated, so a security
+   * strip can poll it. An unrecognized/absent field degrades to `unknown`
+   * (never `ok`) — fail-closed display.
+   */
+  async auditIntegrity(): Promise<AuditIntegrityView> {
+    const raw = await call<unknown>("kiwi_audit_integrity");
+    const rec = (raw ?? {}) as Record<string, unknown>;
+    const state = rec["state"];
+    const auditOk = rec["auditOk"];
+    if (state === "ok" || state === "corrupt" || state === "unknown") {
+      return { state, auditOk: typeof auditOk === "boolean" ? auditOk : state === "unknown" ? null : state === "ok" };
+    }
+    return { state: "unknown", auditOk: null };
+  },
+  /**
+   * T-320: save one session's deterministic forensic report to `destPath` as a
+   * self-verifying artifact (SHA-256 of its own canonical bytes embedded in
+   * the file). The written file round-trips through
+   * `kiwi_forensics::report::ExportEnvelope::verify_bytes` — no external
+   * trust store needed.
+   */
+  forensicsExport(sessionId: string, destPath: string): Promise<ForensicsExportView> {
+    return call<ForensicsExportView>("kiwi_forensics_export", { sessionId, destPath });
+  },
+
+  /**
+   * T-260: typed `SecuritySessionView` (ipc.md §3 canonical shape) with
+   * safe-render normalization — an unrecognized enum token degrades to its
+   * honest unknown form instead of rendering verbatim. A malformed envelope
+   * surfaces as `null` so the view can say so rather than show a blank card.
+   */
+  async sessionDetail(sessionId: string): Promise<SecuritySessionView | null> {
+    return parseSecuritySession(await call<unknown>("kiwi_session_detail", { sessionId }));
   },
   findingDetail(findingId: string): Promise<FindingDetailView> {
     return call<FindingDetailView>("kiwi_finding_detail", { findingId });

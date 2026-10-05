@@ -24,7 +24,10 @@ secret handling). The backend never delegates security decisions to the UI.
   `PairEngine` handlers (no second implementation).
 - **`kiwi_ping()`** returns `"kiwi backend ok"` and reports the contract
   version via `kiwi_app_info().contractVersion` (`"kiwi.ipc/1"`).
-- Errors serialize as `{ "code": string, "message": string }` — see §8.
+- Errors serialize as `{ "code": string, "message": string, "retryAfterMs"?: number }`
+  — see §8. `retryAfterMs` is present **only** when the failure carries a
+  structured backoff hint (provider `Retry-After` or an enforced cooldown);
+  a consumer must never parse it out of `message`.
 - **Wire evolution (serde posture):** view structs are serialize-only —
   consumers must ignore unknown fields. Input structs *also* ignore
   unknown fields (`deny_unknown_fields` is deliberately not set, and
@@ -37,10 +40,13 @@ secret handling). The backend never delegates security decisions to the UI.
   meets an unknown token must render `unknown`, never treat it as a pass
   (SECURITY.md rule 1).
 - Times are Unix epoch **seconds** unless the field name says `_ms`.
-- No IPC response ever contains a password, token, private key, or
-  credential-store secret. Compose bodies are accepted as *input* to
-  `kiwi_send_message` only; they are never echoed back (outbox views carry
-  envelope metadata + subject only).
+- No IPC response ever contains a password, credential, private key, or
+  credential-store secret. The single documented capability exception is
+  `deliverability_begin`'s `consentToken` — a short-lived, single-use
+  anti-replay token that is never persisted, logged, or audited (§9e.2).
+  Compose bodies are accepted as *input* to `kiwi_send_message` only; they
+  are never echoed back (outbox views carry envelope metadata + subject
+  only).
 - Everything is local-first: the only outbound calls are the configured
   mail servers and, when bound, the loopback kiwi-admin bridge (§10 of
   admin-api.md).
@@ -52,14 +58,26 @@ fails with `code: "locked"`. Exempt commands — the renderer must always be
 able to drive the lock UI — are marked **[exempt]** below:
 
 - `kiwi_ping`, `kiwi_app_info`, `kiwi_security_status`, `kiwi_lock`,
+  `kiwi_dev_unlock` (env-gated dev seam — see below),
   `kiwi_request_challenge`, `kiwi_submit_challenge`, `unlock_challenge`,
   `kiwi_collect_endpoint_signals` (signals feed trust even while locked).
+- `kiwi_audit_integrity` (T-331) — returns only a chain verdict
+  (`ok|corrupt|unknown` + boolean): no rows, counts, paths, or hashes. The audit
+  **row reader** `kiwi_audit_events` stays gated.
 - `pair_begin` / `pair_status` are exempt **only while a backend-owned
   pairing flow is active** (§9d.7); outside it they are gated like the rest.
 
 Everything else — accounts, folders, messages, sync, send/outbox, sandbox
-open, findings, events, session detail, report, devices, org binding — is
-**gated**.
+open, findings, events, session detail, report, devices, org binding, contacts,
+prefs, rules, templates, integrations, storage diagnostics — is **gated**. Note
+`kiwi_prefs_get/set/list` are gated in full: there is no prefs exemption
+subset.
+
+**This list is enforced, not documentation.** `commands/lock_matrix.rs`
+(T-340) parses the real `invoke_handler!` list from `lib.rs` and fails the
+build for any registered command that is neither gated nor present in its
+`LOCK_EXEMPT` table — so the default is *gated* and an exemption has to be
+written down. Full audit: `docs/audits/lockgate-coverage-1.md`.
 
 Lock/unlock semantics come from `kiwi-core::TrustMachine` (sticky `Locked`;
 unlock requires an authenticator-verified challenge when
@@ -99,11 +117,19 @@ fetch detail via `kiwi_collect_endpoint_signals` (§10) and
 
 Field names follow `security-session.md` §3 verbatim, camelCased
 (`sessionId`, `tlsVersion`, `certChain`, `authMechanism`, …). Enum spellings
-match the contract (`"tls1.3"`, `"hostname-mismatch"`, `"xoauth2"`, …).
+match the contract (`"tls1.3"`, `"hostname-mismatch"`, `"xoauth2"`, …) and are
+pinned by `kiwi-app` `types::tests` (T-260). `source` is `"live-client"` —
+it supersedes the pre-pivot `"thunderbird-hook"`; a standalone client has no
+Thunderbird hook behind a live observation (SS-2 ruling).
 These are **session-view tokens, not forensics wire tags** — embedded
 `Finding`/`Report` objects (§8) use FSV-1 snake_case (`"tls13"`,
 `"hostname_mismatch"`, `"x_o_auth2"`, `"start_tls"`, …); the two
 vocabularies are deliberately distinct (forensics.md §12).
+
+A renderer must **safe-render** these tokens: `parseSecuritySession` in
+`kiwi.ts` normalizes an unrecognized enum to its honest unknown form rather
+than echoing it or dropping the row, and returns `null` for an envelope that
+does not match the shape at all.
 
 ## 4. Commands — system / lock path **[exempt]**
 
@@ -122,6 +148,13 @@ Current trust/lock verdict (recomputed from live signals).
 
 ### `kiwi_lock() → SecurityStatusView`
 Administrative lock — audited. Idempotent while locked.
+
+### `kiwi_dev_unlock() → SecurityStatusView` *(exempt — dev seam, T-350/T-352)*
+Clears `Locked` **without** an authenticator signature. Exists only while
+`KIWI_DEV_PLAINTEXT=1` is set in the backend environment — otherwise it
+fails closed with `unsupported-event`. Exempt from the lock gate because
+unlocking a locked endpoint is its sole purpose. Audited on every call
+(`dev-unlock` row). See THREAT-MODEL RR-12; never shipped as a default.
 
 ### `kiwi_request_challenge(deviceId, event) → ChallengeView` *(compat alias — §9d)*
 Compatibility alias over `PairEngine::issue_challenge` — the canonical
@@ -142,17 +175,27 @@ Pairing requires a `pending` device; unlock/recovery require `active`.
 ```jsonc
 // response
 { "challengeId": "…", "deviceId": "…", "sessionId": "…",
-  "event": "unlock", "signatureB64": "…" }
+  "event": "unlock", "signatureB64": "…", "decision": "approve" }
 ```
+`decision` is `"approve"` (default when absent — the pre-T-282 wire) or
+`"deny"` (authenticator.md §6.3: unsigned, audited `challenge-denied`,
+confers no authorization, never consumes the challenge). Approves are
 Ed25519-verified against the registered device key over canonical bytes —
 delegates to `PairEngine::verify_response`, which atomically consumes the
 challenge (single-use enforced in the same SQLite transaction as the
 activation write; `pair.db` is the persistent nonce/replay ledger). On
 success the bound action runs: `unlock` → `attempt_unlock`,
-`device-pairing` → `pending → active`. `recovery`/`elevated-action` verify
-but currently return `unsupported-event`. Errors: `invalid-signature`,
+`device-pairing` → `pending → active`. `recovery`/`elevated-action` are
+refused `unsupported-event` BEFORE verification — the challenge is never
+consumed for a post-action that cannot run. Audit (authenticator.md §9,
+evidence-before-effect): `challenge-approved` and `device-paired` on
+success, `challenge-denied` on an attributable deny, and
+`challenge-verification-failed` (`err=<ChallengeError name>`, or the IPC
+code for non-challenge engine failures) on every failed response — a
+silent timeout writes no row (§6.3). Errors: `invalid-signature`,
 `challenge-expired`, `already-consumed`, `binding-mismatch`,
-`unknown-challenge`, `device-not-active`, `unsupported-algorithm`.
+`unknown-challenge`, `device-not-active`, `device-revoked`,
+`unsupported-event`, `invalid-input` (bad `decision`).
 `challenge-expired` is the only emitted spelling; the legacy `expired`
 code is withdrawn.
 
@@ -316,6 +359,71 @@ Snoozed/parked rows **count** toward both (snooze defers display, it
 doesn't suppress — same principle as §6e search). The unread badge reads
 `unseen`.
 
+### `kiwi_folder_create(accountId, parentId?, name) → FolderView` (T-319, T-328)
+Routing depends on the account's incoming protocol:
+
+- **POP3 account → local store folder** (T-319 semantics, unchanged). Creates
+  under `parentId` (or root when omitted/`null`); the parent must be a local
+  folder on the same account. Names are trimmed, required, ≤255 bytes, and
+  reject `/`, `\`, control characters, `.`/`..`, reserved system mailbox
+  names, and case-insensitive sibling duplicates. The new row has
+  `origin: "local"`. POP3 has no server folder namespace, so local is the
+  only honest answer.
+- **IMAP account → server-side `CREATE`** (T-328). The wire op runs first;
+  the local `origin: "remote"` row is mirrored only after the tagged `OK`
+  **and** a verifying `LIST` shows the mailbox (server spelling wins). The
+  hierarchy delimiter is probed via `LIST "" ""`, never assumed — a `NIL`
+  delimiter (flat namespace) refuses with `protocol-error`. A `parentId`
+  that resolves to a `remote`/`system` row composes the child's wire name as
+  `<parentWire><delimiter><name>`; a `local` parent is refused
+  (`invalid-input` — the server cannot see it). Leaf names are trimmed,
+  required, ≤255 bytes, and reject control characters, `.`/`..`, reserved
+  system names, the LIST wildcards `%`/`*` (RFC 3501 §6.3.8 — a wildcard in
+  a name would make later LIST traffic ambiguous), and the server's own
+  hierarchy delimiter.
+
+### `kiwi_folder_rename(accountId, folderId, newName) → FolderView` (T-319, T-328)
+Routing depends on the **target row's origin**:
+
+- `local` → T-319 store rename, same validation and sibling uniqueness.
+- `remote`/`system` → IMAP `RENAME` on the wire name (T-328). `INBOX` is
+  refused `policy-blocked` — RFC 3501 RENAME INBOX means "move every inbox
+  message", not a rename. The new name keeps the old wire prefix: renaming
+  `A/B` to `C` issues `RENAME A/B A/C` (leaf semantics, matching the local
+  UX). After the tagged `OK`, a verifying `LIST` must show the new name;
+  then the local rows mirror — the target plus every `old<sep>…` inferior
+  row is rewritten in the same transaction (the server renames inferiors
+  and carries subscription state per RFC 3501 §6.3.5). POP3 accounts have
+  no remote namespace → `policy-blocked`.
+
+### `kiwi_folder_delete(accountId, folderId) → { folderId }` (T-319, T-328)
+Routing depends on the **target row's origin**:
+
+- `local` → T-319 store delete: owned, empty leaf only; `policy-blocked`
+  when it contains messages or has child folders.
+- `remote`/`system` → IMAP `DELETE` on the wire name (T-328). `INBOX` is
+  refused `policy-blocked` (RFC 3501 §6.3.4 — INBOX is permanent). After
+  the tagged `OK`, a verifying `LIST` must show the mailbox *gone*; only
+  then does the local row delete (its messages, evidence, and payload
+  files cascade with it). Inferior mailboxes are the server's — a remote
+  parent delete leaves `Tasks/Sub` standing. POP3 accounts →
+  `policy-blocked`.
+
+**Fail-closed ordering (T-328):** every remote op is
+validate → audit intent (`folder-*-requested`) → wire op → verifying
+`LIST` → local mirror → audit outcome (`folder-*-remote`). A server `NO`/`BAD`
+surfaces as `server-reject` with the reply text verbatim; an `OK` that the
+verifying LIST contradicts surfaces as `protocol-error`. Nothing is mirrored
+ahead of the server, so a refused or failed op leaves zero local residue.
+Each remote session is also recorded through the transport-observation path
+(`imap folder create|rename|delete` labels).
+
+`FolderView` includes `parentId: number | null` and
+`origin: "remote" | "local" | "system"`. Existing sync rows migrate to
+`remote`, canonical mailbox names to `system`, and only user-created rows are
+`local`. Remote rows keep `parentId: null` — the wire name is the canonical
+identity, same shape sync registers.
+
 ### `kiwi_list_messages(accountId, folderId, limit?) → MessageView[]`
 Newest first. `limit` default 50, clamp 1–500. `folderId` must belong to
 `accountId` (cross-account reads → `not-found`).
@@ -349,14 +457,38 @@ uids, or lazily from stored bodies (≤32 parses per list call). `null`/
 `[]` means "unknown" — no-body messages predating the cache learn on
 their next sync or body fetch.
 
-### `kiwi_search_messages(query, folderId?, limit?) → SearchHitView[]` (T-231)
+### `kiwi_search_messages(query, folderId?, limit?) → SearchHitView[]` (T-231, operators T-334)
 FTS5 over the local store (`kiwi_mail::search` — subject/from/to/snippet
-columns; `body:` terms match the snippet proxy). Grammar: plain terms,
-`subject:`/`from:`/`to:`/`body:` scopes, `"quoted phrases"`, `-negation`;
-≤8 terms, `limit` default 50 clamp 1–500, `query` bounded at 512 chars.
-`folderId` (must be ≥0) scopes to one folder; omitted → every folder.
-`accountId` is resolved server-side from the folder row per hit.
-`has:`/`folder:` are UI post-filters and are not part of this grammar.
+columns; `body:` terms match the snippet proxy) **plus** fielded
+operators that filter real columns. Grammar:
+
+- Free text: plain terms, `"quoted phrases"`, `-negation`,
+  `body:`/`text:`/`snippet:` scopes. ≤8 terms/predicates total.
+- Fielded operators (AND-combined with each other and the free text):
+  - `from:v`, `to:v`, `subject:v` — case-insensitive substring on the
+    stored column (LIKE, escaped — `%`/`_` are literal).
+  - `has:attachment` — `has_attachments` set.
+  - `is:unread`, `is:read`, `is:starred`/`is:flagged` — `\Seen`/`\Flagged`
+    flag tokens, exact-token match.
+  - `before:YYYY-MM-DD` — `date_unix <` that day's UTC midnight;
+    `after:YYYY-MM-DD` — `date_unix >=` that midnight. Dates are strict
+    (real calendar dates only).
+  - `in:name` / `folder:name` — folder name, case-insensitive, across
+    every account's folder rows; ANDs with `folderId` when both given.
+- Operator values may be quoted (`subject:"two words"`,
+  `in:'Sent Items'`); `-` negates an operator (`-has:attachment`).
+- Unknown `key:value` tokens — and known operators with malformed values
+  (`before:tuesday`, `has:cheese`) — degrade to literal free text: no
+  error, no silent drop.
+- `limit` default 50, clamped 1–500 at the command — and the engine then
+  caps returned rows at its own bound (200), so the effective maximum
+  page is 200 hits. `query` bounded at 512 chars.
+  `folderId` (must be ≥0) scopes to one folder; omitted → every folder.
+  `accountId` is resolved server-side from the folder row per hit.
+- A query made only of fielded predicates runs as a real-column scan
+  (no FTS join); a query of only negated free text still yields nothing.
+- The renderer's `?` help hint (titlebar search placeholder) lists these
+  operators — the SearchView syntax chips mirror this grammar.
 
 ```jsonc
 { "accountId": "a1", "folderId": 1, "uid": 991, "subject": "…",
@@ -369,16 +501,20 @@ Errors: `invalid-input` (query >512 chars, `folderId` < 0), `locked`,
 
 ### `kiwi_get_message(accountId, folderId, uid) → MessageBodyView`
 Reads the stored body; for IMAP, missing bodies are fetched on demand
-(`BODY[]`) and stored — that fetch is itself recorded as a session.
-`inReplyTo`/`references` come from the parsed body (authoritative).
+and stored — that fetch is itself recorded as a session. T-339: a
+message with deferred attachments fetches a **skeleton**
+(`BODY.PEEK[HEADER]` + per-leaf `…MIME` headers + eager text leaves —
+attachment payloads are never pulled by this read); one without part
+rows fetches `BODY[]` as before. `inReplyTo`/`references` come from the
+parsed body (authoritative).
 
 ```jsonc
 { "folderId": 1, "uid": 991, "messageId": "<…>" | null,
   "subject": "…" | null,
   "from": ["a@b"], "to": ["…"], "cc": [], "dateUnix": 0 | null,
   "textBody": "…" | null, "htmlBody": "…" | null,
-  "attachments": [ { "filename": "…" | null, "contentType": "…",
-                   "size": 123 } ],
+  "attachments": [ { "index": 0, "filename": "…" | null,
+                   "contentType": "…", "size": 123, "fetched": false } ],
   "bodyPresent": true,
   "inReplyTo": "<…>" | null, "references": ["<…>"] }
 ```
@@ -389,12 +525,23 @@ honest absence, never an empty string. `textBody: null` with
 `bodyPresent: true` means the message has no text/plain alternative;
 render the sanitized `htmlBody` path instead.
 
+`attachments[]` (T-339): `index` is the ordinal `kiwi_download_attachment`
+resolves; `fetched: false` means the payload is deferred server-side and
+a save triggers a live `BODY.PEEK[<section>]` fetch (recorded). For
+deferred parts `size` is the BODYSTRUCTURE **wire** octet count — the
+encoded body, not the decoded payload — and 0 means unknown. Attachment
+rows on a deferred message come from persisted server-derived
+descriptors, not from re-parsing the skeleton.
+
 ### `kiwi_message_source(accountId, folderId, uid) → MessageSourceView` (T-295)
 Verbatim RFC822 source for the reader's "view source" surface (T-292
-flagged this as missing). Same fetch semantics as `kiwi_get_message`:
-stored body, IMAP `BODY[]` on-demand fetch (recorded + stored) when
-absent. A body that is absent locally AND unfetchable is **`not-found`**
-— never an empty string. `source` is UTF-8-lossy decoded and capped at
+flagged this as missing). Always the **complete** body: stored bytes when
+whole, else a live IMAP `BODY[]` fetch (recorded + stored). T-339: a
+stored skeleton (`message_parts` rows present) is never returned as
+source — the real `BODY[]` lands first, replaces it, and clears the
+deferred marker. A body that is absent locally AND unfetchable is
+**`not-found`** — never an empty string. `source` is UTF-8-lossy decoded
+and capped at
 **8 MiB of bytes** with char-boundary walk-back (same rule as
 `kiwi_render_body`); `bytes` reports the stored total and `truncated`
 marks the cap firing, so the UI can label "first 8 MiB of N".
@@ -432,6 +579,55 @@ sidecar index (`AccountMeta.pop3_delete_after_download`), audited
 (`pop3-delete-policy`). The live-sync worker reads the same flag, so the
 policy applies identically to manual and scheduled passes.
 
+### `kiwi_import_mbox(accountId, path, folder?) → MboxImportView` (T-309)
+
+Import a Berkeley mbox file into a local folder — the migration path for
+Thunderbird/Mailspring-era mail. Lock-gated; `path` must be an existing
+regular file on the host, bounded at **512 MiB** and ≤50 000 `From `
+members (larger archives must be split first). A file with no `From `
+separator is `invalid-input`, not a zero-row import.
+
+```jsonc
+{ "accountId": "a1", "folder": "Import", "folderId": 9,
+  "messagesFound": 4, "imported": 2, "skippedDuplicates": 0,
+  "skippedExpunged": 1, "failed": 1, "truncated": false,
+  "ruleFailures": 0,
+  "issues": [ { "index": 3, "detail": "no parseable headers" } ] }
+```
+
+Semantics:
+
+- **Local targets only (T-326).** Default target is `Import`. A target
+  that resolves to a *synced* folder (`origin` `remote` or `system` — rows
+  a sync pass owns) is refused with `policy-blocked` before any
+  row is written: imported uids are locally minted and server-unknown, so
+  reconcile would expunge them on the next pass. Resolution is
+  case-insensitive (`COLLATE NOCASE`, matching folder-name uniqueness) —
+  a case-variant of a synced name refuses too. A returned `MboxImportView`
+  is therefore non-synced by construction — there is deliberately no
+  `folderIsSynced` field (it could only ever be `false`).
+- **Parsing is mboxrd**: `From ` lines at line-start are separators (the
+  envelope sender feeds `fromAddr` when the message has no `From:` header);
+  `>+From ` body lines are unescaped one level. `\r\n` and `\n` both split;
+  stored bodies keep the file's original line endings.
+- **X-Mozilla-Status/-Status2 map best-effort** (nsMsgMessageFlags.idl):
+  `0x0001`→`\Seen`, `0x0002`→`\Answered`, `0x0004`→`\Flagged`,
+  legacy status2 `0x00080000`→`\Junk`. `0x0008` **Expunged** members are
+  *skipped* and counted — importing a deleted-but-uncompacted row would
+  resurrect mail the user already deleted.
+- **Dedup is account-wide on `Message-ID`** — re-running the same import
+  skips every already-stored member (`skippedDuplicates`); members without
+  a `Message-ID` always import.
+- **Every member is accounted for**: `imported + skippedDuplicates +
+  skippedExpunged + failed == min(messagesFound, cap)`; `truncated` marks
+  members past the cap never parsed. `issues` is bounded (≤200 entries,
+  160-char details, no bodies/filenames).
+- **Imported rows run the same ingest pipeline as sync** — rules
+  (`EvalStage::Full`, errors in `ruleFailures`), attachment/link risk, and
+  an Authentication-Results stamp with no SMTP receipt (`spf=none`, never
+  a fabricated verdict). Threading headers are indexed for the thread view.
+- Audited as `mbox-imported` with the account, folder, and all counts.
+
 ## 6b. Commands — message actions **[gated]** (T-146)
 
 ### `kiwi_update_message(accountId, folderId, uid, patch) → MessageUpdateView`
@@ -445,10 +641,23 @@ row + body file move with it. Returns `{folderId, uid, flags,
 movedToFolderId}` — `folderId` is the *source* the caller passed. Audited.
 
 ### `kiwi_download_attachment(accountId, folderId, uid, attachmentIndex, destPath) → AttachmentSavedView`
-Extracts part N of the stored MIME body to `destPath` (the UI save-dialog
-path; parents created as needed). Bound: decoded bytes ≤50 MiB. `destPath`
-inside the app data dir is refused. `filename`/`contentType` come from the
-MIME part — never the caller. Audited (`attachment-saved`).
+Extracts attachment `attachmentIndex` to `destPath` (the UI save-dialog
+path; parents created as needed). Bound: decoded bytes ≤50 MiB.
+`destPath` inside the app data dir is refused. `filename`/`contentType`
+come from the MIME part or the persisted part descriptor — never the
+caller. Audited (`attachment-saved`, plus `attachment-fetched` when a
+deferred payload lands).
+
+**Deferred parts (T-339):** when `message_parts` rows exist (the stored
+body is a skeleton), the index resolves a server-derived descriptor; a
+payload absent locally is fetched via `UID FETCH BODY.PEEK[<section>]`
+on a fresh connection — the section comes only from the persisted
+descriptor, re-verified against a fresh BODYSTRUCTURE (index + section +
+mime must match; drift fails closed rather than pulling another
+message's bytes). The decoded payload is stored durably under
+`attachments/` and the row marked fetched, so repeat saves are local.
+Without part rows the stored complete body's MIME tree is walked
+verbatim, as before.
 
 ### `kiwi_render_body(accountId, folderId, uid) → RenderedBodyView`
 Sanitized HTML fragment for the webview — ammonia strict allowlist
@@ -492,6 +701,46 @@ Audited.
   "uidMap": { "12": 41 } }
 ```
 
+### `kiwi_copy_messages(accountId, srcFolderId, dstFolderId, uids) → CopyResultView` (T-325)
+
+Local **Copy-to** — the sibling of move that drag/ctx-menu never exposed.
+Duplicates each `uids` row into `dstFolderId` under a **fresh local uid**,
+preserving envelope fields + flags; body file, attachment dir, and the
+attachment/link/auth evidence rows are byte-/row-copied so the duplicate
+keeps its evaluation. **Source is untouched** — rows, payloads, and snooze
+state all stay (a copy of a parked message is not itself parked: snooze
+binds to the source coordinate). Absent uids are skipped, not errors.
+
+**This is NOT a server copy.** No `UID COPY` is issued — a copy of a
+synced-folder message lands in `dst` as a *local-only* row with no server
+identity; on the next reconcile the server remains the authority for the
+source side. Real IMAP `COPY`/`UID COPY` semantics belong to the sync
+layer — **filed gap**: when that lands, copies into *remote* folders can
+upgrade to server-side duplication without an IPC change.
+
+Destination rules (same deny-by-construction family as move, plus one
+copy-specific refusal):
+- `dstFolderId` must be a real `folders` row on `accountId` — smart views
+  (Unread/Starred/All-inboxes…) have no row and are `not-found`; a foreign
+  account's folder is `not-found` (never a partial cross-account write).
+- **System-origin destinations are refused** (`invalid-input`) — INBOX /
+  SENT / TRASH / DRAFTS / JUNK / ARCHIVE are sync-owned mailboxes; a
+  local-only copy inside one fabricates "received" provenance that the
+  next reconcile would expunge anyway. Copy into a local folder. (Move
+  keeps its Trash destination because that is the delete path.)
+- `srcFolderId` may be any owned real folder — copying OUT of
+  system/synced folders is the point (e.g. Inbox → project folder).
+- `srcFolderId == dstFolderId` → `invalid-input`; `uids` bounded at 500,
+  non-empty, non-negative.
+
+Lock-gated; audited `messages-copied` (account + folder ids + count —
+never subjects/paths).
+
+```jsonc
+{ "srcFolderId": 1, "dstFolderId": 5, "copied": 2,
+  "uidMap": { "12": 41, "15": 42 } }
+```
+
 ### `kiwi_message_unsubscribe(accountId, folderId, uid, action, consent?) → UnsubscribeResultView` (T-234)
 
 Executes the stored List-Unsubscribe offer on a message — the action the
@@ -532,6 +781,94 @@ audit row (`unsubscribe-http` / `unsubscribe-mailto`).
 received; mailto: queued). `httpStatus` <400 means the endpoint accepted
 the unsubscribe — a 4xx/5xx is still `executed` but reported so the UI
 can tell "sent" from "probably ignored".
+
+## 6b-ii. Commands — conversation mute (T-341)
+
+Thunderbird's **Ignore Thread**, at conversation scope. Distinct from the
+T-167 **account** mute, which silences a whole mailbox; this suppresses one
+conversation and leaves its siblings alone.
+
+### `conversationId` — the exact identity, and its honest limits
+
+A conversation id is `` `${accountId}\n${normalizedSubject}` `` — the literal
+`\n` separator, then the folded subject. It is **the list view's own thread
+key**, chosen deliberately: the UI mutes exactly the grouping it displays,
+so a mute can never disagree with what the user clicked.
+
+The normalization is `kiwi-mail/src/threading.rs` (`normalize_subject`):
+case-folded, `Re:`/`Fwd:`/`Aw:` prefixes stripped (repeatedly, with
+separator punctuation), whitespace collapsed.
+
+> **Honest limitation — this is subject folding, NOT RFC 5322 threading.**
+> The store holds no `References`/`In-Reply-To` graph, so two different
+> conversations that share a normalized subject ("Weekly report" in January
+> and in March) are one conversation, and muting one mutes both. Conversely a
+> reply that changes its subject lands in a different conversation. This
+> matches what the UI already shows, so counts and labels stay consistent —
+> but it is weaker than true threading, and true threading is not
+> implemented. Clients must not assume a conversation is a mail thread.
+
+Because the id carries the account, the same subject on two accounts is two
+independent mutes.
+
+### `kiwi_thread_set_muted(conversationId, muted) → ThreadMuteView`
+Mutes or unmutes one conversation. Both directions are idempotent: asking
+for the state a conversation is already in succeeds and reports
+`changed: false` rather than pretending to have written anything.
+
+Returns `{conversationId, accountId, muted, changed}` — `conversationId` is
+echoed verbatim, so the caller can match the receipt to its request without
+re-deriving anything.
+
+| Field | Meaning |
+|---|---|
+| `conversationId` | Echo of the argument, verbatim. |
+| `accountId` | The account parsed out of the id. Mutes are per account. |
+| `muted` | The state now in effect (echoes the `muted` argument). |
+| `changed` | `true` only when this call changed stored state. |
+
+**What a mute suppresses — and what it does not:**
+
+- **Folder `unseen` counts** drop, immediately and in the store (not a
+  client-side filter). Because the smart-folder badges derive from folder
+  `unseen`, smart counts follow automatically.
+- **Notifications** never fire for that conversation.
+- **`exists` is untouched** — it stays the truthful total of stored rows.
+  Only the *unseen* number is suppressed, so a mute never makes the app
+  claim fewer messages exist than do.
+- **Read state is untouched.** Muting hides nothing from the reader; opening
+  a message still works.
+- Unmuting restores the count on the next `folder_stats` call.
+
+**Persistence & lifetime:** the mute is keyed by conversation, not by
+message rows, so it survives every message in the thread being deleted,
+moved, or expunged, and it keeps suppressing mail that has not synced yet.
+Deleting the **account** cascades and removes the mutes with it.
+
+Errors: `invalid-input` for a malformed id (no `\n`, empty/oversized
+subject, bad control characters) or a subject that normalizes to nothing;
+`not-found` for a well-formed id naming an account that does not exist — a
+mute that silently suppresses nothing is not a success. `locked` while the
+app is locked, like every other gated command.
+
+Audited as `thread-muted` / `thread-unmuted`, recording the account, the
+conversation key, and whether the row changed — never a subject line or a
+message id.
+
+### `kiwi_thread_list_muted(accountId) → string[]`
+The account's muted conversation keys, sorted. The list view uses this to
+render a thread as muted from backend truth rather than from a client cache
+that a restart would lose. Account-scoped: returns `[]` for an account with
+no mutes.
+
+**UI seam (not built here — store + IPC only):** a thread context-menu item,
+"Ignore thread" / "Stop ignoring", calling `threadSetMuted(key, !muted)`
+and re-fetching folder stats on the returned receipt.
+
+```ts
+// { "conversationId": "a1\ndeploy", "accountId": "a1",
+//   "muted": true, "changed": true }
+```
 
 ## 6c. Live sync engine **[background]** (T-157)
 
@@ -699,6 +1036,44 @@ what stored evidence shows, never guesses). `conditionHits` lists only true
 predicate leaves using stable AST paths (`$`, `$.children[n]`, `$.child`); it
 never returns the matched address, header, or body value.
 
+### `kiwi_sandbox_sessions() → SandboxSessionsView` **[gated]**
+The transparency surface behind the Agenda security card's pending-sessions
+row (T-300): the bounded, in-memory record of sandbox opens, **newest first**.
+There is no live guest — every open above tears down before it is recorded —
+so a recorded session's `state` is always `completed` and `expiresAtUnix` is
+`null`. `expiresAtUnix` is reserved so a future live-session provider can
+populate it without a wire change.
+
+`sessions` is bounded at 128 rows (the store ring's capacity; oldest evicted
+first). When nothing has ever been opened the result is `{"sessions": []}` —
+**absence is never an error**, so the card renders an honest empty row rather
+than a failure. Errors: `locked` only.
+
+```jsonc
+{ "sessions": [
+    { "sessionId": "sandbox:0", "kind": "link",
+      "target": "https://evil.example/login",
+      "riskVerdict": "failed",
+      "evidenceReasons": ["insecureHttp", "ipLiteralHost"],
+      "openedAtUnix": 1760000000, "state": "completed",
+      "expiresAtUnix": null },
+    { "sessionId": "sandbox:1", "kind": "attachment",
+      "target": "attachment:f3/u712",
+      "riskVerdict": null,
+      "evidenceReasons": ["evidence-unavailable"],
+      "openedAtUnix": 1760000100, "state": "completed",
+      "expiresAtUnix": null } ] }
+```
+
+Field honesty: `target` is the same sanitized display target as the open
+receipts — a URL with userinfo/query/fragment removed for links, the
+`attachment:f<folderId>/u<uid>` coordinate for attachments. `riskVerdict` is the
+stored message's own link/attachment hint (`clean | noted | failed`) and is
+`null` when no stored evidence matched the target: absent evidence, **never a
+fabricated `clean`**. `evidenceReasons` stays the bounded stable reason codes —
+never a URL, filename, host path, or body fragment. The renderer drops rows it
+cannot parse rather than guessing a verdict.
+
 ### Ingest-time application (sync path — no IPC entry)
 The same engine runs automatically during sync: IMAP `sync_folder`
 evaluates envelope-stage rules on new INBOX messages (block verdicts
@@ -746,15 +1121,18 @@ WSL2 artifact tier structurally blocks egress and therefore returns
 
 ### `kiwi_sandbox_open_attachment(folderId, uid, filename) → SandboxOpenView`
 
-The input is a **stored payload reference only**: the backend re-opens the
-message's stored MIME body, requires exactly one exact filename match, stages
-the decoded bytes privately, invokes the provider, and deletes the staging
-path afterwards. Raw attachment bytes and host paths never cross IPC and are
-not echoed. Decoded size is bounded at 64 MiB and at the active provider's
-`maxArtifactBytes`. The message's `attachRisk.reasons` are handed into the
-session record; absent evidence is explicitly `evidence-unavailable`, never
-clean. `target` is the coordinate `attachment:f<folderId>/u<uid>`, never the
-filename or staging path.
+The input is a **stored payload reference only**: the backend requires
+exactly one exact filename match, stages the decoded bytes privately,
+invokes the provider, and deletes the staging path afterwards. On a
+complete body the stored MIME tree is walked; on a T-339 skeleton the
+match resolves a persisted `message_parts` descriptor and the payload
+lands first via the on-demand `BODY.PEEK[<section>]` path (recorded,
+drift-checked). Raw attachment bytes and host paths never cross IPC and
+are not echoed. Decoded size is bounded at 64 MiB and at the active
+provider's `maxArtifactBytes`. The message's `attachRisk.reasons` are
+handed into the session record; absent evidence is explicitly
+`evidence-unavailable`, never clean. `target` is the coordinate
+`attachment:f<folderId>/u<uid>`, never the filename or staging path.
 
 Errors: `locked`, `invalid-input`, `not-found` for the stored reference,
 `sandbox-unavailable`, or `sandbox-failed`. No host-open fallback.
@@ -968,6 +1346,93 @@ Audit posture: create/update/delete are recorded (drafts-adjacent writes
 `render` are reads and unaudited. Template **content** never enters the
 log — event detail is the id only.
 
+## 6j. Commands — mbox interchange **[gated]** (T-309 import, T-316 export)
+
+Both directions speak **mboxrd** — the variant Thunderbird writes — and
+share one implementation (`kiwi_mail::mbox`), so the conventions below
+are normative for both sides:
+
+- **Separator:** a line starting with `From ` (5 bytes + space) at file
+  start or right after a `\n` begins a new member; the envelope line
+  itself is not message content. Export writes
+  `From <sender-token-or---> <asctime-UTC>` LF — the token comes from the
+  stored `from_addr` (`<…>` content or first whitespace token, ≤256 B),
+  the timestamp from `date_unix`; absent values emit `From -`.
+- **Escaping (write):** every line matching `^>*From ` gains one leading
+  `>` — `From ` → `>From `, `>From ` → `>>From `, any depth. Unescape
+  (read) strips exactly one `>` from `^>+From ` lines. Payload line
+  endings pass through verbatim both ways; each member is terminated by
+  `\n` before the next separator.
+- **Flags round-trip via `X-Mozilla-Status` / `X-Mozilla-Status2`**
+  (nsMsgMessageFlags): Read `0x0001`↔`\Seen`, Replied `0x0002`↔`\Answered`,
+  Marked `0x0004`↔`\Flagged`, Expunged `0x0008` (import skips — exporting
+  never stamps it, the row is either stored or not), status2 Junk
+  `0x00080000`↔`\Junk`. Export stamps only when a mapped flag exists and
+  the payload lacks the header (a re-exported import keeps its own stamp).
+
+### `kiwi_import_mbox(accountId, path, folder?) → MboxImportView` (T-309)
+
+Imports a local mbox file into a folder (default the local `Import`
+folder — never a sync target unless the caller names one). Honest counts:
+every `From ` member lands as `imported`, `skippedDuplicates` (same
+`Message-ID` already on the account), `skippedExpunged` (Expunged bit —
+never resurrect deleted mail), or `failed` + a bounded `issues` list
+(`{index, detail}` ≤200 entries, detail ≤160 B, never a filename or body
+fragment). `truncated` when the file holds >`MAX_MBOX_MESSAGES` (50k)
+members; the file itself is capped at 512 MiB. Imported rows run the
+full ingest pipeline (rules, attach/link risk, `spf=none` auth stamp —
+no fabricated verdict). Audit: `mbox-imported` (ids + counts).
+
+```ts
+interface MboxImportView {
+  accountId: string; folder: string; folderId: number;
+  messagesFound: number;   // `From ` separators parsed
+  imported: number; skippedDuplicates: number; skippedExpunged: number;
+  failed: number;          // unparseable/store failures — see issues
+  truncated: boolean;      // members beyond the 50k cap unprocessed
+  ruleFailures: number;    // ingest-rule errors; the rows still landed
+  issues: { index: number; detail: string }[];  // 1-based member ordinals
+}
+```
+
+### `kiwi_mailbox_export_mbox(folderId, destPath) → MboxExportView` (T-316)
+
+Streams the folder's rows to a `.mbox` file at `destPath` — the mirror of
+the importer. Bodies come from the same loader `kiwi_message_source` uses:
+stored RFC822 verbatim, else one bounded on-demand IMAP `BODY[]` fetch;
+nothing is reconstructed from envelope fields. A row with no obtainable
+body (envelope-only, dead server) is **omitted and counted in `skipped`**
+— `partial` flips true, so a partial file is never presented as complete.
+8 consecutive load failures trip a breaker: remaining rows count as
+`skipped` without further fetch attempts.
+
+The write is atomic — bytes land at `<destPath>.kiwi-part` and rename over
+the destination (an existing file at the chosen path is replaced; a crash
+never leaves a truncated mbox there). `destPath` must name a writable
+file inside an existing directory — a directory path, missing parent,
+empty string, or **anywhere under the app data dir** (canonicalized —
+mail.db/audit.jsonl/stored bodies must never be the target) is an input
+error; rows are capped at `MAX_EXPORT_MESSAGES`
+(50k, symmetric to import) with overflow reported via `truncated`.
+Lock-gated; `folderId` must belong to a registered account. Audit:
+`mbox-exported` — account/folder ids + counts only, never the path or
+subjects.
+
+```ts
+interface MboxExportView {
+  accountId: string; folder: string; folderId: number;
+  exported: number;   // members written
+  skipped: number;    // rows with no obtainable body — omitted, not faked
+  bytes: number;      // file size
+  partial: boolean;   // skipped > 0 || truncated
+  truncated: boolean; // rows beyond the 50k cap unread
+}
+```
+
+Errors: `locked`, `invalid-input` (bounds/dest checks), `not-found`
+(unknown folder, missing destination directory), `io`-class write
+failures surface as `invalid-input` with a bounded reason.
+
 ## 7. Commands — send / outbox **[gated]**
 
 ### `kiwi_send_message(accountId, message: ComposeInput, options?) → SendReceipt`
@@ -990,6 +1455,16 @@ two cannot lose a committed send.
 // receipt
 { "queueId": "send-…", "notBeforeUnix": 0, "undoWindowUntilUnix": 0 }
 ```
+
+**Integration-bound destinations (binding).** Before the outbox write, the
+backend resolves the final recipient set against every integration-managed
+endpoint (live temp-mail address and any reserved deliverability address).
+A match requires an OS-level `rfd` confirmation whose affirmative result is
+consumed inside Rust; denial is `consent-required`, a burst is
+`consent-throttled`, both are audited, and neither enqueues. Ordinary mail
+to the user's own recipients never prompts. A successful prompt-then-enqueue
+still gets the normal retryable dispatch class; only the deliverability
+command opts into the single-attempt class (§9e.2).
 
 ### `kiwi_cancel_send(queueId) → { cancelled: bool }`
 Recall a queued send. Succeeds while the item is still recallable:
@@ -1122,6 +1597,232 @@ Unknown id → `not-found`.
 `kiwi.forensics/2` report built from retained findings
 (`generatedFrom: "live"`, limitation noting live-observation scope).
 
+### `kiwi_forensics_export(sessionId, destPath) → ForensicsExportView` **[gated]** (T-320)
+Writes one session's deterministic `kiwi.forensics/2` report to a file as a
+**self-verifying artifact**: the SHA-256 of the report's own canonical bytes is
+embedded in the file, so a reader detects tampering with **no external trust
+store** — no signature, no sidecar, no second file.
+
+```jsonc
+// input
+{ "sessionId": "app:imap:3", "destPath": "C:/Users/me/reports/r3.json" }
+// response
+{ "path": "C:/Users/me/reports/r3.json", "bytes": 48213,
+  "sha256": "9f2c…", "reportContractVersion": "kiwi.forensics/2",
+  "findings": 3, "generatedAtUnix": 1760000000 }
+```
+
+The file is an integrity envelope wrapping the report:
+
+```jsonc
+{ "envelopeVersion": "kiwi.forensics-export/1",
+  "reportContractVersion": "kiwi.forensics/2",
+  "ruleCatalogVersion": 1, "scoringModelVersion": "kiwi-score-2",
+  "generatedAtUnix": 1760000000,
+  "sha256": "<lowercase hex over the canonical bytes of `report`>",
+  "reportBytes": 47980,
+  "report": { /* the unchanged kiwi.forensics/2 Report */ } }
+```
+
+**Verify-by-construction.** The digest covers the *report payload only*; the
+envelope is derived metadata and never mutates the report, so the embedded
+bytes are exactly what `Report::to_json` renders and the payload still parses
+with the existing `Report::from_json`. Readers verify with
+`kiwi_forensics::report::ExportEnvelope::verify_bytes(bytes)`, which returns
+`Valid` (digest + length both match), `DigestMismatch` (parsed, but the payload
+was modified after export), or `Unrecognized` (not an envelope, wrong
+`envelopeVersion`, or not UTF-8). A foreign or tampered file is a **verdict,
+never a panic**. Manual check: re-serialize `report`, SHA-256 it, compare to
+`sha256`; also compare `reportBytes` to the re-serialized length.
+
+`generatedAtUnix` is deliberately **not** covered by the digest — a clock is
+not a content fact, and baking it in would make the digest change on every
+re-export of otherwise identical evidence. `ruleCatalogVersion` +
+`scoringModelVersion` are carried so a verifier can distinguish "modified" from
+"produced by a different engine".
+
+Path and safety rules (mirroring the mbox export, T-316):
+- **Atomic** — built at `<destPath>.kiwi-part`, renamed over the destination;
+  a crash never leaves a truncated artifact at the chosen path. A pre-existing
+  file at that path is replaced.
+- **Fail-closed destination** — must name a file inside an *existing*
+  directory: a directory, a missing parent, or an empty path is
+  `invalid-input`/`not-found` rather than an io-detail leak. Writing inside the
+  app data dir is refused, so an export can never overwrite `mail.db`, the
+  audit log, or a stored body.
+- **Bounded** — the serialized artifact is capped at 32 MiB
+  (`MAX_REPORT_EXPORT_BYTES`); the report builder's own bounds keep real
+  reports far below it.
+- **Audited as ids + counts only** — `forensics-exported` carries the session
+  id, finding count, byte count, and digest. Never the path, never a subject,
+  never a finding-id list.
+- `sessionId` must name a retained session; unknown → `not-found`, **never** an
+  empty report (which would read as a clean bill of health).
+
+Errors: `locked`, `invalid-input`, `not-found`, `internal`.
+
+### `kiwi_audit_events(before_unix?, limit?) → AuditEventView[]` **[gated]** (T-324)
+
+Reads the real append-only app-audit channel (`audit.jsonl` — `mbox-imported`,
+`mbox-exported`, `forensics-exported`, account/rules/device mutations, etc.).
+This is **not** the transport-security session journal; `kiwi_security_events`
+remains that surface. The audit log is device-owner sensitive, so this reader
+is lock-gated and returns no rows while the endpoint is locked.
+
+The persisted record schema is exactly `{seq, ts_unix, action, detail, prev,
+hash}`. The projection therefore maps only real fields: `action → event`,
+`ts_unix → atUnix`, and verbatim `detail → detailJson`. The store has **no
+actor or subject column**, so `actor` and `subjectId` are always `null` —
+never synthesized as `system`/`user`. `detailJson` is frequently plain text,
+not a JSON object; renderers may attempt JSON parsing but must display the
+verbatim string when parsing fails.
+
+Newest first. `beforeUnix` is an **exclusive** timestamp keyset cursor: pass
+the oldest `atUnix` already loaded to request strictly older rows. `limit`
+defaults to 100 and is clamped to **1–500**. An absent log returns `[]`; a
+malformed record fails closed as `audit-corrupt` rather than silently
+shortening the evidence list.
+
+```jsonc
+{ "event": "mbox-imported",
+  "atUnix": 1760000000,
+  "actor": null,                 // schema has no actor column
+  "subjectId": null,             // schema has no subject column
+  "detailJson": "a1 → Import: found 4 imported 2" }
+```
+
+Errors: `locked`, `invalid-input` (negative `beforeUnix`), `audit-corrupt`,
+`io-error`.
+
+### `kiwi_storage_stats() → StorageStatsView` **[gated]** (T-330)
+
+Read-only measurement of local storage. Every field is a real measurement
+or an explicit `null` — `0` and `null` are different facts and renderers
+must keep them apart.
+
+```jsonc
+{ "dbBytes": 311296,             // real mail.db file length; null = no file
+  "messageCount": 12,            // COUNT(*) across all accounts/folders
+  "folderCount": 9,              // remote + local + system rows
+  "attachmentBytes": 1048576,    // persisted attachments/ payload tree;
+                                // null when unmeasurable — NOT the sum of
+                                // parts still inside stored bodies
+  "auditCount": 43,              // audit.jsonl records (a file, not a table)
+  "schemaVersion": 15,           // PRAGMA user_version
+  "integrityCheck": "ok" }       // SQLite's own PRAGMA integrity_check
+                                // result — ANY value other than "ok" is a
+                                // problem to surface, never a pass
+```
+
+### `kiwi_storage_compact() → StorageCompactView` **[gated]** (T-330)
+
+Rebuilds `mail.db` via `VACUUM` and returns the real file length measured
+immediately before and after. `after > before` is possible and honest — a
+rebuild can re-grow a file that had free tail pages.
+
+Refuses `sync-in-flight` (with `retryAfterMs`) while a live sync worker is
+in a writing state. Audited twice: `storage-compact-requested` BEFORE the
+rebuild (a mid-VACUUM crash still leaves the attempt in the log) and
+`storage-compacted` with `before=/after=` byte counts.
+
+```jsonc
+{ "beforeDbBytes": 311296, "afterDbBytes": 200704 }  // null when unmeasurable
+```
+
+Errors: `locked`, `sync-in-flight`, `internal`.
+
+### Retention policy (T-327) — no extra command
+
+`audit.jsonl` is append-only *and* hash-chained, so it previously grew without
+bound. Retention is a bounded sweep; the values ride the existing prefs store,
+so there is **no new IPC surface**.
+
+- **Trigger: app open, and nothing else.** A timer would race concurrent
+  `record` calls; a sweep after every write would rewrite the file per event.
+  `AppState::open` runs the sweep single-threaded before any command can write.
+  A sweep failure **surfaces** — retention that silently stops is worse than
+  none.
+- **Two bounds; both must be exceeded to prune.** A row is dropped only if it
+  is **older than `retentionDays` AND** outside the newest `keepLast` rows. The
+  count floor is a backstop against a runaway event rate: a row recent by
+  *either* measure survives.
+- **The chain is re-anchored, not broken.** `AuditLog::open` verifies from
+  `"genesis"`, so naively deleting the first N lines would make the next launch
+  report `audit-corrupt`. The retained rows are re-linked from a new anchor and
+  renumbered, so the rewritten file verifies end-to-end. (A regression test
+  asserts reopen-clean *and* that a subsequent append still chains.)
+- **The sweep audits itself.** An `audit-pruned` row is written as the new
+  genesis anchor, so deletion is visible **in the log it trims**. Its detail is
+  **counts only** — `pruned=`, `kept=`, both policy values, and a 12-char short
+  form of the prior chain head (enough to correlate with a prior export, never
+  row content). The rows it trims are re-linked *from that anchor's hash*.
+- **Fails honest.** An unparseable log, or one above the 100 000-row sweep
+  bound, is left **untouched** and the error surfaces — the sweep never
+  rewrites evidence it did not read.
+- **Write is atomic** (`.kiwi-part` + rename): a crash never leaves a
+  half-written log.
+
+**Security-critical events are NOT exempt — retention is indiscriminate.** The
+record schema has no per-row criticality marker, so `revoke` / `lock` / `pair` /
+`auth-fail` rows age out exactly like any other. This is a deliberate,
+documented limitation, and the defaults are set generously for it. Marking
+critical rows and exempting them is future work, not silently claimed here.
+
+**Settings (prefs, global scope, via the existing `kiwi_prefs_*` store):**
+
+| pref key | type | default | accepted band |
+|---|---|---|---|
+| `kiwi.audit.retentionDays` | integer | `400` | 30 – 3 650 |
+| `kiwi.audit.keepLast` | integer | `20000` | 1 000 – 1 000 000 |
+
+Values are **clamped on read**; a value outside the band (negative,
+non-integral) falls back to the **conservative** bound — shortest retention,
+smallest keep — so a malformed or hostile pref can never *loosen* retention. A
+changed policy applies at the next app open (the sweep trigger), not
+retroactively. `400` days / `20 000` rows is deliberately generous so a
+`device-revoked` or `lock` row survives a real investigation window.
+
+### `kiwi_audit_integrity() → AuditIntegrityView` (T-331) — chain health
+
+`kiwi_audit_events` fails closed on a bad chain by **throwing** `audit-corrupt`.
+That error had no renderer handler, so a tampered or truncated `audit.jsonl` was
+invisible: the audit view showed an empty/pending panel and the user was never
+told the evidence trail no longer verifies.
+
+This is the cheap path the security strip polls — it re-walks the same records
+`AuditLog::open` does but **reports** instead of throwing, so corruption becomes
+a renderable *state* rather than a silent failure. No row payloads cross this
+boundary.
+
+```jsonc
+{ "state": "ok | corrupt | unknown", "auditOk": true | false | null }
+```
+
+- `ok` — the chain verified from genesis to the current head. An **absent** log
+  is `ok` (there is nothing to tamper with; the file is created on first write).
+- `corrupt` — a record failed to parse, or a `prev`/`hash` link did not verify.
+- `unknown` — the file could not be read. Honest absence, and deliberately
+  **not** `ok`: "we could not check" must never render as "verified".
+
+**Ungated.** It returns no row content, no counts, and no paths — only the
+verdict — so it is not device-owner sensitive like the row reader.
+
+**Also on `SecurityStatusView`: `auditOk?: boolean | null`.** The same
+backend-owned verdict rides the security-status payload, so the security strip
+shows audit health without a second round trip. `null`/absent = not checked
+(never a reassuring `true`); `false` = verification failed. The value is computed
+from the same verifier at status-build time.
+
+**UI obligations (honesty, ui-spec §11).** A `corrupt` verdict is a
+**persistent security state, never a toast**: the Security view shows a
+prominent, non-dismissible error reading exactly *"audit log failed integrity
+verification — possible corruption or tampering"*, and the rows beneath it are
+withheld rather than presented as evidence. The strip shows a persistent
+danger pill. Renderers must not offer a "clear the log" affordance — the log is
+the only record of what the app did.
+
+Errors: `internal` only (the probe reports rather than throws).
+
 ## 9. Commands — devices / org binding **[gated]**
 
 ### `kiwi_register_device(input: RegisterDeviceInput) → DeviceView` *(compat alias — §9d)*
@@ -1225,6 +1926,80 @@ the OS keystore via account auth only.
 
 Bounds: `key` 1–128 chars, `:` refused (scope separator); `value` any
 JSON ≤ 64 KiB serialized; 1024 entries total.
+
+### OS notifications pref (T-329) — no dedicated command
+
+New-mail desktop notifications (tauri-plugin-notification, capability
+`notification:default` = `allow-notify` only) ride this prefs store —
+there is no new IPC surface.
+
+- **Trigger:** a sync pass that lands **new unseen** messages in a real
+  folder — the manual `kiwi_sync_account` path, the live worker's full
+  pass, the IDLE push re-sync, and POP3 poll all share `notify::maybe_notify`.
+  One notification per `(account, folder)` per pass: title `N new messages
+  in {folder}` (or `New message in {folder}` for one), body `sender —
+  subject` of the newest unseen arrival (control chars stripped, ≤120
+  chars/field; missing sender/subject get `Unknown sender`/`(no subject)`
+  — never empty or invented).
+- **Suppression:** `kiwi.notify == "off"` (global scope, the Settings →
+  Notifications toggle) mutes all; the account being in `kiwi.muted`
+  mutes that account; junk/spam/trash-named folders never notify; and a
+  60 s per-(account,folder) rate limit coalesces back-to-back syncs.
+  Unseen means literally no `\Seen` flag — an arrival that was already
+  read elsewhere does not ding.
+- **Fail soft:** a refused/failed OS notification is logged and swallowed
+  — never a sync error. It is also rate-limited like a success so a
+  broken desktop can't retry every pass.
+- **Audit:** individual notifications are NOT audited (noise). Changing
+  `kiwi.notify` *is* — `kiwi_prefs_set` records `pref-notify-set` for that
+  key only (a silenced channel is a posture change; cosmetic prefs are
+  not audited).
+- **Click-to-focus:** not wired — the plugin's Rust `show()` is
+  fire-and-forget; the guest `onAction` API is the only click path and
+  wasn't plumbed for one affordance. Honest absence, not a claimed
+  feature.
+
+| pref key | scope | values | default |
+|---|---|---|---|
+| `kiwi.notify` | global | `"on"` / `"off"` | `"on"` (absent = on) |
+| `kiwi.muted` | global | `accountId[]` | `[]` — also mutes that account's notifications |
+
+### System tray pref + quit flow (T-345)
+
+The tray icon lives in the main process (`tray.rs`); the renderer sees
+only a pref, an `AppInfoView` field, and two events.
+
+- **`kiwi.trayOnClose`** (global, `"on"`/`"off"`, default **on** — absent
+  or any non-`"off"` value means on): the main window's X hides to the
+  tray instead of quitting while a tray icon exists. Default-on is
+  deliberate: the feature exists because closing the window used to kill
+  sync + notifications; the tray menu's Quit is always a real exit, so
+  opting out is one click. When the platform reports no tray surface
+  (`AppInfoView.trayAvailable == false`), the pref is inert and X always
+  quits — hiding into nothing would strand a running, invisible app.
+  `kiwi_prefs_set` on this key updates the backend's lock-free mirror AND
+  records `pref-tray-set` (close-behavior is posture, like `pref-notify-set`).
+- **Tray menu:** Show/Hide toggles the main window; Compose raises it and
+  emits `kiwi://tray-compose` (renderer owns the navigation — the backend
+  does not reach into route state); Quit counts queued outbox rows and
+  exits immediately only when zero.
+- **`kiwi://confirm-quit` `{pending: number}`** (backend → renderer):
+  emitted when Quit was chosen with a non-empty outbox. The renderer
+  shows the honest confirm ("N queued, quitting abandons them to the
+  next launch") and calls `kiwi_confirm_quit` to actually exit. An
+  *unreadable* outbox count also takes the confirm path — the guard
+  fails toward honesty.
+- **`kiwi_confirm_quit()`** **[exempt]**: exits the process. Lock-gate
+  exempt on purpose — quitting a locked app leaks nothing, and locking
+  must never trap the process.
+- **Tooltip** `"KIWI"` / `"KIWI — N unread"`: `N` is `total_unseen` — the
+  same muted-conversation-aware predicate as `folder_stats`, so the tray
+  number equals the summed folder badges. Refreshed on events only (the
+  four post-sync sites plus flag/delete/copy/junk/import mutations) —
+  never polled. Left click restores + focuses the window; right click
+  opens the menu.
+- **Icon:** `default_window_icon()` — the verified bundle icon
+  (`icons/icon.png`), the real KIWI mark.
 
 ## 9d. Commands — pairing engine, kiwi-pair **[partly gated]** (T-188, ratified; T-269, implemented)
 
@@ -1651,19 +2426,26 @@ or audit detail.
 IPC surface for `kiwi-integrations` (docs/contracts/integrations.md). All
 nine commands are **gated** (the lock gate applies — no exempt member of
 this family). All transport is HTTPS-only via the shared `ReqwestClient`;
-no redirects; response bodies capped. Session material (`PHPSESSID`,
-`sid_token`, test slugs, consent tokens) lives in memory only — nothing
-here is persisted, and none of it ever appears in an IPC payload.
+no redirects; response bodies capped. Provider session material
+(`PHPSESSID`, `sid_token`, test slugs) lives in memory only and never
+crosses IPC. The one deliberate exception is `consentToken`: a short-lived,
+single-use **anti-replay capability** returned only by
+`deliverability_begin` (see §9e.2). It is never persisted, audited, or
+logged, and it is **not** user consent — the trusted gate is the native
+confirmation described in §9e.2.
 
 ### 9e.1 Temp mail — `kiwi_integrations_tempmail_*`
 
 One disposable-inbox session at a time (GuerrillaMail sessions are
 single-mailbox). `create` replaces any live session; `discard` clears it.
-**Every response in this family carries `publicInboxNotice`** — the
-binding warning that the UI must display before/alongside use; it is
-forwarded verbatim from `PUBLIC_INBOX_NOTICE` so the copy cannot drift.
-Disposable inboxes are PUBLIC: anyone who knows the address can read its
-mail.
+The session lock spans the whole lifecycle: a failed candidate is retired
+remotely and the previous session stays usable, and a displaced session is
+retired before the replacement becomes active. **Every successful response
+in this family carries `publicInboxNotice`** — the binding warning that the
+UI must display before/alongside use; it is forwarded verbatim from
+`PUBLIC_INBOX_NOTICE` so the copy cannot drift. Error envelopes are
+`{code, message}` and carry no notice. Disposable inboxes are PUBLIC:
+anyone who knows the address can read its mail.
 
 #### `kiwi_integrations_tempmail_create(localPart?) → TempMailboxView`
 
@@ -1686,10 +2468,11 @@ decoded; text is still untrusted (render as text, never HTML).
 #### `kiwi_integrations_tempmail_fetch(mailId) → TempMessageView`
 
 `f=fetch_email` → the provider's synthesized RFC822 is parsed and the
-HTML body runs through the same `ammonia` allowlist as
-`kiwi_render_body` — **with remote resources always stripped** (a public
-inbox never honors `remote_content_allowed`; it is a tracking surface on
-a public address). Returns `{mailId, from, subject, date, contentType?,
+HTML body runs through a **display-only** sanitizer: remote resources are
+always stripped (a public inbox never honors
+`remote_content_allowed`; it is a tracking surface on a public address) and
+**anchors/`href` are removed entirely**, so temp mail can never navigate the
+app or webview. Returns `{mailId, from, subject, date, contentType?,
 html?, text?, remoteImagesStripped, publicInboxNotice}`. Raw MIME never
 crosses IPC.
 
@@ -1707,46 +2490,87 @@ addressCreatedUnix?, publicInboxNotice}`.
 
 ### 9e.2 Deliverability — `kiwi_integrations_deliverability_*`
 
-Flow: `begin` → send the real message (consent-gated) → `status` polls →
-`report`. The reservation `slug` is a capability secret and never leaves
-the backend — IPC sees only the opaque `testId`.
+Flow: `begin` → send the real message → `status` polls → `report`. The
+reservation `slug` is a capability secret and never leaves the backend —
+IPC sees only the opaque `testId`.
 
 #### `kiwi_integrations_deliverability_begin() → DeliverabilityBeginView`
 
 `POST /api/v1/inbox` → `{testId, address, expiresAtUnix?,
 expiresAtRaw?, consentToken, consentNotice}`. `consentToken` is a
-single-use CSPRNG capability the backend minted; `consentNotice` is the
-mandatory UI copy describing what consent covers.
+single-use CSPRNG anti-replay capability the backend minted;
+`consentNotice` is the mandatory UI disclosure copy describing what the run
+covers. The reservation is an **irreversible external effect**: the backend
+records a `deliverability-begin-intent` audit entry before the provider call
+and aborts if that entry cannot be written.
 
 #### `kiwi_integrations_deliverability_send(testId, consentToken, accountId, message) → DeliverabilitySendView`
 
-**Consent is non-bypassable**: `consentToken` must match the stored
-single-use token, compared and consumed atomically under the sessions
-lock — missing/wrong/consumed all fail `consent-required` (no oracle on
-which). The message's `to`/`cc`/`bcc` are IGNORED; the sole recipient is
-the reserved address. The send rides the normal outbox
-(`SendOptions`-less enqueue: default undo grace, audited `send-queued`).
-Returns `{testId, queueId, notBeforeUnix}` — `kiwi_cancel_send` still
-works inside the grace window.
+Two independent backend facts, both enforced in Rust:
+
+1. **Anti-replay.** `consentToken` must match the stored single-use token,
+   compared and consumed atomically under the sessions lock —
+   missing/wrong/consumed all fail `consent-required` (no oracle on which).
+2. **Native confirmation.** The enqueue path resolves the final recipients
+   against every integration-managed endpoint (reserved deliverability
+   addresses and the live temp-mail address). If any recipient resolves to
+   one, the backend shows an OS-level `rfd` warning dialog and continues
+   **only** on the exact affirmative result. A renderer cannot forge,
+   suppress, or pre-answer it. Deny/cancel/close →
+   `consent-required`, a `send-consent-denied` audit record, and **no
+   enqueue**. A burst of integration-bound requests inside 30 s is refused
+   without a prompt (`consent-throttled`,
+   `send-consent-burst-denied`) so a compromised renderer cannot consent-fatigue
+   flood. Ordinary composition is unchanged: the user's own Send click is the
+   consent for mail to their own recipients, so those sends never prompt.
+
+The message's `to`/`cc`/`bcc` are IGNORED; the sole recipient is the
+reserved address. The enqueue is `SendOptions`-less, audited, and
+**single-attempt**: an ambiguous relay outcome is never automatically
+retried into the same reservation, including after a restart. Returns
+`{testId, queueId, notBeforeUnix, consentConsumed: true, enqueued: true,
+singleAttempt: true}`. `enqueued` is set only after the queue row exists —
+account, MIME, persistence, confirmation, or audit failure leaves the
+session `enqueued: false` with a `deliverability-send-failed` record.
+`kiwi_cancel_send` still works inside the grace window.
 
 #### `kiwi_integrations_deliverability_status(testId) → DeliverabilityStatusView`
 
 Single-shot `GET /tests/{slug}/status`. `{testId, analysisStatus,
-checksDone, checksTotal, ready, sent}` — `ready` means `checks_ready`
-(`report` is fetchable); `sent` reports whether consent was consumed.
-Any poll loop belongs to the UI (provider rate limits: `rate-limited`
-carries the hint).
+checksDone, checksTotal, ready, sent, consentConsumed, retryAfterMs?}` —
+`ready` means `checks_ready` (`report` is fetchable); `sent` means a
+message is **enqueued** (never merely "token consumed");
+`consentConsumed` reports the spent capability. The backend is
+single-flight per `testId`: a concurrent poll returns `rate-limited` with
+`retryAfterMs`, and after a provider 429 a cooldown (30 s floor) is served
+from the last observation. `analysisStatus: "failed"` is never a status —
+it is the `integration-error` / `AnalysisFailed` mapping. The UI owns the
+loop: one recursive timeout (15 s default), never overlapping requests,
+stopping on `ready` or a terminal state.
 
 #### `kiwi_integrations_deliverability_report(testId) → DeliverabilityReportView`
 
 `GET /tests/{slug}` → `{testId, scoreOursMilli?, scoreCompatMilli?,
-complete, reportUrl?, subscores, tallies, checks, authFailureIds}`.
-Scores are integers in milli-units; `tallies` are computed from
-`checks[]` deterministically (never trusted from the wire);
-`authFailureIds` is the auth-gate set for the UI banner; `checks[]`
-carries `category` (normalized) + `categoryRaw` (verbatim), `status`,
-`title`, `summary`, `citations[]`. Unknown statuses/categories pass
-through as strings — forward-compat is contract.
+complete, checksTruncated, reportUrl?, subscores, tallies, checks,
+authFailureIds, authGate, evidenceComplete}`. Scores are integers in
+milli-units; `tallies` are computed from `checks[]` deterministically
+(never trusted from the wire); `checks[]` carries `category` (normalized) +
+`categoryRaw` (verbatim), `status`, `title`, `summary`, `citations[]`.
+Unknown statuses/categories pass through as strings — forward-compat is
+contract.
+
+`authGate` is the only decision procedure and is **fail-closed**:
+`{state: "clear"|"blocked"|"incomplete", clear: bool, failedIds: string[],
+gap?}`. `clear` is true only when at least one auth check exists, no auth
+status or category is unknown, and the client did not truncate `checks[]`.
+`authFailureIds` is the display set, never a pass decision.
+`checksTruncated` is client-side truth; `complete && !checksTruncated`
+(= `evidenceComplete`) is the only "whole evidence" combination.
+
+`reportUrl` and citation URLs are validated (https, bounded, no userinfo,
+no fragment) and are **copy-only** text — never anchors, never fetched. A
+URL that embeds the reservation slug is omitted entirely, so the slug never
+crosses IPC.
 
 ## 9f. Commands — OAuth2 acquisition **[gated]** (T-230, implements `kiwi.oauth2/1`)
 

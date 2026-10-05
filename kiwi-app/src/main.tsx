@@ -2,6 +2,7 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import "./theme.css";
 import "./mailspring-tokens.css";
+import "./ms/ms-threadlist.css"; // Mailspring thread-list port (rows/columns/icons)
 import "./shell.css";
 import "./motion.css";
 import "./themes"; // T-268: stock theme packages + sideloaded-theme restore

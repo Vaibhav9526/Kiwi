@@ -4,6 +4,31 @@ import type { AccountView, DeliverabilityReportView, DeliverabilityStatusView, T
 import { PUBLIC_INBOX_NOTICE } from "../kiwi";
 import { api, IpcError } from "../ipc";
 import { DELIVERABILITY_POLL_MS, DeliverabilityPanel, IntegrationsView, TempMailPanel } from "./integrations";
+import { DisposableInboxView } from "./disposable";
+import { useTempMail } from "../state/tempmail";
+import type { TempMail } from "../state/tempmail";
+
+/** T-342: TempMailPanel/DisposableInboxView consume the shared useTempMail
+ *  state — a plain-object stub for render-only tests. */
+function tempStub(overrides: Partial<TempMail> = {}): TempMail {
+  return {
+    mailbox: null,
+    messages: [],
+    unread: 0,
+    notice: PUBLIC_INBOX_NOTICE,
+    busy: null,
+    error: null,
+    flash: null,
+    extraSecs: 0,
+    expiresAtUnix: null,
+    create: vi.fn(async () => false),
+    refresh: vi.fn(async () => {}),
+    fetchMessage: vi.fn(async () => null),
+    extend: vi.fn(async () => {}),
+    discard: vi.fn(async () => {}),
+    ...overrides,
+  };
+}
 
 const account: AccountView = {
   id: "account-1",
@@ -29,6 +54,9 @@ const sendView = {
   testId: beginView.testId,
   queueId: "queue-1",
   notBeforeUnix: 1_700_000_001,
+  consentConsumed: true,
+  enqueued: true,
+  singleAttempt: true,
 };
 
 const pendingStatus: DeliverabilityStatusView = {
@@ -38,6 +66,7 @@ const pendingStatus: DeliverabilityStatusView = {
   checksTotal: 2,
   ready: false,
   sent: true,
+  consentConsumed: true,
 };
 
 const readyStatus: DeliverabilityStatusView = {
@@ -47,6 +76,7 @@ const readyStatus: DeliverabilityStatusView = {
   checksTotal: 2,
   ready: true,
   sent: true,
+  consentConsumed: true,
 };
 
 const reportView: DeliverabilityReportView = {
@@ -70,6 +100,8 @@ const reportView: DeliverabilityReportView = {
   ],
   authFailureIds: [],
   authGate: "pass",
+  checksTruncated: false,
+  evidenceComplete: true,
 };
 
 const emptyPoll: TempPollView = {
@@ -138,7 +170,7 @@ afterEach(() => {
 describe("integrations UI", () => {
   it("shows the public inbox notice and keeps the consent checkbox gate", async () => {
     vi.spyOn(api, "integrationsTempmailPoll").mockResolvedValue(emptyPoll);
-    render(<IntegrationsView accounts={[account]} mode="live" />);
+    render(<IntegrationsView accounts={[account]} mode="live" temp={tempStub()} />);
     expect(screen.getByRole("note", { name: "Public inbox notice" })).toHaveTextContent(PUBLIC_INBOX_NOTICE);
 
     vi.spyOn(api, "integrationsDeliverabilityBegin").mockResolvedValue(beginView);
@@ -155,25 +187,23 @@ describe("integrations UI", () => {
   });
 
   it("makes fetched temp-mail links and forms click-inert", async () => {
-    const poll = vi.spyOn(api, "integrationsTempmailPoll").mockResolvedValueOnce(emptyPoll).mockResolvedValueOnce(pollWith([summary()]));
-    vi.spyOn(api, "integrationsTempmailCreate").mockResolvedValue({
-      address: "throwaway@example.test",
-      publicInboxNotice: PUBLIC_INBOX_NOTICE,
+    // T-342: the message reader now lives in DisposableInboxView — the
+    // sanitised fragment mounts click-inert exactly as before.
+    const temp = tempStub({
+      mailbox: { address: "throwaway@example.test", publicInboxNotice: PUBLIC_INBOX_NOTICE },
+      messages: [summary()],
+      fetchMessage: vi.fn(async () => ({
+        mailId: "mail-1",
+        from: "sender@example.test",
+        subject: "A message",
+        date: "2026-09-25",
+        html: '<a id="https-link" href="https://evil.test">HTTPS</a><a id="data-link" href="data:text/html,x">data</a><svg><a id="svg-link" href="javascript:alert(1)">SVG</a></svg><form id="temp-form"><input name="secret" /></form>',
+        remoteImagesStripped: 0,
+        publicInboxNotice: PUBLIC_INBOX_NOTICE,
+      })),
     });
-    vi.spyOn(api, "integrationsTempmailFetch").mockResolvedValue({
-      mailId: "mail-1",
-      from: "sender@example.test",
-      subject: "A message",
-      date: "2026-09-25",
-      html: '<a id="https-link" href="https://evil.test">HTTPS</a><a id="data-link" href="data:text/html,x">data</a><svg><a id="svg-link" href="javascript:alert(1)">SVG</a></svg><form id="temp-form"><input name="secret" /></form>',
-      remoteImagesStripped: 0,
-      publicInboxNotice: PUBLIC_INBOX_NOTICE,
-    });
-    render(<TempMailPanel live />);
-    fireEvent.click(screen.getByRole("button", { name: "Create disposable address" }));
-    await waitFor(() => expect(poll).toHaveBeenCalledTimes(2));
-    const toggle = document.querySelector('button[aria-expanded="false"]') as HTMLButtonElement;
-    fireEvent.click(toggle);
+    render(<DisposableInboxView temp={temp} live />);
+    fireEvent.click(screen.getByRole("option", { name: /A message/ }));
     await waitFor(() => expect(screen.getByText("HTTPS")).toBeInTheDocument());
     for (const id of ["https-link", "data-link", "svg-link"]) {
       const link = document.getElementById(id) as HTMLAnchorElement;
@@ -185,6 +215,24 @@ describe("integrations UI", () => {
     const submit = new Event("submit", { bubbles: true, cancelable: true });
     form.dispatchEvent(submit);
     expect(submit.defaultPrevented).toBe(true);
+  });
+
+  it("keeps the Integrations card management-only — inbox moved to the sidebar view", async () => {
+    // T-342: TempMailPanel shows lifecycle + a link to the view, never the
+    // message list (that rendered list lives in DisposableInboxView now).
+    const temp = tempStub({
+      mailbox: { address: "throwaway@example.test", publicInboxNotice: PUBLIC_INBOX_NOTICE },
+      messages: [summary()],
+      unread: 1,
+    });
+    render(<TempMailPanel temp={temp} live />);
+    expect(screen.getByText("throwaway@example.test")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open Disposable Inbox" })).toBeInTheDocument();
+    expect(screen.getByText(/1 unread in the sidebar inbox/)).toBeInTheDocument();
+    expect(screen.queryByRole("listbox")).toBeNull(); // no inbox list here
+    expect(screen.queryByRole("button", { name: "Create disposable address" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Check for mail" }));
+    await waitFor(() => expect(temp.refresh).toHaveBeenCalled());
   });
 
   it("keeps report and citation URLs copy-only", async () => {
@@ -308,14 +356,19 @@ describe("integrations UI", () => {
   });
 
   it("re-renders the mandated notice from every temp-mail response", async () => {
-    vi.spyOn(api, "integrationsTempmailPoll").mockResolvedValue(emptyPoll);
+    // T-342: drives the REAL shared hook (one poller) through the inbox view —
+    // create → poll → fetch → extend all re-render the notice verbatim.
+    function Harness() {
+      const t = useTempMail(true);
+      return <DisposableInboxView temp={t} live />;
+    }
+    vi.spyOn(api, "integrationsTempmailPoll")
+      .mockResolvedValueOnce(emptyPoll) // mount resync
+      .mockResolvedValue(pollWith([summary()])); // post-create poll + interval
     vi.spyOn(api, "integrationsTempmailCreate").mockResolvedValue({
       address: "throwaway@example.test",
       publicInboxNotice: PUBLIC_INBOX_NOTICE,
     });
-    vi.spyOn(api, "integrationsTempmailPoll")
-      .mockResolvedValue(emptyPoll)
-      .mockResolvedValue(pollWith([summary()]));
     vi.spyOn(api, "integrationsTempmailFetch").mockResolvedValue({
       mailId: "mail-1",
       from: "sender@example.test",
@@ -331,12 +384,12 @@ describe("integrations UI", () => {
       publicInboxNotice: PUBLIC_INBOX_NOTICE,
     });
     const notice = () => screen.getByRole("note", { name: "Public inbox notice" });
-    render(<TempMailPanel live />);
+    render(<Harness />);
     expect(notice()).toHaveTextContent(PUBLIC_INBOX_NOTICE);
     fireEvent.click(screen.getByRole("button", { name: "Create disposable address" }));
     await waitFor(() => expect(screen.getByText("throwaway@example.test")).toBeInTheDocument());
     expect(notice()).toHaveTextContent(PUBLIC_INBOX_NOTICE);
-    fireEvent.click(document.querySelector('button[aria-expanded="false"]') as HTMLButtonElement);
+    fireEvent.click(await screen.findByRole("option", { name: /A message/ }));
     await waitFor(() => expect(screen.getByText("3 remote resource(s) stripped.")).toBeInTheDocument());
     expect(notice()).toHaveTextContent(PUBLIC_INBOX_NOTICE);
     fireEvent.click(screen.getByRole("button", { name: "Extend session" }));

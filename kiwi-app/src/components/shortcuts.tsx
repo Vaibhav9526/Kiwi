@@ -10,6 +10,7 @@ export const SHORTCUT_ROWS: [string, string][] = [
   ["F5", "Get new messages (sync now)"],
   ["/", "Focus message search"],
   ["Enter (in search)", "Open full search results"],
+  ["Search operators", "from: to: subject: body: has:attachment is:unread|read|starred before:/after:YYYY-MM-DD in:folder — \"…\"/ '…' quote values, - negates"],
   ["j / ↓  ·  k / ↑", "Next / previous message"],
   ["n / p", "Next / previous message (alternate)"],
   ["Enter (in list)", "Open message — focus moves into the reader"],

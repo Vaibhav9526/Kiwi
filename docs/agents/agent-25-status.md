@@ -590,3 +590,382 @@ plugin e2e not rerun (no plugin-surface changes).
   CSP delta + residual risks (shared process, no origin pinning, unsigned).
 - tsc 0 errors repo-wide; vite build green; plugin e2e 48/48.
 
+
+## T-307 — plugin install UX (done)
+
+- **Settings → Plugins "Install plugin…"** button → hidden `webkitdirectory`
+  input; `installPluginFiles` reads every picked file as text, strips the
+  top-level dir via `webkitRelativePath`, caps at 64 files / 512KB each, then
+  calls registry `installPlugin(manifestText, files)` (settings.tsx).
+- **Honest errors** — `.kiwi-banner.error` surfaces: missing root
+  `manifest.json`, invalid JSON, unknown capabilities (with the known list),
+  oversize/overflow files, read failures. Verified live for all three classes.
+- **Live FileList bug caught + fixed**: `input.value=""` ran BEFORE reading
+  the (live) FileList → installs silently no-op'd for real users too. Now
+  `Array.from(files)` snapshots before clearing — found via the CDP demo,
+  would have shipped broken otherwise.
+- **List refresh** rides the existing `kiwi-plugins-changed` → installed rows
+  re-render with declared-capability badges (`.ms-badge` per permission,
+  "no capabilities declared" when empty).
+- **Live install demo** (`artifacts/t307/install.mjs` + plugins-tab.png):
+  `vite preview` :4173 + CDP. CDP can't populate `webkitdirectory` inputs
+  headless, so files were injected via `DataTransfer` carrying the REAL
+  on-disk bytes — the production handler path ran unmodified:
+  notify-on-mail installed → row + `notify` badge → worker target spawned
+  (running under prod CSP) → hello installed → `[hello] Hello plugin
+  loaded.` toast → disable killed its worker (2→1) → re-enable respawned
+  (1→2) → Remove deleted the row.
+- e2e flake hardened: notify.show assertion now polls the toast itself
+  (plugin awaits renderPane THEN notify — trails one round-trip). 48/48 ×4.
+- tsc 0 errors repo-wide (foreign mid-flight errors settled); vite green.
+- Docs: GETTING-STARTED lifecycle section now documents the install UX.
+
+## T-312 — contacts depth + agenda sandbox row (done)
+
+- **Audit of existing surface**: detail/edit already real (T-173 view +
+  T-231 IPC): click → detail card (org/title, labeled emails+phones, tag
+  pills, notes) → Edit form → api.updateContact; Delete → confirm →
+  api.deleteContact. Full IPC CRUD exists — NO gap to file.
+- **Added depth (live-verified):**
+  - Server-side search in live mode — debounced `kiwi_search_contacts`
+    (250ms); the loaded list caps at 500 so a real book needs it. Failure
+    → error banner + client-filter fallback (stated, not silent). Demo
+    keeps the client filter only. Selection resolves across serverHits so
+    a hit outside the first-500 still opens its detail card.
+  - "Write" → compose handoff: per-email `Write` button + action-row
+    primary (disabled w/ reason when no address). sessionStorage
+    `kiwi.composeTo` one-shot → ComposeView seeds the recipient chip AFTER
+    draft restore (merge, never clobber). Live-proven: click → #/compose →
+    `To: alice@example.test` chip, key consumed.
+- **T-300 landed → wired the stub**: `api.sandboxSessions()` joins
+  loadSecurity's Promise.all → `sandboxOpens` count → Agenda security card
+  "Sandbox opens" row (shield icon). Honest semantics: T-300 sessions are
+  always `completed` (no live guest exists), so the row is opens-count,
+  not "pending". null/absent in demo — verified absent.
+- Verify: tsc 0 errors; vite green; ui-smoke 12/12; e2e untouched 48/48.
+  Live exercise of the sandbox row needs the Tauri backend (no demo
+  fixture by design) — same posture as findings/devices rows.
+- artifacts/t312/{verify.mjs,contacts-detail.png,mail-rail.png}
+
+## T-315 — About settings tab (done)
+
+- New SECTIONS entry "About" → `{section === "About"}` panel:
+  - **Version**: `src/version.ts` reads tauri.conf.json `version` (fallback
+    package.json) — build-manifest source, never a literal that drifts.
+  - **Diagnostics `dl`** — real sources only: app version, accounts
+    (live IPC count; demo counts DEMO_ACCOUNTS — the fixture source the
+    sidebar actually renders, caught a "0 (demo fixtures)" lie in review),
+    plugins installed (real registry), then live-only appInfo rows:
+    backend version + IPC contract, sessions observed, deviceId, org.
+    Profile-dir/store-size honestly omitted (no IPC exposes them) — the
+    panel SAYS so rather than estimate.
+  - **Keymap panel**: renders the shared `SHORTCUT_ROWS` (same const the
+    `?` overlay + Shortcuts tab use — one source, no drift).
+  - **License**: MPL-2.0 per repo LICENSE + contributors line.
+- `dl` semantics (dt/dd grid) per the a11y ask; tab rides the existing
+  roving-tabindex tablist.
+- Smoke: new `about` check (version regex, dl, shortcut table, license,
+  backend-row absence asserted in demo); settings-tabs now counts 9.
+  ui-smoke 13/13; tsc clean; vite green.
+- artifacts/t315/about.png — verified live in built app.
+
+## T-318 — mbox import/export UI seam (done)
+
+- Contracts: both rows landed in `docs/contracts/ipc.md` §6j —
+  `kiwi_import_mbox(accountId, path, folder?)` → `MboxImportView` (T-309)
+  and `kiwi_mailbox_export_mbox(folderId, destPath)` → `MboxExportView`
+  (T-316). Wired verbatim; nothing stubbed.
+- `src/kiwi.ts` `MboxExportView` + `src/ipc.ts` `api.mailboxExportMbox`
+  added (import wrapper pre-existed). Tauri arg convention matches the
+  other folderId commands.
+- **Import** — Settings→Accounts, per-account "Import .mbox…" expands an
+  inline form: path input (typed-path idiom — no dialog plugin in this
+  shell; same as attachment download), optional target folder (empty =
+  local `Import`), busy "Importing…", result card renders counts VERBATIM
+  (imported/messagesFound, duplicates, expunged, failed, ruleFailures,
+  truncated, first-5 issues + "+N more"). Client rejects non-.mbox
+  extension + empty path before the IPC; backend errors land in the
+  section action-error banner.
+- **Export** — two entry points, both call `api.mailboxExportMbox`:
+  (a) Settings→Accounts "Export folder" card: folder select built from
+      real `folderLists` (per-account optgroup-style labels, `(empty)`/
+      `(N)` exists-count in the label), dest-path input (.mbox auto-
+      appended AND echoed back in the result so the shown path is the
+      real one), busy state, result banner shows exported/skipped/bytes/
+      truncated/partial + "folder was empty" when 0/0.
+  (b) Folder ctx-menu "Export to mbox…" (download icon) on account rows
+      only — smart rows never open the menu — → modal (ms-composer-modal
+      reuse): dest input + error banner + busy; success → notify toast
+      with verbatim counts. Composite `accountId:folderId` key parsed to
+      the numeric folderId; non-real ids toast an error.
+- **Honest states**: demo → import buttons disabled (title explains),
+  export card + ctx item disabled with "needs the backend" reason; live
+  no-accounts → explicit "add one first" note; empty folder list → "sync
+  first" hint; `exists===0` folders labeled `(empty)` in the select.
+- **Audit view**: none exists — `securityEvents` is transport sessions,
+  `audit.jsonl` has no renderer IPC. Both actions ARE audited backend-side
+  (`mbox-imported`/`mbox-exported`, ids+counts only) per §6j; nothing to
+  surface them in yet — documented, not faked.
+- Smoke: new `mbox-io` check (export card renders, demo gate text, ctx
+  item present + disabled-with-reason in demo). ui-smoke **20/20**;
+  tsc 0 errors; vite green.
+- artifacts/t318/{shot.mjs,settings-accounts.png,folder-ctx.png}
+
+## T-323 — app-audit log view surface (done)
+
+- Contract: filed `kiwi_audit_events(before_unix?, limit)` in ipc.md §8 as a
+  PROPOSED/backend-pending row (T-324, A15). Shape consumed by the UI:
+  newest-first `{event, atUnix, actor, subjectId?, detailJson?}` — ids and
+  counts only (paths/subjects/bodies never enter the audit channel).
+- `kiwi.ts` `AuditEventView` + `ipc.ts` `api.auditEvents(beforeUnix?, limit)`.
+- Home: Security Center → new "App audit log" section below the transport
+  events table, with an explicit "this is what the app DID, not what the
+  wire showed" distinction. No tabs existed; a section is the honest fit.
+- States: `pending` (BackendUnavailableError / unknown-command → banner
+  saying the read IPC is queued and recording already happens), `error`
+  (real failure + Retry), `ready` (table), loading, and a true "No audit
+  events recorded yet" empty state. Demo → pending banner, NEVER fixtures.
+- Table: Time (locale) · event `code` · actor · subjectId · Detail toggle →
+  detailJson pretty-printed in `kiwi-evidence` pre (parse fallback = raw).
+  200-row pages, "Load older" keyset-paginates on last atUnix, Refresh
+  replaces + resets the done flag.
+- Copy: "Copy JSON" / "Copy CSV" write the LOADED rows to the clipboard via
+  navigator.clipboard (real rows only — no "download full log" fake; the
+  toolbar states that explicitly).
+- Auto-lights: nothing is mocked — when T-324 registers the command the same
+  code path renders real rows (the pending state only triggers on
+  unavailable/unknown-command errors).
+- Verify: tsc 0 errors; vite green; ui-smoke **22/22** — new `audit-log`
+  check asserts heading + pending banner + zero fabricated rows.
+- artifacts/t323/probe.mjs
+
+## T-333 — storage stats/compact + notification pref (done)
+
+- **Storage (T-330 landed: both commands registered).** ipc.md §8 had no
+  rows yet — filed them as-built: `kiwi_storage_stats() → StorageStatsView`
+  ({dbBytes|null, messageCount, folderCount, attachmentBytes|null,
+  auditCount, schemaVersion, integrityCheck}) and `kiwi_storage_compact() →
+  StorageCompactView` ({beforeDbBytes|null, afterDbBytes|null}; refuses
+  `sync-in-flight` w/ retry hint; audited `-requested` BEFORE VACUUM then
+  `-compacted`). `kiwi.ts` types + `ipc.ts` wrappers added.
+- **About → new "Storage" section** (below Diagnostics): dl of real
+  measurements — db size humanized (fmtBytes, binary units) + raw bytes,
+  messages, folders, attachment payload bytes (annotated: persisted tree
+  only), audit records, schema version. `null` renders "unmeasurable" —
+  never an estimate. `integrityCheck` shows SQLite's own verdict; non-"ok"
+  renders a danger pill with the verbatim text.
+- **Compact flow:** "Compact database…" → warn-banner confirm (explains the
+  write pause + sync-in-flight refusal + audit tags) → `api.storageCompact()`
+  → honest `before → after` note + stats re-fetch; `sync-in-flight`/other
+  errors land verbatim in an error banner. Demo → the whole section shows
+  "need the backend", no fabricated numbers.
+- The stale Diagnostics omit-note was updated — it claimed "store size
+  omitted, no IPC exposes it"; now only profile-dir remains omitted.
+- **Notifications (T-329 landed):** pref is `kiwi.notify` ("on"/"off",
+  global scope, audited `pref-notify-set` — ipc.md prefs table). The
+  Settings→General "OS notifications" select was already bound to it and
+  already round-trips via `collectPrefs`/`applyPrefsBag` → `kiwi_prefs_set`.
+  Added the honest demo note: no OS-notification channel in this build, but
+  the pref saves and the desktop app honors it. Suppression semantics
+  (muted accounts, junk/spam/trash folders, 60s rate limit) are backend —
+  the footnote already states them.
+- Verify: tsc 0 errors; vite green; ui-smoke **23/23** — `about` extended
+  (storage heading + demo no-backend gate + no fabricated integrity), new
+  `notify-pref` check (select present + demo no-channel note).
+
+## T-338 — audit-integrity strip indicator + corrupt surface (done)
+
+- **T-331 landed ahead of me:** `kiwi_audit_integrity() → {state, auditOk}`
+  probe (ipc.md §8, contract row committed), `auditOk` on
+  `SecurityStatusView`, `toTrustState` normalizes non-boolean → null,
+  `ipc.ts` wrapper degrades malformed payloads honestly, security-center
+  corrupt banner + row-withholding + `audit-corrupt` IpcError path, plus a
+  6-test vitest file. My job was the strip polish + closing the "unchecked"
+  honesty hole.
+- **Strip indicator is now a real tri-state** (`TrustChip`): `false` →
+  danger pill "Audit: unverified" (persistent, → Security view, title =
+  AUDIT_CORRUPT_MESSAGE); `true` → quiet `secure` pill "Audit: verified"
+  (a real backend claim, not assumed); `null`/absent → neutral `unknown`
+  pill "Audit: unchecked" (title "Audit log integrity not yet verified").
+  Previously null/true rendered NOTHING — silence was indistinguishable
+  from verified. Value is backend-owned only: `kiwi_security_status.auditOk`
+  via `toTrustState`; no localStorage, no renderer guess.
+- **Demo note (corrects the brief's assumption):** demo has NO backend and
+  no audit.jsonl — "verified ok" would be a fabricated claim. The strip
+  therefore reads **unchecked** in demo; `verified` can only appear on a
+  real `kiwi_security_status` verdict. Smoke asserts exactly this.
+- **Security Center audit section:** corrupt banner unchanged (persistent,
+  role=alert, rows withheld) — plus a "Re-check" button that re-runs the
+  probe and reloads rows if the chain now verifies (real re-verification,
+  not a dismiss). Added verdict line for the readable states: "verified"
+  when ok, "could not be verified — rows shown are unverified" when the
+  probe reports unknown while rows rendered.
+- Updated `audit-integrity.test.tsx` — the two tests that pinned silence
+  now pin the neutral/green pills (unchecked = never `secure`/`danger`
+  class; verified = `secure`, `data-audit-integrity="ok"`).
+- Verify: tsc 0 errors; vitest audit-integrity 6/6; vite green;
+  ui-smoke **25/25** — new `audit-strip` check asserts demo chip is
+  `unchecked`, carries no verdict class, honest title.
+
+## T-342 — UI pass#2: disposable-inbox sidebar promo + density + radius tokens (in progress)
+
+**Status:** in-progress — resumed 2026-09-26 after overnight Orca restart.
+Prior session already landed (uncommitted): `src/state/tempmail.ts`
+(shared `useTempMail` — one hook instance drilled to sidebar/view/
+management card), `src/views/disposable.tsx` (inbox-style list+reader
+view), `src/router.ts` (`disposable` route), `chrome.tsx`
+`FolderRow.onOpen` seam.
+
+**Plan (planner pass#2 spec):**
+- Sidebar promo: "Disposable Inbox" section under the mailboxes (icon +
+  unread badge → `#/disposable`; "+ New disposable" quick-action;
+  demo-gated honestly). Integrations keeps the management card only.
+- Radius: global `--kiwi-radius-*` scale (sm 6 / md 8 / card 12 /
+  large 16 / pill / circle) in `theme.css`; `--kiwi-ms-radius-*`
+  re-based onto it (owner directive supersedes the sharper observed
+  Mailspring values); literal sweep in theme/shell css.
+  A24's `.em-dock` already awaits `var(--kiwi-radius-large, 16px)` —
+  resolves 16px with `lg` deliberately undefined.
+- Density: sidebar gains a populated section; remaining bare-text empty
+  state (palette) upgraded to the kiwi-empty idiom; agenda/richer rows
+  verified already shipped (T-283/T-287).
+
+**Files (mine):** `state/tempmail.ts`, `views/disposable.tsx`,
+`router.ts`, `theme.css`, `mailspring-tokens.css`, `views/integrations.tsx`,
+`views/integrations.test.tsx`, `components/palette.tsx`, this file.
+**Shared, additive hunks only:** `chrome.tsx` (my section + onOpen;
+A24's requestCompose hunks foreign), `App.tsx` (useTempMail + route +
+prop drill; A24 dock + A20 quit-modal foreign), `shell.css` (my
+dispo/radius styles; A24 `.em-dock-*` foreign), `settings.tsx` (one
+temp-prop hunk; A20 trayClose foreign), `scripts/ui-smoke.mjs` (one
+additive check; A26 browser-gate foreign).
+
+**DONE 2026-09-26 — T-342 complete.** Evidence:
+
+- **Sidebar promo:** `.em-dispo` section under the mailbox tree — clock-icon
+  "Disposable Inbox" `FolderRow` (new `onOpen` seam overrides the default
+  folder navigation) with real `temp.unread` badge, plus a `+ New`
+  quick-action that mints an address via the shared hook then lands on
+  `#/disposable`. Demo-gated: disabled with an honest title, never
+  fabricates a session or count.
+- **First-class view:** `views/disposable.tsx` (`#/disposable`) — notice
+  verbatim BEFORE controls, demo explanation, honest no-mailbox empty
+  state, address card + lifecycle buttons, 45s-polled list | reader
+  split, sanitized-inert html, `≈`-labeled provider age-out ESTIMATE.
+- **Shared state:** App owns the single `useTempMail(!demo && !locked)`
+  instance → FolderPane prop + DisposableInboxView + SettingsView →
+  TempMailPanel. Panel is management-only now (lifecycle + "Open
+  Disposable Inbox" + unread count; message list deleted).
+- **Radius tokens:** `theme.css` `--kiwi-radius-{sm,md,card,large,lg,pill,
+  circle}` scale (lg kept as alias for A24's committed dock var refs);
+  `--kiwi-ms-radius-*` re-based onto it in `mailspring-tokens.css`;
+  literal-radius sweep across theme.css + shell.css (incl. the committed
+  `.em-dock-chip` 8px literal → `--kiwi-radius-md`).
+- **Density:** last bare-text empty state (palette "No matching
+  commands.") → `.kiwi-palette-empty` icon+muted idiom; all other empty
+  states already `kiwi-empty`-illustrated (verified in audit).
+- **Smoke:** new `disposable` check — sidebar section+row, route lands,
+  notice verbatim, demo `+New`/create disabled, zero fabricated rows.
+- **Verify:** `npx tsc --noEmit` 0 errors; `npm run build` green;
+  `vitest run integrations.test.tsx` 15/15 (3 T-342 tests incl.
+  real-hook notice round-trip + click-inert reader + management-only
+  contract); `ui-smoke.mjs` **27/27 pass, 0 fail, 0 skip** (Edge).
+- **Foreign gates noted:** `cargo fmt --check` diff = foreign UNTRACKED
+  `kiwi-mail/src/parts.rs` (untouched); `cargo clippy --workspace
+  --all-targets` finished with ONE warning, `too_many_arguments` at
+  foreign in-flight `kiwi-mail/src/sync.rs:362` (+165-line foreign hunk,
+  not mine — left for its owner).
+- **Commit hygiene:** whole-file adds only for files whose diff is 100%
+  mine; `git apply --cached` filtered patches for mixed files — App.tsx
+  (kept 5 T-342 hunks, dropped A20's quit-modal/tray-listener hunks),
+  settings.tsx (kept temp prop/import/call, dropped A20 trayClose),
+  ui-smoke.mjs (kept only the `disposable` check; A26's browser-gate +
+  other agents' checks foreign), TASKS.md (only the T-342 row flip).
+- **Assumption:** `.em-dispo-*`/`.kiwi-dispo-*` styles + `kiwi-toolbar-gap`
+  landed inside A24's committed T-343 sweep (ee543ef) — they stay, no
+  rework needed; my remaining shell.css delta is token swaps + the
+  palette-empty block.
+- **Risk:** live-mode `+ New`/lifecycle exercised only via unit tests
+  (demo smoke asserts gating); provider flows need a live backend run.
+
+## UI-sweep — global bug sweep (in progress, Planner dispatch 2026-09-26d)
+
+**Status:** in-progress — claimed before editing. Lead saturated; dispatched by Planner.
+
+**Scope:** click through EVERY view — mail, compose dock, contacts,
+settings (all tabs), disposable inbox, security center, integrations,
+rules, filters, templates — capture alignment/overflow/dead-controls/
+missing-labels-or-icons/contrast/broken-empty-states, write findings
+here FIRST, then fix top-severity. Frontend CSS/TSX only — no backend.
+Gate: kiwi-app tsc clean.
+
+**Method:** CDP sweep script (`kiwi-app/scripts/ui-sweep.mjs`, sibling of
+ui-smoke.mjs) drives Edge over every route + every settings tab +
+palette/shortcuts/dock overlays; per view collects console errors,
+horizontal-overflow offenders, unnamed interactive controls, zero-size
+widgets, computed-style contrast misses, and a screenshot into
+artifacts/ui-sweep/. Screenshots eyeballed before fixing.
+
+**File claims:** TBD after findings land — will list each file before
+editing. Likely candidates: shell.css / theme.css / offending views.
+Foreign in-flight noted: A24 T-357/358/359 (compose/nav/mailbox ports),
+A20 T-348 blocklist UI, Lead T-350-352 dev-unlock/tray seams — my fixes
+must not sweep those hunks.
+
+**Findings:** (populated after the sweep run)
+
+**Findings (sweep run, Edge 1440×900, artifacts/ui-sweep/ 25 shots + sweep-report.json):**
+
+VERIFIED defects (screenshot or DOM-evidenced):
+- **S1. setup.tsx — missing spaces in hero copy** (visible: "Get startedwith us", "security.Complete these steps") — JSX text-collapse bugs on the first-run screen. HIGH (user-facing copy).
+- **S2. Compose `section` overflows 14px horizontally** (scrollWidth>clientWidth, no scroll allowed) — inner row pokes past the modal. MED.
+- **S3. Enabled toolbar labels at 3.07:1** (`.em-tool-label` rgb(138,145,156) — Reply/Forward/etc. confirmed NOT inside disabled buttons after the disabled-aware audit) — fails WCAG AA on the main action bar. HIGH.
+- **S4. `--em-text-faint` (≈2.6:1) used on content text** — "(4 of 5)" count, agenda times, menu hints/section heads, demo microcopy. Decorative-use token on informative text. HIGH.
+- **S5. `.em-row-acct` account badge orange ≈1.94:1** — worst measured contrast in the app. HIGH.
+- **S6. Link/action blue ≈3.3–4.1:1** (`.em-linkbtn`, `.em-add-task`, `.em-fmt` on light) — under AA. MED.
+- **S7. `--em-text-dim` ≈4.08:1 on snippets/dates** — marginal fail. MED.
+- **S8. Warn text ≈4.48:1** (`9a6206` on warn bg: security Warning pill, disposable PUBLIC notice, backend-unavailable banner) — marginal. LOW-MED.
+- **S9. Settings h2/h3 group labels ≈4.48:1** (`6a7280`) — marginal. LOW.
+- **S10. Contacts detail pane empty state is bare text** ("Select a contact — or create one.") — inconsistent with the kiwi-empty idiom. LOW.
+- **S11. Bare-text empties** — settings-general "No accounts yet." + settings-plugins "No plugins installed." — LOW.
+
+FALSE POSITIVES (audit artifact, verified via screenshot):
+- setup hero white-on-white: hero is a gradient/photo panel — background-image not visible to computed-background walks. Text is legible.
+- settings-appearance "14 unnamed inputs": label-wrapped radios — named correctly.
+- ctx "Snooze" 3.18:1 — disabled item (demo); exempt.
+- compose `#compose-body` unnamed: resolved — label-wrapped.
+
+NOT EXERCISED: compose dock (nav-away doesn't dock — needs the minimize control; dock smoke path is T-343's check), live mode (demo only in browser).
+
+**Fix plan (top severity):** S1 setup copy; S3 toolbar label token; S4 text-faint usages that carry information → --em-text-dim; S5 account badge → darker ink or tinted-pill treatment; S6 link blue → existing darker --em-link; S7 dim token nudge; S8/S9 marginal nudges; S10 contacts empty state; S2 compose overflow if the offender is identifiable.
+
+**Correction (evidence-first):** S1 setup "missing spaces" = FALSE POSITIVE — `<br/>` renders correctly (verified in setup.png); textContent concatenation artifact. S3 toolbar labels = FALSE POSITIVE — live probe confirms labels sit inside `button[disabled]` (disabled styling via `--kiwi-text-disabled`, WCAG-exempt). S10 contacts empty pane = FALSE POSITIVE — already a `.kiwi-empty` w/ icon (contacts.tsx:691). S2 compose overflow = benign negative-margin bleed by design (`em-compose-fields` edge-bleed inside padded modal; no visual clip) — will harden with `overflow-x: clip` to prevent horizontal scrollbar.
+
+**File claims (A25 sweep fixes — staged surgically, foreign hunks excluded):**
+- `kiwi-app/src/shell.css` — token bumps at `[data-shell=mailspring]` light+dark blocks (~1132/1170); warning-text swaps at `.ms-policy-strip.warn`, `.em-outbox-*`, `.em-security-demo`; `.ms-composer-modal` overflow-x.
+- `kiwi-app/src/views/mailbox.tsx` — `.em-row-acct` inline style (acct hue kept on border, text darkened toward theme text via color-mix).
+- `kiwi-app/src/themes/stock/light/theme.css` + `light-orange/theme.css` — `--kiwi-warning` → darker (4.47→~5.4).
+- `kiwi-app/scripts/ui-sweep.mjs` — audit hardening (`.is-disabled`, `[aria-disabled]`, label-wrapped controls, gradient-bg awareness).
+- `kiwi-app/scripts/ui-probe.mjs` — NEW tiny CDP probe helper (kept: fleet can reuse for DOM forensics).
+
+NOT fixing (recorded for Planner): settings bare `<small>` empties (honest inline hints inside cards — idiom would be overkill); dark-theme cat-pill/link palette (audit ran light only — separate dark sweep warranted); compose dock interaction untested via nav-away (dock needs minimize control — covered by T-343 smoke).
+
+**FIXES LANDED (worktree):**
+- `shell.css` `[data-shell=mailspring]` light: `--em-text-dim` #69707c→#5a616e, `--em-text-faint` #98a0ab→#667080, `--em-group-head` #6a7280→#5a6470, `--em-link` #3b82c4→#3370b8, `--em-cat-news`→#2e68a8, `--em-cat-personal`→#9a5b00, `--em-cat-logs`→#27712b; dark: `--em-text-faint` #5e5c72→#84829a (was ~2.9:1 on dark pane).
+- `shell.css`: `--kiwi-ms-warning` (fill/status orange) no longer used as TEXT — `.ms-policy-strip.warn`, `.em-outbox-sending/.em-outbox-retry`, `.em-security-demo` now use `--kiwi-warning` ink (border keeps the status hue). `.em-iconbtn.is-active` blends link 78% toward ink (clears AA on select tint). `.ms-composer-modal` gets `overflow-x: clip` (negative-margin field bleed can't summon h-scrollbar).
+- `mailbox.tsx` `.em-row-acct`: avatar tint stays on border; label text = `color-mix(tint 55%, --kiwi-ms-text)` — theme-adaptive AA.
+- `light/theme.css` + `light/manifest.json`: `--kiwi-ms-text-muted` #7d8794→#6b7480, `--kiwi-warning` #9a6206→#8a5605; `light-orange/theme.css`: same warning fix; `mailspring-tokens.css`: base muted #8a94a0→#6b7480, dark muted #5e5c72→#84829a.
+- `compose.tsx`: `overflowX: "clip"` on compose section.
+- `ui-sweep.mjs` hardened: disabled-context skip (`[disabled]`/`aria-disabled`/`.is-disabled`/`:disabled` ancestors), gradient-bg skip (counted, not flagged), `overflow-x:clip` exempt in overflow audit. NEW `ui-probe.mjs` — minimal CDP eval helper.
+
+**RE-SWEEP (post-fix):** 25 stops — all clean EXCEPT: settings-general/plugins bare `<small>` "No accounts yet."/"No plugins installed." (ACCEPTED — inline card hints, kiwi-empty idiom would be overkill) and `section.ms-pref-section` 18px x-overflow on Shortcuts/About (FOREIGN — `src/ms/ms-preferences.css` in-flight, unstyled child ~18px; cosmetic, overflow:hidden clips; owner=A24's port).
+
+**FOREIGN RESOLVED MID-SWEEP:** search view giant-ellipse/squeeze = `section.em-search` colliding with header `.em-search` pill styles — fixed in worktree by foreign rename to `em-search-view` (search.tsx + shell.css:3796); verified clean in re-run.
+
+**GATES:** `npx vite build` ✓ · `ui-smoke.mjs` 27/27 PASS ✓ · `npx tsc --noEmit`: **0 errors in all touched/shipped files**; workspace-wide tsc RED on foreign in-flight `src/ms/{drop-zone,outline-view,outline-view-item}.tsx` — comment blocks contain literal `data-*/` sequences that early-terminate `/* */` comments (72 parse errors). NOT mine — owner is the Mailspring-port author (A24 T-35x); flagged for Lead.
+
+**SURGICAL STAGE — FINAL STATE:** committed hunks = shell.css (7 sweep hunks only — composer's `overflow-x:clip`, 3× `--kiwi-warning` text swaps, light-token bumps, cat-pill fg tuning, `.em-iconbtn.is-active` blend, dark faint bump), compose.tsx (`overflowX:"clip"` only), mailspring-tokens.css (2 muted bumps), light/light-orange theme warning+dark-muted, light manifest muted bump, `ui-sweep.mjs` + `ui-probe.mjs` (new tooling), this status file.
+- `mailbox.tsx` NOT committed: mid-sweep T-335 refactor relocated `.em-row-acct` into untracked `src/ms/ms-thread-row.tsx` — my color-mix badge fix was carried into that file intact (comment `A25 UI-sweep` preserved @117-125); owner lands it.
+- Foreign preserved in worktree: mailbox.tsx T-335 rewrite, A24 `src/ms/*` port (still churning — untracked), ms-pref-section overflow, all `src-tauri/*`.
+
+**GATES (final):** `ui-smoke` 27/27 PASS · `vite build` ✓ · `tsc --noEmit`: **0 errors outside foreign `src/ms/`** — red remainder = ms-mail-important-icon, ms-thread-list-columns, ms-thread-list-participants, tokenizing-text-field (active port churn; signature shifted from earlier parse errors → owner still mid-landing). Gate satisfied for A25 scope: my files typecheck clean.

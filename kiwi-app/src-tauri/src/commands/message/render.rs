@@ -177,7 +177,9 @@ fn sanitize_fragment(html: &str, allow_remote: bool, allow_links: bool) -> (Stri
     if allow_links {
         tags.push("a");
     }
-    let schemes: HashSet<&str> = ["http", "https", "mailto", "cid", "data"].into_iter().collect();
+    let schemes: HashSet<&str> = ["http", "https", "mailto", "cid", "data"]
+        .into_iter()
+        .collect();
     let out = ammonia::Builder::default()
         .tags(tags.into_iter().collect())
         .generic_attributes(["title", "lang", "dir"].into_iter().collect())

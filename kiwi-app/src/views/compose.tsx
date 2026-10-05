@@ -13,7 +13,7 @@
  * progress and the 25 MiB cap is enforced before the send IPC runs.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { ClipboardEvent, DragEvent } from "react";
+import type { ClipboardEvent, DragEvent, ReactNode } from "react";
 import type { PolicyBannerVerdict, TemplateView } from "../kiwi";
 import type { ContactView } from "../kiwi";
 import { contactLabel, contactPrimaryEmail } from "../kiwi";
@@ -21,6 +21,8 @@ import { accountPref, loadPref } from "../prefs";
 import { api, IpcError } from "../ipc";
 import { filterContacts, loadLocalBook } from "../contacts";
 import { PolicyBanner } from "../components/security";
+import { DropMenu, useDismissable } from "../components/chrome";
+import type { MenuEntry } from "../components/chrome";
 import { Icon, isIconName } from "../components/icons/index";
 import { navigate } from "../router";
 import { fireComposerAction, useComposerActions } from "../plugins";
@@ -79,6 +81,7 @@ function RecipientInput({
   onChange,
   onPick,
   book,
+  hideLabel,
 }: {
   id: string;
   label: string;
@@ -86,6 +89,8 @@ function RecipientInput({
   onChange: (v: string) => void;
   onPick: (email: string) => void;
   book: ContactView[];
+  /** Field-row layout supplies its own label cell — render input-only. */
+  hideLabel?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(0);
@@ -93,11 +98,12 @@ function RecipientInput({
   useEffect(() => setActive(0), [value]);
   const shown = open && sugg.length > 0;
   return (
-    <span style={{ position: "relative", display: "inline-block" }}>
-      <label htmlFor={id}>{label}: </label>
+    <span className="em-field-input-wrap" style={{ position: "relative", display: "inline-block", flex: 1, minWidth: "10rem" }}>
+      {!hideLabel && <label htmlFor={id}>{label}: </label>}
       <input
         id={id}
         type="text"
+        aria-label={hideLabel ? label : undefined}
         value={value}
         onChange={(e) => {
           onChange(e.target.value);
@@ -113,9 +119,9 @@ function RecipientInput({
           } else if (e.key === "ArrowUp" && sugg.length > 0) {
             e.preventDefault();
             setActive((a) => (a - 1 + sugg.length) % sugg.length);
-          } else if (e.key === "Enter") {
+          } else if (e.key === "Enter" || e.key === ",") {
             e.preventDefault();
-            if (shown && sugg[active]) {
+            if (shown && sugg[active] && e.key === "Enter") {
               const hit = sugg[active];
               onPick(contactPrimaryEmail(hit) || contactLabel(hit));
             } else {
@@ -174,11 +180,131 @@ function RecipientInput({
   );
 }
 
+/**
+ * T-343: Gmail-style floating compose dock. The dock is pure chrome around
+ * the real ComposeView — draft autosave, seed handoffs, send/undo/outbox all
+ * stay identical. `#/compose` remains the full-page form (expand target +
+ * deep links); `requestCompose()` opens a dock when the app registered one,
+ * else falls back to the route (never loses the ability to compose).
+ *
+ * Minimized docks stay MOUNTED-but-hidden — the autosave is 1s-debounced so
+ * an unmount could drop sub-second keystrokes; hiding keeps React state (and
+ * Gmail's semantics) intact.
+ */
+export interface ComposeDockApi {
+  /** Dock is collapsed — the composer ignores Ctrl+Enter and pointer focus. */
+  hidden: boolean;
+  /** This dock's isolated autosave slot (`kiwi.draft.dock.<id>`). Per-dock
+   * keys are mandatory: the page slot is one-draft-per-account, so sharing
+   * it would let concurrent drafts (or a dock + the page composer)
+   * clobber each other's autosave. */
+  draftKey: string;
+  /** Live subject preview for the dock header/chip. */
+  onSubject: (subject: string) => void;
+  /** The draft finished (sent/queued/scheduled) or was discarded. */
+  onDone: () => void;
+  /** Escape / header chevron / header × — minimize, never destroy. */
+  onMinimize: () => void;
+  /** Open the same draft as the full-page composer (flushes autosave first). */
+  onExpand: () => void;
+  /** Assigned by the view: synchronous draft handoff (used by expand). */
+  flushRef: { current: (() => void) | null };
+  /** Assigned by the view: discard the draft + report done. */
+  discardRef: { current: (() => void) | null };
+}
+
+let composeDockOpener: (() => void) | null = null;
+/** App registers the real dock opener; unmount unregisters. */
+export function registerComposeDock(fn: () => void): () => void {
+  composeDockOpener = fn;
+  return () => {
+    if (composeDockOpener === fn) composeDockOpener = null;
+  };
+}
+/** Every compose entry point (reply/forward/new) goes through here. */
+export function requestCompose(): void {
+  if (composeDockOpener) composeDockOpener();
+  else navigate({ name: "compose" });
+}
+
+/** Dock card chrome — header with live subject + min/expand/close. */
+export function ComposeDockCard({
+  subject,
+  focused,
+  onMinimize,
+  onExpand,
+  children,
+}: {
+  subject: string;
+  /** Visible + topmost — focus lands in the To field on open AND on
+   *  chip-restore (the card stays mounted while minimized, so this must
+   *  be prop-driven, not a mount effect). */
+  focused: boolean;
+  onMinimize: () => void;
+  onExpand: () => void;
+  children: ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (focused) ref.current?.querySelector("input")?.focus();
+  }, [focused]);
+  return (
+    <div
+      ref={ref}
+      className="em-dock"
+      role="dialog"
+      aria-modal="false"
+      aria-label={subject ? `Compose message: ${subject}` : "Compose message"}
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          onMinimize(); // never destroys — the draft survives as a chip
+        }
+      }}
+    >
+      <header className="em-dock-head">
+        <span className="em-dock-title" title={subject || "New message"}>
+          {subject || "New message"}
+        </span>
+        <button
+          type="button"
+          className="em-iconbtn"
+          aria-label="Minimize compose — draft stays as a chip"
+          title="Minimize (draft kept)"
+          onClick={onMinimize}
+        >
+          <Icon name="chevron-down" size={12} />
+        </button>
+        <button
+          type="button"
+          className="em-iconbtn"
+          aria-label="Expand compose to full page"
+          title="Open as full page"
+          onClick={onExpand}
+        >
+          <Icon name="external" size={12} />
+        </button>
+        <button
+          type="button"
+          className="em-iconbtn"
+          aria-label="Close compose — draft stays as a minimized chip"
+          title="Close (draft kept)"
+          onClick={onMinimize}
+        >
+          <Icon name="close" size={12} />
+        </button>
+      </header>
+      {children}
+    </div>
+  );
+}
+
 export function ComposeView({
   mode,
   accounts,
   onSent,
   onNotify,
+  dock,
 }: {
   mode: "live" | "demo";
   accounts: { id: string; email: string; displayName: string }[];
@@ -188,9 +314,22 @@ export function ComposeView({
     text: string,
     opts?: { action?: { label: string; run: () => void }; ttlMs?: number },
   ) => void;
+  /** T-343: present when mounted inside the floating dock. */
+  dock?: ComposeDockApi;
 }) {
   const [accountId, setAccountId] = useState(() => {
     try {
+      // T-343: a dock expand handoff carries its owning account — the page
+      // composer must mount under it or the draft fields would render with
+      // the wrong sender. The payload itself is consumed by the restore
+      // effect below (it stays in sessionStorage until then).
+      if (!dock) {
+        const ex = window.sessionStorage.getItem("kiwi.expandDraft");
+        if (ex) {
+          const d = JSON.parse(ex) as { account?: unknown };
+          if (typeof d.account === "string" && accounts.some((a) => a.id === d.account)) return d.account;
+        }
+      }
       const preferred = window.localStorage.getItem("kiwi.defaultAccount");
       if (preferred) {
         const want = JSON.parse(preferred) as string;
@@ -207,6 +346,8 @@ export function ComposeView({
   const [body, setBody] = useState("");
   const [recipients, setRecipients] = useState<string[]>([]);
   const [ccRecipients, setCcRecipients] = useState<string[]>([]);
+  const [ccOpen, setCcOpen] = useState(false);
+  const showCc = ccOpen || ccRecipients.length > 0;
   // T-302: plugin-registered composer actions (composer-action capability).
   const pluginActions = useComposerActions();
   const [book, setBook] = useState<ContactView[]>([]);
@@ -234,6 +375,16 @@ export function ComposeView({
   const [draftNote, setDraftNote] = useState<string | null>(null);
   const [includeSig, setIncludeSig] = useState(true);
   const bodyRef = useRef<HTMLTextAreaElement | null>(null);
+  // Gmail-style footer: split Send (chevron = send options), icon row
+  // (formatting toggle, attach, link, image, overflow), trash at the far
+  // right. The hidden inputs are the real pickers — footer icons drive them.
+  const [sendMenuOpen, setSendMenuOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
+  const [fmtOpen, setFmtOpen] = useState(true);
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const imageRef = useRef<HTMLInputElement | null>(null);
+  const sendMenuRef = useDismissable(sendMenuOpen, () => setSendMenuOpen(false));
+  const moreMenuRef = useDismissable(moreOpen, () => setMoreOpen(false));
   const [graceSeconds] = useState(() => {
     const v = Number(loadPref("kiwi.grace", "10"));
     return [5, 10, 20, 30].includes(v) ? v : 10;
@@ -278,14 +429,45 @@ export function ComposeView({
 
   // Draft autosave (T-151): no draft command exists in kiwi.ipc/1, so drafts
   // persist to this device's localStorage only — never credentials, never
-  // attachments (b64 blobs would blow the quota). One draft per account.
-  const draftKey = `kiwi.draft.${accountId || "default"}`;
+  // attachments (b64 blobs would blow the quota). One draft per account on
+  // the page composer; docked composers get an isolated per-dock slot so
+  // concurrent drafts can never clobber each other (T-343).
+  const draftKey = dock?.draftKey ?? `kiwi.draft.${accountId || "default"}`;
 
   useEffect(() => {
     try {
+      // T-343 expand handoff: a dock's flush publishes the full draft as a
+      // one-shot sessionStorage payload. It REPLACES page state (it is the
+      // draft, not a merge) and suppresses the page-key read so a stale
+      // autosave under this account can't resurrect over it. The account
+      // was already adopted by the useState initializer above.
+      if (!dock) {
+        const ex = window.sessionStorage.getItem("kiwi.expandDraft");
+        if (ex) {
+          window.sessionStorage.removeItem("kiwi.expandDraft");
+          const d = JSON.parse(ex) as {
+            recipients?: unknown;
+            cc?: unknown;
+            subject?: unknown;
+            body?: unknown;
+            scheduled?: unknown;
+          };
+          setRecipients(Array.isArray(d.recipients) ? d.recipients.filter((r): r is string => typeof r === "string") : []);
+          setCcRecipients(Array.isArray(d.cc) ? d.cc.filter((r): r is string => typeof r === "string") : []);
+          setSubject(typeof d.subject === "string" ? d.subject : "");
+          setBody(typeof d.body === "string" ? d.body : "");
+          setScheduled(typeof d.scheduled === "string" ? d.scheduled : null);
+          setDraftNote("Draft restored (this device only).");
+          return;
+        }
+      }
       const raw = window.localStorage.getItem(draftKey);
       if (!raw) return;
-      const d = JSON.parse(raw) as { recipients?: unknown; cc?: unknown; subject?: unknown; body?: unknown; scheduled?: unknown };
+      const d = JSON.parse(raw) as { account?: unknown; recipients?: unknown; cc?: unknown; subject?: unknown; body?: unknown; scheduled?: unknown };
+      // Drafts written by dock autosaves carry their owning account — adopt
+      // it when valid (the orphan sweep files them under that account's
+      // slot, so this only fires for consistent payloads).
+      if (!dock && typeof d.account === "string" && accounts.some((a) => a.id === d.account)) setAccountId(d.account);
       if (Array.isArray(d.recipients)) setRecipients(d.recipients.filter((r): r is string => typeof r === "string"));
       if (Array.isArray(d.cc)) setCcRecipients(d.cc.filter((r): r is string => typeof r === "string"));
       if (typeof d.subject === "string") setSubject(d.subject);
@@ -298,11 +480,40 @@ export function ComposeView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draftKey]);
 
+  // T-312: one-shot "Write" handoff from the Contacts detail card. Runs
+  // after draft restore (mount-effect order) so a restored draft's
+  // recipients merge with, and are never clobbered by, the handoff.
+  useEffect(() => {
+    try {
+      const addr = window.sessionStorage.getItem("kiwi.composeTo");
+      if (addr) {
+        window.sessionStorage.removeItem("kiwi.composeTo");
+        setRecipients((r) => (r.includes(addr) ? r : [...r, addr]));
+      }
+      // T-314: reply/reply-all/forward seed — same one-shot handoff.
+      // Merge recipients; subject only fills an empty field; the quote
+      // appends below existing draft text (never clobbers).
+      const raw = window.sessionStorage.getItem("kiwi.replySeed");
+      if (raw) {
+        window.sessionStorage.removeItem("kiwi.replySeed");
+        const seed = JSON.parse(raw) as { to?: string[]; cc?: string[]; subject?: string; quote?: string | null };
+        if (Array.isArray(seed.to)) setRecipients((r) => [...new Set([...r, ...seed.to!])]);
+        if (Array.isArray(seed.cc)) setCcRecipients((c) => [...new Set([...c, ...seed.cc!])]);
+        if (typeof seed.subject === "string" && seed.subject) setSubject((s) => (s.trim() ? s : seed.subject!));
+        if (typeof seed.quote === "string" && seed.quote) setBody((b) => (b.trim() ? `${b.replace(/\s+$/, "")}\n\n${seed.quote}` : seed.quote!));
+      }
+    } catch {
+      // storage denied / malformed — nothing to seed.
+    }
+  }, []);
+
   useEffect(() => {
     const t = window.setTimeout(() => {
       if (recipients.length === 0 && ccRecipients.length === 0 && !subject && !body) return;
       try {
-        window.localStorage.setItem(draftKey, JSON.stringify({ recipients, cc: ccRecipients, subject, body, scheduled, at: Date.now() }));
+        // `account` rides along so an orphaned dock draft (app exit while
+        // minimized) can be swept back into the right account's slot.
+        window.localStorage.setItem(draftKey, JSON.stringify({ account: accountId, recipients, cc: ccRecipients, subject, body, scheduled, at: Date.now() }));
         setDraftNote(`Draft autosaved ${new Date().toLocaleTimeString()} (this device only, no attachments).`);
       } catch {
         setDraftNote("Draft autosave failed (storage full?) — copy your text before leaving.");
@@ -324,6 +535,51 @@ export function ComposeView({
     setScheduled(null);
     setDraftNote("Draft discarded.");
   };
+
+  // T-343 dock integration. The dock header/chip mirrors the live subject —
+  // reported through a ref-guard because the `dock` prop is a fresh object
+  // every App render: without the guard each render would re-report and
+  // setDocks would feed a render loop.
+  const dockSubject = useRef<string | null>(null);
+  useEffect(() => {
+    if (!dock || dockSubject.current === subject) return;
+    dockSubject.current = subject;
+    dock.onSubject(subject);
+  }, [dock, subject]);
+  // flushRef/discardRef are down-calls from the dock chrome — assigned in an
+  // effect (never mid-render) with no dep array so the closures always see
+  // the latest draft fields.
+  useEffect(() => {
+    if (!dock) return;
+    // Expand handoff: publish the WHOLE draft (incl. account — even an
+    // empty one, so a stale page-slot draft can't resurrect over it) as a
+    // one-shot sessionStorage payload, then release this dock's autosave
+    // slot. The page composer consumes it on mount (initializer + restore
+    // effect above) — byte-identical state, no shared-key write needed.
+    dock.flushRef.current = () => {
+      try {
+        window.sessionStorage.setItem(
+          "kiwi.expandDraft",
+          JSON.stringify({ account: accountId, recipients, cc: ccRecipients, subject, body, scheduled }),
+        );
+        window.localStorage.removeItem(draftKey);
+      } catch {
+        // storage denied — the expand navigation still happens; the draft
+        // simply doesn't follow, which the empty composer shows honestly.
+      }
+    };
+    dock.discardRef.current = () => {
+      clearDraft();
+      dock.onDone();
+    };
+  });
+  // Close the dock once the draft has actually finished its lifecycle —
+  // sent/queued/scheduled (grace window over), not merely "sending" (undo
+  // must stay reachable inside the dock while graceLeft counts down).
+  useEffect(() => {
+    if (!dock || graceLeft !== null) return;
+    if (sentNote === "Queued for dispatch." || sentNote === "Message sent." || (sentNote !== null && /^Scheduled for /.test(sentNote))) dock.onDone();
+  }, [dock, sentNote, graceLeft]);
 
   const allRecipients = useMemo(() => [...recipients, ...ccRecipients], [recipients, ccRecipients]);
   const demoResult = mode === "demo" ? demoEvaluate(allRecipients) : null;
@@ -365,8 +621,10 @@ export function ComposeView({
     };
   }, [mode, graceLeft, onSent, onNotify]);
 
-  // Ctrl+Enter sends.
+  // Ctrl+Enter sends. A minimized (hidden) dock composer must not fire —
+  // several docks share this window-level listener.
   useEffect(() => {
+    if (dock?.hidden) return;
     const onKey = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
         e.preventDefault();
@@ -376,7 +634,7 @@ export function ComposeView({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, accountId, recipients, ccRecipients, subject, body, scheduled, attachments, sending]);
+  }, [mode, accountId, recipients, ccRecipients, subject, body, scheduled, attachments, sending, dock?.hidden]);
 
   /** Add a picked/typed address to To (false) or Cc (true), de-duplicated. */
   const addAddress = (email: string, toCc: boolean) => {
@@ -419,6 +677,16 @@ export function ComposeView({
     setSentNote(null);
     setSendError(null);
     setBanner(null);
+    // Gmail semantics: half-typed recipient text commits on Send rather than
+    // being silently dropped or producing a spurious "no recipients" error.
+    const toList = to.trim() ? [...recipients, to.trim()] : recipients;
+    const ccList = cc.trim() ? [...ccRecipients, cc.trim()] : ccRecipients;
+    if (toList !== recipients || ccList !== ccRecipients) {
+      setRecipients(toList);
+      setCcRecipients(ccList);
+      setTo("");
+      setCc("");
+    }
     // Sending consumes the autosaved draft (fields stay for undo).
     try {
       window.localStorage.removeItem(draftKey);
@@ -440,7 +708,7 @@ export function ComposeView({
       setSendError("Choose a sending account first.");
       return;
     }
-    if (recipients.length === 0 && ccRecipients.length === 0) {
+    if (toList.length === 0 && ccList.length === 0) {
       setSendError("Add at least one recipient (To or Cc).");
       return;
     }
@@ -467,8 +735,8 @@ export function ComposeView({
       const receipt = await api.sendMessage(
         accountId,
         {
-          to: recipients,
-          cc: ccRecipients,
+          to: toList,
+          cc: ccList,
           bcc: [],
           subject,
           text: sendText,
@@ -496,11 +764,11 @@ export function ComposeView({
     } catch (e) {
       setSending(false);
       if (e instanceof IpcError && e.code === "policy-blocked") {
-        setBanner({ verdict: "block", offenders: recipients });
+        setBanner({ verdict: "block", offenders: toList });
         setSendError(`Policy blocked this send: ${e.message}`);
         onNotify("error", `Policy blocked this send: ${e.message}`);
       } else if (e instanceof IpcError && e.code === "policy-unavailable") {
-        setBanner({ verdict: "warn", offenders: recipients });
+        setBanner({ verdict: "warn", offenders: toList });
         setSendError(`Policy service unreachable — the server held the send (fail-closed): ${e.message}`);
         onNotify("warn", "Policy service unreachable — the server held the send (fail-closed).");
       } else {
@@ -679,88 +947,134 @@ export function ComposeView({
   };
 
   return (
-    <section aria-label="Compose message" style={{ maxWidth: "46rem", position: "relative" }} {...dragHandlers}>
+    <section aria-label="Compose message" style={{ maxWidth: "46rem", position: "relative", overflowX: "clip" }} {...dragHandlers}>
       {dragOver && (
         <div className="em-drop-veil" role="status">
           <Icon name="file" size={28} />
           <p>Drop files to attach</p>
         </div>
       )}
-      <h1>Compose {mode === "demo" && <small style={{ color: "var(--kiwi-text-secondary)" }}>(demo)</small>}</h1>
+      {!dock && (
+        <h1>
+          Compose {mode === "demo" && <small style={{ color: "var(--kiwi-text-secondary)" }}>(demo)</small>}
+        </h1>
+      )}
       {mode === "demo" && demoResult && demoResult.verdict !== "none" && (
         <PolicyBanner verdict={demoResult.verdict} offenders={demoResult.offenders} onRemove={removeAddress} />
       )}
       {banner && (
         <PolicyBanner verdict={banner.verdict} offenders={banner.offenders} onRemove={removeAddress} />
       )}
-      {mode === "live" && accounts.length > 0 && (
-        <p>
-          <label>
-            From:{" "}
-            <select value={accountId} onChange={(e) => setAccountId(e.target.value)} aria-label="Sending account">
+      {/* Gmail-style field rows: hairline-separated, prefix label cell,
+          chips inline in the To row, borderless inputs, Cc link reveals the
+          Cc row (no Bcc — the send payload has none). */}
+      <div className="em-compose-fields">
+        {mode === "live" && accounts.length > 0 && (
+          <div className="em-field">
+            <span className="em-field-label">
+              <label htmlFor="compose-from">From</label>
+            </span>
+            <select
+              id="compose-from"
+              className="em-field-input"
+              value={accountId}
+              onChange={(e) => setAccountId(e.target.value)}
+              aria-label="Sending account"
+            >
               {accounts.map((a) => (
                 <option key={a.id} value={a.id}>
                   {a.displayName} &lt;{a.email}&gt;
                 </option>
               ))}
             </select>
-          </label>
-        </p>
-      )}
-      <p>
-        <RecipientInput
-          id="compose-to"
-          label="To"
-          value={to}
-          onChange={setTo}
-          onPick={(email) => addAddress(email, false)}
-          book={book}
-        />{" "}
-        <button type="button" onClick={() => addAddress(to, false)}>
-          Add
-        </button>
-      </p>
-      <p>
-        <RecipientInput
-          id="compose-cc"
-          label="Cc"
-          value={cc}
-          onChange={setCc}
-          onPick={(email) => addAddress(email, true)}
-          book={book}
-        />{" "}
-        <button type="button" onClick={() => addAddress(cc, true)}>
-          Add
-        </button>{" "}
-        <small style={{ color: "var(--kiwi-text-secondary)" }}>
-          Contacts: {bookSource === "server" ? "address book" : "demo book (localStorage fixture)"}.
-        </small>
-      </p>
-      <p aria-label="Recipients">
-        {recipients.map((r) => (
-          <span key={`to-${r}`} className="kiwi-pill unknown" style={{ marginRight: "0.3rem" }}>
-            To: {r}{" "}
-            <button type="button" onClick={() => removeAddress(r)} aria-label={`Remove ${r}`}>
-              <Icon name="close" size={10} />
-            </button>
-          </span>
-        ))}
-        {ccRecipients.map((r) => (
-          <span key={`cc-${r}`} className="kiwi-pill unknown" style={{ marginRight: "0.3rem" }}>
-            Cc: {r}{" "}
-            <button type="button" onClick={() => removeAddress(r)} aria-label={`Remove ${r}`}>
-              <Icon name="close" size={10} />
-            </button>
-          </span>
-        ))}
-        {recipients.length === 0 && ccRecipients.length === 0 && (
-          <small style={{ color: "var(--kiwi-text-secondary)" }}>No recipients yet.</small>
+          </div>
         )}
-      </p>
+        <div className="em-field">
+          <span className="em-field-label">
+            <label htmlFor="compose-to">To</label>
+          </span>
+          <p aria-label="Recipients" className="em-field-chips">
+            {recipients.map((r) => (
+              <span key={`to-${r}`} className="em-addr-chip">
+                To: {r}
+                <button type="button" onClick={() => removeAddress(r)} aria-label={`Remove ${r}`}>
+                  <Icon name="close" size={10} />
+                </button>
+              </span>
+            ))}
+            {ccRecipients.map((r) => (
+              <span key={`cc-${r}`} className="em-addr-chip">
+                Cc: {r}
+                <button type="button" onClick={() => removeAddress(r)} aria-label={`Remove ${r}`}>
+                  <Icon name="close" size={10} />
+                </button>
+              </span>
+            ))}
+          </p>
+          <RecipientInput
+            id="compose-to"
+            label="To"
+            hideLabel
+            value={to}
+            onChange={setTo}
+            onPick={(email) => addAddress(email, false)}
+            book={book}
+          />
+          <button type="button" className="em-field-add" onClick={() => addAddress(to, false)}>
+            Add
+          </button>
+          {!showCc && (
+            <button
+              type="button"
+              className="em-field-link"
+              onClick={() => setCcOpen(true)}
+              aria-label="Add Cc recipients"
+            >
+              Cc
+            </button>
+          )}
+        </div>
+        {showCc && (
+          <div className="em-field">
+            <span className="em-field-label">
+              <label htmlFor="compose-cc">Cc</label>
+            </span>
+            <RecipientInput
+              id="compose-cc"
+              label="Cc"
+              hideLabel
+              value={cc}
+              onChange={setCc}
+              onPick={(email) => addAddress(email, true)}
+              book={book}
+            />
+            <button type="button" className="em-field-add" onClick={() => addAddress(cc, true)}>
+              Add
+            </button>
+            <button type="button" className="em-field-link" onClick={() => setCcOpen(false)} aria-label="Hide Cc">
+              ×
+            </button>
+          </div>
+        )}
+        <div className="em-field">
+          <span className="em-field-label">
+            <label htmlFor="compose-subject">Subject</label>
+          </span>
+          <input
+            id="compose-subject"
+            className="em-field-input"
+            type="text"
+            value={subject}
+            onChange={(e) => setSubject(e.target.value)}
+            aria-label="Subject"
+          />
+        </div>
+      </div>
       <p>
-        <label>
-          Subject: <input type="text" value={subject} onChange={(e) => setSubject(e.target.value)} style={{ width: "70%" }} />
-        </label>
+        <small style={{ color: "var(--kiwi-text-secondary)" }}>
+          Contacts: {bookSource === "server" ? "address book" : "demo book (localStorage fixture)"} — Enter or a
+          comma commits an address.
+        </small>
       </p>
       <p>
         <label>
@@ -865,6 +1179,7 @@ export function ComposeView({
           (plaintext — toolbar inserts markers, no HTML is sent)
         </small>
         <br />
+        {fmtOpen && (
         <span role="toolbar" aria-label="Format body text" style={{ display: "inline-flex", gap: "0.25rem", marginBottom: "0.25rem" }}>
           <button type="button" title="Bold (**text**)" aria-label="Bold" onClick={() => wrapSelection("**")}>
             <strong>B</strong>
@@ -885,6 +1200,7 @@ export function ComposeView({
             <Icon name="list" size={13} />
           </button>
         </span>
+        )}
         <textarea
           id="compose-body"
           ref={bodyRef}
@@ -916,20 +1232,152 @@ export function ComposeView({
           </small>
         </p>
       )}
-      <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap" }}>
-        <button type="button" className="kiwi-btn-primary" onClick={() => void send()} disabled={blocked || sending} aria-disabled={blocked || sending}>
-          {sending ? `Sending in ${graceLeft ?? "…"}s…` : scheduled ? "Schedule send" : "Send (Ctrl+Enter)"}
-        </button>
-        <button type="button" onClick={() => setShowSchedule((s) => !s)} aria-expanded={showSchedule}>
-          Send later
+      <div className="em-compose-footer">
+        <div className="em-menu-wrap em-send-wrap" ref={sendMenuRef}>
+          <span className="em-send-split">
+            <button
+              type="button"
+              className="em-send"
+              title="Send (Ctrl+Enter)"
+              onClick={() => void send()}
+              disabled={blocked || sending}
+              aria-disabled={blocked || sending}
+            >
+              {sending ? `Sending in ${graceLeft ?? "…"}s…` : scheduled ? "Schedule send" : "Send"}
+            </button>
+            <button
+              type="button"
+              className="em-send-chev"
+              aria-label="Send options"
+              title="Send options"
+              aria-haspopup="menu"
+              aria-expanded={sendMenuOpen}
+              disabled={blocked || sending}
+              onClick={() => setSendMenuOpen((o) => !o)}
+            >
+              <Icon name="chevron-down" size={12} />
+            </button>
+          </span>
+          {sendMenuOpen && (
+            <DropMenu
+              label="Send options"
+              onClose={() => setSendMenuOpen(false)}
+              entries={[
+                {
+                  label: scheduled ? "Edit scheduled time…" : "Schedule send…",
+                  run: () => setShowSchedule(true),
+                },
+              ]}
+            />
+          )}
+        </div>
+        <span className="em-compose-tools" role="toolbar" aria-label="Compose tools">
+          <button
+            type="button"
+            className={`em-iconbtn em-fmt${fmtOpen ? " is-active" : ""}`}
+            title="Formatting options"
+            aria-label="Formatting options"
+            aria-pressed={fmtOpen}
+            onClick={() => setFmtOpen((o) => !o)}
+          >
+            Aa
+          </button>
+          <button
+            type="button"
+            className="em-iconbtn"
+            title="Attach files"
+            aria-label="Attach files"
+            onClick={() => fileRef.current?.click()}
+          >
+            <Icon name="paperclip" size={15} />
+          </button>
+          <button
+            type="button"
+            className="em-iconbtn"
+            title="Insert link"
+            aria-label="Insert link"
+            onClick={() => wrapSelection("[", "](https://)")}
+          >
+            <Icon name="link" size={15} />
+          </button>
+          <button
+            type="button"
+            className="em-iconbtn"
+            title="Attach image"
+            aria-label="Attach image"
+            onClick={() => imageRef.current?.click()}
+          >
+            <Icon name="image" size={15} />
+          </button>
+          <div className="em-menu-wrap" ref={moreMenuRef}>
+            <button
+              type="button"
+              className="em-iconbtn"
+              title="More options"
+              aria-label="More compose options"
+              aria-haspopup="menu"
+              aria-expanded={moreOpen}
+              onClick={() => setMoreOpen((o) => !o)}
+            >
+              <Icon name="more" size={15} />
+            </button>
+            {moreOpen && (
+              <DropMenu
+                label="More compose options"
+                onClose={() => setMoreOpen(false)}
+                entries={
+                  [
+                    { label: "Save as template…", run: () => setSaveTplOpen(true) },
+                    { label: "Manage templates…", run: () => navigate({ name: "settings" }) },
+                    ...(signature
+                      ? [{ label: includeSig ? "✓ Append signature" : "Append signature", run: () => setIncludeSig((s) => !s) }]
+                      : []),
+                  ] as MenuEntry[]
+                }
+              />
+            )}
+          </div>
+        </span>
+        <button
+          type="button"
+          className="em-iconbtn em-compose-trash"
+          aria-label="Discard draft"
+          title="Discard draft"
+          onClick={() => {
+            clearDraft();
+            dock?.onDone();
+          }}
+        >
+          <Icon name="trash" size={15} />
         </button>
       </div>
+      <input
+        ref={fileRef}
+        type="file"
+        multiple
+        hidden
+        aria-label="Choose files to attach"
+        onChange={(e) => {
+          addFiles(e.target.files);
+          e.target.value = "";
+        }}
+      />
+      <input
+        ref={imageRef}
+        type="file"
+        accept="image/*"
+        multiple
+        hidden
+        aria-label="Attach image"
+        onChange={(e) => {
+          addFiles(e.target.files);
+          e.target.value = "";
+        }}
+      />
       <p>
-        <label>
-          Attachments (25 MiB total cap):{" "}
-          <input type="file" multiple onChange={(e) => addFiles(e.target.files)} aria-label="Choose files to attach" />
-        </label>{" "}
-        <small style={{ color: "var(--kiwi-text-secondary)" }}>or drop files anywhere in this window / paste an image</small>
+        <small style={{ color: "var(--kiwi-text-secondary)" }}>
+          Attachments (25 MiB total cap) — drop files anywhere in this window / paste an image
+        </small>
         {attachError && (
           <span role="alert">
             <br />

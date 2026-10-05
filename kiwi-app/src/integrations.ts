@@ -234,6 +234,9 @@ export function decodeDeliverabilitySendView(raw: unknown): DeliverabilitySendVi
       testId: requiredString(source, "testId"),
       queueId: requiredString(source, "queueId"),
       notBeforeUnix: integer(source["notBeforeUnix"], Number.MIN_SAFE_INTEGER),
+      consentConsumed: requiredBoolean(source, "consentConsumed"),
+      enqueued: requiredBoolean(source, "enqueued"),
+      singleAttempt: requiredBoolean(source, "singleAttempt"),
     };
   });
 }
@@ -251,6 +254,7 @@ export function decodeDeliverabilityStatusView(raw: unknown): DeliverabilityStat
       checksTotal,
       ready: requiredBoolean(source, "ready"),
       sent: requiredBoolean(source, "sent"),
+      consentConsumed: requiredBoolean(source, "consentConsumed"),
       retryAfterMs: optionalRetryAfterMs(source),
     };
   });
@@ -307,6 +311,8 @@ export function decodeDeliverabilityReportView(raw: unknown): DeliverabilityRepo
       checks: array(source, "checks").map(decodeCheck),
       authFailureIds: stringList(source, "authFailureIds"),
       authGate,
+      checksTruncated: requiredBoolean(source, "checksTruncated"),
+      evidenceComplete: requiredBoolean(source, "evidenceComplete"),
     };
   });
 }

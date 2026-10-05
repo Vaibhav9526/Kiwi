@@ -313,6 +313,9 @@ P.emitToPlugin("settings-pane-demo", "pane.mount", { paneId: "about" });
 for (let i = 0; i < 75 && !/rendered by the plugin/.test(P.listPluginPanes().find((p) => p.paneId === "about")?.body ?? ""); i++) await sleep(20);
 const paneBody = P.listPluginPanes().find((p) => p.paneId === "about")?.body ?? "";
 ok(/rendered by the plugin/.test(paneBody), "pane.mount evt → plugin pushed markup via settings.renderPane");
+// The plugin awaits renderPane THEN notify.show — the toast trails the pane
+// body by one round-trip, so it needs its own poll window.
+for (let i = 0; i < 75 && !toasts.some((t) => t.t === "[settings-pane-demo] demo pane mounted"); i++) await sleep(20);
 ok(
   toasts.some((t) => t.t === "[settings-pane-demo] demo pane mounted" && t.k === "info"),
   "notify.show reached the toast sink scoped with the plugin id",

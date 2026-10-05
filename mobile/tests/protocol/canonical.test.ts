@@ -17,7 +17,7 @@ describe('canonical challenge bytes', () => {
     const c = validChallenge();
     const bytes = canonicalOf(c);
     // 4+17 (domain) + 4+13 (chg-test-0001) + 4+13 (dev-test-0001)
-    // + 4+14 (x-tx-test-0001) + 1 tag + 32 nonce + 8 + 8
+    // + 4+14 (boot-test-0001) + 1 tag + 32 nonce + 8 + 8
     expect(bytes.length).toBe(4 + 17 + 4 + 13 + 4 + 13 + 4 + 14 + 1 + 32 + 8 + 8);
     // Domain length prefix = 17, then the domain string.
     expect([bytes[0], bytes[1], bytes[2], bytes[3]]).toEqual([0, 0, 0, 17]);
@@ -114,7 +114,12 @@ describe('challenge parsing (strict, unknown fields ignored)', () => {
   it('decodeB64 enforces exact decoded length', () => {
     expect(decodeB64(Buffer.from(NONCE).toString('base64'), 32, 'nonce')).toEqual(NONCE);
     expect(() => decodeB64('', 32, 'nonce')).toThrow();
-    expect(() => decodeB64('AAAAAA', 3, 'nonce')).toThrow(/exactly 3/);
+    // Canonical padded base64 of exactly 3 bytes -> valid spelling, but it
+    // is not the 32 bytes the field requires.
+    const threeBytes = Buffer.from(new Uint8Array([0, 0, 0])).toString('base64');
+    expect(() => decodeB64(threeBytes, 32, 'nonce')).toThrow(/exactly 32/);
+    // Unpadded / non-canonical spellings fail before the length check.
+    expect(() => decodeB64('AAAAAA', 3, 'nonce')).toThrow(/canonical/);
   });
 });
 
@@ -124,7 +129,11 @@ describe('response building (§6.2)', () => {
     const resp = buildChallengeResponseData(c, 'approve', Buffer.from(new Uint8Array(64)).toString('base64'));
     expect(resp.decision).toBe('approve');
     expect(resp.signature_b64.length).toBeGreaterThan(0);
-    expect(() => buildChallengeResponseData(c, 'approve', 'not-enough')).toThrow(/64 bytes/);
+    // Canonical base64 of the wrong length fails the byte-count check...
+    const short = Buffer.from(new Uint8Array(63)).toString('base64');
+    expect(() => buildChallengeResponseData(c, 'approve', short)).toThrow(/64 bytes/);
+    // ...and non-base64 text never reaches it (fail closed, rule 9).
+    expect(() => buildChallengeResponseData(c, 'approve', 'not-enough')).toThrow();
   });
 
   it('deny carries no signature', () => {

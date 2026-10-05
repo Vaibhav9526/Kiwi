@@ -133,8 +133,17 @@ host). 48 assertions; exits non-zero on any failure.
 `installPlugin(manifest, files)` → enabled immediately;
 `setPluginEnabled(id, false)` → host stops routing calls;
 `removePlugin(id)` → purged from `kiwi.plugins.v1`.
-The Preferences → Integrations/Plugins pane (per-plugin enable/disable +
-remove UI) is wired by the layout task onto `listPlugins()` etc.
+
+**Install UX (T-307):** Settings → Plugins has an **Install plugin…** button
+backed by a folder picker (`webkitdirectory`). The picked folder's files are
+read as text (64-file / 512KB-per-file caps), the top-level dir is stripped so
+`manifest.json` resolves at the package root, and `installPlugin` runs the
+manifest schema + capability whitelist + safe-path checks. Failures surface
+verbatim in an error banner ("manifest is not valid JSON", `unknown capability
+"x" (known: …)`, "no manifest.json at the package root", …) — nothing fails
+silently. Success emits `kiwi-plugins-changed` → the list refreshes, the
+plugin's declared capabilities render as per-row badges, and (if enabled) the
+worker session starts immediately. Per-row Enable/Remove were verified live.
 
 ## Post-alpha hardening checklist
 

@@ -579,3 +579,427 @@ modules). Nothing fabricated: every rendered field is on the wire view.
 Mid-session the settings.tsx edits were swept into commit 43b528a
 ("A24 → T-308") — final content verified in HEAD; this commit carries
 the smoke-suite addition + this log.
+
+## T-310 — reader quoted-text collapse + thread polish (presentation-only)
+
+**Quote collapse (BodyPane, mailbox.tsx):**
+- HTML path: post-mount DOM pass tags `data-kiwi-quote` on top-level quote
+  containers (`blockquote`, `.gmail_quote`, `.moz-cite-prefix`,
+  `[type="cite"]`) plus a preceding "On … wrote:" preamble element —
+  `.em-quotes-collapsed` on the body hides them. The sanitize pipeline is
+  untouched: this is an effect over `rendered.html` AFTER it mounts, with
+  zero re-parsing authority. Conservative guards: nested quotes ride their
+  ancestor; nothing collapses when the quote IS the whole body (no real
+  content would remain).
+- Text path: `splitQuotedText` collapses only when the marker is
+  unambiguous — "On … wrote:" preamble followed by quote lines, or a `>`
+  run (≥2 lines) that extends to EOM tolerating blanks + a trailing sig
+  block. Interleaved quoting, quote-only bodies, single stray `>` lines,
+  and bare preambles all stay fully visible.
+- Toggle: "Show quoted text (N)" / "Hide" — per-message-open state
+  (`useState` + reset on uid change), collapsed by default, no pref.
+
+**In-reply-to jump:** `MessageEnvelope` now carries `messageId` /
+`inReplyTo` / `references` (real `MessageView` fields mapped in
+`toEnvelope`). Each card resolves `inReplyTo` (or last `references`) —
+normalized, case-folded, `<>`-stripped — against loaded thread members and
+renders "← In reply to {sender}" navigating to the parent's real route.
+Nothing renders when unresolved — honest dormancy in demo (fixtures carry
+no chain ids).
+
+**Signature de-emphasis:** RFC 3676 `-- ` delimiter in the HEAD region only
+renders inside a muted `.em-sig` span (text bodies). HTML sig heuristics
+skipped — not cheap/reliable; noted, not faked.
+
+**Fix-forward:** `ipc.ts` imported `SandboxSessionView` unused (A21's
+T-300 seam) — removed the name from the import list only; the type still
+backs `parseSandboxSessions` in kiwi.ts.
+
+**Verification:** `tsc && vite build` green (91 modules); smoke suite
+11/11 PASS on real Edge headless. `splitQuotedText` logic verified
+directly on 8 cases (collapse: preamble+quotes, run-to-EOM, sig+quote;
+refuse: interleaved, quote-only, stray `>`, bare preamble, plain).
+Swept into `6ee4daf` mid-session — final content verified in HEAD.
+
+## T-313 — quick-filter chips on the message list
+
+**Chip bar** (`.em-filterbar`, mailbox.tsx) — client-side view filtering
+over the already-fetched rows; zero new IPC:
+
+- **Unread / Starred / Attachments** chips AND-combine, each with a live
+  count scoped to the current tab's loaded set. **From sender** captures
+  the selected row's From address when toggled (disabled with honest
+  tooltip when no selection exists; title names the captured address).
+- `filtered` memo sits between the category-tab filter and thread
+  grouping — threading, range-select, select-all, keyboard nav, and
+  "selected" fallback all operate on the narrowed set consistently.
+- **Reset on folder switch** (chips + sender address cleared together);
+  chips compose with search honestly by disappearing while `searching`
+  (search drives its own result list — stacking the two would lie about
+  scope).
+- **Counts**: header reads "N of M filtered" while chips are active;
+  a `role=status` span announces "N of M shown" for AT; chips are
+  `aria-pressed` buttons inside a labelled `role=group`.
+- **No-matches state** is distinct from empty-folder: "No matches —
+  nothing passes the active filter chips" + a Clear filters button.
+
+**Shortcut:** none added — chips are ordinary focusable buttons and `/`
+already focuses search; inventing one would collide with the T-291 map.
+Documented, not faked.
+
+**Verification:** `tsc && vite build` green; the T-305 suite gained a
+`quickfilter` check — flattens to list mode, asserts `.em-row` count
+equals the Unread chip's declared count AND the status line reads
+"N of M shown", sender chip narrows 1..total, Clear restores full rows +
+empty status. **12/12 PASS** on real Edge headless.
+
+## T-314 — smoke suite deepened to FLOW checks (+ real reply prefill landed)
+
+**Feature discovery (filed-and-fixed, not faked):** the flow audit exposed
+that "Reply" anywhere in the app — ctx menu, reader card, r/a/f keys,
+toolbar — opened a BLANK composer; the old comment even admitted "compose
+route owns prefill when it exists". Real implementation landed rather
+than a faked test:
+
+- `seedCompose(mode, m, body)` (exported from mailbox.tsx) writes a
+  one-shot `kiwi.replySeed` to sessionStorage then navigates — same
+  pattern as T-312's `kiwi.composeTo` handoff. Reply seeds `Re:` subject
+  (no double-Re) + To=original sender; Reply-All adds cc = body's
+  to/cc minus self minus sender (needs the loaded body — honest); Forward
+  seeds `Fwd:` + quote with empty recipients.
+- **Quote only when provable:** `> `-prefixed lines + "On … wrote:" attach
+  ONLY when `body` belongs to that message (`m.id === selectedId` /
+  card-gated `isSelected`) — a right-click on an unselected row seeds
+  without a quote rather than fabricate one. Storage denied → composer
+  opens blank.
+- ComposeView consumes the seed post-draft-restore: recipients merge
+  dedup'd, subject fills only if empty, quote appends below existing
+  draft text — restored drafts never clobbered.
+- Wired: ctx-menu ×3, card header + actions Reply, r/a/f keys, App
+  toolbar Reply/ReplyAll/Forward.
+
+**Suite:** `check()` gained a `kind` ("smoke"|"flow"); results + a
+`flows` array both land in SMOKE_JSON. New flow checks (state-change
+assertions, restore afterwards so the suite is order-independent):
+
+- `rail` — agenda rail collapse→expand roundtrip via the real toggle.
+- `ctxmark` — ctx-menu Mark read/unread flips `.em-row.is-unread`, then
+  restores via the same menu.
+- `reply-prefill` — row→Reply→compose: `Re:` subject + To chip asserted;
+  quote honestly gated in demo (no message-body IPC) and said so in the
+  detail string.
+- `demo-send` — recipient commit via #compose-to+Add → Send → "Demo:
+  sending" toast → Undo action → "back to draft" status. Honest demo
+  path, no fake IPC.
+- `pref-roundtrip` — dark theme → real `Page.reload` → still dark →
+  restore light (localStorage roundtrip proven on real browser).
+- `quickfilter` re-tagged as the flow it already was.
+- `lock` stays a smoke check — demo cannot reach the locked overlay
+  (documented honestly; positive render is live-only).
+
+**Result:** 18/18 PASS (12 smoke + 6 flow) on real Edge headless, ~15s.
+`tsc && vite build` green.
+
+## T-317 — drag messages → folder tree (last un-wired mailbox interaction)
+
+**Drag side** (mailbox.tsx): `RowShell` gains `dragIds`/`dragSubject` —
+draggable rows write `application/x-kiwi-messages` JSON + `text/plain`
+summary + `effectAllowed=move`. Pick-aware: a dragged row inside the
+picked set drags the whole selection (threads resolve to member ids, or
+the picked set when a member is picked).
+
+**Drop side** (chrome.tsx): `FolderRow` accepts a `dropTarget` only on
+real account folders — Favorites/smart rows (incl. Outbox) get NO handler,
+so dropping there is impossible by construction (honest, not a fake deny).
+`getData` is unreadable during dragover, so the source folder rides as a
+`application/x-kiwi-src-*` TYPE token (lowercased — setData normalizes).
+Same-folder hover → `dropEffect=none` + `em-drop-denied` +
+`aria-dropeffect="none"`; valid target → `em-drop-target` + `move`.
+Drop filters same-folder members (multi-source drags keep the movable
+subset); all-local drops no-op silently.
+
+**Drop → same move path:** `onDropMessages` resolves the composite
+`accountId:folderId` → `moveToFolder` → the existing chunked
+`kiwi_move_messages` loop (shared with ctx-menu Move-to, which stays the
+keyboard fallback). Demo → honest "needs the Tauri backend" toast. Toast
+now names the destination ("Moved N to X."). **No undo** — no real undo
+IPC exists; not faked.
+
+**Smoke `dragdrop` flow:** synthetic `DragEvent`+`DataTransfer` on real
+DOM (Chromium resets `dropEffect` post-dispatch for synthetic events —
+proven via probe; so assertions use the React-state affordance:
+`em-drop-denied`/`em-drop-target` + `aria-dropeffect`). Verifies:
+dragstart carries the payload+source token → same-folder hover denied →
+different folder paints the move affordance → drop reaches the handler →
+demo answers the honest toast. **20/20 PASS.**
+
+**Mid-flight collisions:** A25's T-318 was landing in settings.tsx +
+ui-smoke.mjs concurrently (transient tsc errors + a `mbox-io` check
+appeared mid-run + one theme-check flake during their save). My staging
+was hunk-scoped: `git apply --cached` of ONLY the dragdrop hunk —
+mbox-io stays in the worktree for their own commit.
+
+## T-322 — folder-management UI over A15's T-319 IPC
+
+**Contract (ipc.md §kiwi_folder_*):** `create(accountId,parentId?,name)` /
+`rename(accountId,folderId,newName)` → `FolderView`; `delete` →
+`{folderId}`. **Local-only** — remote/system rows return `policy-blocked`;
+delete requires empty+leaf. No IMAP server CREATE — contract files that
+gap honestly, and the UI copy mirrors it ("Local folder — never created
+on the mail server").
+
+**Surface (chrome.tsx FolderPane):**
+- `FolderSection.items` gains `folderId/origin/parentId/exists`
+  (accounts.ts maps them from the real `FolderView`; demo items lack
+  them → ops disabled there anyway).
+- Folder ctx menu gains: **New subfolder…** (local parents only),
+  **Rename…** (local only — tooltips distinguish "system can't rename"
+  vs "remote is server-managed"), **Delete** (danger; gated on
+  `origin==="local" && exists===0 && no children`, each deny explains
+  itself). Entries DISABLED, never hidden — the reason lives in the
+  tooltip.
+- Account-head right-click → **New folder…** (root create, parentId null).
+- One small `.ms-composer-modal` dialog for all three ops (create/rename
+  share the name field — Enter submits, Esc/backdrop dismisses, busy
+  locks). IPC error strings render verbatim in `role=alert`.
+
+**Split:** FolderPane collects intent + name → `onFolderOp(FolderOp)`
+returns `Promise<string|null>`; App.tsx owns the api call →
+`loadFolders()` refresh + toast ("Created local folder X (not synced to
+the server)"). IPC stays in App; errors flow back into the dialog.
+
+**Smoke `folder-mgmt` flow:** right-click folder row → asserts all three
+items present (+ demo-disabled honestly) → Escape → right-click account
+head → "New folder…" present. Live create→rename→delete is covered by
+A15's backend tests; the demo surface proves presence+gating, stated
+honestly in the detail line. **21 pass / 1 fail** — the fail is A21's
+in-flight `audit-log` check (T-320 security-center work, CDP eval
+"object reference chain too long" — their uncommitted ipc.ts/
+security-center.tsx are mid-edit; not T-322).
+
+**Staging:** hunk-scoped again — `git apply --cached` of only the
+folder-mgmt hunk; A21's audit-log check + A25's nav line stay in the
+worktree. kiwi.ts/ipc.ts (A15's T-319 wrappers + A21's audit line) NOT
+committed by me.
+
+## T-323-aux — Empty Trash/Junk via the real delete path
+
+**No new IPC** — `FolderOp` gains `{kind:"empty"}`; App drains the folder
+through `listMessages(limit 500)` → `api.deleteMessages(…, permanent=true)`
+chunked at 400 (the same IPC the message ctx-menu Delete uses — audit is
+backend-side via that command). Loops until a page comes back empty or
+progress stalls (0 removed in a round → break, honest; 25-round cap).
+
+**Menu (chrome.tsx):** `Empty {Trash|Junk|Spam|Deleted}…` appears ONLY on
+dump-named folders — hidden elsewhere (eM idiom). Disabled honestly when
+demo / `folderId` unknown / `exists` unknown ("counts unavailable — can't
+confirm") / already empty.
+
+**Dialog:** same T-322 `.ms-composer-modal` — "Empty Trash?" →
+"Permanently delete N messages? **This cannot be undone.**" → Empty
+button; Esc/backdrop blocked while busy; IPC error verbatim in role=alert.
+Toast on success: "Emptied folder — N permanently deleted[, M failed]".
+
+**Smoke:** `folder-mgmt` extended — right-clicks the Trash-labelled row,
+asserts the Empty item exists + demo-disabled. CDP bug found+fixed: evals
+must not return DOM elements (object-graph serialization throws
+"Object reference chain is too long") — return primitives. Same failure
+currently breaks A21's `audit-log` check on their end (mid-flight T-320).
+**21 pass / 1 fail** (audit-log only, foreign).
+
+## T-332 — "Copy to" ctx-menu over A20's kiwi_copy_messages
+
+**mailbox.tsx:** `ctxMoveFolders` renamed → `ctxDstFolders` (shared by
+Move-to and Copy-to — one destination list, same construction: account
+matched, current folder excluded for single-select, empty ⇒ both
+disabled). New "Copy to" entry sits directly under "Move to"; its
+tooltip is the contract's honesty ("Duplicates into a local copy —
+never an IMAP server COPY"). `onCopyToFolder` prop added.
+
+**App.tsx:** `copyToFolder` mirrors `moveToFolder` shape — groupByFolder,
+400-uid chunks, src==dst groups counted without a call (a same-folder
+"copy" would mint a real duplicate; skipping keeps the count honest),
+`Copied N message(s) to X` toast, `reloadMail` refreshes dst counts.
+No undo — no undo IPC.
+
+**Keyboard:** ctx menu is the keyboard path (arrow/Enter/→ submenu nav)
+— same reachability Move-to has; no new binding invented.
+
+**Smoke:** `ctxmenu` now asserts exactly one "Move to" + one "Copy to"
+(both demo-disabled) — **22/22 PASS** (A21's audit-log green again too).
+
+## T-335 — Unified Inbox ("All Inboxes") completed + badges
+
+**Discovery:** the merge path already existed (T-267) — the Favorites
+"All Inboxes" row already loads every account's INBOX via
+`kiwi_list_messages` (50/page cap, existing page size — documented
+depth), merges date-desc, and each envelope keeps `accountId/folderId/uid`
+composite ids so reply/move/delete/junk/quick-filters/search/ctx-menu all
+operate on the row's own account by construction (groupByFolder on the
+composite id). The real gaps were presentation + honesty gating:
+
+- **Account badge:** `RowShell.acctTag` — a bordered chip in the marks
+  area showing the row's owning `accountEmail` (avatarTint color).
+  MessageRow passes it whenever the view key has no `acct:id` colon
+  (all-inboxes/sent/trash/drafts/junk/unread/flagged/unreplied/snoozed);
+  per-account folder views never badge (context obvious — asserted by
+  the smoke leg). ThreadRow: single-account threads show the email;
+  cross-account threads show an honest "N accounts" chip. Reader cards
+  already carried `To: m.accountEmail` — no change needed.
+- **Hide rules (accounts.ts):** `all-inboxes` drops from Favorites when
+  accounts <2 (would duplicate the lone Inbox row) or when every
+  account's folder list has loaded AND every inbox reports `exists: 0`.
+  While any list is still loading the row stays — unknown ≠ empty.
+- **Counts:** already real (`smartUnread["all-inboxes"]` sums per-inbox
+  `unseen`).
+
+**Smoke `unified` flow:** loads `#/mail/all-inboxes`, unions the badge
+texts across every category tab (the acc-demo-2 fixture is categorized
+`newsletters` — tabs partition the merge), asserts ≥2 accounts present;
+then a per-account folder must render ZERO badges. **24/24 PASS.**
+
+**Found via test:** demo all-inboxes includes the sent fixture row too —
+`base = DEMO_MESSAGES` unscoped. Left as-is (harmless in demo; live
+loader scopes to real inboxes); noted here for honesty.
+
+## T-343 — Gmail floating compose dock (resumed 2026-09-26 after Orca restart)
+
+**Status:** done — `tsc --noEmit` clean, `vite build` green (94 modules),
+`ui-smoke` **26/26 PASS** on real Edge headless incl. the new `compose-dock`
+flow. Found+fixed three real defects left at stand-down (below).
+
+### Surface
+
+- `compose.tsx` — `ComposeDockApi`/`registerComposeDock`/`requestCompose`
+  module seam; `ComposeDockCard` chrome (live-subject header, minimize /
+  expand / close-as-minimize buttons, Esc inside fields minimizes); the real
+  `ComposeView` runs inside unchanged (`dock` prop = the only seam). Every
+  entry point routes through `requestCompose`: Ctrl+N, palette, +New,
+  hamburger, contacts "Write", mailbox `r` key, `seedCompose` (reply/
+  reply-all/forward keeps its `kiwi.replySeed` merge). `#/compose` stays the
+  full-page form = expand target + deep links.
+- `App.tsx` — `docks` state (open minimizes siblings — one expanded max),
+  `.em-dock-layer` fixed overlay (pointer-events:none, children opt in),
+  `.em-dock-chips` minimized-draft bar (restore / discard chips), outside
+  pointerdown minimizes, live-region announcements, orphan-draft sweep.
+- `shell.css` — `.em-dock*`/`em-visually-hidden` block; `z-index:45` sits
+  under popovers(50)/menus(60-70)/toasts(80)/dialogs(100).
+
+### Defects found on resume (the diff at stand-down was pre-verification)
+
+1. **Draft-key collision** — every dock shared `kiwi.draft.<accountId>` with
+   the page composer: two docks (or dock + hidden-layer-during-page-compose)
+   autosaved last-writer-wins onto one slot = draft loss. Fixed with
+   per-dock keys `kiwi.draft.dock.<id>` (`dock.draftKey`); the draft JSON
+   now carries `account` so recovery knows the owner.
+2. **Expand was account-blind + key-coupled** — flush wrote the DOCK's
+   account key while the page composer mounts under the DEFAULT account →
+   restored the wrong/stale draft or nothing. Replaced with a one-shot
+   `sessionStorage.kiwi.expandDraft` handoff (same idiom as `kiwi.replySeed`):
+   flush publishes {account, recipients, cc, subject, body, scheduled} even
+   when empty (so a stale page draft can't resurrect) + drops the dock key;
+   the page `useState` initializer adopts `account` and the restore effect
+   consumes the payload with replace semantics.
+3. **Render-loop risk** — `dock` prop is a fresh object each App render;
+   `useEffect([dock, subject])` → `onSubject` → `setDocks` (new array) →
+   loop. Guarded both sides: `dockSubject` ref-gate in ComposeView, same-ref
+   return in App's `onSubject`.
+4. `flushRef`/`discardRef` were assigned mid-render — moved to a dep-less
+   effect (fresh closures each render is the point).
+5. CSS: `.em-dock > section` needed `flex:1 1 auto; min-height:0` to scroll
+   inside the capped card; the chips-offset sibling selectors could never
+   match (chips follow per-dock WRAPPER divs, not `.em-dock`) → replaced by
+   `.em-dock-layer.has-open .em-dock-chips` (React-driven class).
+6. `ComposeDockCard` focus was mount-only — now a `focused` prop so
+   chip-restore refocuses the To field.
+7. Smoke: two `waitFor` exprs returned DOM elements → CDP `returnByValue`
+   "Object reference chain is too long" (same trap as T-323-aux) — `!!`.
+
+### Orphan recovery
+
+Exiting with drafts minimized orphans `kiwi.draft.dock.*` keys. App mount
+sweeps them into `kiwi.draft.<payload.account>` ONLY when that slot is empty
+(never clobbers a newer draft), then removes the orphan — crash-safe drafts,
+one-draft-per-account invariant preserved.
+
+### Verification
+
+- `npm run build` (tsc + vite) — green, 94 modules.
+- `npm run test:ui` — **26/26 PASS** incl. `compose-dock` flow: Ctrl+N opens
+  dock → live subject in header → minimize→chip keeps subject → restore →
+  Esc minimizes → draft survives → demo send → dock auto-closes after the
+  undo grace (onDone fires only on terminal sentNote, not "sending").
+- `cargo fmt --check` — one foreign file flagged (`commands/pair.rs`,
+  committed-but-unformatted; not mine, left alone). `cargo clippy -p
+  kiwi-app` — see run note below.
+
+### Honest limits
+
+- Tray "Compose" (T-345's uncommitted line) still navigates to `#/compose`
+  rather than a dock — deliberate non-edit of another agent's hunk; the
+  route fallback is correct behavior.
+- Opening a dock while ON `#/compose` mounts it behind the hidden layer —
+  it surfaces as a chip when you leave the page. Deliberate (a dock over
+  the full-page composer made no sense), not a gap.
+- Attachments in a dock draft are not autosaved (pre-existing localStorage
+  quota rule — unchanged).
+- A hidden dock keeps autosaving to its OWN key — intended crash
+  protection while minimized; can no longer touch the page draft.
+
+---
+
+## polish-revamp (planner dispatch) — claimed
+
+**Task:** complete the Mailspring rail+cards standard across secondary views —
+left nav rail, stacked cards, hairline row dividers, right-aligned controls,
+muted section descriptions (docs/ui/reference-layout.png is the target
+idiom; settings rail shell landed in UI pass#4 9061ee7 / A25's live T-362).
+
+**Claimed files (mine):**
+- `kiwi-app/src/views/contacts.tsx` — split-pane → rail + card treatment
+- `kiwi-app/src/views/security-center.tsx` — bare sections → stacked cards
+- `kiwi-app/src/views/search.tsx`, `filters.tsx`, `disposable.tsx` — normalize
+- `kiwi-app/src/views/rules.tsx`, `integrations.tsx` — inner markup normalize
+  (they render inside `.ms-prefs-content`; rows must fit the pattern)
+- `kiwi-app/src/shell.css`, `theme.css` — shared polish layer
+- `docs/agents/agent-24-status.md`, `docs/TASKS.md` row if ledgered
+
+**Deliberately NOT claimed (live owners):**
+- `settings.tsx` — A25 T-362 live; I touch it only via shared CSS selectors
+  so the pane contents adopt the pattern without an edit collision.
+- `chrome.tsx`, `App.tsx`, `mailbox.tsx`, `compose.tsx` — other live tasks.
+
+**Gate:** `tsc --noEmit` + vite build; `ui-smoke` regression pass.
+
+### polish-revamp — result
+
+- New `.ms-pane` primitive appended to `shell.css` (lines ~3605+): the
+  `.ms-prefs-content` children-become-rows contract without the tab rail —
+  hairline-divided rows, muted group headers (`em-pane-desc`,
+  `.ms-pane > h2/h3`), right-aligned last control in `.ms-filterbar`, inset
+  `kiwi-card`/`kiwi-banner`, flush `ms-table` cells.
+- Same row contract extended to view-wrapper `<div>`/`<section>` inside
+  `.ms-prefs-content` so RulesView/FiltersView/IntegrationsView roots adopt
+  the pattern without touching A25's live `settings.tsx`.
+- `security-center.tsx`: three stacked panes (Findings / Events / App audit
+  log); `section[aria-label='KIWI Security event center']`, all `h2`s and
+  the pending `.kiwi-banner` preserved — audit-log smoke intact.
+- `contacts.tsx`: rail pane (search+New filterbar, listbox, honest
+  source/import-export footer) + detail pane (`em-contact-head` with
+  right-aligned Write/Edit/Delete actions, `em-contact-lines` rows, empty
+  state). All IPC/demo gating untouched.
+- `search.tsx`: query+hints pane + results pane; root renamed
+  `em-search-view` — `.em-search` was already the chrome toolbar pill and
+  the collision collapsed the view to a ~223px flex strip (found by CDP
+  probe, confirmed by sweep 8→0 findings).
+- `filters.tsx`: pane + `em-rule-row` hairline list; `disposable.tsx`:
+  pane wraps notice/address-head, public-inbox warning stays first;
+  `rules.tsx`: root div → fragment so children become pane rows.
+- Gates: `tsc --noEmit` clean on all tracked files — the only failures are
+  in `src/ms/outline-view.tsx`, an untracked foreign in-flight file that
+  appeared mid-pass (not claimed, not touched).
+- ui-smoke 27/27 PASS (real Edge headless). ui-sweep after polish:
+  search 0, disposable 0, security 0, contacts 0, filters 0,
+  settings-mail-rules 0, settings-integrations 0. Settings-general
+  contrast findings (muted 3.64:1) are pre-existing token-level issues,
+  same count as baseline — left for token owners.

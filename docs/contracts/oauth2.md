@@ -1,8 +1,11 @@
 # Contract — OAuth2 Grant Acquisition (`kiwi-autoconfig::oauth2`)
 
 > Owner: Agent 19 · **Contract version: `kiwi.oauth2/1`** · Status: crate
-> implementation landed; **T-229 contract review complete** (2026-09-25);
-> app-layer OAuth IPC/wizard integration remains deferred to T-230. Implemented
+> implementation landed; **T-229 contract review complete** (2026-09-25,
+> close-out re-verified 2026-09-26 after T-230 landed). T-230 wired the IPC
+> ceremony (begin/poll/cancel/status/discover, ticket→account binding,
+> `save_tokens` persistence) — but the connect-time decode+refresh is still
+> missing (gap 7, now confirmed against the landed T-230 code). Implemented
 > by `kiwi-autoconfig/src/oauth2/` (Rust). This document is authoritative for
 > provider endpoints, grant capabilities, token lifecycle, and credential-store
 > wiring. Changes require Lead review → record in DECISIONS.md.
@@ -16,8 +19,9 @@ transport fixtures, and normal token refresh path match the implementation.
 The contract below explicitly marks the remaining source gaps instead of
 describing them as shipped guarantees: secret-bearing `Debug` envelopes,
 stored-blob validation, public redirect construction, live-vs-injected
-transport guarantees, stateless grant replay, soft loopback bounds, and the
-unwired T-230 app seam.
+transport guarantees, stateless grant replay, soft loopback bounds, and —
+since T-230 wired storage/ceremony but not the connect path — the missing
+connect-time blob decode + refresh (gap 7, confirmed 2026-09-26).
 
 ## 1. Invariants (binding)
 
@@ -99,7 +103,12 @@ trait OAuthFlow: Send + Sync {
 `OAuthClient::google(cid)`, `OAuthClient::microsoft(cid)`). `http` is an
 `&dyn OAuthTransport` (§6). Registry lookup is
 `ProviderConfig::by_id(id: &str, client_id: &str) -> Result<ProviderConfig,
-OAuthError>`; unknown ids fail closed.
+OAuthError>`; unknown ids fail closed. Discovery helpers (added post-T-195
+review, T-251): `provider_id_for_suggestion(&AccountSuggestion) ->
+Option<&'static str>` — the provider id for a suggestion whose mail host is
+one a shipped config can mint tokens for (`None` for password suggestions,
+POP3, and XOAUTH2 providers without a client config); `grant_kind_str()` —
+the provider's grant kind in wire spelling.
 
 ### 3.1 `PendingGrant` — immutable capability, not a serialized state machine
 
@@ -227,12 +236,23 @@ responsibility unless a future provider-side token check rejects it.
   map to `OAuthError::CredentialStore`. The generic `CredentialStore` trait
   does not itself enforce secret-free diagnostics, so every adapter MUST omit
   key/blob/token values from its error text.
-- **T-230 integration is deferred.** The crate provides the grant, blob, and
-  `ensure_fresh` seams but does not yet alter the app's generic `AuthRef`
-  resolution. Until T-230 lands, callers MUST NOT store a `TokenSet` JSON blob
-  at a key that the current app passes directly as an XOAUTH2 bearer token;
-  the app must decode the blob, refresh it, and pass only
-  `access_token()`.
+- **T-230 wired storage but not connect-time decode (gap 7, confirmed
+  2026-09-26).** T-230 landed the IPC ceremony
+  (`kiwi_oauth2_begin/poll/cancel/status`, ticket→account binding,
+  `save_tokens` persistence) — but no connect path decodes the stored blob.
+  `save_tokens` writes `to_blob()` JSON at `oauth2/<provider>/<email>`;
+  `resolve_secret` (`kiwi-app/src-tauri/src/commands/mod.rs:169-187`)
+  returns that value verbatim for every `AuthRef` kind; live IMAP sync
+  (`commands/mail.rs:835-843`, via `connect_imap`) and live SMTP send
+  (`commands/send/dispatch.rs:297`) pass it straight into
+  `XOAuth2 { token: secret }`. `ensure_fresh`/`load_tokens` have zero callers
+  on any connect path (`load_tokens` is used only by the status view).
+  Net effect: the app sends the full JSON blob — **including the refresh
+  token** — as the XOAUTH2 bearer on every connection. Real providers reject
+  it (auth fails), and the refresh token is needlessly exposed to the mail
+  server. The fix (decode via `from_blob`, refresh via `ensure_fresh`, pass
+  only `access_token()`) is a code task for the mail-command owners, not this
+  review.
 - Wizard integration (T-230): on an `xoauth2` suggestion (autoconfig.md §6),
   run the provider's grant, `save_tokens`, then set `auth_ref` on the account
   instead of a password key.
@@ -310,8 +330,9 @@ supported via `microsoft_tenant`).
 
 ## 10. Testing
 
-`cargo test -p kiwi-autoconfig` — 92 tests total, of which **32** are
-OAuth2 tests, fully offline. The OAuth tests cover the RFC 7636 §B vector;
+`cargo test -p kiwi-autoconfig` — 97 tests total, of which **33** are
+OAuth2 tests, fully offline (92/32 at the 2026-09-25 review; T-251 added
+`provider_id_for_suggestion` coverage). The OAuth tests cover the RFC 7636 §B vector;
 form codec; provider/tenant/client-id validation; device begin/poll
 transitions; expiry short-circuit; authorize URL and exact exchange bodies;
 state/error/missing-code guards; wrong-grant calls; refresh rotation and
@@ -349,9 +370,23 @@ until the corresponding implementation and regression tests land:
 6. **Loopback bounds (Medium).** Deadline is checked between connections and
    the read cap can overshoot by one chunk; either tighten the implementation
    or retain the explicitly soft-bound wording.
-7. **App seam (T-230, critical integration gap).** The crate is not yet wired
-   into Tauri; the current generic app resolver must not treat a JSON token
-   blob as a raw XOAUTH2 bearer string.
+7. **App seam (T-230 wired storage, NOT the connect path — CONFIRMED OPEN
+   2026-09-26, High).** T-230 landed the IPC ceremony
+   (`kiwi_oauth2_begin/poll/cancel/status`, ticket→account binding,
+   `save_tokens` persistence at `oauth2/<provider>/<email>`) — but no connect
+   path decodes the stored blob. `resolve_secret`
+   (`kiwi-app/src-tauri/src/commands/mod.rs:169-187`) returns the
+   credential-store value verbatim for every `AuthRef` kind; live IMAP sync
+   (`commands/mail.rs:835-843` via `connect_imap`) and live SMTP send
+   (`commands/send/dispatch.rs:297`) pass it straight into
+   `XOAuth2 { token: secret }`. `ensure_fresh`/`load_tokens` have zero callers
+   on any connect path (`load_tokens` is used only by the status view).
+   Net effect: the app sends the full JSON blob — **including the refresh
+   token** — as the XOAUTH2 bearer on every connection. Real providers
+   reject it (OAuth2 mail auth is broken end-to-end), and the refresh token
+   is needlessly exposed to the mail server. Fix (decode via `from_blob`,
+   refresh via `ensure_fresh`, pass only `access_token()`) is a code task
+   for the mail-command owners, not this review.
 
 ## 12. Out of scope (future work)
 

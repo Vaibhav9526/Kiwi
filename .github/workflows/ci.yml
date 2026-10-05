@@ -1,15 +1,16 @@
-# KIWI CI (T-140 Agent 6; T-177: infra/e2e both suites + mobile lint).
+# KIWI CI (T-140 Agent 6; T-177: infra/e2e both suites + mobile lint;
+# T-336 Agent 26: CDP ui-smoke job).
 # Mirrors the local gates in docs/TESTING.md §2:
 # Rust workspace (test/clippy/fmt) + kiwi-admin (ci/typecheck/test) +
-# mobile (ci/lint) + static checks (secret scan, fixtures, CSP,
-# encoding, compose-static) + live infra (compose db+mailpit+greenmail+
-# admin, full unittest suites incl. infra/e2e admin + mail-flow).
+# mobile (ci/lint) + kiwi-app (typecheck/test/build + CDP ui-smoke) +
+# static checks (secret scan, fixtures, CSP, encoding, compose-static) +
+# live infra (compose db+mailpit+greenmail+admin, full unittest suites
+# incl. infra/e2e admin + mail-flow).
 #
-# What CI does NOT do: build Tauri bundles, run the desktop app, touch the
-# sandbox (T-132), or require AI availability.
-#
-# What CI does NOT do: build Tauri bundles, run the desktop app, touch the
-# sandbox (T-132), or require AI availability.
+# What CI does NOT do: build Tauri bundles, run the Tauri desktop shell
+# itself, touch the sandbox (T-132), or require AI availability. The
+# ui-smoke job runs the same renderer in a plain headless browser against
+# the app's demo mode — that is a browser smoke gate, not a Tauri E2E.
 
 name: ci
 
@@ -87,6 +88,81 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+
+  # T-336 (Agent 26): CDP UI smoke suite against the real rendered DOM.
+  # The harness boots its own vite server and drives a real headless
+  # Chrome/Chromium over the DevTools protocol (no mocks, no jsdom).
+  # The browser is PROBED first — the ubuntu-latest image ships Google
+  # Chrome — and only installed (Playwright Chromium) when the probe finds
+  # nothing, so a green run always means a real browser actually ran.
+  # KIWI_SMOKE_REQUIRE_BROWSER=1 makes a missing browser a hard FAIL rather
+  # than an honest skip, so this job can never go green without running.
+  ui-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: kiwi-app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: kiwi-app/package-lock.json
+      - name: Resolve a headless browser
+        id: browser
+        shell: bash
+        run: |
+          set -euo pipefail
+          found=""
+          for bin in google-chrome google-chrome-stable chromium chromium-browser; do
+            if command -v "$bin" >/dev/null 2>&1; then
+              found="$(command -v "$bin")"
+              break
+            fi
+          done
+          if [ -z "$found" ]; then
+            echo "No system Chrome/Chromium; installing Playwright Chromium."
+            npx --yes playwright@1 install --with-deps chromium
+            found="$(ls -1 "$HOME"/.cache/ms-playwright/chromium-*/chrome-linux/chrome 2>/dev/null | head -n 1 || true)"
+          fi
+          if [ -z "$found" ] || [ ! -x "$found" ]; then
+            {
+              echo "### ui-smoke: no headless browser available"
+              echo
+              echo "This gate is required, so the job fails instead of reporting a skip as a pass."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+          version="$("$found" --version 2>/dev/null || echo unknown)"
+          echo "available=true" >> "$GITHUB_OUTPUT"
+          echo "path=$found" >> "$GITHUB_OUTPUT"
+          {
+            echo "### ui-smoke browser"
+            echo
+            echo '```'
+            echo "$found - $version"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - run: npm ci
+      - run: npm run build
+      - name: UI smoke (CDP)
+        env:
+          KIWI_SMOKE_BROWSER: ${{ steps.browser.outputs.path }}
+          KIWI_SMOKE_REQUIRE_BROWSER: "1"
+        run: |
+          set -o pipefail
+          npm run test:ui 2>&1 | tee smoke.log
+      - name: Upload ui-smoke output
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          path: kiwi-app/smoke.log
+          if-no-files-found: warn
+          retention-days: 7
 
   static-checks:
     runs-on: ubuntu-latest

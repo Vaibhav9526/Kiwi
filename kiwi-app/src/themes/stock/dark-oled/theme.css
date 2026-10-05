@@ -1,0 +1,124 @@
+/* OLED Black — stock theme package. True-black surfaces for OLED panels;
+ * hairline borders only, amber brand accent, no wasted light. */
+
+:root[data-theme="dark-oled"],
+[data-theme="dark-oled"] {
+  color-scheme: dark;
+
+  /* ---- canonical palette ---- */
+  --accent: #eaa132;
+  --accent-hover: #f2b64c;
+  --accent-ink: #1c1204;
+  --selection: #26262e;
+
+  /* ---- mailspring tokens ---- */
+  --kiwi-ms-bg: #000000;
+  --kiwi-ms-surface: #0a0a0a;
+  --kiwi-ms-surface-2: #101010;
+  --kiwi-ms-surface-3: #161616;
+  --kiwi-ms-sidebar: #050505;
+  --kiwi-ms-toolbar: #0d0d0d;
+  --kiwi-ms-list-bg: #000000;
+  --kiwi-ms-list-border: #1c1c1c;
+  --kiwi-ms-list-hover: #141414;
+  --kiwi-ms-text: #ececec;
+  --kiwi-ms-text-heading: #ffffff;
+  --kiwi-ms-text-secondary: #a6a6a6;
+  --kiwi-ms-text-muted: #6e6e6e;
+  --kiwi-ms-link: #f2c063;
+  --kiwi-ms-accent: #eaa132;
+  --kiwi-ms-accent-active: #f2b64c;
+  --kiwi-ms-accent-emphasis: #f2c063;
+  --kiwi-ms-primary: #eaa132;
+  --kiwi-ms-primary-text: #1c1204;
+  --kiwi-ms-icon-muted: #787878;
+  --kiwi-ms-border: #1c1c1c;
+  --kiwi-ms-border-strong: #333333;
+  --kiwi-ms-divider: #141414;
+  --kiwi-ms-hairline: rgba(236, 236, 236, 0.08);
+  --kiwi-ms-info: #8ab4e8;
+  --kiwi-ms-success: #58b660;
+  --kiwi-ms-warning: #eaa132;
+  --kiwi-ms-danger: #f26d6d;
+  --kiwi-ms-toast-info: #8ab4e8;
+  --kiwi-ms-toast-success: #58b660;
+  --kiwi-ms-toast-warning: #eaa132;
+  --kiwi-ms-toast-error: #f26d6d;
+  --kiwi-ms-toast-pending: #6e6e6e;
+  --kiwi-ms-shadow-color: rgba(0, 0, 0, 0.8);
+  --kiwi-ms-shadow-standard: 0 1px 2px 0 rgba(0, 0, 0, 0.7);
+  --kiwi-ms-shadow-raised: 0 2px 8px 0 rgba(0, 0, 0, 0.75);
+  --kiwi-ms-shadow-popover: 0 2px 10px rgba(0, 0, 0, 0.8);
+  --kiwi-ms-shadow-modal: 0 12px 40px rgba(0, 0, 0, 0.85);
+  --kiwi-ms-focus-glow: 0 0 0 3px rgba(234, 161, 50, 0.35);
+  --kiwi-ms-select-tint: #26262e;
+  --kiwi-ms-select-border: #3d3d48;
+  --kiwi-ms-select-solid: var(--kiwi-ms-accent-active);
+
+  /* ---- legacy kiwi tokens ---- */
+  --kiwi-bg: #000000;
+  --kiwi-surface: #0a0a0a;
+  --kiwi-sidebar: #050505;
+  --kiwi-card: #101010;
+  --kiwi-input: #080808;
+  --kiwi-border: #1c1c1c;
+  --kiwi-border-soft: #141414;
+  --kiwi-text: #ececec;
+  --kiwi-text-secondary: #a6a6a6;
+  --kiwi-text-disabled: #5e5e5e;
+  --kiwi-brand: #eaa132;
+  --kiwi-brand-hover: #f2b64c;
+  --kiwi-brand-ink: #f2c063;
+  --kiwi-focus: #f0a83c;
+  --kiwi-focus-ring: rgba(234, 161, 50, 0.35);
+  --kiwi-secure: #58b660;
+  --kiwi-secure-bg: #0b2014;
+  --kiwi-secure-border: rgba(88, 182, 96, 0.45);
+  --kiwi-warning: #eaa132;
+  --kiwi-warning-bg: #211809;
+  --kiwi-warning-border: rgba(234, 161, 50, 0.45);
+  --kiwi-danger: #f26d6d;
+  --kiwi-danger-bg: #260f12;
+  --kiwi-danger-border: rgba(242, 109, 109, 0.5);
+  --kiwi-unknown: #909090;
+  --kiwi-unknown-bg: #141414;
+  --kiwi-unknown-border: rgba(144, 144, 144, 0.4);
+  --kiwi-lock: #f2c063;
+  --kiwi-lock-bg: #211809;
+  --kiwi-hover-bg: rgba(255, 255, 255, 0.04);
+  --kiwi-shadow: 0 6px 24px rgba(0, 0, 0, 0.7);
+  --kiwi-shimmer: rgba(255, 255, 255, 0.05);
+
+  /* ---- pane tokens ---- */
+  --em-pane-border: #1c1c1c;
+  --em-hairline: #141414;
+  --em-pane-bg: #000000;
+  --em-pane-alt: #0a0a0a;
+  --em-pane-titlebar: #0d0d0d;
+  --em-toolbar-bg: #0d0d0d;
+  --em-select: #26262e;
+  --em-select-border: #3d3d48;
+  --em-select-focus: #1d1d24;
+  --em-unread-dot: #eaa132;
+  --em-sender-blue: #f2c063;
+  --em-link: #f2c063;
+  --em-hover: #141414;
+  --em-text-dim: #a6a6a6;
+  --em-text-faint: #6e6e6e;
+  --em-group-head: #909090;
+  --em-avatar-text: #ffffff;
+  --em-card-bg: #101010;
+  --em-menu-bg: #101010;
+  --em-tab-line: #1c1c1c;
+  --em-star: #eaa132;
+  --em-cat-news: #8ab4e8;
+  --em-cat-news-bg: #16202e;
+  --em-cat-personal: #eaa132;
+  --em-cat-personal-bg: #241a08;
+  --em-cat-logs: #58b660;
+  --em-cat-logs-bg: #0f2113;
+  --em-cat-social: #b08ff5;
+  --em-cat-social-bg: #1d1230;
+  --em-cat-other: #909090;
+  --em-cat-other-bg: #161616;
+}

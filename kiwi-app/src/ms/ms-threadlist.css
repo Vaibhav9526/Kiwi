@@ -1,0 +1,595 @@
+/* ms-threadlist.css — tokenized port of Mailspring's list-item styling.
+   Sources:
+     vendor/mailspring/app/static/style/list-tabular.less
+     vendor/mailspring/app/internal_packages/thread-list/stylesheets/thread-list.less
+   Adapted seams:
+     - LESS vars/mixins → KIWI --ms-* / --kiwi-* tokens (flat fills, hairlines).
+     - RetinaImg icon assets → mask-image data-URIs (alpha-only SVG masks,
+       painted with token colors — same technique as ContentIsMask).
+     - Absolute row positioning per vendor metrics (top = idx * itemHeight);
+       `.em-row` keeps its own skin from theme.css, these rules only add the
+       Mailspring column/icon layout inside it. */
+
+:root {
+  --ms-icon-star: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M12 2.5l2.9 6.6 6.9.6-5.2 4.6 1.6 6.8-6.2-3.6-6.2 3.6 1.6-6.8-5.2-4.6 6.9-.6z'/></svg>");
+  --ms-icon-star-hover: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='none' stroke='black' stroke-width='1.6' d='M12 4l2.4 5.5 6 .5-4.6 4 1.4 5.9-5.2-3.1-5.2 3.1 1.4-5.9-4.6-4 6-.5z'/></svg>");
+  --ms-icon-unread: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><circle cx='12' cy='12' r='5.5'/></svg>");
+  --ms-icon-replied: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round' d='M9 10l-5 5 5 5'/><path fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' d='M4 15h9a7 7 0 007-7V6'/></svg>");
+  --ms-icon-forwarded: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round' d='M15 10l5 5-5 5'/><path fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' d='M20 15h-9a7 7 0 00-7-7V6'/></svg>");
+  --ms-icon-pencil: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path d='M4 20h4l10.5-10.5a2.1 2.1 0 000-3l-1-1a2.1 2.1 0 00-3 0L4 16z'/></svg>");
+  --ms-icon-attachment: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round' d='M21.4 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.2-9.19a4 4 0 015.65 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48'/></svg>");
+  --ms-icon-archive: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round' d='M3 4.5h18v4H3zM5.5 8.5h13V19a1 1 0 01-1 1h-11a1 1 0 01-1-1zM10 12.5h4'/></svg>");
+  --ms-icon-trash: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><path fill='none' stroke='black' stroke-width='1.7' stroke-linecap='round' stroke-linejoin='round' d='M4 7h16M9.5 7V5a1.5 1.5 0 011.5-1.5h2A1.5 1.5 0 0114.5 5v2M6.5 7l.9 13h9.2l.9-13'/></svg>");
+}
+
+/* ---------- list-rows host (vendor: .list-rows inside .scroll-region) ----------
+ * Vendor `.list-container .list-rows { background: linear-gradient(to top,
+ * @list-border 0px, @list-bg 1px) repeat }` — the gradient paints the
+ * dividers in the unrendered space below the last row, so it needs
+ * `background-size` from the caller (mailbox.tsx passes
+ * `100% ${MS_ROW_HEIGHT}px`). (list-tabular.less:101-110) */
+.em-rows .list-rows {
+  position: relative;
+  background-image: linear-gradient(
+    to top,
+    var(--ms-list-border) 0px,
+    var(--ms-list-bg) 1px
+  );
+  background-repeat: repeat;
+}
+
+.swipe {
+  height: 100%;
+}
+
+/* ---------- .list-item (port of .list-item base + thread-list row) ----------
+ * Vendor `.thread-list .list-item { background-color: darken(@background-primary, 2%);
+ * border-bottom: 1px solid fade(@list-border, 60%); line-height: 36px }`
+ * (thread-list.less:131-135) over `.list-container .list-item { font-size:
+ * @font-size-base; color: @text-color; background: @list-bg }` with
+ * `&:hover { background: darken(@list-bg, 5%) }` and
+ * `&.selected { background: @list-selected-bg; border-bottom-color:
+ * @list-selected-border }` (list-tabular.less:112-136).
+ * The unread row is the FLAT `@background-primary` while read rows carry the
+ * 2% darken (thread-list.less:215-227) — that inversion is the vendor's
+ * whole reason for the two fills. */
+.em-rows .list-item {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  cursor: pointer;
+  font-size: var(--ms-font-size-base);
+  color: var(--ms-text-color);
+  background-color: var(--ms-list-bg);
+  border-bottom: 1px solid var(--ms-list-border);
+  line-height: 21px; /* vendor narrow item line-height (thread-list.less:463) */
+}
+
+/* Vendor `.list-item:hover { background: darken(@list-bg, 5%) }`
+ * (list-tabular.less:117-119). */
+.em-rows .list-item:hover {
+  background-color: var(--ms-list-hover-bg);
+}
+
+/* Vendor `.list-item.selected { background: @list-selected-bg;
+ * border-bottom: 1px solid @list-selected-border }` (list-tabular.less:121-124).
+ * `.em-row.is-selected` in shell.css sets the same fill from the eM token, so
+ * only the divider needs restating here. */
+.em-rows .list-item.is-selected {
+  border-bottom-color: var(--ms-list-selected-border);
+}
+
+/* Vendor `.thread-list .unread:not(.focused):not(.selected) { background-color:
+ * @background-primary }` (thread-list.less:215-223) — unread rows sit FLAT,
+ * read rows are the darkened fill, so the divider reads as the separator. */
+.em-rows .list-item.unread:not(.is-selected) {
+  background-color: var(--ms-list-bg);
+}
+
+/* ---------- columns ----------
+ * Vendor `.list-tabular .list-column { padding: 0 @padding-base-horizontal;
+ * overflow:hidden; white-space:nowrap; text-overflow:ellipsis; align-items:center }`
+ * with `:first-child { padding-left: @padding-base-horizontal - 4 }` and
+ * `:last-child { text-align: right }` (app/static/style/components/list-tabular.less:219-234).
+ * `@padding-base-horizontal` = 12px (ui-variables.less:139). */
+
+.em-rows .list-item .list-column {
+  flex-shrink: 0;
+  margin-right: 8px;
+  padding: 6px 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  box-sizing: border-box;
+}
+
+/* KIWI-only columns: the dot+checkbox pick affordance and the avatar sit
+ * outside the vendor column set, so they keep their own fixed widths. */
+.em-rows .list-item .list-column-Pick {
+  width: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Avatar — vendor has no avatar in the thread list; KIWI adds one. Sized to
+ * the vendor icon-box scale (`@component-icon-size` 16px, `@spacing-standard`
+ * 14px — ui-variables.less:239,131) as a 28px circle, matching the
+ * `.em-avatar` skin in shell.css. */
+.em-rows .list-item .list-column-Avatar {
+  width: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* The message column takes all remaining width and is the ONLY column allowed
+ * to shrink (vendor `flex: 1` on the narrow `Item` column,
+ * thread-list-columns.tsx:188-189). `min-width: 0` is what allows its children
+ * to ellipsise rather than forcing the row wider than the pane. */
+.em-rows .list-item .list-column-Item {
+  flex: 1 1 auto;
+  flex-shrink: 1;
+  min-width: 0;
+  margin-right: 0;
+}
+
+/* Marks (account chip + thread count) — right-aligned trailing column.
+ * Both chips ellipsise (see `.em-row-acct` in shell.css), and this column is
+ * capped AND shrinkable so a long account email can never squeeze the sender
+ * down to zero inside a narrow pane. The vendor has no such column — it gives
+ * its trailing Date column a `min-width` for the same defensive reason
+ * (thread-list.less:210) — so the cap is the port's equivalent guard. */
+.em-rows .list-item .list-column-Marks {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 3px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 48px;
+  overflow: hidden;
+}
+
+/* Overlay column: zero-width anchor; .em-quick is positioned over the row. */
+.em-rows .list-item .list-column-Quick {
+  width: 0;
+  margin-right: 0;
+  padding: 0;
+  overflow: visible;
+}
+
+.em-row-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Unread dot — vendor unread indicator is `.thread-icon-unread`, a 15px glyph
+ * inside the 25x24 `.thread-icon` box (thread-list.less:256-272). KIWI's
+ * `.em-dot` is the compact list-edge variant of that same idea. */
+.em-rows .em-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+}
+
+/* ---------- participants line: sender + date (vendor narrow, thread-list.less:448-472)
+ * Vendor narrow puts the timestamp in the SAME flex row as the participants
+ * (`.participants-wrapper { display:flex; align-items:center; min-height:24px }`
+ *  + `.timestamp { order:100; min-width:0 }`, thread-list.less:453-457 + 465-468)
+ * so the two can never collide. Our earlier port took the timestamp OUT of flow
+ * (`position:absolute; right:0`), which is the overlap bug: an out-of-flow date
+ * reserves no width, so a long sender ran underneath the right-aligned date.
+ * The date is now an in-flow flex item with `flex-shrink: 0`; the sender takes
+ * `flex: 1 1 auto; min-width: 0` and ellipsises instead. That holds at every
+ * list width, which is what the truncation contract requires. ---------- */
+
+.thread-list .participants-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 24px; /* vendor narrow: thread-list.less:456 */
+  margin-right: 0;
+  overflow: hidden;
+}
+
+/* Sender — vendor narrow `.participants { font-size: @font-size-base }`
+ * (thread-list.less:470) with the base `.participants` ellipsis rules
+ * (thread-list.less:159-168). `--ms-font-size-base` is the tokenized alias of
+ * `@font-size-base` (14px). */
+.thread-list .participants {
+  /* `flex: 0 1 auto` + `min-width: 0` is the flex-truncation contract: the
+   * sender may SHRINK and ellipsise, but must not GROW. The narrow `Item`
+   * column puts a `<span style={{flex:1}} />` spacer (thread-list-columns.tsx:234)
+   * between the sender and the date, and that spacer — not the sender — is
+   * what absorbs the slack and pushes the date right. Growing the sender too
+   * would starve the spacer and collapse the sender to zero width. */
+  flex: 0 1 auto;
+  min-width: 0;
+  display: block;
+  font-size: var(--ms-font-size-base);
+  font-weight: var(--ms-font-weight-normal);
+  line-height: 21px; /* vendor narrow `.list-tabular-item` (thread-list.less:463) */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: left;
+}
+
+/* Vendor `.participants.no-recipients { color: @text-color-very-subtle }`
+ * (thread-list.less:165-167). */
+.thread-list .participants.no-recipients {
+  color: var(--ms-text-color-very-subtle);
+}
+
+.thread-list .participants .unread-true,
+.thread-list.draft-list .participants .draft-true {
+  /* Vendor `.unread:not(.focused) .participants .unread-true` →
+   * `@font-weight-semi-bold` (thread-list.less:239-243). */
+  font-weight: var(--ms-font-weight-semi-bold);
+}
+
+/* Date — vendor base `.timestamp { font-size: @font-size-small; font-weight:
+ * @font-weight-normal; min-width: 70px; margin-right: @scrollbar-margin;
+ * opacity: 0.62 }` (thread-list.less:207-213), right-aligned by
+ * `.list-column-Date { text-align: right }` (thread-list.less:203-205).
+ *
+ * NARROW OVERRIDE: vendor `.thread-list-narrow .timestamp { order: 100;
+ * min-width: 0 }` (thread-list.less:465-468) RESETS the 70px min-width — that
+ * 70px belongs to the WIDE column set, where the Date is its own fixed column.
+ * Our rows use the narrow `Item` column, so the date shares one flex line with
+ * the sender and must NOT reserve 70px; keeping it would starve the sender
+ * (measured: 90px line − 70px date − 16px margins = 4px, sender → 0).
+ * `order: 100` puts it last, and `flex-shrink: 0` keeps the date whole while
+ * the sender is what gives way — the truncation contract for this port. */
+.thread-list .timestamp {
+  order: 100; /* vendor narrow (thread-list.less:465) */
+  flex: 0 0 auto;
+  min-width: 0; /* vendor narrow override (thread-list.less:467) */
+  margin-left: 8px;
+  margin-right: 8px; /* @scrollbar-margin (thread-list.less:211) */
+  font-size: var(--ms-font-size-small);
+  font-weight: var(--ms-font-weight-normal);
+  color: var(--ms-text-color-subtle);
+  opacity: 0.62;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* Selected rows read as inverse content, so the date must stay legible on the
+ * tint rather than dimmed by the 0.62 opacity (vendor `.inverseContent` mixin,
+ * thread-list.less:8-37, applied by `.list-item.selected`). */
+.em-rows .list-item.is-selected .timestamp,
+.em-rows .list-item:focus-within .timestamp {
+  opacity: 1;
+  color: inherit;
+}
+
+.thread-list .thread-icon-pencil,
+.thread-list .thread-icon-attachment {
+  display: inline-block;
+  flex-shrink: 0;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  background-color: var(--ms-text-color-subtle);
+  vertical-align: top;
+  margin-right: 8px;
+  margin-top: 6px;
+  height: 15px;
+  width: 15px;
+}
+
+.thread-list .thread-icon-pencil {
+  -webkit-mask-image: var(--ms-icon-pencil);
+  mask-image: var(--ms-icon-pencil);
+}
+
+/* Vendor `.thread-icon` is a fixed 25x24 box (thread-list.less:256-283), but in
+ * the narrow `participants-wrapper` it competes with the sender for one line.
+ * The paperclip is decorative while the sender is the row's identity, so it is
+ * the item that gives way: `flex-shrink: 1; min-width: 0` lets it collapse to
+ * nothing in a cramped pane instead of pushing the sender out. The icon-column
+ * copy of `.thread-icon` (the star/unread mark) stays `flex-shrink: 0` above,
+ * exactly as vendor specifies. */
+.thread-list .participants-wrapper .thread-icon-attachment {
+  -webkit-mask-image: var(--ms-icon-attachment);
+  mask-image: var(--ms-icon-attachment);
+  /* A large shrink factor (the same idiom vendor uses for the toolbar
+   * selection bar, list-tabular.less:37-40) collapses the paperclip before
+   * the sender loses a single pixel. */
+  flex-shrink: 100;
+  min-width: 0;
+  overflow: hidden;
+  mask-position: left center;
+  -webkit-mask-position: left center;
+}
+
+/* Subject — vendor narrow `.subject { font-size: @font-size-base; overflow:hidden;
+ * text-overflow:ellipsis; text-align:left; margin-right: @scrollbar-margin }`
+ * (thread-list.less:480-486); weight `@font-weight-normal` from the base
+ * `.details .subject` rule (thread-list.less:176-184). */
+.thread-list .subject {
+  font-size: var(--ms-font-size-base);
+  color: var(--ms-text-color-subtle);
+  font-weight: var(--ms-font-weight-normal);
+  line-height: 21px; /* vendor narrow item line-height (thread-list.less:463) */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  margin-right: 8px; /* @scrollbar-margin (thread-list.less:485) */
+}
+
+.thread-list .subject .emoji {
+  padding: 0;
+  margin: 0 2px;
+  font-size: 1.25em;
+  vertical-align: text-bottom;
+}
+
+/* unread subject emphasis — vendor `.unread:not(.focused) .subject`
+ * { font-weight: @font-weight-semi-bold }` (thread-list.less:229-238) */
+.thread-list .list-item.unread .subject {
+  color: var(--kiwi-ms-text);
+  font-weight: var(--ms-font-weight-semi-bold);
+}
+
+/* Snippet line — vendor narrow `.snippet-and-labels { margin-right:
+ * @scrollbar-margin; display:flex; align-items:baseline; overflow:hidden }`
+ * (thread-list.less:487-492). */
+.thread-list .snippet-and-labels {
+  font-size: var(--ms-font-size-small);
+  font-weight: var(--ms-font-weight-normal);
+  line-height: 21px;
+  min-width: 0;
+  margin-right: 8px; /* @scrollbar-margin (thread-list.less:488) */
+  overflow: hidden;
+  display: flex;
+  align-items: baseline;
+}
+
+/* Vendor narrow `.snippet { font-size: @font-size-small; overflow:hidden;
+ * text-overflow:ellipsis; opacity:0.7; text-align:left; min-height:21px;
+ * margin-right:4px }` (thread-list.less:498-506). The 0.62 opacity of the
+ * wide `.details .snippet` (thread-list.less:190) is the wide-only value. */
+.thread-list .snippet-and-labels .snippet {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--ms-text-color-subtle);
+  font-size: var(--ms-font-size-small);
+  opacity: 0.7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+  min-height: 21px;
+  margin-right: 4px;
+}
+
+/* Vendor narrow `.snippet-and-labels .mail-label { font-size: 0.8em;
+ * line-height: 17px }` (thread-list.less:493-496) over the base `.mail-label`
+ * `{ padding: 1px 8px; margin-right: 6px; border-radius: 3px; flex-shrink: 0 }`
+ * (app/static/style/components/extra.less `.mail-label`). */
+.thread-list .snippet-and-labels .mail-label {
+  font-size: 0.8em;
+  line-height: 17px;
+  padding: 1px 8px;
+  margin-right: 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+  flex-shrink: 0;
+  cursor: default;
+  user-select: none;
+}
+
+.thread-list .snippet-and-labels .mail-label:last-child {
+  margin-right: 0;
+}
+
+.thread-list .snippet-and-labels .mail-label.em-pill {
+  font-weight: var(--ms-font-weight-semi-bold);
+}
+
+/* ---------- icons column + info column ----------
+ * Vendor narrow `.thread-info-column { flex: 1; align-self: center;
+ * overflow: hidden }` (thread-list.less:448-452) and
+ * `.thread-list-narrow .icons-column { display:flex; flex-direction:column;
+ * align-items:center; width: 25px; margin-right: 5px }` (thread-list.less:437-447).
+ * `.list-column { display: block }` in narrow mode (thread-list.less:459-461). */
+
+.thread-list .list-item .thread-info-column {
+  display: flex;
+  flex: 1;
+  align-self: center;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.thread-list .list-item .list-column-Item {
+  display: block;
+}
+
+.thread-list .icons-column {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex-shrink: 0;
+  width: 25px;
+  margin-right: 5px;
+}
+
+/* Vendor `.thread-icon { width: 25px; height: 24px; flex-shrink: 0;
+ * background-size: 15px; display: inline-block }` with the star at 16px
+ * (thread-list.less:256-283). The 25x24 box is the vendor hit target; the
+ * 15px glyph is the visible mark. */
+.thread-list .list-item .thread-icon {
+  height: 24px;
+  width: 25px;
+  flex-shrink: 0;
+  display: inline-block;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: 15px;
+  mask-size: 15px;
+  background-color: var(--ms-text-color-subtle);
+}
+
+/* Vendor `&.thread-icon-star { background-size: 16px }` (thread-list.less:279-282). */
+.thread-list .list-item .thread-icon-star {
+  -webkit-mask-size: 16px;
+  mask-size: 16px;
+}
+
+.thread-list .list-item .thread-icon-star {
+  -webkit-mask-image: var(--ms-icon-star);
+  mask-image: var(--ms-icon-star);
+  background-color: var(--ms-component-accent);
+}
+
+.thread-list .list-item .thread-icon-star-on-hover {
+  -webkit-mask-image: var(--ms-icon-star-hover);
+  mask-image: var(--ms-icon-star-hover);
+  background-color: var(--ms-text-color-subtle);
+}
+
+.thread-list .list-item .thread-icon-unread {
+  -webkit-mask-image: var(--ms-icon-unread);
+  mask-image: var(--ms-icon-unread);
+  background-color: var(--ms-component-accent);
+}
+
+.thread-list .list-item .thread-icon-replied {
+  -webkit-mask-image: var(--ms-icon-replied);
+  mask-image: var(--ms-icon-replied);
+}
+
+.thread-list .list-item .thread-icon-forwarded {
+  -webkit-mask-image: var(--ms-icon-forwarded);
+  mask-image: var(--ms-icon-forwarded);
+}
+
+.thread-list .list-item .thread-icon-none {
+  -webkit-mask-image: var(--ms-icon-pencil);
+  mask-image: var(--ms-icon-pencil);
+}
+
+/* Compact actions row (vendor: narrow-mode star stacked with quick actions) */
+.thread-list .icons-column .inner {
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ---------- hover quick actions (vendor: .hover-actions on narrow + c5) ---------- */
+
+.thread-list .list-item .em-quick {
+  display: none;
+}
+
+.thread-list .list-item:hover .em-quick,
+.thread-list .list-item:focus-within .em-quick {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  position: absolute;
+  right: 8px;
+  top: 0;
+  height: 100%;
+  z-index: 2;
+  background: var(--ms-list-bg);
+  border-radius: var(--kiwi-radius);
+  padding-left: 6px;
+}
+
+.thread-list .list-item.is-selected .em-quick {
+  background: var(--ms-list-selected-bg);
+}
+
+/* Ported quick-action buttons — .btn.action.action-{archive,trash} */
+.thread-list .btn.action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: var(--kiwi-radius);
+  background: transparent;
+  cursor: pointer;
+  padding: 0;
+}
+
+.thread-list .btn.action::before {
+  content: "";
+  display: block;
+  width: 14px;
+  height: 14px;
+  background-color: var(--ms-text-color-subtle);
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+}
+
+.thread-list .btn.action:hover::before {
+  background-color: var(--kiwi-ms-text);
+}
+
+.thread-list .btn.action-archive::before {
+  -webkit-mask-image: var(--ms-icon-archive);
+  mask-image: var(--ms-icon-archive);
+}
+
+.thread-list .btn.action-trash::before {
+  -webkit-mask-image: var(--ms-icon-trash);
+  mask-image: var(--ms-icon-trash);
+}
+
+.thread-injected-quick-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* ---------- injected column / important icon ---------- */
+
+.thread-injected-message-labels,
+.thread-injected-participants {
+  overflow: hidden;
+}
+
+.thread-list .mail-important-icon {
+  padding: 0;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  height: 20px;
+  width: 20px;
+}
+
+.thread-list .mail-important-icon.active .em-mark {
+  border-color: var(--ms-component-accent);
+}
+
+/* ---------- account color bar (vendor account-color-bar.less) ---------- */
+
+.account-color-bar {
+  box-shadow: inset 0 0 0.5px var(--ms-border-subtle);
+}

@@ -1,0 +1,497 @@
+/* Liquid Glass — stock theme package. Apple's iOS 26 "Liquid Glass"
+ * aesthetic, light variant: a real acrylic window (see
+ * src-tauri/tauri.conf.json — `transparent` + acrylic-first windowEffects, so
+ * live windows behind KIWI are sampled in real time) under THREE graded depth
+ * tiers rather than one uniform wash: structural panes at 0.05-0.20 that let the
+ * acrylic and wallpaper bleed through, content strips/fields at 0.20-0.46, and
+ * frosted floating plates (cards, composer, menus) at 0.44-0.62. Every tier
+ * keeps a white hairline and the specular inset top highlight, which is what
+ * makes a 0.14 pane read as a lit lip instead of a void. A saturated pastel mesh
+ * on #root carries the hue the near-neutral acrylic cannot, plus long
+ * blue-tinted shadows and the iOS system blue #007aff accent. Gradients/blur
+ * live in the scoped rules below — tokens stay plain colors so opaque contexts
+ * still resolve. */
+
+:root[data-theme="liquid-glass"],
+[data-theme="liquid-glass"] {
+  color-scheme: light;
+
+  /* ---- canonical palette ---- */
+  --accent: #007aff;
+  --accent-hover: #0069d9;
+  --accent-ink: #ffffff;
+  --selection: rgba(0, 122, 255, 0.14); /* translucent blue wash, not solid */
+
+  /* ---- mailspring tokens ----
+   * Three depth tiers, because a window that samples a live acrylic backdrop
+   * reads as flat milk when every surface carries the same alpha. The window
+   * is `transparent` with acrylic (see src-tauri/tauri.conf.json), so each
+   * surface only needs to tint what the DWM already blurred:
+   *
+   *   structural  0.05-0.20  frames content, never carries it. The acrylic +
+   *                      wallpaper bleed dominates; you read the desktop
+   *                      through these panes.
+   *   content     0.20-0.46  strips and fields whose text sits directly on the
+   *                      fill, so they need a plate but stay translucent.
+   *   floating    0.44-0.62  cards, composer, menus: frosted plates that read
+   *                      as sitting ON the backdrop.
+   *
+   * SPECULAR EDGES ARE WHAT SELL THE TIERS. Every tier keeps a white hairline
+   * (`--kiwi-ms-border`, `--em-pane-border`) plus the `inset 0 1px 0
+   * rgba(255,255,255,.55)` top highlight from the chrome blocks below, so a
+   * 0.14 pane still has a visible lip instead of dissolving into the canvas. */
+  --kiwi-ms-bg: rgba(255, 255, 255, 0.05);
+  --kiwi-ms-surface: rgba(255, 255, 255, 0.52);
+  --kiwi-ms-surface-2: rgba(255, 255, 255, 0.4);
+  --kiwi-ms-surface-3: rgba(255, 255, 255, 0.28);
+  --kiwi-ms-sidebar: rgba(255, 255, 255, 0.12);
+  --kiwi-ms-toolbar: rgba(255, 255, 255, 0.13);
+  /* Row strip: a content tier, not a pane. Rows carry sender/subject/snippet
+   * with no legibility veil of their own, so this stays above the pane tier. */
+  --kiwi-ms-list-bg: rgba(255, 255, 255, 0.22);
+  --kiwi-ms-list-border: rgba(60, 60, 67, 0.12);
+  --kiwi-ms-list-hover: rgba(255, 255, 255, 0.24);
+  --kiwi-ms-text: #1d1d1f;
+  --kiwi-ms-text-heading: #1d1d1f;
+  --kiwi-ms-text-secondary: #3a3a3c;
+  --kiwi-ms-text-muted: #6e6e73;
+  --kiwi-ms-link: #007aff;
+  --kiwi-ms-accent: #007aff;
+  --kiwi-ms-accent-active: #0069d9;
+  --kiwi-ms-accent-emphasis: #0a84ff;
+  --kiwi-ms-primary: #007aff;
+  --kiwi-ms-primary-text: #ffffff;
+  --kiwi-ms-icon-muted: #8e8e93;
+  --kiwi-ms-border: rgba(255, 255, 255, 0.5); /* glass edge — carries the tier lip */
+  --kiwi-ms-border-strong: rgba(60, 60, 67, 0.2);
+  --kiwi-ms-divider: rgba(60, 60, 67, 0.12); /* iOS separator gray, low alpha */
+  --kiwi-ms-hairline: rgba(60, 60, 67, 0.12);
+  --kiwi-ms-info: #0a84ff;
+  --kiwi-ms-success: #34c759;
+  --kiwi-ms-warning: #ff9f0a;
+  --kiwi-ms-danger: #ff3b30;
+  --kiwi-ms-toast-info: #0a84ff;
+  --kiwi-ms-toast-success: #34c759;
+  --kiwi-ms-toast-warning: #ff9f0a;
+  --kiwi-ms-toast-error: #ff3b30;
+  --kiwi-ms-toast-pending: #8e8e93;
+  --kiwi-ms-shadow-color: rgba(31, 38, 135, 0.1);
+  --kiwi-ms-shadow-standard: 0 2px 10px rgba(31, 38, 135, 0.07);
+  --kiwi-ms-shadow-raised: 0 8px 28px rgba(31, 38, 135, 0.12);
+  --kiwi-ms-shadow-popover: 0 16px 48px rgba(31, 38, 135, 0.16);
+  --kiwi-ms-shadow-modal: 0 24px 72px rgba(31, 38, 135, 0.2);
+  --kiwi-ms-focus-glow: 0 0 0 4px rgba(0, 122, 255, 0.25);
+  --kiwi-ms-select-tint: rgba(0, 122, 255, 0.14);
+  --kiwi-ms-select-border: rgba(0, 122, 255, 0.35);
+  --kiwi-ms-select-solid: #0069d9;
+
+  /* ---- --ms-* contract vars ---- */
+  --ms-component-active-bg: rgba(255, 255, 255, 0.54);
+  --ms-list-selected-color: #1d1d1f; /* dark ink on the translucent blue tint */
+  --ms-list-focused-color: #ffffff; /* focused rows go solid accent → white */
+  --ms-btn-border-color: rgba(60, 60, 67, 0.18);
+  --ms-btn-default-bg-color: rgba(255, 255, 255, 0.46);
+  --ms-dropdown-default-bg-color: rgba(255, 255, 255, 0.62);
+  --ms-input-bg: rgba(255, 255, 255, 0.46);
+  --ms-input-border-color: rgba(255, 255, 255, 0.55); /* white hairline */
+
+  /* ---- legacy kiwi tokens ---- */
+  --kiwi-bg: rgba(255, 255, 255, 0.05);
+  --kiwi-surface: rgba(255, 255, 255, 0.52);
+  --kiwi-sidebar: rgba(255, 255, 255, 0.12);
+  --kiwi-card: rgba(255, 255, 255, 0.54);
+  --kiwi-input: rgba(255, 255, 255, 0.46);
+  --kiwi-border: rgba(255, 255, 255, 0.5);
+  --kiwi-border-soft: rgba(255, 255, 255, 0.32);
+  --kiwi-text: #1d1d1f;
+  --kiwi-text-secondary: #3a3a3c;
+  --kiwi-text-disabled: #6e6e73;
+  --kiwi-brand: #007aff;
+  --kiwi-brand-hover: #0069d9;
+  --kiwi-brand-ink: #0057b8; /* deep blue ink for text on tinted surfaces */
+  --kiwi-focus: #007aff;
+  --kiwi-focus-ring: rgba(0, 122, 255, 0.25);
+  --kiwi-secure: #34c759;
+  --kiwi-secure-bg: rgba(52, 199, 89, 0.14);
+  --kiwi-secure-border: rgba(52, 199, 89, 0.4);
+  --kiwi-warning: #ff9f0a;
+  --kiwi-warning-bg: rgba(255, 159, 10, 0.14);
+  --kiwi-warning-border: rgba(255, 159, 10, 0.42);
+  --kiwi-danger: #ff3b30;
+  --kiwi-danger-bg: rgba(255, 59, 48, 0.12);
+  --kiwi-danger-border: rgba(255, 59, 48, 0.4);
+  --kiwi-unknown: #6e6e73;
+  --kiwi-unknown-bg: rgba(110, 110, 115, 0.12);
+  --kiwi-unknown-border: rgba(110, 110, 115, 0.35);
+  --kiwi-lock: #c93400;
+  --kiwi-lock-bg: rgba(255, 159, 10, 0.16);
+  --kiwi-hover-bg: rgba(255, 255, 255, 0.24);
+  --kiwi-shadow: 0 24px 72px rgba(31, 38, 135, 0.2);
+  --kiwi-shimmer: rgba(255, 255, 255, 0.5);
+  /* shell.css:3197 reads --kiwi-surface-2 with an #f3f3f3 fallback and NO theme
+   * defines it, so the composer dock header was painting a fully OPAQUE plate
+   * inside the glass — one of the flat spots that survived the translucency
+   * pass. Defining it here keeps the dock head a tier-correct frosted strip and
+   * leaves every other theme pixel-identical. */
+  --kiwi-surface-2: rgba(255, 255, 255, 0.6);
+  /* Same story for the recipient chips / field hover chips (shell.css:1704,
+   * :1733, :1747): undefined --em-surface-2 fell back to opaque #f1f3f4. They
+   * sit on the composer surface, so they must read HEAVIER than it. */
+  --em-surface-2: rgba(255, 255, 255, 0.62);
+
+  /* ---- pane tokens: structural tier ---- */
+  --em-pane-border: rgba(255, 255, 255, 0.5);
+  --em-hairline: rgba(60, 60, 67, 0.12);
+  --em-pane-bg: rgba(255, 255, 255, 0.14);
+  --em-pane-alt: rgba(255, 255, 255, 0.12);
+  /* Titlebar reads as part of the window's glass, not a separate plate —
+   * see the "titlebar merged into the body" block below. */
+  --em-pane-titlebar: rgba(255, 255, 255, 0.1);
+  --em-toolbar-bg: rgba(255, 255, 255, 0.13);
+  --em-select: rgba(0, 122, 255, 0.14);
+  --em-select-border: rgba(0, 122, 255, 0.35);
+  --em-select-focus: rgba(0, 122, 255, 0.2);
+  --em-unread-dot: #007aff;
+  --em-sender-blue: #0069d9;
+  --em-link: #007aff;
+  --em-hover: rgba(255, 255, 255, 0.24);
+  --em-text-dim: #3a3a3c;
+  --em-text-faint: #6e6e73;
+  --em-group-head: #6e6e73;
+  --em-avatar-text: #ffffff;
+  /* Floating tier: the reader card, the compose dock chip, the context menu and
+   * the drop veil all resolve --em-card-bg, so this is the alpha that makes the
+   * message column read as a frosted plate floating over the acrylic. */
+  --em-card-bg: rgba(255, 255, 255, 0.56);
+  /* Heaviest surface in the theme — a menu sits over the toolbar AND over live
+   * wallpaper, so it needs the deepest frost to stay legible. */
+  --em-menu-bg: rgba(255, 255, 255, 0.62);
+  --em-tab-line: rgba(60, 60, 67, 0.12);
+  --em-star: #ff9f0a;
+  --em-cat-news: #0a84ff;
+  --em-cat-news-bg: rgba(10, 132, 255, 0.12);
+  --em-cat-personal: #ff9f0a;
+  --em-cat-personal-bg: rgba(255, 159, 10, 0.14);
+  --em-cat-logs: #34c759;
+  --em-cat-logs-bg: rgba(52, 199, 89, 0.12);
+  --em-cat-social: #af52de;
+  --em-cat-social-bg: rgba(175, 82, 222, 0.12);
+  --em-cat-other: #6e6e73;
+  --em-cat-other-bg: rgba(110, 110, 115, 0.12);
+}
+
+/* ==================== Liquid Glass chrome ==================== */
+
+/* ---- base canvas: LET THE WINDOW SHOW ----
+ * The main window is `transparent` with acrylic window effects (see
+ * src-tauri/tauri.conf.json), so an opaque body/#root would completely hide
+ * the OS backdrop and leave a flat lavender rectangle. The mesh therefore
+ * drops to a ~0.14-0.20 alpha pastel tint: it still tints the glass, but the
+ * desktop wallpaper + the live windows behind KIWI read through it. Other
+ * themes are unaffected — this selector only matches
+ * [data-theme="liquid-glass"]. */
+[data-theme="liquid-glass"] html,
+[data-theme="liquid-glass"] body,
+[data-theme="liquid-glass"] #root {
+  background: transparent;
+}
+
+/* A whisper of pastel on the root canvas only (body stays clear so the tint
+ * is composited exactly once, not twice). Fixed attachment keeps the tint
+ * static behind scrolling panes.
+ *
+ * COLOR BLEED: the radials carry the hue the acrylic cannot — mica samples the
+ * wallpaper only, acrylic samples whatever is behind, and on a plain desktop
+ * both are near-neutral, which is what read as "flat milky wash". Saturating
+ * these stops a step and lifting them to 0.14-0.20 is what makes the backdrop
+ * look like COLORED glass. Hard cap 0.22: the readability veils further down
+ * (.em-card-body::before etc.) assume the canvas never gets heavier than this,
+ * and the panes above it have to keep a contrast budget for #1d1d1f ink. */
+[data-theme="liquid-glass"] #root {
+  background:
+    radial-gradient(120% 90% at 8% 0%, rgba(147, 197, 253, 0.2) 0%, rgba(147, 197, 253, 0) 55%),
+    radial-gradient(110% 100% at 95% 15%, rgba(216, 180, 254, 0.2) 0%, rgba(216, 180, 254, 0) 50%),
+    radial-gradient(120% 120% at 50% 110%, rgba(153, 246, 228, 0.19) 0%, rgba(153, 246, 228, 0) 55%),
+    linear-gradient(135deg, rgba(186, 220, 254, 0.17) 0%, rgba(233, 214, 255, 0.14) 32%, rgba(190, 242, 232, 0.15) 68%, rgba(210, 226, 255, 0.17) 100%);
+  background-attachment: fixed;
+}
+
+/* The center well stays barely veiled — the OS backdrop must reach the glass
+ * panes (folders / list / reader / rail) so blur can refract it. */
+[data-theme="liquid-glass"] .em-main {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* ---- depth tiers: opt a few surfaces back up to a plate ----
+ * Lowering --em-pane-bg / --em-pane-alt moved the pane tier down to 0.12-0.14,
+ * which is right for .em-list-col and .em-reader (both frame cards or rows
+ * that carry their own fill). But a handful of elements borrowed those SAME
+ * tokens while actually being a card, a chip or a text field — shell.css has no
+ * separate token for them, so they would have silently dropped to the pane tier
+ * and put their ink straight on the wallpaper. They are pinned to the tier they
+ * belong to here. Everything in this list is scoped to liquid-glass, so other
+ * themes stay pixel-identical. */
+[data-theme="liquid-glass"] .em-security-card,
+[data-theme="liquid-glass"] .em-attach {
+  background: rgba(255, 255, 255, 0.56); /* floating cards (rail + attachment note) */
+}
+[data-theme="liquid-glass"] .em-quick {
+  background: rgba(255, 255, 255, 0.62); /* floating hover-action chip over a row */
+}
+[data-theme="liquid-glass"] .em-search,
+[data-theme="liquid-glass"] .em-agenda-add input {
+  background: rgba(255, 255, 255, 0.46); /* content tier: fields carry their own text */
+}
+
+/* ---- frosted structural surfaces: chrome bars, side panes, list column ----
+ * Translucent token fill + a DEEP backdrop blur + the signature specular top
+ * edge. blur(36px) saturate(200%) is what makes the low-alpha fills read as
+ * glass rather than as a washed-out grey card. */
+[data-theme="liquid-glass"] .em-titlebar,
+[data-theme="liquid-glass"] .em-toolbar,
+[data-theme="liquid-glass"] .em-statusbar,
+[data-theme="liquid-glass"] .ms-menubar,
+[data-theme="liquid-glass"] .ms-toolbar,
+[data-theme="liquid-glass"] .ms-statusbar,
+[data-theme="liquid-glass"] .em-folders,
+[data-theme="liquid-glass"] .ms-sidebar,
+[data-theme="liquid-glass"] .em-rail,
+[data-theme="liquid-glass"] .em-list-col,
+[data-theme="liquid-glass"] .em-reader,
+[data-theme="liquid-glass"] .ms-reader,
+[data-theme="liquid-glass"] .ms-prefs-rail {
+  backdrop-filter: blur(36px) saturate(200%);
+  -webkit-backdrop-filter: blur(36px) saturate(200%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+  border-color: rgba(255, 255, 255, 0.42);
+}
+
+/* ---- titlebar merged into the body ----
+ * shell.css gives .em-titlebar its own `background` + `border-bottom`, which
+ * drew a visible seam against the toolbar beneath it and cut the OS window
+ * blur off at the top of the client area. Here the titlebar becomes part of
+ * the same glass sheet as .em-chrome/.em-toolbar: no plate fill, no dividing
+ * rule, no drop shadow — the window blur flows straight through it. The drag
+ * region (data-tauri-drag-region) and the overlay caption buttons are DOM
+ * attributes, untouched, so dragging + min/max/close keep working; only the
+ * paint changes. */
+[data-theme="liquid-glass"] .em-titlebar {
+  background: transparent;
+  border-bottom: none;
+  box-shadow: none;
+  backdrop-filter: blur(36px) saturate(200%);
+  -webkit-backdrop-filter: blur(36px) saturate(200%);
+}
+/* The rule that made the seam: shell.css draws it on .em-toolbar too. Kill it
+ * here as well so titlebar → toolbar → body is one continuous pane. */
+[data-theme="liquid-glass"] .em-toolbar {
+  border-bottom: none;
+}
+
+/* With the plate gone the titlebar's bare-text controls would sit directly on
+ * the OS backdrop, so #1d1d1f ink can lose contrast over a light wallpaper.
+ * These chips carry their own 0.35 white veil — enough luminance floor to stay
+ * legible, not enough to re-introduce a seam. Drag region + the OS caption
+ * buttons are untouched, so dragging and min/max/close keep working. */
+[data-theme="liquid-glass"] .em-titlebar .em-iconbtn,
+[data-theme="liquid-glass"] .em-titlebar .em-theme-label,
+[data-theme="liquid-glass"] .em-titlebar .em-demo-pill {
+  background: rgba(255, 255, 255, 0.35);
+  border-radius: var(--kiwi-radius-pill, 999px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+}
+/* The inline theme <select> must stay distinguishable from its new label chip. */
+[data-theme="liquid-glass"] .em-theme-label select {
+  background: rgba(255, 255, 255, 0.5);
+}
+
+/* ---- floating cards: specular edge + soft long shadow (replaces the
+ * token shadow — combined so they never double up weirdly). Severity
+ * surfaces (.kiwi-banner/.ms-policy-strip/.kiwi-actionbar) get the glass +
+ * shadow too but KEEP their semantic border colors. ---- */
+[data-theme="liquid-glass"] .em-card,
+[data-theme="liquid-glass"] .kiwi-card,
+[data-theme="liquid-glass"] .em-security-card,
+[data-theme="liquid-glass"] .em-setup-card,
+[data-theme="liquid-glass"] .ms-unsub-panel,
+[data-theme="liquid-glass"] .ms-finding-row,
+[data-theme="liquid-glass"] .em-quick {
+  backdrop-filter: blur(36px) saturate(200%);
+  -webkit-backdrop-filter: blur(36px) saturate(200%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    0 8px 28px rgba(31, 38, 135, 0.12);
+  border-color: rgba(255, 255, 255, 0.42);
+}
+[data-theme="liquid-glass"] .kiwi-banner,
+[data-theme="liquid-glass"] .kiwi-actionbar,
+[data-theme="liquid-glass"] .ms-policy-strip {
+  backdrop-filter: blur(36px) saturate(200%);
+  -webkit-backdrop-filter: blur(36px) saturate(200%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    0 8px 28px rgba(31, 38, 135, 0.12);
+}
+
+/* ---- floating overlays: menus / popovers / modals / toasts / dock ---- */
+[data-theme="liquid-glass"] .em-menu,
+[data-theme="liquid-glass"] .ms-menu-list,
+[data-theme="liquid-glass"] .ms-finding-popover,
+[data-theme="liquid-glass"] .ms-composer-modal,
+[data-theme="liquid-glass"] .kiwi-dialog,
+[data-theme="liquid-glass"] .em-dock,
+[data-theme="liquid-glass"] .em-dock-chip,
+[data-theme="liquid-glass"] .em-field-input-wrap ul[role="listbox"] {
+  backdrop-filter: blur(40px) saturate(200%);
+  -webkit-backdrop-filter: blur(40px) saturate(200%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    0 16px 48px rgba(31, 38, 135, 0.16);
+  border-color: rgba(255, 255, 255, 0.42);
+}
+/* Toasts keep their 3px severity strip — glass on the base border only. */
+[data-theme="liquid-glass"] .kiwi-toast {
+  backdrop-filter: blur(40px) saturate(200%);
+  -webkit-backdrop-filter: blur(40px) saturate(200%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    0 16px 48px rgba(31, 38, 135, 0.16);
+  border-top-color: rgba(255, 255, 255, 0.42);
+  border-right-color: rgba(255, 255, 255, 0.42);
+  border-bottom-color: rgba(255, 255, 255, 0.42);
+}
+
+/* ---- veils: iOS-style light dim + blur instead of a heavy black scrim ---- */
+[data-theme="liquid-glass"] .ms-composer-backdrop {
+  background: rgba(29, 29, 31, 0.28);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+[data-theme="liquid-glass"] .kiwi-dialog-backdrop {
+  background: rgba(29, 29, 31, 0.32);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+/* Lock screen: the app dissolves behind a deep frosted veil. */
+[data-theme="liquid-glass"] .kiwi-lock-overlay {
+  backdrop-filter: blur(30px) saturate(160%);
+  -webkit-backdrop-filter: blur(30px) saturate(160%);
+}
+
+/* ---- controls ----
+ * Real form fields get the glass fill (token bg) + white hairline +
+ * specular inset + a whisper of outer ring so the edge stays discoverable. */
+[data-theme="liquid-glass"] input:not([type="checkbox"]):not([type="radio"]),
+[data-theme="liquid-glass"] select,
+[data-theme="liquid-glass"] textarea,
+[data-theme="liquid-glass"] .tokenizing-field,
+[data-theme="liquid-glass"] .em-search {
+  border-color: rgba(255, 255, 255, 0.55);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    0 0 0 0.5px rgba(60, 60, 67, 0.08);
+}
+
+/* Borderless field inputs live INSIDE glass rows — keep them invisible. */
+[data-theme="liquid-glass"] .em-search input,
+[data-theme="liquid-glass"] .em-field input,
+[data-theme="liquid-glass"] .em-field select,
+[data-theme="liquid-glass"] .em-field-input,
+[data-theme="liquid-glass"] .em-field-input-wrap input,
+[data-theme="liquid-glass"] .tokenizing-field input {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+/* Focus still earns the blue ring + accent border under the glass edge. */
+[data-theme="liquid-glass"] input:not([type="checkbox"]):not([type="radio"]):focus,
+[data-theme="liquid-glass"] select:focus,
+[data-theme="liquid-glass"] textarea:focus {
+  border-color: var(--kiwi-ms-accent);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.6),
+    0 0 0 3px var(--kiwi-focus-ring);
+}
+[data-theme="liquid-glass"] .em-search:focus-within {
+  border-color: var(--kiwi-ms-accent);
+  box-shadow:
+    var(--kiwi-ms-focus-glow),
+    inset 0 1px 0 rgba(255, 255, 255, 0.6);
+}
+[data-theme="liquid-glass"] .em-search input:focus,
+[data-theme="liquid-glass"] .em-field input:focus,
+[data-theme="liquid-glass"] .em-field select:focus,
+[data-theme="liquid-glass"] .em-field-input:focus,
+[data-theme="liquid-glass"] .em-field-input-wrap input:focus,
+[data-theme="liquid-glass"] .tokenizing-field input:focus {
+  border-color: transparent;
+  box-shadow: none;
+}
+
+/* Secondary/default buttons stay translucent white glass; Apple keeps the
+ * ONE primary action solid. Tiny chip buttons get specular only. */
+[data-theme="liquid-glass"] .ms-btn {
+  background: rgba(255, 255, 255, 0.46);
+  border-color: rgba(255, 255, 255, 0.55);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+}
+[data-theme="liquid-glass"] .ms-quick-actions button,
+[data-theme="liquid-glass"] .ms-filterbar input,
+[data-theme="liquid-glass"] .ms-filterbar select {
+  border-color: rgba(255, 255, 255, 0.55);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.55);
+}
+
+/* Solid system-blue primaries with a faint inner top highlight. */
+[data-theme="liquid-glass"] .ms-btn-primary,
+[data-theme="liquid-glass"] .kiwi-btn-primary,
+[data-theme="liquid-glass"] .em-tool-primary,
+[data-theme="liquid-glass"] .em-send,
+[data-theme="liquid-glass"] .em-send-chev {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    0 2px 8px rgba(0, 122, 255, 0.3);
+}
+[data-theme="liquid-glass"] .ms-btn-primary:hover:not(:disabled),
+[data-theme="liquid-glass"] .kiwi-btn-primary:hover:not(:disabled) {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.28),
+    0 2px 10px rgba(0, 122, 255, 0.38);
+}
+
+/* ---- thread rows: glass hover + translucent blue selection (tokens do
+ * the fill; these keep read-dimming consistent with other themes) ---- */
+:root[data-theme="liquid-glass"] .em-row:not(.is-unread):not(.is-selected),
+:root[data-theme="liquid-glass"] .ms-row:not(.is-unread):not(.is-selected):not([aria-selected="true"]),
+:root[data-theme="liquid-glass"] .kiwi-row:not(.is-unread):not([aria-selected="true"]) {
+  color: #6e6e73;
+}
+
+/* ---- text-legibility veil ----
+ * Lowering every surface alpha to 0.10–0.45 means #1d1d1f body copy now sits
+ * on whatever the window blur sampled from the desktop. Pure-text regions —
+ * rendered message bodies, thread rows, setup/quick text — get an extra
+ * rgba(255,255,255,0.35) veil composited UNDER their content (a ::before
+ * pseudo-layer, so it never intercepts clicks or text selection) to restore
+ * the luminance floor the old 0.62 fills used to provide. */
+[data-theme="liquid-glass"] .kiwi-rendered-body,
+[data-theme="liquid-glass"] .em-card-body {
+  position: relative;
+}
+[data-theme="liquid-glass"] .kiwi-rendered-body::before,
+[data-theme="liquid-glass"] .em-card-body::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: rgba(255, 255, 255, 0.35);
+  border-radius: inherit;
+}
+[data-theme="liquid-glass"] .kiwi-rendered-body > *,
+[data-theme="liquid-glass"] .em-card-body > * {
+  position: relative;
+  z-index: 1;
+}
+

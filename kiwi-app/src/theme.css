@@ -1,7 +1,8 @@
 /* KIWI premium theme (T-145) — deep-black flagship + refined light.
- * Brand: orange→pink gradient (#EAA132→#E580CC), used SPARINGLY (wordmark,
- * primary actions, secure/lock accents, selected markers). Severity is never
- * color-only (glyph + text label carry meaning in every pill).
+ * Brand: flat orange accent (#EAA132) on every surface — no gradients.
+ * (--kiwi-gradient remains defined as a flat solid for theme-package
+ * compatibility; new code should use --kiwi-brand directly.) Severity is
+ * never color-only (glyph + text label carry meaning in every pill).
  * Operate-mode surface: tokens + classes only — no function/route changes. */
 
 :root,
@@ -19,8 +20,9 @@
   --kiwi-text-disabled: #8d8672;
   --kiwi-accent-from: #eaa132;
   --kiwi-accent-to: #d16fb5;
-  --kiwi-gradient: linear-gradient(135deg, #eaa132, #e580cc);
+  --kiwi-gradient: var(--kiwi-brand);
   --kiwi-brand: #eaa132;
+  --kiwi-brand-hover: #d8912a;
   --kiwi-brand-ink: #8a5a06;
   --kiwi-focus: #b45309;
   --kiwi-focus-ring: rgba(180, 83, 9, 0.22);
@@ -39,8 +41,42 @@
   --kiwi-lock: #8a5a06;
   --kiwi-lock-bg: #f6e8c4;
   --kiwi-hover-bg: rgba(138, 90, 6, 0.06);
-  --kiwi-shadow: 0 18px 48px rgba(60, 45, 10, 0.18);
+  --kiwi-shadow: 0 4px 20px rgba(60, 45, 10, 0.14);
   --kiwi-shimmer: rgba(138, 90, 6, 0.08);
+
+  /* ---- canonical flat palette (dispatch 2026-09-26c item 1) ----
+   * Single source of truth for primary actions + selection. Stock theme
+   * packages override these; --kiwi-brand/--em-orange/--kiwi-ms-primary
+   * stay as the surface-level aliases. */
+  --accent: var(--kiwi-brand);
+  --accent-hover: var(--kiwi-brand-hover);
+  --accent-ink: #1c1204;
+  --surface: var(--kiwi-surface);
+  --surface-2: var(--kiwi-bg);
+  --border: var(--kiwi-border-soft);
+  --text: var(--kiwi-text);
+  --text-muted: var(--kiwi-text-secondary);
+  --selection: #d7ebfb;
+  --ok: var(--kiwi-secure);
+  --warn: var(--kiwi-warning);
+  --danger: var(--kiwi-danger);
+  --info: #2f6fd6;
+
+  /* ---- T-342 global radius scale ("soft corners everywhere" — planner UI
+   * pass#2). Tiers: sm = controls (buttons/inputs/chips, 6–8px band); md =
+   * menus, popovers, small surfaces; card = cards/panels/readers (10–14px
+   * band); large = dialogs, modal composer, floating dock (~16px). The
+   * Mailspring --kiwi-ms-radius-* tokens re-base onto this scale. Theme
+   * packages may override, but should keep the ordering. */
+  --kiwi-radius-sm: 6px;
+  --kiwi-radius-md: 8px;
+  --kiwi-radius-card: 12px;
+  --kiwi-radius-large: 16px;
+  --kiwi-radius-pill: 999px;
+  --kiwi-radius-circle: 50%;
+  /* Alias — T-343's floating dock was authored against --kiwi-radius-lg
+     before this scale landed; keep both names resolving to the same tier. */
+  --kiwi-radius-lg: var(--kiwi-radius-large);
 }
 
 [data-theme="dark"] {
@@ -57,8 +93,9 @@
   --kiwi-text-disabled: #5e5c72;
   --kiwi-accent-from: #eaa132;
   --kiwi-accent-to: #e580cc;
-  --kiwi-gradient: linear-gradient(135deg, #eaa132, #e580cc);
+  --kiwi-gradient: var(--kiwi-brand);
   --kiwi-brand: #eaa132;
+  --kiwi-brand-hover: #f0ab3f;
   --kiwi-brand-ink: #f2c063;
   --kiwi-focus: #f0a83c;
   --kiwi-focus-ring: rgba(234, 161, 50, 0.25);
@@ -77,20 +114,48 @@
   --kiwi-lock: #f2c063;
   --kiwi-lock-bg: #241b0b;
   --kiwi-hover-bg: rgba(255, 255, 255, 0.035);
-  --kiwi-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+  --kiwi-shadow: 0 6px 24px rgba(0, 0, 0, 0.5);
   --kiwi-shimmer: rgba(255, 255, 255, 0.06);
+
+  /* ---- canonical flat palette (dark side) ---- */
+  --accent: var(--kiwi-brand);
+  --accent-hover: var(--kiwi-brand-hover);
+  --accent-ink: #1c1204;
+  --surface: var(--kiwi-surface);
+  --surface-2: var(--kiwi-bg);
+  --border: var(--kiwi-border-soft);
+  --text: var(--kiwi-text);
+  --text-muted: var(--kiwi-text-secondary);
+  --selection: #2a2f45;
+  --ok: var(--kiwi-secure);
+  --warn: var(--kiwi-warning);
+  --danger: var(--kiwi-danger);
+  --info: #8ab4e8;
 }
 
 * { box-sizing: border-box; }
 
-::selection { background: rgba(234, 161, 50, 0.32); }
+/* ---- font-size control (Settings → Appearance → Font size) ----
+ * `kiwi.fontScale` is written onto the root element by applyUiPrefs()
+ * (src/prefs.ts) as a plain multiplier (0.8 … 1.2). Two hooks consume it:
+ *   1. the --kiwi-ms-text-* / --kiwi-ms-h* tokens in mailspring-tokens.css
+ *      (every px-sized surface: menubar, sidebar, thread rows, reader);
+ *   2. this root font-size, which scales every `rem` declaration
+ *      (theme.css, shell.css and the inline styles in the views).
+ * 16px is the browser default, so `--kiwi-font-scale: 1` is a no-op. */
+:root {
+  --kiwi-font-scale: 1;
+  font-size: calc(16px * var(--kiwi-font-scale));
+}
+
+::selection { background: var(--selection); }
 
 body {
   margin: 0;
   background: var(--kiwi-bg);
   color: var(--kiwi-text);
   font-family: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  font-size: 14px;
+  font-size: calc(14px * var(--kiwi-font-scale, 1));
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
 }
@@ -106,7 +171,7 @@ h2 { font-size: 1.02rem; }
 :focus-visible {
   outline: 2px solid var(--kiwi-focus);
   outline-offset: 2px;
-  border-radius: 6px;
+  border-radius: var(--kiwi-radius-sm);
 }
 
 button, input, select, textarea, .kiwi-row, .kiwi-tree-item, .kiwi-nav-btn {
@@ -120,7 +185,7 @@ button {
   color: inherit;
   background: var(--kiwi-surface);
   border: 1px solid var(--kiwi-border);
-  border-radius: 8px;
+  border-radius: var(--kiwi-radius-md);
   padding: 0.4rem 0.8rem;
   cursor: pointer;
 }
@@ -136,17 +201,16 @@ button[aria-disabled="true"] {
   opacity: 0.75;
 }
 
-/* Primary gradient action — reserved for the one main action per surface. */
+/* Primary action — flat accent, reserved for the one main action per surface. */
 .kiwi-btn-primary {
-  background: var(--kiwi-gradient);
+  background: var(--accent);
   border: none;
-  color: #1c1204;
+  color: var(--accent-ink);
   font-weight: 700;
-  box-shadow: 0 4px 18px rgba(234, 161, 50, 0.28);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.14);
 }
 .kiwi-btn-primary:hover:not(:disabled) {
-  background: var(--kiwi-gradient);
-  filter: brightness(1.07);
+  background: var(--accent-hover);
   border: none;
 }
 
@@ -155,7 +219,7 @@ input, select, textarea {
   color: var(--kiwi-text);
   background: var(--kiwi-input);
   border: 1px solid var(--kiwi-border);
-  border-radius: 8px;
+  border-radius: var(--kiwi-radius-md);
   padding: 0.4rem 0.55rem;
 }
 input:focus, select:focus, textarea:focus {
@@ -164,14 +228,11 @@ input:focus, select:focus, textarea:focus {
   outline: none;
 }
 
-/* Gradient wordmark — the single brand moment in the top bar. */
+/* Flat brand wordmark. */
 .kiwi-brand {
   font-weight: 800;
   letter-spacing: 0.08em;
-  background: var(--kiwi-gradient);
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: var(--kiwi-brand);
 }
 
 /* ---------- pills: distinct treatments per state ---------- */
@@ -180,7 +241,7 @@ input:focus, select:focus, textarea:focus {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
-  border-radius: 999px;
+  border-radius: var(--kiwi-radius-pill);
   padding: 0.2rem 0.65rem;
   font-size: 0.75rem;
   font-weight: 700;
@@ -212,15 +273,14 @@ input:focus, select:focus, textarea:focus {
 }
 .kiwi-pill.locked {
   color: var(--kiwi-lock);
-  background: linear-gradient(var(--kiwi-lock-bg), var(--kiwi-lock-bg)) padding-box,
-    var(--kiwi-gradient) border-box;
-  border: 1px solid transparent;
+  background: var(--kiwi-lock-bg);
+  border: 1px solid rgba(138, 90, 6, 0.45);
 }
 
 /* ---------- banners / cards / dialogs ---------- */
 
 .kiwi-banner {
-  border-radius: 10px;
+  border-radius: var(--kiwi-radius-card);
   padding: 0.65rem 0.85rem;
   margin-bottom: 0.7rem;
   border: 1px solid;
@@ -232,10 +292,10 @@ input:focus, select:focus, textarea:focus {
 .kiwi-card {
   background: var(--kiwi-card);
   border: 1px solid var(--kiwi-border-soft);
-  border-radius: 12px;
-  padding: 0.9rem 1rem;
+  border-radius: var(--kiwi-radius-card);
+  padding: 0.8rem 1rem;
   margin-bottom: 0.8rem;
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 
 .kiwi-dialog-backdrop {
@@ -252,7 +312,7 @@ input:focus, select:focus, textarea:focus {
   background: var(--kiwi-surface);
   color: var(--kiwi-text);
   border: 1px solid var(--kiwi-border);
-  border-radius: 14px;
+  border-radius: var(--kiwi-radius-large);
   padding: 1.4rem;
   max-width: 640px;
   width: calc(100vw - 3rem);
@@ -269,10 +329,7 @@ input:focus, select:focus, textarea:focus {
   align-items: center;
   justify-content: center;
   text-align: center;
-  background:
-    radial-gradient(640px 420px at 50% 36%, rgba(234, 161, 50, 0.13), transparent 70%),
-    radial-gradient(500px 380px at 50% 40%, rgba(229, 128, 204, 0.07), transparent 70%),
-    var(--kiwi-bg);
+  background: var(--kiwi-bg);
 }
 .kiwi-lock-mark {
   width: 96px;
@@ -282,11 +339,10 @@ input:focus, select:focus, textarea:focus {
   align-items: center;
   justify-content: center;
   font-size: 2.6rem;
-  border-radius: 50%;
-  background: linear-gradient(var(--kiwi-surface), var(--kiwi-surface)) padding-box,
-    var(--kiwi-gradient) border-box;
-  border: 2px solid transparent;
-  box-shadow: 0 0 42px rgba(234, 161, 50, 0.25);
+  border-radius: var(--kiwi-radius-circle);
+  background: var(--kiwi-surface);
+  border: 2px solid var(--accent);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.18);
 }
 
 .kiwi-evidence {
@@ -294,7 +350,7 @@ input:focus, select:focus, textarea:focus {
   font-size: 0.8rem;
   background: var(--kiwi-unknown-bg);
   border: 1px solid var(--kiwi-border);
-  border-radius: 8px;
+  border-radius: var(--kiwi-radius-md);
   padding: 0.65rem;
   overflow: auto;
   white-space: pre-wrap;
@@ -305,7 +361,7 @@ input:focus, select:focus, textarea:focus {
 
 .kiwi-row {
   border: 1px solid var(--kiwi-border-soft);
-  border-radius: 10px;
+  border-radius: var(--kiwi-radius-card);
   padding: 0.55rem 0.65rem;
   background: transparent;
   cursor: pointer;
@@ -313,8 +369,8 @@ input:focus, select:focus, textarea:focus {
 .kiwi-row:hover { border-color: var(--kiwi-border); background: var(--kiwi-hover-bg); }
 .kiwi-row[aria-selected="true"] {
   background: var(--kiwi-surface);
-  border-color: rgba(234, 161, 50, 0.45);
-  box-shadow: inset 2px 0 0 var(--kiwi-brand), 0 4px 16px rgba(0, 0, 0, 0.25);
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--kiwi-border-soft));
+  box-shadow: inset 2px 0 0 var(--accent), 0 1px 4px rgba(0, 0, 0, 0.08);
 }
 .kiwi-row.is-unread { font-weight: 700; }
 
@@ -325,7 +381,7 @@ input:focus, select:focus, textarea:focus {
   font-weight: 400;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: var(--kiwi-radius-md);
   padding: 0.4rem 0.6rem;
   color: var(--kiwi-text-secondary);
 }
@@ -343,7 +399,7 @@ input:focus, select:focus, textarea:focus {
   align-items: center;
   gap: 0.45rem;
   padding: 0.35rem 0.45rem;
-  border-radius: 8px;
+  border-radius: var(--kiwi-radius-md);
 }
 .kiwi-account:hover { background: var(--kiwi-hover-bg); }
 
@@ -354,7 +410,7 @@ input:focus, select:focus, textarea:focus {
   position: relative;
   background: var(--kiwi-surface);
   border: 1px solid var(--kiwi-border-soft);
-  border-radius: 12px;
+  border-radius: var(--kiwi-radius-card);
   padding: 1rem 1.1rem;
   overflow-y: auto;
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22);
@@ -366,9 +422,9 @@ input:focus, select:focus, textarea:focus {
   left: 14px;
   right: 14px;
   height: 2px;
-  border-radius: 2px;
-  background: var(--kiwi-gradient);
-  opacity: 0.75;
+  border-radius: var(--kiwi-radius-pill);
+  background: var(--kiwi-brand);
+  opacity: 0.55;
 }
 
 .kiwi-section-label {
@@ -386,7 +442,7 @@ input:focus, select:focus, textarea:focus {
   100% { background-position: 400px 0; }
 }
 .kiwi-skeleton {
-  border-radius: 10px;
+  border-radius: var(--kiwi-radius-card);
   min-height: 64px;
   margin-bottom: 0.4rem;
   background: linear-gradient(100deg, transparent 30%, var(--kiwi-shimmer) 50%, transparent 70%),
@@ -433,7 +489,7 @@ input:focus, select:focus, textarea:focus {
   color: var(--kiwi-text);
   border: 1px solid var(--kiwi-border);
   border-left-width: 3px;
-  border-radius: 10px;
+  border-radius: var(--kiwi-radius-card);
   padding: 0.55rem 0.7rem;
   box-shadow: var(--kiwi-shadow);
   font-size: 0.85rem;
@@ -499,15 +555,17 @@ input:focus, select:focus, textarea:focus {
   background: var(--kiwi-surface);
   border: 1px solid var(--kiwi-border);
   border-left: 3px solid var(--kiwi-brand);
-  border-radius: 10px;
+  border-radius: var(--kiwi-radius-card);
   padding: 0.5rem 0.65rem;
   margin-bottom: 0.5rem;
 }
 
 /* ---------- T-167: density + accent intensity ---------- */
 
+/* Density sets the root size, so it composes with --kiwi-font-scale rather
+ * than replacing it (font size at 100% stays 13px here). */
 [data-density="compact"] {
-  font-size: 13px;
+  font-size: calc(13px * var(--kiwi-font-scale, 1));
 }
 [data-density="compact"] .kiwi-row {
   padding: 0.3rem 0.45rem;
@@ -538,20 +596,20 @@ input:focus, select:focus, textarea:focus {
 [data-accent="subtle"] .kiwi-reader::before {
   background: var(--kiwi-brand);
 }
-/* Vivid: stronger gradient presence. */
+/* Vivid: stronger flat-accent presence. */
 [data-accent="vivid"] .kiwi-btn-primary {
-  box-shadow: 0 4px 26px rgba(234, 161, 50, 0.5);
+  box-shadow: 0 2px 10px rgba(234, 161, 50, 0.45);
 }
 [data-accent="vivid"] .kiwi-row[aria-selected="true"] {
   border-color: var(--kiwi-brand);
-  box-shadow: inset 3px 0 0 var(--kiwi-brand), 0 6px 22px rgba(234, 161, 50, 0.25);
+  box-shadow: inset 3px 0 0 var(--kiwi-brand), 0 4px 16px rgba(234, 161, 50, 0.18);
 }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
   background: var(--kiwi-border);
-  border-radius: 6px;
+  border-radius: var(--kiwi-radius-pill);
   border: 2px solid var(--kiwi-bg);
 }
 ::-webkit-scrollbar-thumb:hover { background: var(--kiwi-brand); }

@@ -288,20 +288,18 @@ impl TempMailProvider for GuerrillaMail {
         let resp = self
             .call(HttpMethod::Post, "forget_me", &[("email_addr", addr)])
             .await?;
+        let body = resp.body.trim_ascii();
+        if body != FORGET_ME_OK {
+            if let Ok(value) = serde_json::from_slice::<Value>(body) {
+                reject_in_band_error(&value)?;
+            }
+            return Err(IntegrationError::ProviderRejected("forget_me"));
+        }
         let mut s = self.state.lock().expect("gm session");
         s.address = None;
         s.created_unix = None;
         s.last_seq = 0;
-        // PHPSESSID intentionally survives — the session itself persists
-        // server-side per API docs.
-        let body = resp.body.trim_ascii();
-        if body == FORGET_ME_OK {
-            return Ok(());
-        }
-        if let Ok(value) = serde_json::from_slice::<Value>(body) {
-            reject_in_band_error(&value)?;
-        }
-        Err(IntegrationError::ProviderRejected("forget_me"))
+        Ok(())
     }
 
     async fn extend(&self) -> Result<ExtendOutcome, IntegrationError> {
@@ -771,6 +769,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn forget_me_failure_keeps_address_for_retry() {
+        let g = gm(vec![
+            Step::get("init", &["f=get_email_address"], 200, ADDR_JSON)
+                .respond_headers(&[("set-cookie", "PHPSESSID=sess42; path=/")]),
+            Step::post(
+                "forget-fails",
+                &["f=forget_me", "email_addr=abc123%40guerrillamailblock.com"],
+                200,
+                r#"{"error":"busy"}"#,
+            )
+            .expect_header("cookie", "PHPSESSID=sess42"),
+        ]);
+        g.get_email_address().await.unwrap();
+        let before = g.address().unwrap();
+        assert!(g.forget_me().await.is_err());
+        assert_eq!(g.address().as_deref(), Some(before.as_str()));
+    }
+
+    #[tokio::test]
     async fn forget_me_clears_address_keeps_session() {
         let g = gm(vec![
             Step::get("init", &["f=get_email_address"], 200, ADDR_JSON)
@@ -1044,7 +1061,11 @@ mod tests {
                 IntegrationError::ProviderRejected("forget_me"),
                 "body {body:?} must not count as success"
             );
-            assert_eq!(g.address(), None);
+            assert_eq!(
+                g.address().as_deref(),
+                Some("abc123@guerrillamailblock.com"),
+                "a rejected forget must stay retryable"
+            );
         }
     }
 

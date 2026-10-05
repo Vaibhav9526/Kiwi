@@ -422,7 +422,7 @@ pub(crate) async fn test_account_impl(
         IncomingProtocol::Imap => Protocol::Imap,
         IncomingProtocol::Pop3 => Protocol::Pop3,
     };
-    let in_secret = resolve_secret(&state, &acct.incoming.auth)?;
+    let in_secret = resolve_secret(&state, &acct.incoming.auth).await?;
     let in_auth = auth_input_from(&acct.incoming.auth);
     let mut results = vec![
         probe(
@@ -441,7 +441,7 @@ pub(crate) async fn test_account_impl(
         .await,
     ];
     // Outgoing.
-    let out_secret = resolve_secret(&state, &acct.outgoing.auth)?;
+    let out_secret = resolve_secret(&state, &acct.outgoing.auth).await?;
     let out_auth = auth_input_from(&acct.outgoing.auth);
     results.push(
         probe(
@@ -539,7 +539,14 @@ async fn probe(
             let mut client = try_step!(
                 "smtp-handshake",
                 "EHLO ok".to_string(),
-                SmtpClient::connect(transport, kiwi_mail::smtp::SmtpConfig::default())
+                SmtpClient::connect(
+                    transport,
+                    kiwi_mail::smtp::SmtpConfig {
+                        // KIWI_DEV_PLAINTEXT fixture seam — loopback hosts only.
+                        allow_plaintext_auth: kiwi_core::dev::plaintext_fixture_for(host),
+                        ..Default::default()
+                    }
+                )
             );
             let offered = client.ehlo_info().map(|e| e.has_starttls());
             let auth_succeeded = match (auth, secret) {
@@ -587,7 +594,13 @@ async fn probe(
             let mut client = try_step!(
                 "imap-handshake",
                 "greeting + CAPABILITY ok".to_string(),
-                ImapClient::connect(transport)
+                ImapClient::connect_with(
+                    transport,
+                    kiwi_mail::imap::ImapConfig {
+                        // KIWI_DEV_PLAINTEXT fixture seam — loopback hosts only.
+                        allow_plaintext_auth: kiwi_core::dev::plaintext_fixture_for(host),
+                    }
+                )
             );
             let offered = Some(client.has_capability("STARTTLS"));
             let auth_succeeded = match (auth, secret) {
@@ -642,7 +655,14 @@ async fn probe(
             let mut client = try_step!(
                 "pop3-handshake",
                 "greeting + CAPA ok".to_string(),
-                Pop3Client::connect(transport, kiwi_mail::pop3::Pop3Config::default())
+                Pop3Client::connect(
+                    transport,
+                    kiwi_mail::pop3::Pop3Config {
+                        // KIWI_DEV_PLAINTEXT fixture seam — loopback hosts only.
+                        allow_plaintext_auth: kiwi_core::dev::plaintext_fixture_for(host),
+                        ..Default::default()
+                    }
+                )
             );
             let offered = Some(client.has_capa("STLS"));
             let auth_succeeded = match (auth, secret) {

@@ -52,10 +52,47 @@ LEVELS = [("L", ERROR_CORRECT_L), ("M", ERROR_CORRECT_M)]
 
 # One fixture per structural case: both EC levels, block-group splits,
 # alignment patterns (v >= 2), and version information blocks (v >= 7).
-# Payload length is derived from the *actual* version chosen under the strict
-# fit rule (see the module docstring): `_pad_start` is the last byte count that
-# still failed to fit, `_pad_end` the first that fits -- regenerated versions
-# therefore land on the same version even after byte-count bookkeeping changes.
+#
+# Fixture payload sizes are derived from the ISO capacity of the version the
+# fixture targets (see `_padding_payload` below): the padding payload is sized
+# to exactly fill the target version's data capacity at the requested level,
+# so the strict-fit rule regenerates the same version every time -- the last
+# byte count that still fails to fit belongs to the previous version, the
+# first that fits belongs to the target. Level letters are matched
+# case-insensitively (`_level_const`); a mismatch here once produced vectors
+# labelled "L" that were actually encoded at "M", which made the encoder
+# tests fail on version drift.
+
+
+def _level_const(name: str) -> int:
+    return ERROR_CORRECT_L if name.upper() == "L" else ERROR_CORRECT_M
+
+
+def _max_byte_capacity(version: int, level: str) -> int:
+    """Largest byte-mode payload that still fits `version` at `level`.
+
+    Mirrors both the encoder's strict fit rule and python-qrcode's own
+    capacity accounting: 4-bit mode indicator + 16-bit byte count (both
+    targets are version >= 10) + 8 bits per payload byte must fit inside the
+    version's total data-codeword bits.
+    """
+    blocks = rs_blocks(version, _level_const(level))
+    data_bits = sum(block.data_count for block in blocks) * 8
+    return (data_bits - 4 - 16) // 8
+
+
+def _padding_payload(char: str, target_bytes: int) -> str:
+    """A `{"padding": ...}` payload of exactly `target_bytes` UTF-8 bytes."""
+    base = json.dumps({"padding": ""}, separators=(",", ":"))
+    fill = target_bytes - len(base.encode("utf-8"))
+    if fill < 0:
+        raise ValueError(f"target_bytes {target_bytes} smaller than the JSON wrapper")
+    payload = json.dumps({"padding": char * fill}, separators=(",", ":"))
+    if len(payload.encode("utf-8")) != target_bytes:
+        raise AssertionError("padding payload size drifted from the target byte count")
+    return payload
+
+
 FIXTURES = [
     ("byte-v1-m", "KIWI", "m"),
     (
@@ -75,15 +112,11 @@ FIXTURES = [
         ),
         "m",
     ),
-    ("json-v21-l", json.dumps({"padding": "x" * 930}, separators=(",", ":")), "l"),
+    ("json-v21-l", _padding_payload("x", _max_byte_capacity(21, "l")), "l"),
     ("json-v9-m", json.dumps({"padding": "y" * 260}, separators=(",", ":")), "m"),
-    ("json-v25-l", json.dumps({"padding": "z" * 1274}, separators=(",", ":")), "l"),
+    ("json-v25-l", _padding_payload("z", _max_byte_capacity(25, "l")), "l"),
     ("json-v17-m", json.dumps({"padding": "w" * 700}, separators=(",", ":")), "m"),
 ]
-
-
-def _level_const(name: str) -> int:
-    return ERROR_CORRECT_L if name == "L" else ERROR_CORRECT_M
 
 
 def write_tables(path: pathlib.Path) -> None:
@@ -158,6 +191,15 @@ def build_qr(text: str, level: str, mask: int | None) -> QRCode:
 def fixture(name: str, text: str, level: str) -> dict[str, object]:
     auto = build_qr(text, level, None)
     version = int(auto.version)
+    if version > MAX_VERSION:
+        # The encoder's tables (and the checked-in evidence) stop at
+        # MAX_VERSION; a fixture beyond it would only ever assert a
+        # rejection, so fail loudly and shrink the payload instead.
+        raise ValueError(
+            f"fixture {name}: python-qrcode chose v{version} at level {level.upper()}, "
+            f"beyond the supported v{MAX_VERSION} -- size the payload with "
+            f"_padding_payload()/_max_byte_capacity() to land inside the table"
+        )
     masks: list[dict[str, object]] = []
     for mask in range(8):
         forced = build_qr(text, level, mask)

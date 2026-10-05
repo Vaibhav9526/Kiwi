@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-LEAD_TERMINAL = "term_c20c6737-9b80-4911-bcd2-38aa5113e4d7"
+LEAD_TERMINAL = "term_db8527c7-eb71-4274-b416-61c91143a6cf"
 DEFAULT_INTERVAL = 600
 ANSI_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 

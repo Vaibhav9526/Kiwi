@@ -1,0 +1,416 @@
+// Ported from Mailspring `app/src/components/swipe-container.tsx`.
+// Adapted seam: the vendor reads `com.apple.swipescrolldirection` via
+// `child_process.exec` on darwin; KIWI's renderer is a browser context
+// (no child_process/process.platform), and the thread-list rows never
+// register onSwipe* callbacks, so the gesture paths stay inert and
+// SwipeInverted is fixed to the vendor's default value.
+import _ from "underscore";
+import React, { CSSProperties } from "react";
+import ReactDOM from "react-dom";
+import { Utils } from "./ms-exports";
+
+// This is a stripped down version of
+// https://github.com/michaelvillar/dynamics.js/blob/master/src/dynamics.coffee#L1179,
+//
+const SpringBounceFactory = (options: { frequency: number; friction: number }) => {
+  const frequency = Math.max(1, options.frequency / 20);
+  const friction = 20 ** (options.friction / 100);
+  return (t: number) => {
+    return 1 - (friction / 10) ** -t * (1 - t) * Math.cos(frequency * t);
+  };
+};
+const SpringBounceFunction = SpringBounceFactory({
+  frequency: 360,
+  friction: 440,
+});
+
+const Phase = {
+  // No wheel events received yet, container is inactive.
+  None: "none",
+
+  // Wheel events received
+  GestureStarting: "gesture-starting",
+
+  // Wheel events received and we are stopping event propagation.
+  GestureConfirmed: "gesture-confirmed",
+
+  // Fingers lifted, we are animating to a final state.
+  Settling: "settling",
+};
+
+// KIWI seam: vendor flips this from a macOS `defaults read` subprocess —
+// KIWI's renderer has no child_process, so the vendor default stands.
+let SwipeInverted = false;
+
+type SwipeContainerProps = React.HTMLProps<HTMLDivElement> & {
+  shouldEnableSwipe?: (...args: any[]) => any;
+  onSwipeLeft?: (...args: any[]) => any;
+  onSwipeLeftClass?: string | ((...args: any[]) => any);
+  onSwipeRight?: (...args: any[]) => any;
+  onSwipeRightClass?: string | ((...args: any[]) => any);
+  onSwipeCenter?: (...args: any[]) => any;
+};
+
+type SwipeContainerState = {
+  targetX: number;
+  settleStartTime: number;
+  thresholdDistance: number | "unknown";
+  fullDistance: number | "unknown";
+  lastDragX: number;
+  currentX: number;
+};
+
+export default class SwipeContainer extends React.Component<
+  SwipeContainerProps,
+  SwipeContainerState
+> {
+  static displayName = "SwipeContainer";
+
+  static ownPropKeys = [
+    "children",
+    "shouldEnableSwipe",
+    "onSwipeLeft",
+    "onSwipeLeftClass",
+    "onSwipeRight",
+    "onSwipeRightClass",
+    "onSwipeCenter",
+  ];
+
+  static defaultProps = {
+    shouldEnableSwipe: () => true,
+  };
+
+  mounted = false;
+  tracking = false;
+  trackingTouchX = 0;
+  trackingTouchY = 0;
+  trackingStartX = 0;
+  trackingStartY = 0;
+  trackingInitialTargetX = 0;
+  trackingTouchIdentifier: number | null = null;
+  phase = Phase.None;
+  fired = false;
+  isEnabled: boolean | null = null;
+  state: SwipeContainerState = {
+    fullDistance: "unknown",
+    thresholdDistance: "unknown",
+    settleStartTime: 0,
+    lastDragX: 0,
+    currentX: 0,
+    targetX: 0,
+  };
+
+  componentDidMount() {
+    this.mounted = true;
+    window.addEventListener("gesture-scroll-begin", this._onScrollTouchBegin);
+    window.addEventListener("gesture-scroll-end", this._onScrollTouchEnd);
+  }
+
+  componentDidUpdate(prevProps: SwipeContainerProps) {
+    // Reset cached isEnabled when props change
+    if (
+      prevProps.onSwipeLeft !== this.props.onSwipeLeft ||
+      prevProps.onSwipeRight !== this.props.onSwipeRight ||
+      prevProps.shouldEnableSwipe !== this.props.shouldEnableSwipe
+    ) {
+      this.isEnabled = null;
+    }
+
+    if (this.phase === Phase.Settling) {
+      window.requestAnimationFrame(() => {
+        if (this.phase === Phase.Settling) {
+          this._settle();
+        }
+      });
+    }
+  }
+
+  componentWillUnmount() {
+    this.phase = Phase.None;
+    this.mounted = false;
+    window.removeEventListener("gesture-scroll-begin", this._onScrollTouchBegin);
+    window.removeEventListener("gesture-scroll-end", this._onScrollTouchEnd);
+  }
+
+  _isEnabled = () => {
+    if (this.isEnabled === null) {
+      // Cache this value so we don't have to recalculate on every swipe
+      this.isEnabled =
+        (this.props.onSwipeLeft || this.props.onSwipeRight) && this.props.shouldEnableSwipe
+          ? true
+          : false;
+    }
+    return this.isEnabled;
+  };
+
+  _onWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    // Require that the wheel direction has a greater X component than Y component
+    const ratio = Math.abs(e.deltaX) / (Math.abs(e.deltaY) || 1);
+    if (this.phase !== Phase.GestureConfirmed && ratio < 1.3) return;
+
+    let velocity = e.deltaX / 3;
+    if (SwipeInverted) {
+      velocity = -velocity;
+    }
+
+    this._onDragWithVelocity(velocity);
+
+    // This no longer works - we need to pass passive: true to the event listener and bind it manually
+    // to preventDefault. https://developers.google.com/web/updates/2019/02/scrolling-intervention
+    // I think this should be fine though.
+    // if (this.phase === Phase.GestureConfirmed) {
+    // e.preventDefault();
+    // }
+  };
+
+  _onDragWithVelocity = (velocityX: number) => {
+    if (this.tracking === false || !this._isEnabled()) {
+      return;
+    }
+
+    if (this.phase === Phase.None) {
+      this.phase = Phase.GestureStarting;
+    }
+
+    const velocityConfirmsGesture = Math.abs(velocityX) > 3;
+    if (velocityConfirmsGesture || this.phase === Phase.Settling) {
+      this.phase = Phase.GestureConfirmed;
+    }
+
+    let { fullDistance, thresholdDistance } = this.state;
+
+    if (fullDistance === "unknown") {
+      fullDistance = (ReactDOM.findDOMNode(this) as HTMLElement).clientWidth;
+      thresholdDistance = 110;
+    }
+
+    // At this point, fullDistance and thresholdDistance are guaranteed to be numbers
+    const fullDist = fullDistance as number;
+    const threshDist = thresholdDistance as number;
+
+    const clipToMax = (v: number) => Math.max(-fullDist, Math.min(fullDist, v));
+    const currentX = clipToMax(this.state.currentX + velocityX);
+    const estimatedSettleX = clipToMax(currentX + velocityX * 5);
+    const lastDragX = currentX;
+    let targetX = 0;
+
+    // If you started from the center, you can swipe left or right. If you start
+    // from the left or right "Activated" state, you can only swipe back to the
+    // center.
+
+    if (this.trackingInitialTargetX === 0) {
+      if (this.props.onSwipeRight && estimatedSettleX > threshDist) {
+        targetX = fullDist;
+      }
+      if (this.props.onSwipeLeft && estimatedSettleX < -threshDist) {
+        targetX = -fullDist;
+      }
+    } else if (this.trackingInitialTargetX < 0) {
+      if (fullDist - Math.abs(estimatedSettleX) < threshDist) {
+        targetX = -fullDist;
+      }
+    } else if (this.trackingInitialTargetX > 0) {
+      if (fullDist - Math.abs(estimatedSettleX) < threshDist) {
+        targetX = fullDist;
+      }
+    }
+
+    this.setState({
+      thresholdDistance: threshDist,
+      fullDistance: fullDist,
+      currentX,
+      targetX,
+      lastDragX,
+    });
+  };
+
+  _onScrollTouchBegin = () => {
+    this.tracking = true;
+    this.trackingInitialTargetX = this.state.targetX;
+  };
+
+  _onScrollTouchEnd = () => {
+    this.tracking = false;
+    if (this.phase !== Phase.None && this.phase !== Phase.Settling) {
+      this.phase = Phase.Settling;
+      this.fired = false;
+      this.setState({
+        settleStartTime: Date.now(),
+      });
+    }
+  };
+
+  _onTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (this.trackingTouchIdentifier === null && e.targetTouches.length > 0) {
+      const touch = e.targetTouches.item(0);
+      this.trackingTouchIdentifier = touch.identifier;
+      this.trackingTouchX = this.trackingStartX = touch.clientX;
+      this.trackingTouchY = this.trackingStartY = touch.clientY;
+      this._onScrollTouchBegin();
+    }
+  };
+
+  _onTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (this.trackingTouchIdentifier === null) {
+      return;
+    }
+
+    // Note: Chrome now treats touch events as passive (non-blocking) so we're unable
+    // to explicitly claim the touch events. Thankfully specifying touchAction: 'pan-x pan-y'
+    // seems to enable an automatic "one or the other" treatment so you can't scroll vertically
+    // while swiping.
+
+    // if (e.cancelable === false) {
+    // Chrome has already started interpreting these touch events as a scroll.
+    // We can no longer call preventDefault to make them ours.
+    // if ([Phase.GestureStarting, Phase.GestureConfirmed].includes(this.phase)) {
+    //   this._onReset();
+    // }
+    //   return;
+    // }
+    let trackingTouch = null;
+    for (let ii = 0; ii < e.changedTouches.length; ii++) {
+      const touch = e.changedTouches.item(ii);
+      if (touch.identifier === this.trackingTouchIdentifier) {
+        trackingTouch = touch;
+        break;
+      }
+    }
+    if (trackingTouch !== null) {
+      // If we're still trying to confirm the gesture, ignore any move events
+      // if the direction of the swipe is more than ~15º off the horizontal axis.
+      const dx = Math.abs(trackingTouch.clientX - this.trackingStartX);
+      const dy = Math.abs(trackingTouch.clientY - this.trackingStartY);
+      if (this.phase !== Phase.GestureConfirmed && dy / (dx || 1) > 0.3) {
+        return;
+      }
+
+      const velocityX = trackingTouch.clientX - this.trackingTouchX;
+      this.trackingTouchX = trackingTouch.clientX;
+      this.trackingTouchY = trackingTouch.clientY;
+      this._onDragWithVelocity(velocityX);
+
+      if (this.phase === Phase.GestureConfirmed) {
+        e.preventDefault();
+      }
+    }
+  };
+
+  _onTouchEnd = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (this.trackingTouchIdentifier === null) {
+      return;
+    }
+    for (let ii = 0; ii < e.changedTouches.length; ii++) {
+      if (e.changedTouches.item(ii).identifier === this.trackingTouchIdentifier) {
+        this.trackingTouchIdentifier = null;
+        this._onScrollTouchEnd();
+        break;
+      }
+    }
+  };
+
+  _onSwipeActionCompleted = (rowWillDisappear: boolean) => {
+    let delay = 0;
+    if (rowWillDisappear) {
+      delay = 550;
+    }
+
+    setTimeout(() => {
+      if (this.mounted === true) {
+        this._onReset();
+      }
+    }, delay);
+  };
+
+  _onReset() {
+    this.phase = Phase.Settling;
+    this.setState({
+      targetX: 0,
+      settleStartTime: Date.now(),
+    });
+  }
+
+  _settle() {
+    const { targetX, settleStartTime, lastDragX } = this.state;
+    let { currentX } = this.state;
+
+    const f = (Date.now() - settleStartTime) / 1400.0;
+    currentX = lastDragX + SpringBounceFunction(f) * (targetX - lastDragX);
+
+    const shouldFinish = f >= 1.0;
+    const mostlyFinished = Math.abs(currentX) / Math.abs(targetX) > 0.8;
+    const shouldFire =
+      mostlyFinished && this.fired === false && this.trackingInitialTargetX !== targetX;
+
+    if (shouldFire) {
+      this.fired = true;
+      if (targetX > 0 && this.props.onSwipeRight) {
+        this.props.onSwipeRight(this._onSwipeActionCompleted);
+      } else if (targetX < 0 && this.props.onSwipeLeft) {
+        this.props.onSwipeLeft(this._onSwipeActionCompleted);
+      } else if (targetX === 0 && this.props.onSwipeCenter) {
+        this.props.onSwipeCenter();
+      }
+    }
+
+    if (shouldFinish) {
+      this.phase = Phase.None;
+      this.setState({
+        currentX: targetX,
+        targetX: targetX,
+        thresholdDistance: "unknown",
+        fullDistance: "unknown",
+      });
+    } else {
+      this.phase = Phase.Settling;
+      this.setState({ currentX, lastDragX });
+    }
+  }
+
+  render() {
+    const { currentX, targetX } = this.state;
+    const otherProps = Utils.fastOmit(this.props, SwipeContainer.ownPropKeys);
+    const backingStyles: CSSProperties = { top: 0, bottom: 0, position: "absolute" };
+    let backingClass = "swipe-backing";
+
+    if (currentX < 0 && this.trackingInitialTargetX <= 0) {
+      const { onSwipeLeftClass } = this.props;
+      const swipeLeftClass = _.isFunction(onSwipeLeftClass)
+        ? onSwipeLeftClass()
+        : onSwipeLeftClass || "";
+
+      backingClass += ` ${swipeLeftClass}`;
+      backingStyles.right = 0;
+      backingStyles.width = -currentX + 1;
+      if (targetX < 0) {
+        backingClass += " confirmed";
+      }
+    } else if (currentX > 0 && this.trackingInitialTargetX >= 0) {
+      const { onSwipeRightClass } = this.props;
+      const swipeRightClass = _.isFunction(onSwipeRightClass)
+        ? onSwipeRightClass()
+        : onSwipeRightClass || "";
+
+      backingClass += ` ${swipeRightClass}`;
+      backingStyles.left = 0;
+      backingStyles.width = currentX + 1;
+      if (targetX > 0) {
+        backingClass += " confirmed";
+      }
+    }
+    return (
+      <div
+        onWheel={this._onWheel}
+        onTouchStart={this._onTouchStart}
+        onTouchMove={this._onTouchMove}
+        onTouchEnd={this._onTouchEnd}
+        onTouchCancel={this._onTouchEnd}
+        {...otherProps}
+        style={{ touchAction: "pan-x pan-y", ...otherProps.style }}
+      >
+        <div style={backingStyles} className={backingClass} aria-hidden="true" />
+        <div style={{ transform: `translate3d(${currentX}px, 0, 0)` }}>{this.props.children}</div>
+      </div>
+    );
+  }
+}

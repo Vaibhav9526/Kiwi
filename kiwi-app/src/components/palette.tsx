@@ -7,6 +7,7 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Icon } from "./icons/index";
 
 export interface PaletteAction {
   id: string;
@@ -117,9 +118,10 @@ export function CommandPalette({
         />
         <div id="kiwi-palette-list" role="listbox" aria-label="Commands" style={{ marginTop: "0.5rem" }}>
           {filtered.length === 0 && !showSearchRow && (
-            <p style={{ color: "var(--kiwi-text-secondary)" }}>
-              <small>No matching commands.</small>
-            </p>
+            <div className="kiwi-palette-empty">
+              <Icon name="command" size={15} />
+              <span>No matching commands.</span>
+            </div>
           )}
           {filtered.map((a, i) => (
             <button

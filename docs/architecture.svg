@@ -1,153 +1,261 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="820" viewBox="0 0 1240 820" font-family="Segoe UI, system-ui, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1260" viewBox="0 0 1400 1260" role="img" aria-labelledby="kt kd" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+  <title id="kt">KIWI as-built architecture</title>
+  <desc id="kd">Layered diagram: renderer views, the IPC boundary (lock gate, consent boundary, audit), Tauri command modules, the ten workspace crates, and local-first SQLite storage plus the Node and RN sidecars.</desc>
+
   <defs>
-    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#EAA132"/>
-      <stop offset="0.55" stop-color="#E37533"/>
-      <stop offset="1" stop-color="#E580CC"/>
-    </linearGradient>
-    <linearGradient id="brandV" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#EAA132"/>
-      <stop offset="1" stop-color="#E580CC"/>
-    </linearGradient>
-    <marker id="arr" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
-      <path d="M0,0 L9,4.5 L0,9 z" fill="#8a8a96"/>
+    <marker id="ah" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+      <path class="arrowhead" d="M0,0 L9,4.5 L0,9 z" fill="#6b7a90"/>
     </marker>
-    <marker id="arrB" markerWidth="9" markerHeight="9" refX="7" refY="4.5" orient="auto">
-      <path d="M0,0 L9,4.5 L0,9 z" fill="#E37533"/>
+    <marker id="ahs" markerWidth="9" markerHeight="9" refX="1" refY="4.5" orient="auto">
+      <path class="arrowhead" d="M9,0 L0,4.5 L9,9 z" fill="#6b7a90"/>
     </marker>
+    <style>
+      @media (prefers-color-scheme: dark) {
+        .bg-page { fill: #0e1116; }
+        .band   { fill: #151b23; stroke: #2c3644; }
+        .box    { fill: #1a222c; stroke: #333f4f; }
+        .chip   { fill: #212b37; stroke: #3a4759; }
+        .t-title  { fill: #e8eef6; }
+        .t-head   { fill: #e8eef6; }
+        .t-name   { fill: #f0a44a; }
+        .t-body   { fill: #b8c4d3; }
+        .t-muted  { fill: #93a1b3; }
+        .t-strong { fill: #7fb2ff; }
+        .t-warn   { fill: #f0918a; }
+        .arrow      { stroke: #93a1b3; }
+        .arrowhead  { fill: #93a1b3; }
+      }
+    </style>
   </defs>
 
-  <rect width="1240" height="820" rx="22" fill="#0e0e12"/>
+  <rect class="bg-page" x="0" y="0" width="1400" height="1260" rx="18" fill="#fbfcfd" stroke="#d9e0e8"/>
 
-  <!-- ============ kiwi-app boundary ============ -->
-  <rect x="40" y="40" width="880" height="470" rx="16" fill="none" stroke="url(#brand)" stroke-width="2" stroke-dasharray="9 7"/>
-  <text x="62" y="74" fill="#fff" font-size="21" font-weight="600">kiwi-app</text>
-  <text x="152" y="74" fill="#8a8a96" font-size="15">Tauri 2 desktop shell</text>
+  <text class="t-title" x="44" y="48" font-size="25" font-weight="700" fill="#141d29">KIWI - as-built architecture</text>
+  <text class="t-muted" x="44" y="70" font-size="12.5" fill="#556377">docs/ARCHITECTURE.md - sec 2 system overview / sec 3 crate map / sec 4 IPC boundary / sec 5 security chain / sec 6 plugins / sec 8 sidecars</text>
+  <rect class="chip" x="1132" y="30" width="228" height="30" rx="15" fill="#e7edf5" stroke="#b8c4d3"/>
+  <text class="t-body" x="1246" y="50" font-size="12" text-anchor="middle" fill="#3b4a5e">release/v0.2.0 / Phase 2</text>
 
-  <!-- frontend -->
-  <rect x="70" y="100" width="380" height="112" rx="12" fill="#17171d" stroke="#2c2c36"/>
-  <text x="92" y="138" fill="#fff" font-size="17" font-weight="600">React + TypeScript frontend</text>
-  <text x="92" y="163" fill="#a8a8b4" font-size="13">mailbox · composer · unified inbox</text>
-  <text x="92" y="182" fill="#a8a8b4" font-size="13">security surfaces · lock screen · settings</text>
-  <text x="92" y="201" fill="#7a7a86" font-size="12">webview — untrusted-render boundary</text>
+  <rect class="band" x="40" y="88" width="1320" height="156" rx="14" fill="#ffffff" stroke="#d9e0e8"/>
+  <rect class="chip" x="60" y="100" width="300" height="24" rx="12" fill="#e7edf5" stroke="#b8c4d3"/>
+  <text class="t-head" x="74" y="117" font-size="12" font-weight="700" fill="#1b2635">1 / RENDERER  kiwi-app/src - React 18 + TS + Vite</text>
+  <text class="t-warn" x="1348" y="117" font-size="11" text-anchor="end" fill="#a33a2a">untrusted render - SECURITY.md B2</text>
 
-  <!-- backend -->
-  <rect x="510" y="100" width="380" height="112" rx="12" fill="#17171d" stroke="#2c2c36"/>
-  <text x="532" y="138" fill="#fff" font-size="17" font-weight="600">Rust backend — src-tauri</text>
-  <text x="532" y="163" fill="#a8a8b4" font-size="13">typed IPC commands · input validation</text>
-  <text x="532" y="182" fill="#E9A554" font-size="13" font-weight="600">lock-state gate on every command</text>
-  <text x="532" y="201" fill="#7a7a86" font-size="12">delegates to the crates below — no business logic</text>
+  <rect class="box" x="60" y="134" width="420" height="98" rx="10" fill="#f3f6fa" stroke="#c6d0dc"/>
+  <text class="t-head" x="74" y="154" font-size="13" font-weight="700" fill="#1b2635">Four-pane shell - chrome.tsx</text>
+  <text class="t-body" x="74" y="172" font-size="11" fill="#3b4a5e">folder tree with smart counts / tabbed and grouped</text>
+  <text class="t-body" x="74" y="187" font-size="11" fill="#3b4a5e">message list (virtualized, quick-filter chips,</text>
+  <text class="t-body" x="74" y="202" font-size="11" fill="#3b4a5e">multi-select, drag to folder, ctx-menus)</text>
+  <text class="t-body" x="74" y="217" font-size="11" fill="#3b4a5e">thread-card reader / agenda rail / security strip</text>
 
-  <!-- IPC arrow -->
-  <line x1="452" y1="156" x2="506" y2="156" stroke="url(#brand)" stroke-width="2.5" marker-end="url(#arrB)"/>
-  <line x1="506" y1="156" x2="452" y2="156" stroke="url(#brand)" stroke-width="2.5" marker-end="url(#arrB)"/>
-  <text x="437" y="143" fill="#E9A554" font-size="12" font-weight="600">IPC</text>
+  <rect class="box" x="500" y="134" width="420" height="98" rx="10" fill="#f3f6fa" stroke="#c6d0dc"/>
+  <text class="t-head" x="514" y="154" font-size="13" font-weight="700" fill="#1b2635">Views</text>
+  <text class="t-body" x="514" y="172" font-size="11" fill="#3b4a5e">mailbox / compose / contacts / rules / templates</text>
+  <text class="t-body" x="514" y="187" font-size="11" fill="#3b4a5e">security-center / integrations / unified inbox</text>
+  <text class="t-body" x="514" y="202" font-size="11" fill="#3b4a5e">settings (9 tabs incl. About and Storage) / setup</text>
+  <text class="t-body" x="514" y="217" font-size="11" fill="#3b4a5e">folder mgmt / import-export / device mgmt + QR</text>
 
-  <!-- crates row -->
-  <g>
-    <rect x="70" y="268" width="195" height="150" rx="12" fill="#17171d" stroke="#2c2c36"/>
-    <rect x="70" y="268" width="195" height="6" rx="3" fill="#5aa7ff"/>
-    <text x="86" y="300" fill="#fff" font-size="16" font-weight="600">kiwi-mail</text>
-    <text x="86" y="324" fill="#a8a8b4" font-size="12">SMTP · IMAP · POP3</text>
-    <text x="86" y="341" fill="#a8a8b4" font-size="12">rustls transport</text>
-    <text x="86" y="358" fill="#a8a8b4" font-size="12">accounts · store · sync · MIME</text>
-    <text x="86" y="380" fill="#E9A554" font-size="12" font-weight="600">emits TlsObservation</text>
-    <text x="86" y="397" fill="#7a7a86" font-size="11">every connection is evidence</text>
-  </g>
-  <g>
-    <rect x="280" y="268" width="195" height="150" rx="12" fill="#17171d" stroke="#2c2c36"/>
-    <rect x="280" y="268" width="195" height="6" rx="3" fill="url(#brand)"/>
-    <text x="296" y="300" fill="#fff" font-size="16" font-weight="600">kiwi-core</text>
-    <text x="296" y="324" fill="#a8a8b4" font-size="12">security session model</text>
-    <text x="296" y="341" fill="#a8a8b4" font-size="12">trust engine · lock state</text>
-    <text x="296" y="358" fill="#a8a8b4" font-size="12">SecureMail identity</text>
-    <text x="296" y="380" fill="#a8a8b4" font-size="12">device register / revoke</text>
-  </g>
-  <g>
-    <rect x="490" y="268" width="195" height="150" rx="12" fill="#17171d" stroke="#2c2c36"/>
-    <rect x="490" y="268" width="195" height="6" rx="3" fill="url(#brand)"/>
-    <text x="506" y="300" fill="#fff" font-size="16" font-weight="600">kiwi-forensics</text>
-    <text x="506" y="324" fill="#a8a8b4" font-size="12">deterministic rule engine</text>
-    <text x="506" y="341" fill="#a8a8b4" font-size="12">TLS · cipher · cert · STARTTLS</text>
-    <text x="506" y="358" fill="#a8a8b4" font-size="12">PCAP ingest · scoring</text>
-    <text x="506" y="380" fill="#E9A554" font-size="12" font-weight="600">evidence → findings → diff</text>
-    <text x="506" y="397" fill="#7a7a86" font-size="11">works with AI fully disabled</text>
-  </g>
-  <g>
-    <rect x="700" y="268" width="195" height="150" rx="12" fill="#17171d" stroke="#2c2c36"/>
-    <rect x="700" y="268" width="195" height="6" rx="3" fill="url(#brand)"/>
-    <text x="716" y="300" fill="#fff" font-size="16" font-weight="600">kiwi-mailauth</text>
-    <text x="716" y="324" fill="#a8a8b4" font-size="12">SPF — RFC 7208</text>
-    <text x="716" y="341" fill="#a8a8b4" font-size="12">DKIM — RFC 6376</text>
-    <text x="716" y="358" fill="#a8a8b4" font-size="12">DMARC — RFC 7489</text>
-    <text x="716" y="380" fill="#a8a8b4" font-size="12">offline-testable DNS layer</text>
-  </g>
+  <rect class="box" x="940" y="134" width="420" height="98" rx="10" fill="#f3f6fa" stroke="#c6d0dc"/>
+  <text class="t-head" x="954" y="154" font-size="13" font-weight="700" fill="#1b2635">Plugins (T-306) - Worker-isolated</text>
+  <text class="t-body" x="954" y="172" font-size="11" fill="#3b4a5e">blob: Web Workers; no DOM, localStorage, cookies or</text>
+  <text class="t-body" x="954" y="187" font-size="11" fill="#3b4a5e">__TAURI__; fetch inherits connect-src; per-session ports</text>
+  <text class="t-body" x="954" y="202" font-size="11" fill="#3b4a5e">4 bounded capability sinks - worker_threads 48/48</text>
+  <text class="t-body" x="954" y="217" font-size="11" fill="#3b4a5e">sideload folder picker + validation + badges</text>
 
-  <!-- backend → crates -->
-  <line x1="700" y1="212" x2="168" y2="264" stroke="#8a8a96" stroke-width="1.6" marker-end="url(#arr)"/>
-  <line x1="700" y1="212" x2="378" y2="264" stroke="#8a8a96" stroke-width="1.6" marker-end="url(#arr)"/>
-  <line x1="700" y1="212" x2="588" y2="264" stroke="#8a8a96" stroke-width="1.6" marker-end="url(#arr)"/>
-  <line x1="700" y1="212" x2="798" y2="264" stroke="#8a8a96" stroke-width="1.6" marker-end="url(#arr)"/>
+  <line class="arrow" x1="700" y1="246" x2="700" y2="268" stroke="#6b7a90" stroke-width="2" marker-start="url(#ahs)" marker-end="url(#ah)"/>
+  <text class="t-muted" x="712" y="262" font-size="10.5" fill="#556377">invoke / events</text>
 
-  <!-- kiwi-mail → forensics : security events -->
-  <path d="M265 343 L265 343 C 265 440 480 440 560 420" fill="none" stroke="url(#brand)" stroke-width="2.2" marker-end="url(#arrB)" stroke-dasharray="1 0"/>
-  <text x="300" y="452" fill="#E9A554" font-size="12" font-weight="600">live session events</text>
+  <rect class="band" x="40" y="272" width="1320" height="150" rx="14" fill="#ffffff" stroke="#d9e0e8"/>
+  <rect class="chip" x="60" y="284" width="366" height="24" rx="12" fill="#e7edf5" stroke="#b8c4d3"/>
+  <text class="t-head" x="74" y="301" font-size="12" font-weight="700" fill="#1b2635">2 / IPC BOUNDARY - typed kiwi_* commands (lib.rs)</text>
+  <text class="t-muted" x="1348" y="301" font-size="11" text-anchor="end" fill="#556377">docs/contracts/ipc.md is normative</text>
 
-  <!-- mailauth → forensics -->
-  <line x1="798" y1="418" x2="640" y2="418" stroke="url(#brand)" stroke-width="1.8" marker-end="url(#arrB)"/>
-  <text x="695" y="445" fill="#E9A554" font-size="11">auth results → findings</text>
+  <rect class="box" x="60" y="318" width="420" height="94" rx="10" fill="#f3f6fa" stroke="#c6d0dc"/>
+  <text class="t-strong" x="74" y="338" font-size="12.5" font-weight="700" fill="#1d4ed8">Lock gate - lock_matrix.rs (T-340)</text>
+  <text class="t-body" x="74" y="357" font-size="11" fill="#3b4a5e">every data-touching command requires unlocked</text>
+  <text class="t-body" x="74" y="372" font-size="11" fill="#3b4a5e">state; exemptions are explicit - unlock_challenge,</text>
+  <text class="t-body" x="74" y="387" font-size="11" fill="#3b4a5e">active pair flow, prefs subset</text>
+  <text class="t-body" x="74" y="402" font-size="11" fill="#3b4a5e">matrix proves coverage of the full surface</text>
 
-  <!-- core → backend trust gate (up) -->
-  <line x1="378" y1="268" x2="378" y2="232" stroke="url(#brand)" stroke-width="2" marker-end="url(#arrB)"/>
-  <text x="388" y="240" fill="#E9A554" font-size="11">trust → lock gate</text>
+  <rect class="box" x="500" y="318" width="420" height="94" rx="10" fill="#f3f6fa" stroke="#c6d0dc"/>
+  <text class="t-strong" x="514" y="338" font-size="12.5" font-weight="700" fill="#1d4ed8">Consent boundary - send_consent.rs</text>
+  <text class="t-body" x="514" y="357" font-size="11" fill="#3b4a5e">native rfd dialog in the enqueue path, for</text>
+  <text class="t-body" x="514" y="372" font-size="11" fill="#3b4a5e">integration-bound sends only (deliverability</text>
+  <text class="t-body" x="514" y="387" font-size="11" fill="#3b4a5e">reserved address, temp-mail) - renderer cannot forge</text>
+  <text class="t-body" x="514" y="402" font-size="11" fill="#3b4a5e">ordinary sends do not prompt (Send click is consent)</text>
 
-  <!-- ============ right column: external/local services ============ -->
-  <g>
-    <rect x="960" y="40" width="240" height="128" rx="12" fill="#17171d" stroke="#2c2c36"/>
-    <rect x="960" y="40" width="240" height="6" rx="3" fill="#8e6cff"/>
-    <text x="978" y="78" fill="#fff" font-size="16" font-weight="600">kiwi-admin</text>
-    <text x="978" y="98" fill="#7a7a86" font-size="12">Node + TypeScript · localhost</text>
-    <text x="978" y="122" fill="#a8a8b4" font-size="12">orgs · policies · RBAC</text>
-    <text x="978" y="139" fill="#a8a8b4" font-size="12">mail-flow metadata (no bodies)</text>
-    <text x="978" y="156" fill="#a8a8b4" font-size="12">tamper-evident audit log</text>
-  </g>
-  <g>
-    <rect x="960" y="200" width="240" height="96" rx="12" fill="#17171d" stroke="#2c2c36"/>
-    <text x="978" y="234" fill="#fff" font-size="16" font-weight="600">admin UI</text>
-    <text x="978" y="258" fill="#a8a8b4" font-size="12">React + TS · local only</text>
-    <text x="978" y="275" fill="#a8a8b4" font-size="12">policy + audit views</text>
-  </g>
-  <g>
-    <rect x="960" y="328" width="240" height="130" rx="12" fill="#17171d" stroke="url(#brand)" stroke-width="1.6"/>
-    <text x="978" y="362" fill="#fff" font-size="16" font-weight="600">mobile authenticator</text>
-    <text x="978" y="382" fill="#7a7a86" font-size="12">React Native — Phase 4</text>
-    <text x="978" y="406" fill="#a8a8b4" font-size="12">keystore keypair · QR pairing</text>
-    <text x="978" y="423" fill="#a8a8b4" font-size="12">asymmetric challenge-response</text>
-    <text x="978" y="440" fill="#a8a8b4" font-size="12">replay-protected · revocable</text>
-  </g>
+  <rect class="box" x="940" y="318" width="420" height="94" rx="10" fill="#f3f6fa" stroke="#c6d0dc"/>
+  <text class="t-strong" x="954" y="338" font-size="12.5" font-weight="700" fill="#1d4ed8">Audit - audit.rs to audit.jsonl</text>
+  <text class="t-body" x="954" y="357" font-size="11" fill="#3b4a5e">hash-chained JSONL, genesis-verified on open,</text>
+  <text class="t-body" x="954" y="372" font-size="11" fill="#3b4a5e">re-anchored retention sweep; corruption surfaces</text>
+  <text class="t-body" x="954" y="387" font-size="11" fill="#3b4a5e">as audit-corrupt to a tri-state UI</text>
+  <text class="t-body" x="954" y="402" font-size="11" fill="#3b4a5e">counts and ids only, never payloads</text>
 
-  <!-- backend → kiwi-admin -->
-  <path d="M890 150 C 920 150 930 110 956 106" fill="none" stroke="#8e6cff" stroke-width="1.8" marker-end="url(#arr)"/>
-  <!-- admin → admin UI -->
-  <line x1="1080" y1="168" x2="1080" y2="196" stroke="#8a8a96" stroke-width="1.6" marker-end="url(#arr)"/>
-  <!-- mobile → backend pairing -->
-  <path d="M960 393 C 930 400 930 200 894 190" fill="none" stroke="url(#brand)" stroke-width="1.8" marker-end="url(#arrB)" stroke-dasharray="5 4"/>
-  <text x="895" y="320" fill="#E9A554" font-size="11" transform="rotate(-84 918 310)">pairing · unlock challenge</text>
+  <line class="arrow" x1="700" y1="424" x2="700" y2="446" stroke="#6b7a90" stroke-width="2" marker-end="url(#ah)"/>
+  <text class="t-muted" x="712" y="440" font-size="10.5" fill="#556377">validated, gated, audited call</text>
 
-  <!-- ============ SQLite bar ============ -->
-  <rect x="70" y="560" width="825" height="72" rx="12" fill="#17171d" stroke="#2c2c36"/>
-  <text x="92" y="592" fill="#fff" font-size="16" font-weight="600">SQLite — local-first storage</text>
-  <text x="92" y="614" fill="#a8a8b4" font-size="12">per-service DBs (mail / core / forensics / admin) · encrypted-at-rest secrets · PostgreSQL-ready interfaces</text>
+  <rect class="band" x="40" y="450" width="1320" height="160" rx="14" fill="#ffffff" stroke="#d9e0e8"/>
+  <rect class="chip" x="60" y="462" width="452" height="24" rx="12" fill="#e7edf5" stroke="#b8c4d3"/>
+  <text class="t-head" x="74" y="479" font-size="12" font-weight="700" fill="#1b2635">3 / COMMAND MODULES - src-tauri/src/commands/ + state.rs AppState</text>
+  <text class="t-muted" x="1348" y="479" font-size="10.5" text-anchor="end" fill="#556377">types/ serializes camelCase; renderer parses via kiwi.ts + ipc.ts</text>
 
-  <line x1="168" y1="418" x2="168" y2="556" stroke="#8a8a96" stroke-width="1.4" marker-end="url(#arr)"/>
-  <line x1="378" y1="418" x2="378" y2="556" stroke="#8a8a96" stroke-width="1.4" marker-end="url(#arr)"/>
-  <line x1="588" y1="418" x2="588" y2="556" stroke="#8a8a96" stroke-width="1.4" marker-end="url(#arr)"/>
-  <line x1="798" y1="418" x2="798" y2="556" stroke="#8a8a96" stroke-width="1.4" marker-end="url(#arr)"/>
-  <line x1="1080" y1="458" x2="1080" y2="596" stroke="#8a8a96" stroke-width="1.4" marker-end="url(#arr)"/>
+  <rect class="chip" x="60" y="496" width="248" height="22" rx="11" fill="#eef2f8" stroke="#c3cede"/><text class="t-body" x="184" y="511" font-size="11" text-anchor="middle" fill="#3b4a5e">accounts</text>
+  <rect class="chip" x="316" y="496" width="248" height="22" rx="11" fill="#eef2f8" stroke="#c3cede"/><text class="t-body" x="440" y="511" font-size="11" text-anchor="middle" fill="#3b4a5e">autoconfig</text>
+  <rect class="chip" x="572" y="496" width="248" height="22" rx="11" fill="#eef2f8" stroke="#c3cede"/><text class="t-body" x="696" y="511" font-size="11" text-anchor="middle" fill="#3b4a5e">contacts</text>
+  <rect class="chip" x="828" y="496" width="248" height="22" rx="11" fill="#eef2f8" stroke="#c3cede"/><text class="t-body" x="952" y="511" font-size="11" text-anchor="middle" fill="#3b4a5e">devices</text>
+  <rect class="chip" x="1084" y="496" width="248" height="22" rx="11" fill="#eef2f8" stroke="#c3cede"/><text class="t-body" x="1208" y="511" font-size="11" text-anchor="middle" fill="#3b4a5e">endpoint</text>
 
-  <!-- ============ bottom: trust boundary + principles ============ -->
-  <rect x="70" y="680" width="1130" height="104" rx="12" fill="none" stroke="#2c2c36"/>
-  <text x="92" y="710" fill="#E9A554" font-size="13" font-weight="700" letter-spacing="2">TRUST BOUNDARIES</text>
-  <text x="92" y="736" fill="#a8a8b4" font-size="13">webview ⇄ Rust IPC (validated)  ·  client ⇄ admin service (RBAC + audit)  ·  client ⇄ mobile (challenge-response, replay-protected)</text>
-  <text x="92" y="762" fill="#7a7a86" font-size="12">deterministic rules are authoritative — AI explains findings, never decides  ·  secrets never logged  ·  unsafe code forbidden in Rust crates</text>
+  <rect class="chip" x="60" y="522" width="248" height="22" rx="11" fill="#eef2f8" stroke="#c3cede"/><text class="t-body" x="184" y="537" font-size="11" text-anchor="middle" fill="#3b4a5e">export / import (mbox)</text>
+  <rect class="chip" x="316" y="522" width="248" height="22" rx="11" fill="#eef2f8" stroke="#c3cede"/><text class="t-body" x="440" y="537" font-size="11" text-anchor="middle" fill="#3b4a5e">folders (local + IMAP by origin)</text>
+  <rect class="chip" x="572" y="522" width="248" height="22" rx="11" fill="#eef2f8" stroke="#c3cede"/><text class="t-body" x="696" y="537" font-size="11" text-anchor="middle" fill="#3b4a5e">integrations</text>
+  <rect class="chip" x="828" y="522" width="248" height="22" rx="11" fill="#eef2f8" stroke="#c3cede"/><text class="t-body" x="952" y="537" font-size="11" text-anchor="middle" fill="#3b4a5e">link (click-gate + sandbox)</text>
+  <rect class="chip" x="1084" y="522" width="248" height="22" rx="11" fill="#eef2f8" stroke="#c3cede"/><text class="t-body" x="1208" y="537" font-size="11" text-anchor="middle" fill="#3b4a5e">message/*</text>
+
+  <rect class="chip" x="60" y="548" width="248" height="22" rx="11" fill="#eef2f8" stroke="#c3cede"/><text class="t-body" x="184" y="563" font-size="11" text-anchor="middle" fill="#3b4a5e">oauth2</text>
+  <rect class="chip" x="316" y="548" width="248" height="22" rx="11" fill="#eef2f8" stroke="#c3cede"/><text class="t-body" x="440" y="563" font-size="11" text-anchor="middle" fill="#3b4a5e">pair (canonical + kiwi_* aliases)</text>
+  <rect class="chip" x="572" y="548" width="248" height="22" rx="11" fill="#eef2f8" stroke="#c3cede"/><text class="t-body" x="696" y="563" font-size="11" text-anchor="middle" fill="#3b4a5e">prefs</text>
+  <rect class="chip" x="828" y="548" width="248" height="22" rx="11" fill="#eef2f8" stroke="#c3cede"/><text class="t-body" x="952" y="563" font-size="11" text-anchor="middle" fill="#3b4a5e">rules</text>
+  <rect class="chip" x="1084" y="548" width="248" height="22" rx="11" fill="#eef2f8" stroke="#c3cede"/><text class="t-body" x="1208" y="563" font-size="11" text-anchor="middle" fill="#3b4a5e">sandbox</text>
+
+  <rect class="chip" x="60" y="574" width="248" height="22" rx="11" fill="#eef2f8" stroke="#c3cede"/><text class="t-body" x="184" y="589" font-size="11" text-anchor="middle" fill="#3b4a5e">security (sessions / findings)</text>
+  <rect class="chip" x="316" y="574" width="248" height="22" rx="11" fill="#eef2f8" stroke="#c3cede"/><text class="t-body" x="440" y="589" font-size="11" text-anchor="middle" fill="#3b4a5e">send/* (enqueue, dispatch)</text>
+  <rect class="chip" x="572" y="574" width="248" height="22" rx="11" fill="#eef2f8" stroke="#c3cede"/><text class="t-body" x="696" y="589" font-size="11" text-anchor="middle" fill="#3b4a5e">storage (stats + compact)</text>
+  <rect class="chip" x="828" y="574" width="248" height="22" rx="11" fill="#eef2f8" stroke="#c3cede"/><text class="t-body" x="952" y="589" font-size="11" text-anchor="middle" fill="#3b4a5e">templates</text>
+  <text class="t-muted" x="1092" y="589" font-size="10.5" fill="#556377">undo / reschedule / cancel</text>
+
+  <line class="arrow" x1="700" y1="612" x2="700" y2="634" stroke="#6b7a90" stroke-width="2" marker-end="url(#ah)"/>
+  <text class="t-muted" x="712" y="628" font-size="10.5" fill="#556377">typed calls into the workspace</text>
+
+  <rect class="band" x="40" y="638" width="1320" height="310" rx="14" fill="#ffffff" stroke="#d9e0e8"/>
+  <rect class="chip" x="60" y="650" width="288" height="24" rx="12" fill="#e7edf5" stroke="#b8c4d3"/>
+  <text class="t-head" x="74" y="667" font-size="12" font-weight="700" fill="#1b2635">4 / WORKSPACE CRATES - 10 (edition 2024)</text>
+  <text class="t-muted" x="1348" y="667" font-size="11" text-anchor="end" fill="#556377">sec 3 crate map - key modules</text>
+
+  <rect class="box" x="60" y="682" width="246" height="120" rx="10" fill="#f3f6fa" stroke="#c6d0dc"/>
+  <text class="t-name" x="74" y="704" font-size="13" font-weight="700" fill="#a4551a">kiwi-mail</text>
+  <text class="t-muted" x="74" y="721" font-size="10.5" fill="#556377">the mail engine</text>
+  <text class="t-body" x="74" y="738" font-size="10.5" fill="#3b4a5e">smtp/ imap/ pop3 mime store/ sync rules/</text>
+  <text class="t-body" x="74" y="753" font-size="10.5" fill="#3b4a5e">search (FTS5) mbox (rd import+export)</text>
+  <text class="t-body" x="74" y="768" font-size="10.5" fill="#3b4a5e">linkrisk attachrisk authrisk authstamp</text>
+  <text class="t-body" x="74" y="783" font-size="10.5" fill="#3b4a5e">category unsub threading transport</text>
+  <text class="t-body" x="74" y="798" font-size="10.5" fill="#3b4a5e">testutil/ loopback scripted servers</text>
+
+  <rect class="box" x="318" y="682" width="246" height="120" rx="10" fill="#f3f6fa" stroke="#c6d0dc"/>
+  <text class="t-name" x="332" y="704" font-size="13" font-weight="700" fill="#a4551a">kiwi-core</text>
+  <text class="t-muted" x="332" y="721" font-size="10.5" fill="#556377">security + session domain</text>
+  <text class="t-body" x="332" y="738" font-size="10.5" fill="#3b4a5e">SecuritySession model</text>
+  <text class="t-body" x="332" y="753" font-size="10.5" fill="#3b4a5e">trust state machine</text>
+  <text class="t-body" x="332" y="768" font-size="10.5" fill="#3b4a5e">device identity</text>
+  <text class="t-body" x="332" y="783" font-size="10.5" fill="#3b4a5e">policy types</text>
+
+  <rect class="box" x="576" y="682" width="246" height="120" rx="10" fill="#f3f6fa" stroke="#c6d0dc"/>
+  <text class="t-name" x="590" y="704" font-size="13" font-weight="700" fill="#a4551a">kiwi-pair</text>
+  <text class="t-muted" x="590" y="721" font-size="10.5" fill="#556377">canonical pairing authority (T-269)</text>
+  <text class="t-body" x="590" y="738" font-size="10.5" fill="#3b4a5e">persistent PairEngine (pair.db)</text>
+  <text class="t-body" x="590" y="753" font-size="10.5" fill="#3b4a5e">tickets challenges devices</text>
+  <text class="t-body" x="590" y="768" font-size="10.5" fill="#3b4a5e">revocation, atomic consume</text>
+  <text class="t-body" x="590" y="783" font-size="10.5" fill="#3b4a5e">TOFU evidence, restart-surviving</text>
+
+  <rect class="box" x="834" y="682" width="246" height="120" rx="10" fill="#f3f6fa" stroke="#c6d0dc"/>
+  <text class="t-name" x="848" y="704" font-size="13" font-weight="700" fill="#a4551a">kiwi-forensics</text>
+  <text class="t-muted" x="848" y="721" font-size="10.5" fill="#556377">deterministic reports</text>
+  <text class="t-body" x="848" y="738" font-size="10.5" fill="#3b4a5e">pcap/ ingest + reassembly</text>
+  <text class="t-body" x="848" y="753" font-size="10.5" fill="#3b4a5e">analyzers/ rules/ score</text>
+  <text class="t-body" x="848" y="768" font-size="10.5" fill="#3b4a5e">report/ canonical bytes</text>
+  <text class="t-body" x="848" y="783" font-size="10.5" fill="#3b4a5e">self-verifying export envelope</text>
+  <text class="t-body" x="848" y="798" font-size="10.5" fill="#3b4a5e">live session scoring</text>
+
+  <rect class="box" x="1092" y="682" width="246" height="120" rx="10" fill="#f3f6fa" stroke="#c6d0dc"/>
+  <text class="t-name" x="1106" y="704" font-size="13" font-weight="700" fill="#a4551a">kiwi-mailauth</text>
+  <text class="t-muted" x="1106" y="721" font-size="10.5" fill="#556377">mail authentication</text>
+  <text class="t-body" x="1106" y="738" font-size="10.5" fill="#3b4a5e">SPF DKIM DMARC verification</text>
+  <text class="t-body" x="1106" y="753" font-size="10.5" fill="#3b4a5e">dns.rs - HickoryResolver prod</text>
+  <text class="t-body" x="1106" y="768" font-size="10.5" fill="#3b4a5e">MockResolver tests</text>
+  <text class="t-body" x="1106" y="783" font-size="10.5" fill="#3b4a5e">bounded, fail-closed</text>
+
+  <rect class="box" x="60" y="818" width="246" height="120" rx="10" fill="#f3f6fa" stroke="#c6d0dc"/>
+  <text class="t-name" x="74" y="840" font-size="13" font-weight="700" fill="#a4551a">kiwi-integrations</text>
+  <text class="t-muted" x="74" y="857" font-size="10.5" fill="#556377">external services (opt-in)</text>
+  <text class="t-body" x="74" y="874" font-size="10.5" fill="#3b4a5e">tempmail/ (Guerrilla)</text>
+  <text class="t-body" x="74" y="889" font-size="10.5" fill="#3b4a5e">deliverability/ (consented)</text>
+  <text class="t-body" x="74" y="904" font-size="10.5" fill="#3b4a5e">http.rs - bounded client</text>
+  <text class="t-body" x="74" y="919" font-size="10.5" fill="#3b4a5e">secret.rs - zeroized secrets</text>
+  <text class="t-body" x="74" y="934" font-size="10.5" fill="#3b4a5e">behind the consent boundary</text>
+
+  <rect class="box" x="318" y="818" width="246" height="120" rx="10" fill="#f3f6fa" stroke="#c6d0dc"/>
+  <text class="t-name" x="332" y="840" font-size="13" font-weight="700" fill="#a4551a">kiwi-autoconfig</text>
+  <text class="t-muted" x="332" y="857" font-size="10.5" fill="#556377">account auto-discovery</text>
+  <text class="t-body" x="332" y="874" font-size="10.5" fill="#3b4a5e">ISPDB fixtures + MX hints</text>
+  <text class="t-body" x="332" y="889" font-size="10.5" fill="#3b4a5e">provider autoconfig</text>
+  <text class="t-body" x="332" y="904" font-size="10.5" fill="#3b4a5e">oauth2 grant acquisition</text>
+
+  <rect class="box" x="576" y="818" width="246" height="120" rx="10" fill="#f3f6fa" stroke="#c6d0dc"/>
+  <text class="t-name" x="590" y="840" font-size="13" font-weight="700" fill="#a4551a">kiwi-contacts</text>
+  <text class="t-muted" x="590" y="857" font-size="10.5" fill="#556377">contact model</text>
+  <text class="t-body" x="590" y="874" font-size="10.5" fill="#3b4a5e">vCard import / export</text>
+  <text class="t-body" x="590" y="889" font-size="10.5" fill="#3b4a5e">address book (contacts.db)</text>
+
+  <rect class="box" x="834" y="818" width="246" height="120" rx="10" fill="#f3f6fa" stroke="#c6d0dc"/>
+  <text class="t-name" x="848" y="840" font-size="13" font-weight="700" fill="#a4551a">kiwi-sandbox</text>
+  <text class="t-muted" x="848" y="857" font-size="10.5" fill="#556377">disposable guest exec</text>
+  <text class="t-body" x="848" y="874" font-size="10.5" fill="#3b4a5e">WSL2 provider</text>
+  <text class="t-body" x="848" y="889" font-size="10.5" fill="#3b4a5e">HTTP(S)-only opens</text>
+  <text class="t-body" x="848" y="904" font-size="10.5" fill="#3b4a5e">teardown-before-record</text>
+  <text class="t-body" x="848" y="919" font-size="10.5" fill="#3b4a5e">honest absence (T-132)</text>
+
+  <rect class="box" x="1092" y="818" width="246" height="120" rx="10" fill="#eef2f8" stroke="#9fb0c6"/>
+  <text class="t-name" x="1106" y="840" font-size="13" font-weight="700" fill="#a4551a">kiwi-app/src-tauri</text>
+  <text class="t-muted" x="1106" y="857" font-size="10.5" fill="#556377">the app binary</text>
+  <text class="t-body" x="1106" y="874" font-size="10.5" fill="#3b4a5e">commands/ state.rs audit.rs</text>
+  <text class="t-body" x="1106" y="889" font-size="10.5" fill="#3b4a5e">syncer.rs notify.rs observe.rs</text>
+  <text class="t-body" x="1106" y="904" font-size="10.5" fill="#3b4a5e">send_consent.rs</text>
+  <text class="t-body" x="1106" y="919" font-size="10.5" fill="#3b4a5e">pairing_listen.rs (dev LAN)</text>
+  <text class="t-body" x="1106" y="934" font-size="10.5" fill="#3b4a5e">e2e.rs - loopback harness</text>
+
+  <line class="arrow" x1="300" y1="950" x2="300" y2="972" stroke="#6b7a90" stroke-width="2" marker-end="url(#ah)"/>
+  <line class="arrow" x1="1000" y1="950" x2="1000" y2="972" stroke="#6b7a90" stroke-width="2" marker-end="url(#ah)"/>
+
+  <rect class="band" x="40" y="976" width="1320" height="150" rx="14" fill="#ffffff" stroke="#d9e0e8"/>
+  <rect class="chip" x="60" y="988" width="392" height="24" rx="12" fill="#e7edf5" stroke="#b8c4d3"/>
+  <text class="t-head" x="74" y="1005" font-size="12" font-weight="700" fill="#1b2635">5 / LOCAL-FIRST STORAGE + TS-FACING SIDECARS</text>
+
+  <rect class="box" x="60" y="1022" width="520" height="92" rx="10" fill="#f3f6fa" stroke="#c6d0dc"/>
+  <text class="t-head" x="74" y="1042" font-size="12.5" font-weight="700" fill="#1b2635">SQLite (mail.db) + sidecars on disk</text>
+  <text class="t-body" x="74" y="1060" font-size="11" fill="#3b4a5e">outbox rows (persisted: retry / held / lastError)</text>
+  <text class="t-body" x="74" y="1075" font-size="11" fill="#3b4a5e">FTS5 search index / bodies + attachments on disk</text>
+  <text class="t-body" x="74" y="1090" font-size="11" fill="#3b4a5e">index.json / audit.jsonl / pair.db / contacts.db</text>
+  <text class="t-body" x="74" y="1105" font-size="11" fill="#3b4a5e">local-first: absent data renders absent, never fake</text>
+
+  <rect class="box" x="600" y="1022" width="380" height="92" rx="10" fill="#f3f6fa" stroke="#c6d0dc"/>
+  <text class="t-head" x="614" y="1042" font-size="12.5" font-weight="700" fill="#1b2635">kiwi-admin - Node / Drizzle + PG</text>
+  <text class="t-body" x="614" y="1060" font-size="11" fill="#3b4a5e">orgs / domains / users / roles / policies</text>
+  <text class="t-body" x="614" y="1075" font-size="11" fill="#3b4a5e">mail-flow metadata (never bodies) / audit</text>
+  <text class="t-body" x="614" y="1090" font-size="11" fill="#3b4a5e">org plane over docker-compose</text>
+  <text class="t-muted" x="614" y="1105" font-size="10.5" fill="#556377">TS-facing sidecar</text>
+
+  <rect class="box" x="1000" y="1022" width="360" height="92" rx="10" fill="#f3f6fa" stroke="#c6d0dc"/>
+  <text class="t-head" x="1014" y="1042" font-size="12.5" font-weight="700" fill="#1b2635">kiwi-admin-ui + mobile/</text>
+  <text class="t-body" x="1014" y="1060" font-size="11" fill="#3b4a5e">admin-ui - React admin on localhost</text>
+  <text class="t-body" x="1014" y="1075" font-size="11" fill="#3b4a5e">mobile/ - RN authenticator scaffold</text>
+  <text class="t-body" x="1014" y="1090" font-size="11" fill="#3b4a5e">keystore / protocol / QR / PendingApprovals</text>
+  <text class="t-body" x="1014" y="1105" font-size="11" fill="#3b4a5e">fail-closed; production blocked on R1-R8</text>
+
+  <rect class="box" x="40" y="1146" width="430" height="88" rx="10" fill="#f7f9fc" stroke="#d5dde7"/>
+  <text class="t-strong" x="54" y="1165" font-size="11" font-weight="700" fill="#1d4ed8">sec 5 - SECURITY CHAIN</text>
+  <text class="t-body" x="54" y="1181" font-size="10.5" fill="#3b4a5e">stamps -&gt; hints -&gt; click-gate (kiwi_link_click:</text>
+  <text class="t-body" x="54" y="1196" font-size="10.5" fill="#3b4a5e">allow | confirm | sandbox | deny) -&gt; WSL2 guest -&gt;</text>
+  <text class="t-body" x="54" y="1211" font-size="10.5" fill="#3b4a5e">evidence; open_external re-checks source risk</text>
+
+  <rect class="box" x="490" y="1146" width="440" height="88" rx="10" fill="#f7f9fc" stroke="#d5dde7"/>
+  <text class="t-strong" x="504" y="1165" font-size="11" font-weight="700" fill="#1d4ed8">sec 9 - DATA FLOW</text>
+  <text class="t-body" x="504" y="1181" font-size="10.5" fill="#3b4a5e">inbound: IMAP IDLE / POP3 -&gt; TLS capture -&gt; mime</text>
+  <text class="t-body" x="504" y="1196" font-size="10.5" fill="#3b4a5e">-&gt; store -&gt; risk + auth stamps -&gt; rules -&gt; counts</text>
+  <text class="t-body" x="504" y="1211" font-size="10.5" fill="#3b4a5e">outbound: compose -&gt; enqueue (undo, send-later,</text>
+  <text class="t-body" x="504" y="1226" font-size="10.5" fill="#3b4a5e">consent) -&gt; outbox -&gt; dispatch -&gt; SMTP -&gt; audits</text>
+
+  <rect class="box" x="950" y="1146" width="410" height="88" rx="10" fill="#f7f9fc" stroke="#d5dde7"/>
+  <text class="t-strong" x="964" y="1165" font-size="11" font-weight="700" fill="#1d4ed8">sec 11 - BOUNDARIES + GATES</text>
+  <text class="t-body" x="964" y="1181" font-size="10.5" fill="#3b4a5e">source/ + reference/ are reference-only, never</text>
+  <text class="t-body" x="964" y="1196" font-size="10.5" fill="#3b4a5e">shipped (copy-overlap gate) / AI never asserts /</text>
+  <text class="t-body" x="964" y="1211" font-size="10.5" fill="#3b4a5e">unsafe_code forbidden / gates: scripts/gates.{ps1,sh}</text>
+  <text class="t-body" x="964" y="1226" font-size="10.5" fill="#3b4a5e">+ ci.yml (rust / admin / mobile / app / ui-smoke)</text>
 </svg>

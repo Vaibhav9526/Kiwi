@@ -111,7 +111,10 @@ pub async fn outbox_loop(app: tauri::AppHandle) {
 /// Deliver one queued send: connect → auth → policy bridge → DATA →
 /// observe (via `run_mail_io` — client futures are `!Send`). On a Held
 /// outcome with attempts remaining, the item is re-enqueued with linear
-/// backoff inside this function — callers only journal the outcome.
+/// backoff inside this function — callers only journal the outcome. An
+/// item in the single-attempt class (a deliverability reservation, which
+/// accepts exactly one message) is never re-enqueued, whatever the relay
+/// reports.
 pub(crate) async fn deliver(
     state: Arc<AppState>,
     item: QueuedSend,
@@ -291,7 +294,7 @@ async fn transmit(
         .get(account_id)
         .map(|m| m.accept_invalid_certs)
         .unwrap_or(false);
-    let secret = resolve_secret(state, &acct.outgoing.auth)?;
+    let secret = resolve_secret(state, &acct.outgoing.auth).await?;
 
     let t = Transport::connect(
         &acct.outgoing.server.host,
@@ -304,9 +307,16 @@ async fn transmit(
     )
     .await
     .map_err(IpcError::from)?;
-    let mut client = SmtpClient::connect(t, SmtpConfig::default())
-        .await
-        .map_err(IpcError::from)?;
+    let mut client = SmtpClient::connect(
+        t,
+        SmtpConfig {
+            // KIWI_DEV_PLAINTEXT fixture seam — loopback hosts only.
+            allow_plaintext_auth: kiwi_core::dev::plaintext_fixture_for(&acct.outgoing.server.host),
+            ..Default::default()
+        },
+    )
+    .await
+    .map_err(IpcError::from)?;
     if let Some(secret) = secret {
         let auth = match acct.outgoing.auth {
             kiwi_mail::account::AuthRef::XOAuth2 { .. } => SmtpAuth::XOAuth2 {

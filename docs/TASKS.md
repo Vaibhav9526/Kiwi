@@ -120,7 +120,7 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-191 | Mailspring-faithful rebuild (sidebar/rows/reader/composer/prefs/motion/keys/CSP) | Agent 12 | done | `kiwi-app/src/` | T-190 |
 | T-192 | KIWI security surfaces in Mailspring idiom | Agent 12 | done | `kiwi-app/src/` | T-191 |
 | T-193 | kiwi-admin H1-H8 fixes per Lead rulings + M1-M7 + e2e regression guards | Agent 6 | open | `kiwi-admin/` | T-187 |
-| T-194 | Mobile authenticator screens: pairing QR, approvals, devices, history (mock transport) | Agent 4 (Nemotron 3.5 Lightning) | open | `mobile/` | T-136 |
+| T-194 | Mobile authenticator screens: pairing QR, approvals, devices, history (mock transport) | Agent 26 | done (88/88) | `mobile/` | T-136 |
 | T-195 | OAuth2 acquisition: trait + Google loopback-PKCE + Microsoft device-code + CredentialStore lifecycle | Agent 19 | done (92/92) | `kiwi-autoconfig/`, `kiwi-mail/` | T-183 |
 
 ## Backlog — MailFlow feature mine (specs in docs/BACKLOG-MAILFLOW.md; start after current queues + T-190-192)
@@ -128,7 +128,7 @@ Status values: `open` | `claimed` | `in-progress` | `blocked` | `in-review` | `d
 | T-200 | F1 rules engine — core done (T-228); ingest application + IPC = T-233 | Agent 15 | in-progress | `kiwi-mail/` | — |
 | T-201 | F2 categorization: deterministic classifier + schema v4 + ingest wiring | Agent 14 | done (101/101) | `kiwi-mail/` | — |
 | T-202 | F3 unsubscribe landed (schema v5, consent-gated mailto, 5 MessageView fields) | Agent 14 | done (116/116) | `kiwi-mail/` + UI | — |
-| T-203 | F4 sender block list (trash-before-rules, per-account) | unassigned | backlog | `kiwi-mail/` | — |
+| T-203 | F4 sender block list (trash-before-rules, per-account) — core+gated IPC+contract committed b0f4a67; 11 tests, exact-address + account-scoped-id bugs caught | Agent 12 | done (settings UI half → T-348) | `kiwi-mail/` + rules IPC (settings UI owed) | F1 landed (T-228) |
 | T-204 | F5 mark-as-read behavior pref | unassigned | backlog | `kiwi-app/` | — |
 | T-205 | F6 GTD labels as real IMAP folders (t/w/d keys, opt-in, Todo clears on send) | unassigned | backlog | `kiwi-mail/` + UI | — |
 | T-206 | F7 contact autocomplete ranked by sent frequency | unassigned | backlog | `kiwi-contacts/` | — |
@@ -179,17 +179,17 @@ rebuild context. Lead handle is now term_c20c6737.
 | Planner | Devin | 621f9265 | plans |
 | Lead | Devin (SWE-2) | c20c6737 | orchestration + ledger |
 
-Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c6737.
+Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_db8527c7 (2026-09-26 incarnation; was term_c20c6737).
 | T-196 | Contract-drift audit: every contracts/*.md vs actual code → docs/audits/contract-drift-1.md | Agent 20 | open | `docs/`, read-only | — |
 | T-197 | License-compliance + secret scan (GPL boundary, secrets, dep licenses) → docs/audits/license-secret-scan-1.md | Agent 21 | open | repo-wide, read-only | — |
 | T-198 | copy_overlap.py gate tool (45-char verbatim scan, CI static-checks) | Agent 21 | open | `tests/tools/` | T-197 |
 | T-199 | Dependency vulnerability audit → dep-vuln-1.md (vitest crit + mobile lockfile + workspace-red catches) | Agent 21 | done | — | — |
-| T-227 | IPC for kiwi-integrations: tempmail commands (public-inbox flag on every response) + deliverability consent-token flow (non-bypassable server-side) | Agent 11 | open | `kiwi-app/src-tauri/`, `ipc.md` | T-226 |
+| T-227 | IPC for kiwi-integrations: tempmail commands (public-inbox flag on every response) + deliverability consent-token flow (non-bypassable server-side) | Agent 11 | done (verified: 9 cmds both sides, §9e + ADR-011 landed; integration commit pending — queued after A20's T-345 commit) | `kiwi-app/src-tauri/`, `ipc.md` | T-226 |
 | T-228 | F1 rules engine core (AST/eval/persistence v6, 25 tests) | Agent 15 | done | `kiwi-mail/src/rules/` | T-181 |
-| T-229 | Review oauth2.md contract for drift vs Agent 19 impl when it lands | Agent 18 | queued | `docs/contracts/` | T-195 |
+| T-229 | Review oauth2.md contract for drift vs landed T-195/T-230 | Agent 18 | done (97/0 autoconfig; gaps 1-6 confirmed open, gap 7 CONNECT-TIME DECODE confirmed open → T-364) | `docs/contracts/` | T-195 |
 | T-230 | OAuth2 IPC + wizard seam (begin/poll/cancel/status/discover, CredentialStore, 86/86) | Agent 19 | done |
 | T-231 | live-data wiring done: FTS search live, contacts real IPC, category tabs real — zero gaps | Agent 24 | done |
-| T-232 | Authentication-Results stamping on ingest (RFC 8601) + verdict field on MessageView | Agent 16 | open | `kiwi-mail/` | T-183 |
+| T-232 | Authentication-Results stamping on ingest (RFC 8601) + verdict field on MessageView | Agent 16 → Agent 12 | done (already landed — authstamp.rs/store/ingest/verdict verified symmetric Rust+TS; A12 fixed 6 double-encoded seqs in authstamp.rs for encoding gate) | `kiwi-mail/` | T-183 |
 | T-233 | Rules ingest application + IPC (5 cmds, rule_hits audit, schema v8) | Agent 15 | done |
 
 
@@ -197,7 +197,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 <!-- ROSTER SWEEP: A16/A17 terminals exited; A12/A13/A18 not in terminal list. Orphans: T-194 mobile screens, T-229 oauth2.md review, T-231 live-data wiring (if A12 gone), T-193 verify-in-tree. 3 unidentified OpenCode/SpaceBunny terminals pinged for identification. A21 reassigned to T-232. -->
 | T-235 | Pair gap audit DONE — CRITICAL: 9d commands missing, kiwi-pair unwired, revocation non-persistent | Agent 23 | done |
 | T-236 | rules.md contract (kiwi.rules/1, 445L) | Agent 22 | done | `docs/contracts/` | T-228 |
-| T-237 | Drift fixes batch: prefs IPC renames + contracts index + admin-api post-T-193 + challenge-expired ruling | Agent 20 | open | `kiwi-app/src/ipc.ts`, `docs/contracts/` | T-196 |
+| T-237 | Drift fixes batch: prefs IPC renames + contracts index + admin-api post-T-193 + challenge-expired ruling | Agent 20 | done (committed 024e87d pre-restart; verified at HEAD — FINDINGS IPC-4/UIS-5/UIS-6 closed) | `kiwi-app/src/ipc.ts`, `docs/contracts/` | T-196 |
 | T-238 | Forensics serde vocab proposal — FSV-1 RATIFIED | Agent 22 | done | `docs/audits/` | T-196 FOR-1/2 |
 | T-239 | Wire-shape reconciliation + SS-1 required_action fix + serde posture note | Agent 20 | done |
 | T-240 | Upstream A-R parse + discrepancy evidence (169/169) | Agent 21 | done |
@@ -222,10 +222,10 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-257 | Add-account->sync e2e PROVEN (scripted loopback TLS IMAP, 98/98 + fail branches) | Agent 19 | done |
 | T-258 | mailauth post-T-183 verification (14 groups + 3 deviations documented) | Agent 22 | done |
 | T-259 | Admin code-side drift fixes ALL landed (ADM-01..15, 126 tests) | Agent 11 | done |
-| T-260 | security-session.md contract-vs-impl enumeration (TrustMachine/lock gates) | Agent 22 | open | `docs/audits/` | T-196 |
+| T-260 | enum cleanup re-verified; SS-2 contract amended to live-client; pinning tests; typed session view | Agent 21 | done |
 | T-261 | LinkRisk hints (linkrisk.rs 459L, 203/203, wired to TS) | Agent 21 | done |
 | T-262 | send-path e2e proven: scripted loopback SMTP+IMAP matrix (green/5xx/undo/STARTTLS-refusal) + sent-copy, audit, LIST bugfix | Agent 19 | done |
-| T-264 | folder exists/unseen real COUNTs — folder_stats + non-optional FolderView (zeros unrepresentable); store half committed fd042d3, app half in-tree pending T-269 landing | Agent 15 | done |
+| T-264 | folder exists/unseen counts (padded token match, no fabricated defaults) | Agent 15 | done |
 
 <!-- A18 terminal gone; e26f119b was a DUP A22 session — renumbered Agent 23, owns T-235. rule_catalog stays v1 (flags restore semantics, default output identical — ratified). -->
 | T-265 | Register batch cleared (IPC-11..14 + FOR-7/8/9; real byte-cap fix) | Agent 20 | done |
@@ -238,6 +238,9 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-270 | authenticator↔mobile/pair audit — fail-closed scaffold verdict + 8 contract decisions needed | Agent 23 | done |
 | T-271 | mail-changed event wired (debounce+toast) + IPC-5 docs + 25 rows closed | Agent 20 | done |
 
+<!-- FLEET PAUSED 2026-09-25 EOD — terminals idled, docker compose down,
+  watchers stopped. Restore map: docs/agents/fleet-state-2026-09-25.md -->
+
 <!-- CURRENT-OWNERSHIP (watcher keys on this; updated at each sweep)
   kiwi-app/src/views,chrome,shell,App   -> A24 (T-267)
   kiwi-app/src/components/icons,themes,plugins -> A25 (T-268)
@@ -248,6 +251,7 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
   kiwi-forensics + types/ + ipc.ts      -> A20 (T-271)
   kiwi-admin                            -> A11 (T-259 done)
   docs/contracts+audits                 -> A22 (T-260) / A23 (T-270)
+  README.md (repo front page)           -> A12 (T-347)
 -->
 | T-272 | register finish: FOR-10 limitation codes emitted (honest absence), IPC-15 wrappers landed, AUTH-1→A11 | Agent 20 | done |
 | T-273 | link-click policy gate: kiwi_link_click verdicts + open_external risk-gated (no bypass), audited | Agent 21 | done |
@@ -259,11 +263,11 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-279 | HickoryResolver production DNS: bounded, fail-closed temperror, wired POP3+IMAP auth paths; MAUTH-1 fixed | Agent 20 | done |
 | T-280 | host plugin surfaces: notify→toasts, settings-page→mounted panes+lifecycle, runtime supervisor, 30/30 | Agent 25 | done |
 | T-281 | rules management UI: Settings/Mail Rules AST+action editors, preview, apply-now | Agent 24 | done |
-| T-282 | AUTH-1 failure/denied authenticator audit rows + timeout-audit contract ruling (evidence-before-effect) | Agent 11 | open | `kiwi-pair`, `commands/security.rs` | T-272 |
+| T-282 | AUTH-1 failure/denied authenticator audit rows + timeout-audit contract ruling (evidence-before-effect) | Agent 11 | done (ADR-013 R7 ratified + landed; deny/verify-fail audited, timeout=no-row; commit pending owner-sweep) | `kiwi-pair`, `commands/security.rs` | T-272 |
 | T-283 | Agenda rail real: security card on real trust/findings/devices (no mock), persisted tasks | Agent 25 | done |
 | T-284 | security-surface regression done: link-gate wired, evidence pill all-3, canonical unlock, useMailbox zombie deleted | Agent 24 | done |
 | T-285 | POP3 e2e proven: scripted wire, ingest+dedup/keep, failures, DELE-witnessed delete; all 3 protocols now wire-proven | Agent 19 | done |
-| T-286 | implement T-278 findings by severity — H consent-bypass server-side first, then 11M, 7L; apply own rulings | Agent 23 | open | `kiwi-integrations`, `commands/`, contracts | T-278 |
+| T-286 | 19 findings fixed: native rfd consent at integration boundary, fail-closed decoders, env-gated live tests, contract reconciled | Agent 23 | done |
 | T-287 | UI hardening sweep done: folder error/empty surfaces, focus rings, ?overlay verified real | Agent 25 | done |
 | T-288 | templates backend done (v15, 5 gated IPC, {{var}} render); UI half → next free UI agent | Agent 20 done / A24or25 UI pending | partial |
 | T-289 | OAuth2/account-add verified live e2e (device code, retryAfterSecs, needsRefresh, error map, first-run) | Agent 24 | done |
@@ -277,14 +281,70 @@ Done-protocol: agents send 'DONE: Agent-N T-xxx — result' to Lead term_c20c673
 | T-297 | no-mock audit: 1100 clicks, 0 console errs, 1 dead fixed, 4 honest gaps filed → ui-honesty-1.md | Agent 25 | done |
 | T-298 | OutboxItem state+lastError (v16, honestly derived held) — T-296 gap closed | Agent 20 | done |
 | T-299 | context menus real: shared menu, message+folder actions on real IPC, state-aware | Agent 24 | done |
-| T-300 | kiwi_sandbox_sessions IPC (live/pending sessions for rail security card) — gap from T-283 | Agent 21 | open | `kiwi-sandbox`, `commands/`, ipc.ts | T-266,T-283 |
+| T-300 | kiwi_sandbox_sessions IPC (honest completed-state, verdict+reasons consistent) | Agent 21 | done |
 | T-301 | templates UI real (picker/render/save-as/Settings CRUD, missingVars honest) — Mailspring parity complete | Agent 24 | done |
 | T-302 | all 4 plugin caps have real hosts (whitelist sinks, composer action, gates, 47/47); CSP-blocks-live-exec finding filed | Agent 25 | done |
 | T-303 | real pairing QR: reused mobile encoder, pair_begin payload→QR, status poll, Settings+LockOverlay | Agent 24 | done |
-| T-304 | LAN pair-claim listener: bounded endpoint → claim_ticket_and_register, loopback-tested (T-269 flag) | Agent 20 | open | `kiwi-pair`, `kiwi-app/src-tauri` | T-269,T-270 |
+| T-304 | LAN pair-claim listener: bounded POST, dev-flagged pending wss ruling, loopback-proven; also fixed stale-flat-file resurrection | Agent 20 | done |
 | T-305 | scripted UI smoke suite (CDP/playwright): boot→folders→list→reader→compose→settings→theme→menu→lock assertions, CI-runnable | Agent 24 | done | `kiwi-app`, scripts/ | regression gate |
 | T-306 | CSP-safe Worker plugin loader (blob: worker-src only, free isolation, live-proven) | Agent 25 | done |
-| T-307 | plugin install UX: file-picker sideload button + error surfaces + cap badges + live install demo | Agent 25 | open | `kiwi-app/src` settings+plugins | T-302,T-306 |
+| T-307 | plugin install UX live-proven (picker→install→worker→lifecycle); FileList-clear bug fixed | Agent 25 | done |
 | T-308 | device surface verified vs canonical §9d: full DeviceView fields, revoke live, this-device badge | Agent 24 | done |
-| T-309 | mbox import: parser (From_ boundaries, flags map) + kiwi_import_mbox IPC + audit | Agent 19 | open | `kiwi-mail`, `commands/` | onboarding/migration |
-| T-310 | reader polish: quoted-text collapse, in-reply-to jump links, sig de-emphasis (presentation-only) | Agent 24 | open | `kiwi-app/src` reader | eM/Thunderbird parity |
+| T-309 | mbox import: mboxrd parser, dedup, honest counts, real ingest pipeline | Agent 19 | done |
+| T-310 | reader polish: quote collapse, splitQuotedText, in-reply-to jump, sig muted | Agent 24 | done |
+| T-311 | draft rulings for 8 authenticator contract contradictions → ADR-013 + proposal doc | Agent 20 | done |
+| T-312 | contacts depth (server search, compose handoff) + agenda sandbox row lit | Agent 25 | done |
+| T-313 | quick-filter chips (unread/starred/attachments/sender; live counts, AND-combine) | Agent 24 | done |
+| T-314 | smoke flow-checks 18/18; caught+fixed Reply blank-composer bug via real seedCompose | Agent 24 | done |
+| T-315 | About tab: build-time version, honest diagnostics w/ omit-notes, shared keymap | Agent 25 | done |
+| T-316 | mbox export: shared mbox.rs write-side, streaming atomic, round-trip proven | Agent 20 | done |
+| T-317 | drag messages→folder tree (multi-select, smart-views un-droppable, no fake undo) | Agent 24 | done |
+| T-318 | import/export UI seam wired to ipc.md §6j (both rows) w/ verbatim counts | Agent 25 | done |
+| T-319 | local folder create/rename/delete IPC; remote/system fail-closed; audited | Agent 15 | done |
+| T-320 | forensics file export: self-verifying SHA-256 envelope, atomic, verdict-not-panic | Agent 21 | done |
+| T-321 | consent-boundary docs sweep (as-built semantics) — ACTIVE post-T-286 | Agent 23 | in-progress | `ipc.md`, `docs/contracts/` | T-286 |
+| T-322 | folder-mgmt UI over T-319 (ctx create/rename/delete, system/smart protected) | Agent 24 | done |
+| T-323 | audit-log view shipped behind honest pending state; auto-lights on T-324 | Agent 25 | done |
+| T-324 | kiwi_audit_events read IPC (bounded keyset, lock-gated, honest nulls) | Agent 15 | done |
+| T-325 | kiwi_copy_messages (bytes duplicated, honest local-only, uidMap surfaced) | Agent 20 | done |
+| T-326 | import refuses synced folders by construction (resolver, policy-blocked pre-write, NOCASE) | Agent 19 | done |
+| T-327 | audit retention: hash-chain re-anchor sweep, dual bounds, self-audited, hostile-pref clamp | Agent 21 | done |
+| T-323-aux | Empty Trash/Junk via real delete loop + count-aware confirm | Agent 24 | done |
+| T-328 | IMAP folder CRUD real wire ops + mirror-post-ACK, loopback E2E | Agent 19 | done |
+| T-329 | new-mail OS notifications (mockable seam, 4 sync sites, pref+rate-limit+junk-suppress, fail-soft) | Agent 20 | done |
+| T-330 | storage stats+compact IPCs (registered+wrapped; consumed by T-333) | Agent 15-substitute | done |
+| T-331 | audit-corruption visible: tri-state probe, banner+pill, withheld-rows, no fake-green | Agent 21 | done |
+| T-332 | Copy-to ctx-menu (shared submenu, picked-aware, honest local-only tooltip) | Agent 24 | done |
+| T-333 | storage+notify UI wired live to T-330/T-329 IPCs | Agent 25 | done |
+| T-334 | search operators (from:/subject:/has:/is:/before:/after:/in:) over FTS path, honest fallback | Agent 15 | done (verified in-tree; fielded predicates AND-ed w/ FTS, NULL-negation fix; commit pending owner-sweep) | `kiwi-mail/store/search`, queries.rs | |
+| T-335 | Unified Inbox: account badges, composite-id ops, honest <2-acct hide; 24/24 smoke | Agent 24 | done |
+| T-336 | ci.yml ui-smoke job (headless Chrome, honest skip/fail, artifacts) — caught demo-fixture gap for A24 | Agent 26 | done |
+| T-337 | real installers built+verified (exe/NSIS/MSI, honest unsigned, RELEASING.md) | Agent 20 | done |
+| T-338 | audit-integrity UI: tri-state TrustChip + banner + re-check; demo honest-unchecked | Agent 25 | done |
+| T-339 | lazy attachment fetch: BODYSTRUCTURE-first sync + on-demand BODY.PEEK part fetch | Agent 19 | done (committed 821ead8; Lead-verified 284/284 mail + 242/242 app incl. e2e_lazy_attachment_body_peek) | `kiwi-mail/imap`, store schema | sync depth |
+| T-340 | lock-gate coverage audit: classify every command, findings for ungated-by-omission | Agent 21 | open | `lib.rs`, `commands/`, `docs/audits/` | T-269 |
+| T-341 | conversation/thread mute: per-conversation flag, suppresses counts+notify, unmute restores | Agent 15 | done (verified: mute/move/copy/key-materialize tests green in-tree; commit pending owner-sweep) | `kiwi-mail/store`, `commands/`, `notify.rs` | |
+| T-342 | UI pass#2 (planner): disposable-inbox sidebar promo + density + radius tokens — LIVE | Agent 25 | done (ui-smoke 27/27 incl. new `disposable` check; vitest 15/15; tsc+vite clean) | `chrome.tsx`, `theme.css`, `mailspring-tokens.css`, `shell.css`, `views/disposable.tsx`, `state/tempmail.ts` | owner-directed |
+| T-343 | Gmail floating compose dock — docks/chips/minimize/expand/discard over real ComposeView; per-dock draft keys + expand handoff + orphan sweep; 26/26 smoke | Agent 24 | done | `compose.tsx`, `App.tsx`, `chrome.tsx`, `mailbox.tsx`, `contacts.tsx`, `shell.css`, `ui-smoke.mjs` | owner-directed |
+| T-344 | local gates script ps1+sh (mirrors CI, honest SKIP, surfaced 3 in-flight breakages) | Agent 26 | done |
+| T-345 | system tray: icon+unread tooltip, show/compose/quit menu, close-to-tray pref, honest degrade | Agent 20 | done (Lead-verified: 234 app + 255 mail green, tray tests incl. quit-guard/tooltip/pref matrix) | `src-tauri` setup, `tauri.conf`, `tray.rs` | |
+| T-346 | regenerate docs/architecture.svg to match as-built ARCHITECTURE.md | Agent 26 | done (ASCII-safe, render-verified; committed f991f27) | `docs/architecture.svg` | ARCHITECTURE rewrite |
+| T-347 | README rebuild: evidence-first GitHub front page — tagline, badges, screenshots from artifacts/t275+t290, architecture embed, verified quickstart, crate map, security summary, docs index, roadmap, license | Agent 12 | done (Lead-verified: all image/doc refs resolve & unignored; screenshots moved to tracked docs/screenshots/) | `README.md`, `docs/screenshots/` | — |
+| T-348 | blocklist settings UI + ipc.ts/kiwi.ts bindings for kiwi_blocklist_{list,block,unblock} per rules.md 7.3 — do NOT reimplement id/normalization in TS (A12 handoff) | Agent 20 (bindings) + Agent 24 (settings UI) | claimed | `ipc.ts`, `kiwi.ts`, settings UI | T-203 |
+| T-349 | Provider quick-pick setup step 1: branded Google/Microsoft/Other cards → OAuth2 (loopback-PKCE / device-code), pre-fill presets + token-claim identity | Agent 24 | claimed (impl in worktree — verify+land, Dispatch 2026-09-26d item A) | `setup.tsx`, oauth2 wiring | spec: planner-notes §Dispatch 2026-09-26 item A |
+| T-350 | KIWI_DEV_PLAINTEXT=1 dev fixture gate: loopback-only plaintext auth + plaintext-lock exemption for loopback + visible DEV chip + THREAT-MODEL entry | Lead | done (committed a9e8cdc; 6 auth surfaces wired, policy Info-evidence path, RR-12, DEV chip) | `dispatch.rs`, `trust.rs`, `credstore.rs`, UI chip | spec item B — blocks all local mail testing |
+| T-351 | credstore bug: store_secret OK but secret never lands (cmdkey empty); write→read-back verify so silent no-op fails loudly | Lead | done (a9e8cdc — root cause: feature-less keyring 3.6 = in-memory mock; real backend per target + read-back verify) | `credstore.rs`, `accounts.rs:242` | spec item C |
+| T-352 | lock recovery UX: dev-unlock seam under KIWI_DEV_PLAINTEXT or destructive reset-security-state in Settings + THREAT-MODEL entry | Lead | done (a9e8cdc — kiwi_dev_unlock exempt IPC, env-gated+audited, LockOverlay affordance, lock-matrix row rides with A21's untracked file) | unlock path, settings UI | spec item D |
+| T-353 | wire ui-stress.mjs (19-check CDP stress suite) into ci.yml + gates.ps1/sh + TESTING.md §2 | Agent 26 | claimed | `ci.yml`, `tools/gates`, `docs/TESTING.md` | ui-smoke job (T-336) |
+| T-354 | live e2e: KIWI_DEV_PLAINTEXT=1 + mailpit — dev-unlock, loopback account add, real send | Agent 19 | claimed | `src-tauri`, mailpit fixture | T-350/T-351/T-352 |
+| T-355 | ms adapter kit completion: ms-electron (Menu→.em-ctx, clipboard), ms-contact (ContactView-backed ContactStore), ms-i18n, ms-keymap, ms-exports barrel — per docs/MAILSPRING-MIGRATION.md seam map | Agent 25 | done (tsc-clean; 5 files, seams documented) | `src/ms/` | contract doc |
+| T-356 | port composer chain verbatim: menu/key-commands-region/tokenizing-text-field/participants-text-field + tokenizing-field.less → ms-tokenizing.css | Agent 25 | done (6 files ported + ms-tokenizing.test 6/6; tsc-clean in scope) | `src/ms/`, vendor ref | T-355 |
+| T-357 | wire compose.tsx To/Cc to ported ParticipantsTextField; keep send/dock/reply-prefill + chips-commit smoke green | Agent 24 | in-progress (live agent) | `compose.tsx`, `src/ms/` | T-356 |
+| T-358 | port outline-view chain + wire nav.em-folders (drop targets/ctx/smart folders preserved; smoke selectors kept) | Agent 24 | done (FolderPane rebuilt on OutlineView; real nested tree; all selectors/hooks preserved) | `chrome.tsx`/`App.tsx` nav, `src/ms/` | T-355 |
+| T-359 | port thread-list/list-tabular → mailbox rows; keep security pill/pick-mode; skin-only vs full-port decision recorded | Agent 24 | in-progress (live agent) | `mailbox.tsx`, `src/ms/` | T-355 |
+| T-360 | port Mailspring theme/variable system → stock theme packages (dark/taiga/etc.) | Agent 25 | done (5 stock themes + 122-var --ms-* contract; tsc+build clean) | `mailspring-tokens.css`, `themes/` | contract doc |
+| T-361 | port composer-view full chain (composer-header-actions/send-action-button/attachment-area w/ real api upload) | Agent 24 | open | `compose.tsx`, `src/ms/` | T-357 |
+| T-362 | port preferences section components → settings rail keeping our schema | Agent 25 | done (ms-preferences.tsx port + settings re-skin; rail/sections/selectors preserved; tsc+build clean) | `settings.tsx`, `src/ms/` | T-355 |
+| T-363 | integrations/pair uncommitted-surface audit: classify every worktree hunk on commands/{integrations,pair,prefs}.rs + types/{integrations,system} + contracts/{integrations,authenticator,oauth2,ipc}.md — landed-superseded→discard, in-flight→finish+test, foreign→report-not-touch | Agent 11 | claimed | `commands/`, `types/`, `contracts/` | A11 owns these paths |
+| T-206 | contact autocomplete ranked by sent frequency — recipient-domain stats feed searchContacts ordering (powers ported ParticipantsTextField completions) | Agent 15 | claimed | `kiwi-mail/`, `kiwi-contacts/`, ipc | unblocked by T-356 port |
+| T-364 | XOAUTH2 connect-time decode: save_tokens stores JSON blob, resolve_secret returns it verbatim — mail.rs:835-843, accounts.rs probe, send/dispatch.rs:297 all pass the whole blob (incl. refresh_token) as the bearer; wire ensure_fresh/load_tokens into connect path + live XOAUTH2 assertion | Agent 11 | claimed (priority — credential leak on wire) | `mail.rs`, `accounts.rs`, `send/dispatch.rs`, credstore | T-230 gap-7 |

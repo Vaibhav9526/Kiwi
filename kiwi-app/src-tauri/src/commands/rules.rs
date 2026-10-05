@@ -17,7 +17,7 @@ use kiwi_mail::rules::{self, Rule};
 use super::{bounded, clamp_u32, gate};
 use crate::error::{CmdResult, IpcError};
 use crate::state::{AppState, now_unix};
-use crate::types::{RuleHitView, RulePreviewView, RuleView, RulesApplyView};
+use crate::types::{BlockedSenderView, RuleHitView, RulePreviewView, RuleView, RulesApplyView};
 
 /// `kiwi_rules_list { accountId? }` — with `accountId`: the rules in
 /// scope for that account (global + its own), evaluation order. Without
@@ -86,6 +86,102 @@ pub async fn kiwi_rules_delete(
 async fn rules_delete_impl(state: &AppState, rule_id: &str) -> CmdResult<serde_json::Value> {
     bounded("ruleId", rule_id, 64)?;
     let removed = state.store.lock().await.delete_rule(rule_id)?;
+    Ok(json!({ "removed": removed }))
+}
+
+/// `kiwi_blocklist_list { accountId }` → `BlockedSenderView[]`. Every block
+/// rule on the account, ordered deterministically by rule id, including
+/// disabled rows (so a UI can show and lift them) and hand-authored block
+/// rules (`sender: null`).
+#[tauri::command]
+pub async fn kiwi_blocklist_list(
+    state: State<'_, Arc<AppState>>,
+    account_id: String,
+) -> CmdResult<Vec<BlockedSenderView>> {
+    gate(state.inner()).await?;
+    blocklist_list_impl(state.inner(), &account_id).await
+}
+
+async fn blocklist_list_impl(
+    state: &AppState,
+    account_id: &str,
+) -> CmdResult<Vec<BlockedSenderView>> {
+    bounded("accountId", account_id, 128)?;
+    let store = state.store.lock().await;
+    Ok(rules::list_blocked_senders(&store, account_id)?
+        .into_iter()
+        .map(BlockedSenderView::from)
+        .collect())
+}
+
+/// `kiwi_blocklist_block { accountId, sender }` → the stored `RuleView`.
+/// `sender` accepts a bare address or a `Display Name <addr>` form; the
+/// address is normalized and the display name is ignored. Idempotent — the
+/// rule id is derived from the account plus the normalized address, so
+/// blocking the same sender again updates one row.
+///
+/// The stored rule is the `is_block` class the F1 engine already evaluates
+/// before every regular rule: first match is terminal and the message is
+/// trashed even if the rule carried only flag actions.
+#[tauri::command]
+pub async fn kiwi_blocklist_block(
+    state: State<'_, Arc<AppState>>,
+    account_id: String,
+    sender: String,
+) -> CmdResult<RuleView> {
+    gate(state.inner()).await?;
+    blocklist_block_impl(state.inner(), &account_id, &sender).await
+}
+
+async fn blocklist_block_impl(
+    state: &AppState,
+    account_id: &str,
+    sender: &str,
+) -> CmdResult<RuleView> {
+    bounded("accountId", account_id, 128)?;
+    // Bound the raw input before normalizing: a caller must not be able to
+    // push unbounded text through the gate.
+    bounded("sender", sender, rules::MAX_BLOCK_SENDER_LEN * 2)?;
+    if state.store.lock().await.get_account(account_id)?.is_none() {
+        return Err(IpcError::not_found("unknown account"));
+    }
+    let rule = {
+        let store = state.store.lock().await;
+        rules::block_sender(&store, account_id, sender)?
+    };
+    let stored = state
+        .store
+        .lock()
+        .await
+        .get_rule_record(&rule.id)?
+        .ok_or_else(|| IpcError::not_found("rule disappeared"))?;
+    Ok(RuleView::from(stored))
+}
+
+/// `kiwi_blocklist_unblock { accountId, sender }` → `{ removed }`. Removes
+/// only the block this surface owns for that exact sender on that account;
+/// a hand-written block rule is never deleted here.
+#[tauri::command]
+pub async fn kiwi_blocklist_unblock(
+    state: State<'_, Arc<AppState>>,
+    account_id: String,
+    sender: String,
+) -> CmdResult<serde_json::Value> {
+    gate(state.inner()).await?;
+    blocklist_unblock_impl(state.inner(), &account_id, &sender).await
+}
+
+async fn blocklist_unblock_impl(
+    state: &AppState,
+    account_id: &str,
+    sender: &str,
+) -> CmdResult<serde_json::Value> {
+    bounded("accountId", account_id, 128)?;
+    bounded("sender", sender, rules::MAX_BLOCK_SENDER_LEN * 2)?;
+    let removed = {
+        let store = state.store.lock().await;
+        rules::unblock_sender(&store, account_id, sender)?
+    };
     Ok(json!({ "removed": removed }))
 }
 
@@ -399,6 +495,89 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(err.code, "invalid-input");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn blocklist_block_list_unblock_roundtrip() {
+        let (state, dir) = state_with_account("blocklist").await;
+
+        // Unknown account is rejected before anything is stored.
+        let err = blocklist_block_impl(&state, "nope", "spam@bad.test")
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, "not-found");
+
+        // Display name and case are normalized away by the backend.
+        let stored = blocklist_block_impl(&state, "a1", "Spam <SPAM@Bad.Test>")
+            .await
+            .unwrap();
+        assert!(stored.is_block, "a blocked sender is an is_block rule row");
+        assert_eq!(stored.account_id.as_deref(), Some("a1"));
+        assert_eq!(
+            stored.when,
+            Predicate::Sender {
+                op: MatchOp::Is,
+                value: "spam@bad.test".into(),
+            },
+            "must be an exact-address match, never a domain match"
+        );
+
+        // Idempotent: same account + same normalized address, one row.
+        let again = blocklist_block_impl(&state, "a1", "spam@bad.test")
+            .await
+            .unwrap();
+        assert_eq!(stored.id, again.id);
+
+        let listed = blocklist_list_impl(&state, "a1").await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].sender.as_deref(), Some("spam@bad.test"));
+        assert!(listed[0].enabled);
+        assert_eq!(listed[0].rule_id, stored.id);
+
+        // A malformed sender never reaches the store.
+        for bad in ["", "a@", "no-at-sign.test", "a b@c.test"] {
+            let err = blocklist_block_impl(&state, "a1", bad).await.unwrap_err();
+            assert_eq!(err.code, "invalid-input", "{bad:?} must be rejected");
+        }
+        assert_eq!(blocklist_list_impl(&state, "a1").await.unwrap().len(), 1);
+
+        // Unblock is exact, case-insensitive, and not repeatable.
+        let out = blocklist_unblock_impl(&state, "a1", "SPAM@bad.test")
+            .await
+            .unwrap();
+        assert_eq!(out["removed"], true);
+        assert!(blocklist_list_impl(&state, "a1").await.unwrap().is_empty());
+        let out = blocklist_unblock_impl(&state, "a1", "spam@bad.test")
+            .await
+            .unwrap();
+        assert_eq!(out["removed"], false);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn blocklist_leaves_hand_written_block_rules_alone() {
+        let (state, dir) = state_with_account("blocklist-hand").await;
+        // A hand-authored domain block: still trashing mail, so it must stay
+        // visible in the list, but with no owned sender and no deletable id.
+        let mut hand = view("block-hand", Some("a1"));
+        hand.is_block = true;
+        rules_upsert_impl(&state, hand).await.unwrap();
+
+        let listed = blocklist_list_impl(&state, "a1").await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].sender, None);
+        assert_eq!(listed[0].rule_id, "block-hand");
+
+        let out = blocklist_unblock_impl(&state, "a1", "someone@x.example")
+            .await
+            .unwrap();
+        assert_eq!(out["removed"], false);
+        assert_eq!(
+            blocklist_list_impl(&state, "a1").await.unwrap().len(),
+            1,
+            "a hand-written block rule must survive an unblock"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

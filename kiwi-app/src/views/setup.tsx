@@ -92,6 +92,12 @@ export function SetupWizardView({ mode, onAdded }: { mode: "live" | "demo"; onAd
   const [oauth2Spec, setOauth2Spec] = useState<{ provider: string; grant: string } | null>(null);
   const [oauth2Ticket, setOauth2Ticket] = useState<string | null>(null);
   const [pasteToken, setPasteToken] = useState(false);
+  // Provider quick-pick (step 0 cards): null = manual email-first path.
+  const [providerPick, setProviderPick] = useState<"google" | "microsoft" | null>(null);
+  // Easy-sign-in mode: one screen, backend discovers + verifies + adds.
+  // Falls back to the step-by-step wizard only when discovery/verify fails.
+  const [autoStage, setAutoStage] = useState<string | null>(null);
+  const [autoError, setAutoError] = useState<string | null>(null);
 
   // Reconfigure handoff: Settings stores server fields (never secrets) under
   // EDIT_HANDOFF_KEY; the wizard prefills and consumes it once.
@@ -120,7 +126,9 @@ export function SetupWizardView({ mode, onAdded }: { mode: "live" | "demo"; onAd
     }
   }, []);
 
-  const emailOk = email.includes("@") && email.indexOf("@") > 0;
+  // Same shape as the backend's `valid_addr` (commands/mod.rs): bounded,
+  // no whitespace or angle brackets, `@` with a non-empty local part.
+  const emailOk = email.trim().length <= 320 && /^[^\s<>]+@[^\s<>]+$/.test(email.trim());
   const serversOk = inHost.trim().length > 0 && outHost.trim().length > 0 && /^\d+$/.test(inPort) && /^\d+$/.test(outPort);
   const plaintext = inSec === "plaintext" || outSec === "plaintext";
   // xoauth2 is satisfied by a completed grant ticket or a pasted token —
@@ -163,6 +171,156 @@ export function SetupWizardView({ mode, onAdded }: { mode: "live" | "demo"; onAd
     setOutgoing(null);
     setAdded(false);
     setLookupNote(note);
+  };
+
+  /** Provider presets for the step-0 quick-pick cards. */
+  const PROVIDER_PRESETS = {
+    google: {
+      provider: "google",
+      inHost: "imap.gmail.com", inPort: "993", inSec: "tls" as Security,
+      outHost: "smtp.gmail.com", outPort: "465", outSec: "tls" as Security,
+    },
+    microsoft: {
+      provider: "microsoft",
+      inHost: "outlook.office365.com", inPort: "993", inSec: "tls" as Security,
+      outHost: "smtp.office365.com", outPort: "587", outSec: "starttls" as Security,
+    },
+  };
+
+  /** Card click → provider OAuth2 sign-in inline; grant fills identity+servers. */
+  const pickProvider = (p: "google" | "microsoft") => {
+    setProviderPick(p);
+    setAuthKind("xoauth2");
+    setOauth2Ticket(null);
+    setPasteToken(false);
+    setOauth2Spec({ provider: PROVIDER_PRESETS[p].provider, grant: "sign-in" });
+  };
+
+  /** Grant completed — provider returns the email; fill everything, jump to Verify. */
+  const providerGranted = (ticket: string, grantEmail?: string) => {
+    const preset = PROVIDER_PRESETS[providerPick ?? "google"];
+    setOauth2Ticket(ticket);
+    if (grantEmail) {
+      setEmail(grantEmail);
+      setUsername(grantEmail);
+      if (!displayName.trim()) setDisplayName(grantEmail.split("@")[0]);
+    }
+    setProtocol("imap");
+    setInHost(preset.inHost); setInPort(preset.inPort); setInSec(preset.inSec);
+    setOutHost(preset.outHost); setOutPort(preset.outPort); setOutSec(preset.outSec);
+    setIncoming(null);
+    setOutgoing(null);
+    setAdded(false);
+    // A grant begun without an email returns none on poll — the address
+    // still has to be typed on this step (the email field stays reachable
+    // there), so only jump to Verify once a valid one is known.
+    if (grantEmail || emailOk) setStep(3);
+  };
+
+  /**
+   * Easy sign-in (one screen): discovery → live verify → add, all automatic.
+   * Only drops into the manual wizard when the backend can't figure it out —
+   * same trust rules apply (verify still probes, plaintext still needs ack).
+   */
+  const quickAdd = async () => {
+    if (!emailOk || password.length === 0) return;
+    setAutoError(null);
+    setError(null);
+    const addr = email.trim();
+    const user = addr;
+
+    setAutoStage("Finding mail servers…");
+    let sug: AutoconfigSuggestion | null = null;
+    try {
+      sug = await api.lookupAutoconfig(addr);
+    } catch {
+      /* fall through to local guess */
+    }
+    if (!sug) sug = localAutoconfigGuess(addr);
+
+    if (!sug) {
+      setLookupNote("Couldn't auto-detect settings for this provider — enter the servers below.");
+      setAutoStage(null);
+      setStep(1);
+      return;
+    }
+    if (sug.oauth2) {
+      // Provider demands OAuth2 — jump to the sign-in surface.
+      applySuggestion(sug, "");
+      setAuthKind("xoauth2");
+      setAutoStage(null);
+      setStep(2);
+      return;
+    }
+
+    const cfg = {
+      protocol: sug.protocol,
+      inHost: sug.inHost, inPort: sug.inPort,
+      inSec: (sug.inSec === "starttls" || sug.inSec === "plaintext" ? sug.inSec : "tls") as Security,
+      outHost: sug.outHost, outPort: sug.outPort,
+      outSec: (sug.outSec === "starttls" || sug.outSec === "plaintext" ? sug.outSec : "tls") as Security,
+    };
+    if (cfg.inSec === "plaintext" || cfg.outSec === "plaintext") {
+      // Never silently accept plaintext — surface the servers step for the
+      // explicit acknowledgment rather than auto-proceeding.
+      applySuggestion(sug, "Discovered servers are plaintext — review and acknowledge below.");
+      setAutoStage(null);
+      setStep(1);
+      return;
+    }
+
+    const auth = { kind: "password", secret: password };
+    setAutoStage("Verifying connection…");
+    let inc: VerifyResult, out: VerifyResult;
+    try {
+      [inc, out] = await Promise.all([
+        api.verifyServer({
+          protocol: cfg.protocol,
+          server: { host: cfg.inHost, port: cfg.inPort, security: cfg.inSec },
+          username: user, auth, acceptInvalidCerts: false,
+        }),
+        api.verifyServer({
+          protocol: "smtp",
+          server: { host: cfg.outHost, port: cfg.outPort, security: cfg.outSec },
+          username: user, auth, acceptInvalidCerts: false,
+        }),
+      ]);
+    } catch (e) {
+      setAutoStage(null);
+      setAutoError(e instanceof IpcError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e));
+      return;
+    }
+    if (!(inc.ok && out.ok)) {
+      setIncoming(inc);
+      setOutgoing(out);
+      applySuggestion(sug, "Verification failed — review the results and adjust.");
+      setAutoStage(null);
+      setStep(3);
+      return;
+    }
+
+    setAutoStage("Adding account…");
+    try {
+      await api.addAccount({
+        displayName: displayName.trim() || addr,
+        email: addr,
+        incomingProtocol: cfg.protocol,
+        incoming: { host: cfg.inHost, port: cfg.inPort, security: cfg.inSec },
+        outgoing: { host: cfg.outHost, port: cfg.outPort, security: cfg.outSec },
+        username: user,
+        incomingAuth: auth,
+        outgoingAuth: auth,
+        acceptInvalidCerts: false,
+      });
+      setPassword("");
+      setAdded(true);
+      setAutoStage(null);
+      setStep(3);
+      onAdded();
+    } catch (e) {
+      setAutoStage(null);
+      setAutoError(e instanceof IpcError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e));
+    }
   };
 
   /** Discovery chain: backend IPC first, labeled local stub on any failure. */
@@ -313,12 +471,30 @@ export function SetupWizardView({ mode, onAdded }: { mode: "live" | "demo"; onAd
   };
 
   return (
-    <section aria-label="Add mail account" style={{ maxWidth: "42rem" }}>
-      <h1>Add account</h1>
+    <section aria-label="Add mail account" className="em-setup">
+      <div className="em-setup-card">
+        {/* Hero panel: brand gradient + grain, step progress */}
+        <aside className="em-setup-hero" aria-hidden="false">
+          <div className="em-setup-hero-inner">
+            <div className="em-setup-logo">KIWI</div>
+            <h1 className="em-setup-title">Get started<br />with us</h1>
+            <p className="em-setup-sub">Mail that proves its security.<br />Complete these steps to add your account.</p>
+            <ol className="em-setup-steps">
+              {STEPS.map((s, i) => (
+                <li key={s} className={i === step ? "is-active" : i < step ? "is-done" : ""} aria-current={i === step ? "step" : undefined}>
+                  <span className="em-setup-num">{i + 1}</span> {s}
+                </li>
+              ))}
+            </ol>
+          </div>
+        </aside>
+        <div className="em-setup-body">
+      <h1 className="em-setup-body-title">{STEPS[step] === "Address" ? "Add account" : STEPS[step]}</h1>
       {mode === "demo" && (
         <div className="kiwi-banner warn" role="status">
-          Demo mode — verification and creation need the backend. Discovery falls back to a labeled local guess; run
-          the Tauri app for live setup.
+          <strong>Backend unavailable</strong> — this is the browser preview; no mail backend is connected.
+          Verification and account creation need the desktop app. Discovery falls back to a labeled local guess
+          here — nothing is verified or persisted.
         </div>
       )}
       {reconfiguring && (
@@ -327,33 +503,46 @@ export function SetupWizardView({ mode, onAdded }: { mode: "live" | "demo"; onAd
           entry in Settings → Accounts.
         </div>
       )}
-      <ol style={{ display: "flex", gap: "0.6rem", listStyle: "none", padding: 0, flexWrap: "wrap" }}>
-        {STEPS.map((s, i) => (
-          <li key={s} aria-current={i === step ? "step" : undefined} style={{ fontWeight: i === step ? 700 : 400 }}>
-            {i + 1}. {s}
-          </li>
-        ))}
-      </ol>
 
       {step === 0 && (
         <>
+          {!reconfiguring && (
+            <div className="em-provider-cards" role="group" aria-label="Sign in with a provider">
+              <button
+                type="button"
+                className="em-provider-card"
+                onClick={() => pickProvider("google")}
+                aria-pressed={providerPick === "google"}
+              >
+                <span className="em-provider-mark em-provider-google" aria-hidden="true">G</span>
+                <span className="em-provider-name">Google</span>
+                <span className="em-provider-sub">Gmail — sign in with your Google account</span>
+              </button>
+              <button
+                type="button"
+                className="em-provider-card"
+                onClick={() => pickProvider("microsoft")}
+                aria-pressed={providerPick === "microsoft"}
+              >
+                <span className="em-provider-mark em-provider-microsoft" aria-hidden="true">
+                  <svg viewBox="0 0 16 16" width="14" height="14"><rect x="0" y="0" width="7" height="7" fill="#f35325"/><rect x="9" y="0" width="7" height="7" fill="#81bc06"/><rect x="0" y="9" width="7" height="7" fill="#05a6f0"/><rect x="9" y="9" width="7" height="7" fill="#ffba08"/></svg>
+                </span>
+                <span className="em-provider-name">Microsoft</span>
+                <span className="em-provider-sub">Outlook / Office 365 — device sign-in</span>
+              </button>
+            </div>
+          )}
+          {!providerPick && !reconfiguring && (
+            <div className="em-setup-or" role="separator"><span>Or use your email</span></div>
+          )}
+          {/* Email stays reachable on the provider path too: the typed
+              address is sent to `kiwi_oauth2_begin`, making the grant
+              email-bound — the backend validates it at begin and returns
+              it on poll. The rest of the quick form is manual-path only. */}
+          <div className="em-quickform">
           <p>
             <label>
-              Email address: <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" />
-            </label>
-          </p>
-          <p>
-            <label>
-              Display name: <input type="text" value={displayName} onChange={(e) => setDisplayName(e.target.value)} />
-            </label>
-          </p>
-          <p>
-            <label>
-              Protocol:{" "}
-              <select value={protocol} onChange={(e) => setProtocol(e.target.value as "imap" | "pop3")}>
-                <option value="imap">IMAP</option>
-                <option value="pop3">POP3</option>
-              </select>
+              Email address: <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" placeholder="you@example.com" />
             </label>
           </p>
           {!emailOk && email && (
@@ -361,17 +550,75 @@ export function SetupWizardView({ mode, onAdded }: { mode: "live" | "demo"; onAd
               <small>Enter a valid email address.</small>
             </p>
           )}
+          {!providerPick && (<>
           <p>
-            <button type="button" onClick={() => void lookup()} disabled={!emailOk || lookingUp}>
-              {lookingUp ? "Looking up…" : "Look up settings"}
-            </button>{" "}
-            <small style={{ color: "var(--kiwi-text-secondary)" }}>
-              Autoconfig discovery (ISPDB → server config → MX guess) fills the next step.
+            <label>
+              Password: <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" placeholder="Your mail password or app password" />
+            </label>
+          </p>
+          <p>
+            <label>
+              Display name <small style={{ color: "var(--kiwi-text-secondary)" }}>(optional)</small>:{" "}
+              <input type="text" value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="Shown to recipients" />
+            </label>
+          </p>
+          {autoError && (
+            <div className="kiwi-banner block" role="alert">
+              {autoError}
+            </div>
+          )}
+          <p>
+            <button
+              type="button"
+              className="kiwi-btn-primary"
+              style={{ width: "100%", padding: "10px 0" }}
+              onClick={() => void quickAdd()}
+              disabled={!emailOk || password.length === 0 || autoStage !== null || mode !== "live"}
+            >
+              {autoStage ?? "Continue"}
+            </button>
+          </p>
+          <p style={{ textAlign: "center" }}>
+            <small>
+              <button type="button" onClick={() => { setStep(1); void lookup(); }} disabled={!emailOk || lookingUp}>
+                {lookingUp ? "Looking up…" : "Set up servers manually"}
+              </button>{" "}
+              <span style={{ color: "var(--kiwi-text-secondary)" }}>
+                — we discover + verify automatically; manual only if that fails.
+              </span>
             </small>
           </p>
           {lookupNote && (
             <div className="kiwi-banner warn" role="status">
               <small>{lookupNote}</small>
+            </div>
+          )}
+          </>)}
+          </div>
+          {providerPick && !oauth2Ticket && (
+            <div className="kiwi-card" style={{ marginTop: "0.6rem" }}>
+              <OAuth2SignIn
+                provider={PROVIDER_PRESETS[providerPick].provider}
+                email={email.trim() || undefined}
+                onDone={providerGranted}
+                onCancel={() => { setProviderPick(null); setOauth2Spec(null); }}
+              />
+              <p style={{ marginBottom: 0 }}>
+                <small style={{ color: "var(--kiwi-text-secondary)" }}>
+                  Prefer a password or another provider?{" "}
+                  <button type="button" onClick={() => { setProviderPick(null); setOauth2Spec(null); setAuthKind("password"); }}>
+                    Enter manually
+                  </button>
+                </small>
+              </p>
+            </div>
+          )}
+          {providerPick && oauth2Ticket && (
+            <div className="kiwi-banner warn" role="status">
+              <small>
+                Signed in via {oauth2Spec ? oauth2ProviderLabel(oauth2Spec.provider) : "the provider"} — the grant is
+                bound to this wizard.{emailOk ? " Continue to Verify & add." : " Enter your email address above, then continue."}
+              </small>
             </div>
           )}
         </>
@@ -535,6 +782,11 @@ export function SetupWizardView({ mode, onAdded }: { mode: "live" | "demo"; onAd
               Account added.
             </div>
           )}
+          {oauth2Ticket && !emailOk && (
+            <p role="alert">
+              <small>Enter a valid email address — use Back to fill it in on the Address step.</small>
+            </p>
+          )}
         </>
       )}
 
@@ -560,6 +812,7 @@ export function SetupWizardView({ mode, onAdded }: { mode: "live" | "demo"; onAd
               onClick={() => void add()}
               disabled={
                 checking ||
+                !emailOk ||
                 (oauth2Ticket ? !credsOk : !canVerify || !incoming?.ok || !outgoing?.ok)
               }
             >
@@ -570,6 +823,8 @@ export function SetupWizardView({ mode, onAdded }: { mode: "live" | "demo"; onAd
             </button>
           </>
         )}
+      </div>
+        </div>
       </div>
     </section>
   );

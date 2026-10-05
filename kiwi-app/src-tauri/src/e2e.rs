@@ -26,7 +26,10 @@ use tokio::net::TcpListener;
 
 use crate::commands::accounts::{add_account_impl, list_accounts_impl};
 use crate::commands::autoconfig::discover_account_impl;
-use crate::commands::mail::{list_folders_impl, list_messages_impl, sync_account_impl};
+use crate::commands::mail::{
+    get_message_impl, list_folders_impl, list_messages_impl, message_source_impl, sync_account_impl,
+};
+use crate::commands::message::attachment::download_attachment_impl;
 use crate::commands::send::{Delivered, cancel_impl, deliver, drop_outbox, send_impl};
 use crate::state::{AppState, now_unix};
 use crate::types::{AddAccountInput, AuthInput, ComposeInput, SendOptions, ServerInput};
@@ -157,7 +160,7 @@ S: a5 OK [READ-WRITE] SELECT completed
 C: a6 UID SEARCH ALL
 S: * SEARCH 101 102
 S: a6 OK SEARCH completed
-C: a7 UID FETCH 101,102 (UID FLAGS ENVELOPE RFC822.SIZE INTERNALDATE)
+C: a7 UID FETCH 101,102 (UID FLAGS ENVELOPE RFC822.SIZE INTERNALDATE BODYSTRUCTURE)
 S: * 1 FETCH (UID 101 FLAGS (\Seen) ENVELOPE ("Wed, 01 Jan 2025 12:00:00 +0000" "Hello from E2E" (("Alice" NIL "alice" "e2e.test")) (("Alice" NIL "alice" "e2e.test")) (("Alice" NIL "alice" "e2e.test")) (("User" NIL "u" "e2e.test")) NIL NIL NIL "<m1@e2e.test>") RFC822.SIZE 4321 INTERNALDATE "01-Jan-2025 12:00:00 +0000")
 S: * 2 FETCH (UID 102 FLAGS () ENVELOPE ("Wed, 01 Jan 2025 13:00:00 +0000" "Second message" (("Bob" NIL "bob" "e2e.test")) (("Bob" NIL "bob" "e2e.test")) (("Bob" NIL "bob" "e2e.test")) (("User" NIL "u" "e2e.test")) NIL NIL NIL "<m2@e2e.test>") RFC822.SIZE 555 INTERNALDATE "02-Jan-2025 13:00:00 +0000")
 S: a7 OK FETCH completed
@@ -302,6 +305,286 @@ async fn e2e_auth_rejection_surfaces_server_reject() {
         "server reply must surface: {}",
         err.message
     );
+    server.await.unwrap().expect("transcript replayed fully");
+}
+
+// ---------------------------------------------------------------------------
+// T-339 — lazy attachment fetch: BODYSTRUCTURE persists part descriptors at
+// sync without pulling payloads; the reader fetch is a skeleton (HEADER +
+// per-leaf .MIME + eager text leaf); a save issues `BODY.PEEK[<section>]` on
+// a fresh connection, decodes, and marks the row fetched; view-source forces
+// the complete `BODY[]` and clears the deferred marker.
+// ---------------------------------------------------------------------------
+
+/// Serve `scripts` as sequential connections on one loopback listener —
+/// every client command opens a fresh session, so a multi-command scenario
+/// needs one script per connection.
+async fn serve_imap_seq(
+    scripts: Vec<String>,
+    tls: Option<TlsAcceptor>,
+) -> (u16, tokio::task::JoinHandle<Result<(), String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let parsed: Vec<Vec<testutil::Step>> = scripts.iter().map(|s| testutil::parse(s)).collect();
+    let h = tokio::spawn(async move {
+        for steps in &parsed {
+            let (stream, _) =
+                tokio::time::timeout(testutil::TRANSCRIPT_STEP_TIMEOUT, listener.accept())
+                    .await
+                    .map_err(|_| "timed out waiting for IMAP connection".to_string())?
+                    .map_err(|e| e.to_string())?;
+            testutil::serve(stream, steps, Proto::Imap, tls.clone()).await?;
+        }
+        Ok(())
+    });
+    (port, h)
+}
+
+/// The handshake+select prelude every fresh connection replays.
+const LAZY_PRELUDE: &str = "S: * OK e2e.test IMAP4rev2 TestServer ready\n\
+     C: a1 CAPABILITY\n\
+     S: * CAPABILITY IMAP4rev2 STARTTLS UIDPLUS IDLE LITERAL+\n\
+     S: a1 OK CAPABILITY completed\n\
+     C: a2 STARTTLS\n\
+     S: a2 OK Begin TLS negotiation now\n\
+     # TLS handshake\n\
+     C: a3 LOGIN u@e2e.test REDACTED-DUMMY\n\
+     S: a3 OK LOGIN completed\n\
+     C: a4 SELECT INBOX\n\
+     S: * 1 EXISTS\n\
+     S: * OK [UIDVALIDITY 4242] UIDs valid\n\
+     S: a4 OK [READ-WRITE] SELECT completed\n";
+
+const LAZY_LOGOUT: &str = "C: a7 LOGOUT\n\
+     S: * BYE TestServer logging out\n\
+     S: a7 OK LOGOUT completed\n";
+
+#[tokio::test(flavor = "current_thread")]
+async fn e2e_lazy_attachment_body_peek() {
+    // multipart/mixed: eager text/plain leaf (section 1) + deferred
+    // application/pdf attachment (section 2, base64, 16 wire octets).
+    const BS: &str = "((\"text\" \"plain\" NIL NIL NIL \"7bit\" 10 1)\
+        (\"application\" \"pdf\" (\"name\" \"note.pdf\") NIL NIL \"base64\" 16 NIL\
+        (\"attachment\" (\"filename\" \"note.pdf\")) NIL) \"mixed\"\
+        (\"boundary\" \"outer\"))";
+    let env = "(\"Wed, 01 Jan 2025 12:00:00 +0000\" \"Lazy attach\"\
+        ((\"Alice\" NIL \"alice\" \"e2e.test\"))\
+        ((\"Alice\" NIL \"alice\" \"e2e.test\"))\
+        ((\"Alice\" NIL \"alice\" \"e2e.test\"))\
+        ((\"User\" NIL \"u\" \"e2e.test\")) NIL NIL NIL \"<lazy@e2e.test>\")";
+
+    // Conn 1: sync — metadata FETCH carries BODYSTRUCTURE; the only body
+    // fetch allowed is the threading-headers probe. No BODY[] anywhere.
+    let c1 = format!(
+        "S: * OK e2e.test IMAP4rev2 TestServer ready\n\
+         C: a1 CAPABILITY\n\
+         S: * CAPABILITY IMAP4rev2 STARTTLS UIDPLUS IDLE LITERAL+\n\
+         S: a1 OK CAPABILITY completed\n\
+         C: a2 STARTTLS\n\
+         S: a2 OK Begin TLS negotiation now\n\
+         # TLS handshake\n\
+         C: a3 LOGIN u@e2e.test REDACTED-DUMMY\n\
+         S: a3 OK LOGIN completed\n\
+         C: a4 LIST \"\" \"*\"\n\
+         S: * LIST (\\HasNoChildren) \"/\" \"INBOX\"\n\
+         S: a4 OK LIST completed\n\
+         C: a5 SELECT INBOX\n\
+         S: * FLAGS (\\Seen \\Answered \\Flagged \\Deleted \\Draft)\n\
+         S: * 1 EXISTS\n\
+         S: * 1 RECENT\n\
+         S: * OK [UIDVALIDITY 4242] UIDs valid\n\
+         S: * OK [UIDNEXT 302] Predicted next UID\n\
+         S: a5 OK [READ-WRITE] SELECT completed\n\
+         C: a6 UID SEARCH ALL\n\
+         S: * SEARCH 301\n\
+         S: a6 OK SEARCH completed\n\
+         C: a7 UID FETCH 301 (UID FLAGS ENVELOPE RFC822.SIZE INTERNALDATE BODYSTRUCTURE)\n\
+         S: * 1 FETCH (UID 301 FLAGS () ENVELOPE {env} RFC822.SIZE 200 INTERNALDATE \"01-Jan-2025 12:00:00 +0000\" BODYSTRUCTURE {BS})\n\
+         S: a7 OK FETCH completed\n\
+         C: a8 UID FETCH 301 (UID BODY.PEEK[HEADER.FIELDS (IN-REPLY-TO REFERENCES)])\n\
+         S: * 1 FETCH (UID 301)\n\
+         S: a8 OK FETCH completed\n\
+         C: a9 LOGOUT\n\
+         S: * BYE TestServer logging out\n\
+         S: a9 OK LOGOUT completed\n"
+    );
+
+    // Conn 2: get_message → fresh BODYSTRUCTURE + skeleton fetch (HEADER +
+    // per-leaf .MIME + the text leaf) — the attachment body is NOT fetched.
+    // Literal payloads ride the following S: steps (each step's bytes are
+    // the literal, then the response continuation on the same line).
+    let c2 = format!(
+        "{LAZY_PRELUDE}\
+         C: a5 UID FETCH 301 (UID BODYSTRUCTURE)\n\
+         S: * 1 FETCH (UID 301 BODYSTRUCTURE {BS})\n\
+         S: a5 OK FETCH completed\n\
+         C: a6 UID FETCH 301 (UID BODY.PEEK[HEADER] BODY.PEEK[1.MIME] BODY.PEEK[1] BODY.PEEK[2.MIME])\n\
+         S: * 1 FETCH (UID 301 BODY[HEADER] {{47}}\n\
+         S: Content-Type: multipart/mixed; boundary=\"outer\" BODY[1.MIME] {{24}}\n\
+         S: Content-Type: text/plain BODY[1] {{10}}\n\
+         S: hello body BODY[2.MIME] {{29}}\n\
+         S: Content-Type: application/pdf)\n\
+         S: a6 OK FETCH completed\n\
+         {LAZY_LOGOUT}"
+    );
+
+    // Conn 3: download → re-verify BODYSTRUCTURE then pull only section 2.
+    let c3 = format!(
+        "{LAZY_PRELUDE}\
+         C: a5 UID FETCH 301 (UID BODYSTRUCTURE)\n\
+         S: * 1 FETCH (UID 301 BODYSTRUCTURE {BS})\n\
+         S: a5 OK FETCH completed\n\
+         C: a6 UID FETCH 301 (UID BODY.PEEK[2])\n\
+         S: * 1 FETCH (UID 301 BODY[2] {{16}}\n\
+         S: aGVsbG8gZmlsZQ==)\n\
+         S: a6 OK FETCH completed\n\
+         {LAZY_LOGOUT}"
+    );
+
+    // Conn 4: view-source forces the complete BODY[] even though a
+    // skeleton is on disk, and the deferred marker clears.
+    let raw_body = "From: alice@e2e.test; FULL-BODY-WIRE-MARKER";
+    let c4 = format!(
+        "{LAZY_PRELUDE}\
+         C: a5 UID FETCH 301 (UID BODY[])\n\
+         S: * 1 FETCH (UID 301 BODY[] {{{}}}\n\
+         S: {raw_body})\n\
+         S: a5 OK FETCH completed\n\
+         {LAZY_LOGOUT}",
+        raw_body.len()
+    );
+
+    let (acceptor, _der) = testutil::tls_acceptor(&["e2e.test"]);
+    let (port, server) = serve_imap_seq(vec![c1, c2, c3, c4], Some(acceptor)).await;
+    let state = test_state("lazy", fixture_net(port));
+
+    let disc = discover_account_impl(&state, "u@e2e.test").await.unwrap();
+    let view = add_account_impl(&state, add_input_from(&disc.suggestion, true))
+        .await
+        .unwrap();
+
+    // ── Sync: descriptors persist, no payload pulled ─────────────────
+    let reports = sync_account_impl(state.clone(), view.id.clone(), None)
+        .await
+        .expect("sync account");
+    assert_eq!(reports[0].new_messages, 1);
+    let folder_id = reports[0].folder_id;
+    {
+        let store = state.store.lock().await;
+        assert!(
+            store.has_message_parts(folder_id, 301).unwrap(),
+            "BODYSTRUCTURE must persist deferred-part rows"
+        );
+        let rows = store.message_parts(folder_id, 301).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].part_index, 0);
+        assert_eq!(rows[0].section, "2");
+        assert_eq!(rows[0].name.as_deref(), Some("note.pdf"));
+        assert_eq!(rows[0].mime, "application/pdf");
+        assert_eq!(rows[0].size_bytes, Some(16));
+        assert_eq!(rows[0].encoding, "base64");
+        assert!(!rows[0].fetched);
+        // Ordinary sync never wrote a body — payloads stay server-side.
+        assert!(store.body_file(folder_id, 301).unwrap().is_none());
+    }
+
+    // ── Read: skeleton lands, attachment list is metadata-only ────────
+    let body = get_message_impl(state.clone(), view.id.clone(), folder_id, 301)
+        .await
+        .expect("get message");
+    assert!(body.body_present);
+    assert!(
+        body.text_body
+            .as_deref()
+            .is_some_and(|t| t.contains("hello body")),
+        "eager text leaf must render: {:?}",
+        body.text_body
+    );
+    assert_eq!(body.attachments.len(), 1);
+    let att = &body.attachments[0];
+    assert_eq!(att.index, 0);
+    assert_eq!(att.filename.as_deref(), Some("note.pdf"));
+    assert_eq!(att.content_type, "application/pdf");
+    assert_eq!(att.size, 16, "wire octets, honestly labeled");
+    assert!(!att.fetched, "payload still deferred");
+    {
+        let store = state.store.lock().await;
+        let raw = std::fs::read(store.body_file(folder_id, 301).unwrap().unwrap()).unwrap();
+        let text = String::from_utf8_lossy(&raw);
+        assert!(
+            text.contains("hello body"),
+            "skeleton carries the text leaf"
+        );
+        assert!(
+            text.contains("application/pdf"),
+            "skeleton carries the part's MIME headers"
+        );
+        assert!(
+            !text.contains("aGVsbG8"),
+            "attachment payload must not be in the skeleton"
+        );
+    }
+
+    // ── Save: BODY.PEEK[2] lands, decoded + durably stored ────────────
+    let dest = state
+        .data_dir
+        .parent()
+        .unwrap()
+        .join(format!("kiwi-e2e-lazy-save-{}", std::process::id()));
+    let dest_str = dest.to_string_lossy().to_string();
+    let saved = download_attachment_impl(
+        state.clone(),
+        view.id.clone(),
+        folder_id,
+        301,
+        0,
+        dest_str.clone(),
+    )
+    .await
+    .expect("deferred attachment download");
+    assert_eq!(saved.filename, "note.pdf");
+    assert_eq!(saved.content_type, "application/pdf");
+    assert_eq!(saved.size, 10, "decoded size — base64 expanded honestly");
+    assert_eq!(std::fs::read(&saved.path).unwrap(), b"hello file");
+    {
+        let store = state.store.lock().await;
+        assert!(
+            store
+                .message_part(folder_id, 301, 0)
+                .unwrap()
+                .unwrap()
+                .fetched,
+            "row marked fetched only after bytes are durable"
+        );
+        assert!(store.attachment_payload_path(folder_id, 301, 0).is_file());
+    }
+
+    // ── Repeat save is local — the listener only serves 4 connections ─
+    download_attachment_impl(state.clone(), view.id.clone(), folder_id, 301, 0, dest_str)
+        .await
+        .expect("repeat save must not dial");
+
+    // ── View-source: skeleton is not verbatim — BODY[] forced ─────────
+    let src = message_source_impl(state.clone(), view.id.clone(), folder_id, 301)
+        .await
+        .expect("message source");
+    assert!(
+        src.source.contains("FULL-BODY-WIRE-MARKER"),
+        "source must be the complete body, not the skeleton"
+    );
+    {
+        let store = state.store.lock().await;
+        assert!(
+            !store.has_message_parts(folder_id, 301).unwrap(),
+            "complete body clears the deferred marker"
+        );
+    }
+    // And a second source read is local (listener is gone after conn 4).
+    message_source_impl(state.clone(), view.id.clone(), folder_id, 301)
+        .await
+        .expect("source replay must not dial");
+
+    let _ = std::fs::remove_file(&dest);
     server.await.unwrap().expect("transcript replayed fully");
 }
 
@@ -545,7 +828,7 @@ S: a7 OK [READ-WRITE] SELECT completed
 C: a8 UID SEARCH ALL
 S: * SEARCH 201
 S: a8 OK SEARCH completed
-C: a9 UID FETCH 201 (UID FLAGS ENVELOPE RFC822.SIZE INTERNALDATE)
+C: a9 UID FETCH 201 (UID FLAGS ENVELOPE RFC822.SIZE INTERNALDATE BODYSTRUCTURE)
 S: * 1 FETCH (UID 201 FLAGS (\Seen) ENVELOPE ("Thu, 02 Jan 2025 12:00:00 +0000" "E2E sent subject" (("E2E Sender" NIL "u" "e2e.test")) (("E2E Sender" NIL "u" "e2e.test")) (("E2E Sender" NIL "u" "e2e.test")) (("Bob" NIL "bob" "e2e.test")) NIL NIL NIL "<sent@e2e.test>") RFC822.SIZE 999 INTERNALDATE "02-Jan-2025 12:00:00 +0000")
 S: a9 OK FETCH completed
 C: a10 UID FETCH 201 (UID BODY.PEEK[HEADER.FIELDS (IN-REPLY-TO REFERENCES)])
@@ -815,6 +1098,123 @@ async fn e2e_send_starttls_refusal_fails_closed() {
     smtp.await
         .unwrap()
         .expect("server consumed greeting+EHLO only");
+}
+
+/// Transcript for a session whose only recipient is rejected: the DATA
+/// phase never runs, and the client resets + quits.
+fn smtp_session_all_rejected() -> String {
+    String::from(
+        "S: 220 e2e.test ESMTP TestServer\n\
+         C: EHLO kiwi.local\n\
+         S: 250-e2e.test greets you\n\
+         S: 250-STARTTLS\n\
+         S: 250 SIZE 10485760\n\
+         C: STARTTLS\n\
+         S: 220 2.0.0 Ready to start TLS\n\
+         # TLS handshake\n\
+         C: EHLO kiwi.local\n\
+         S: 250-e2e.test greets you\n\
+         S: 250-AUTH PLAIN LOGIN\n\
+         S: 250 SIZE 10485760\n\
+         C: AUTH PLAIN\n\
+         S: 235 2.7.0 Authentication successful\n\
+         C: MAIL FROM:<u@e2e.test>\n\
+         S: 250 2.1.0 Ok\n\
+         C: RCPT TO:<bob@e2e.test>\n\
+         S: 550 5.1.1 No such user here\n\
+         C: RSET\n\
+         S: 250 2.0.0 Ok\n\
+         C: QUIT\n\
+         S: 221 2.0.0 Bye\n",
+    )
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn e2e_send_no_recipient_accepted_is_never_journaled_as_sent() {
+    let (acceptor, _der) = testutil::tls_acceptor(&["e2e.test"]);
+    let (smtp_l, smtp_port) = bind_listener().await;
+    let state = test_state("send-allrejected", MockNet::new());
+    let view = add_account_impl(&state, send_input(smtp_port, 9))
+        .await
+        .unwrap();
+    send_impl(
+        &state,
+        &view.id,
+        compose(),
+        Some(SendOptions {
+            send_at_unix: None,
+            undo_grace_secs: Some(0),
+        }),
+    )
+    .await
+    .unwrap();
+    let item = state.send_queue.lock().await.due(i64::MAX).remove(0);
+    let meta = state.outbox_meta.lock().await.get(&item.queue_id).cloned();
+
+    let smtp = spawn_sessions(
+        smtp_l,
+        vec![smtp_session_all_rejected()],
+        Proto::Smtp,
+        Some(acceptor),
+    );
+
+    // An SMTP transaction that accepted nobody is not a delivery: it is a
+    // server rejection, retryable for an ordinary send.
+    let outcome = deliver(state.clone(), item, meta).await;
+    assert_eq!(outcome, Delivered::Held);
+    let audit = audit_actions(&state);
+    assert!(audit.contains("send-attempt-failed"));
+    assert!(!audit.contains("send-sent"), "{audit}");
+    assert!(!audit.contains("send-partially-rejected"), "{audit}");
+    smtp.await.unwrap().expect("smtp transcript replayed fully");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn e2e_single_attempt_send_is_never_retried() {
+    let (acceptor, _der) = testutil::tls_acceptor(&["e2e.test"]);
+    let (smtp_l, smtp_port) = bind_listener().await;
+    let state = test_state("send-single", MockNet::new());
+    let view = add_account_impl(&state, send_input(smtp_port, 9))
+        .await
+        .unwrap();
+    let receipt = send_impl(
+        &state,
+        &view.id,
+        compose(),
+        Some(SendOptions {
+            send_at_unix: None,
+            undo_grace_secs: Some(0),
+        }),
+    )
+    .await
+    .unwrap();
+    // Promote the queued send to the deliverability class: one attempt,
+    // never re-enqueued, whatever the relay says.
+    {
+        let mut metas = state.outbox_meta.lock().await;
+        metas.get_mut(&receipt.queue_id).unwrap().class = crate::state::OutboxClass::SingleAttempt;
+    }
+    let item = state.send_queue.lock().await.due(i64::MAX).remove(0);
+    let meta = state.outbox_meta.lock().await.get(&item.queue_id).cloned();
+
+    let smtp = spawn_sessions(
+        smtp_l,
+        vec![smtp_session_all_rejected()],
+        Proto::Smtp,
+        Some(acceptor),
+    );
+
+    let outcome = deliver(state.clone(), item, meta).await;
+    assert_eq!(
+        outcome,
+        Delivered::Failed,
+        "a single-use sink is not retried"
+    );
+    assert_eq!(state.send_queue.lock().await.pending_count(), 0);
+    let audit = audit_actions(&state);
+    assert!(audit.contains("send-single-attempt-abandoned"), "{audit}");
+    assert!(!audit.contains("send-sent"), "{audit}");
+    smtp.await.unwrap().expect("smtp transcript replayed fully");
 }
 
 // ---------------------------------------------------------------------------
@@ -1155,4 +1555,305 @@ async fn e2e_pop3_delete_after_download_sends_dele() {
     assert_eq!(msgs.len(), 2);
 
     server.await.unwrap().expect("transcript replayed fully");
+}
+
+// ---------------------------------------------------------------------------
+// T-328 — IMAP server-folder CRUD over the same scripted loopback seam.
+// kiwi_folder_create/rename/delete on an IMAP account must issue real
+// CREATE/RENAME/DELETE wire commands; the local row mirrors only after a
+// tagged OK plus a verifying LIST — never local-first-fake. Server NO
+// surfaces `server-reject` with the reply text; INBOX and LIST-wildcard
+// names refuse before any connection is dialed.
+// ---------------------------------------------------------------------------
+
+/// IMAP account input on implicit-TLS loopback (same shape as
+/// `pop3_input`; the outgoing leg is never dialed).
+fn imap_input(port: u16) -> AddAccountInput {
+    AddAccountInput {
+        display_name: "E2E IMAP".into(),
+        email: "u@e2e.test".into(),
+        incoming_protocol: "imap".into(),
+        incoming: ServerInput {
+            host: "127.0.0.1".into(),
+            port,
+            security: "tls".into(),
+        },
+        outgoing: ServerInput {
+            host: "127.0.0.1".into(),
+            port: 2525,
+            security: "tls".into(),
+        },
+        username: Some("u@e2e.test".into()),
+        outgoing_username: Some("u@e2e.test".into()),
+        incoming_auth: Some(AuthInput {
+            kind: "password".into(),
+            secret: Some("s3cret".into()),
+            oauth2_ticket: None,
+        }),
+        outgoing_auth: None,
+        accept_invalid_certs: true,
+    }
+}
+
+/// Shared session head for folder ops: implicit-TLS handshake, scripted
+/// greeting + CAPABILITY, LOGIN, then the per-op transcript body.
+fn folder_sess(body: &str) -> String {
+    format!(
+        "# TLS handshake\n\
+         S: * OK e2e.test IMAP4rev2 TestServer ready\n\
+         C: a1 CAPABILITY\n\
+         S: * CAPABILITY IMAP4rev2 UIDPLUS\n\
+         S: a1 OK CAPABILITY completed\n\
+         C: a2 LOGIN u@e2e.test REDACTED-DUMMY\n\
+         S: a2 OK LOGIN completed\n\
+         {body}"
+    )
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn e2e_imap_folder_crud_hits_the_wire() {
+    use crate::commands::folders::{folder_create_impl, folder_delete_impl, folder_rename_impl};
+
+    let (acceptor, _der) = testutil::tls_acceptor(&["127.0.0.1"]);
+    let (listener, port) = bind_listener().await;
+    let state = test_state("foldercrud", MockNet::new());
+    let view = add_account_impl(&state, imap_input(port))
+        .await
+        .expect("add imap account");
+
+    // One session per op — each impl call opens its own connection.
+    let s_create_root = folder_sess(
+        "C: a3 LIST \"\" \"\"\n\
+         S: * LIST (\\Noselect) \"/\" \"\"\n\
+         S: a3 OK LIST completed\n\
+         C: a4 CREATE \"Work\"\n\
+         S: a4 OK CREATE completed\n\
+         C: a5 LIST \"\" \"Work\"\n\
+         S: * LIST (\\HasNoChildren) \"/\" \"Work\"\n\
+         S: a5 OK LIST completed\n\
+         C: a6 LOGOUT\n\
+         S: * BYE TestServer logging out\n\
+         S: a6 OK LOGOUT completed\n",
+    );
+    let s_create_child = folder_sess(
+        "C: a3 LIST \"\" \"\"\n\
+         S: * LIST (\\Noselect) \"/\" \"\"\n\
+         S: a3 OK LIST completed\n\
+         C: a4 CREATE \"Work/Sub\"\n\
+         S: a4 OK CREATE completed\n\
+         C: a5 LIST \"\" \"Work/Sub\"\n\
+         S: * LIST (\\HasNoChildren) \"/\" \"Work/Sub\"\n\
+         S: a5 OK LIST completed\n\
+         C: a6 LOGOUT\n\
+         S: * BYE TestServer logging out\n\
+         S: a6 OK LOGOUT completed\n",
+    );
+    let s_rename = folder_sess(
+        "C: a3 LIST \"\" \"\"\n\
+         S: * LIST (\\Noselect) \"/\" \"\"\n\
+         S: a3 OK LIST completed\n\
+         C: a4 RENAME \"Work\" \"Tasks\"\n\
+         S: a4 OK RENAME completed\n\
+         C: a5 LIST \"\" \"Tasks\"\n\
+         S: * LIST (\\HasNoChildren) \"/\" \"Tasks\"\n\
+         S: a5 OK LIST completed\n\
+         C: a6 LOGOUT\n\
+         S: * BYE TestServer logging out\n\
+         S: a6 OK LOGOUT completed\n",
+    );
+    // No delimiter probe on delete — nothing is derived from it.
+    let s_delete = folder_sess(
+        "C: a3 DELETE \"Tasks\"\n\
+         S: a3 OK DELETE completed\n\
+         C: a4 LIST \"\" \"Tasks\"\n\
+         S: a4 OK LIST completed\n\
+         C: a5 LOGOUT\n\
+         S: * BYE TestServer logging out\n\
+         S: a5 OK LOGOUT completed\n",
+    );
+    let server = spawn_sessions(
+        listener,
+        vec![s_create_root, s_create_child, s_rename, s_delete],
+        Proto::Imap,
+        Some(acceptor),
+    );
+
+    // ── create at root — wire op, then mirror ─────────────────────
+    let work = folder_create_impl(&state, &view.id, None, "Work")
+        .await
+        .expect("remote create");
+    assert_eq!(work.name, "Work");
+    assert_eq!(work.origin, "remote");
+    {
+        let store = state.store.lock().await;
+        let meta = store.folder_meta(work.id).unwrap().unwrap();
+        assert_eq!(meta.origin, kiwi_mail::store::FolderOrigin::Remote);
+    }
+
+    // ── create under a remote parent — delimiter composition ──────
+    let sub = folder_create_impl(&state, &view.id, Some(work.id), "Sub")
+        .await
+        .expect("remote child create");
+    assert_eq!(
+        sub.name, "Work/Sub",
+        "server-composed <parent>/name wire form"
+    );
+    assert_eq!(sub.origin, "remote");
+    // Remote folders mirror flat (the wire name IS the row name) —
+    // same shape imap_sync registers them with.
+    assert_eq!(sub.parent_id, None);
+
+    // ── rename — leaf semantics, inferiors follow (RFC 3501 §6.3.5) ─
+    let renamed = folder_rename_impl(&state, &view.id, work.id, "Tasks")
+        .await
+        .expect("remote rename");
+    assert_eq!(renamed.name, "Tasks");
+    {
+        let store = state.store.lock().await;
+        let names: Vec<String> = store
+            .list_folders(&view.id)
+            .unwrap()
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        assert!(
+            names.iter().any(|n| n == "Tasks/Sub"),
+            "inferior rows follow the rename: {names:?}"
+        );
+        assert!(!names.iter().any(|n| n == "Work" || n == "Work/Sub"));
+    }
+
+    // ── delete — server ACK + absent-in-LIST verify, then mirror ───
+    folder_delete_impl(&state, &view.id, renamed.id)
+        .await
+        .expect("remote delete");
+    {
+        let store = state.store.lock().await;
+        let names: Vec<String> = store
+            .list_folders(&view.id)
+            .unwrap()
+            .into_iter()
+            .map(|f| f.name)
+            .collect();
+        assert!(!names.iter().any(|n| n == "Tasks"), "{names:?}");
+        assert!(
+            names.iter().any(|n| n == "Tasks/Sub"),
+            "inferiors survive a parent delete (server keeps them): {names:?}"
+        );
+    }
+
+    // Audit trail: intent rows plus the remote outcome rows.
+    let log = std::fs::read_to_string(state.data_dir.join("audit.jsonl")).unwrap();
+    for ev in [
+        "folder-create-requested",
+        "folder-created-remote",
+        "folder-renamed-remote",
+        "folder-deleted-remote",
+    ] {
+        assert!(log.contains(ev), "audit missing {ev}");
+    }
+
+    server.await.unwrap().expect("transcript replayed fully");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn e2e_imap_folder_no_reply_surfaces_server_reject() {
+    use crate::commands::folders::folder_create_impl;
+
+    let (acceptor, _der) = testutil::tls_acceptor(&["127.0.0.1"]);
+    let (listener, port) = bind_listener().await;
+    let state = test_state("folderno", MockNet::new());
+    let view = add_account_impl(&state, imap_input(port))
+        .await
+        .expect("add imap account");
+
+    let script = folder_sess(
+        "C: a3 LIST \"\" \"\"\n\
+         S: * LIST (\\Noselect) \"/\" \"\"\n\
+         S: a3 OK LIST completed\n\
+         C: a4 CREATE \"Denied\"\n\
+         S: a4 NO [CANNOT] denied: read-only server\n\
+         C: a5 LOGOUT\n\
+         S: * BYE TestServer logging out\n\
+         S: a5 OK LOGOUT completed\n",
+    );
+    let server = spawn_sessions(listener, vec![script], Proto::Imap, Some(acceptor));
+
+    let err = folder_create_impl(&state, &view.id, None, "Denied")
+        .await
+        .expect_err("server NO must surface");
+    assert_eq!(err.code, "server-reject");
+    assert!(
+        err.message.contains("denied"),
+        "server reply text surfaces: {}",
+        err.message
+    );
+    // No local row was minted for a refused create.
+    {
+        let store = state.store.lock().await;
+        assert!(store.list_folders(&view.id).unwrap().is_empty());
+    }
+    server.await.unwrap().expect("transcript replayed fully");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn e2e_imap_folder_refusals_never_dial() {
+    use crate::commands::folders::{folder_create_impl, folder_delete_impl, folder_rename_impl};
+
+    // Dead port: any attempt to connect would surface connect-failed, so
+    // an invalid-input/policy-blocked verdict proves refusal happened
+    // before a byte went on the wire.
+    let state = test_state("folderrefuse", MockNet::new());
+    let view = add_account_impl(&state, imap_input(1))
+        .await
+        .expect("add imap account (dead port is fine — nothing may dial)");
+    let inbox = {
+        let store = state.store.lock().await;
+        store.ensure_folder(&view.id, "INBOX").unwrap()
+    };
+
+    for res in [
+        folder_create_impl(&state, &view.id, None, "W*rk")
+            .await
+            .err(),
+        folder_create_impl(&state, &view.id, None, "a%b")
+            .await
+            .err(),
+        folder_create_impl(&state, &view.id, None, "INBOX")
+            .await
+            .err(),
+        folder_rename_impl(&state, &view.id, inbox, "Renamed")
+            .await
+            .err(),
+        folder_delete_impl(&state, &view.id, inbox).await.err(),
+    ] {
+        let code = res.expect("must refuse").code;
+        assert!(
+            matches!(code, "invalid-input" | "policy-blocked"),
+            "refused before dialing, not {code}"
+        );
+    }
+
+    // A local parent is not on the server — refuse, don't fake nesting.
+    {
+        let store = state.store.lock().await;
+        store.ensure_local_folder(&view.id, "LocalOnly").unwrap();
+    }
+    let local_id = {
+        let store = state.store.lock().await;
+        store
+            .list_folders(&view.id)
+            .unwrap()
+            .into_iter()
+            .find(|f| f.name == "LocalOnly")
+            .unwrap()
+            .id
+    };
+    assert_eq!(
+        folder_create_impl(&state, &view.id, Some(local_id), "Sub")
+            .await
+            .unwrap_err()
+            .code,
+        "invalid-input"
+    );
 }
