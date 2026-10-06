@@ -1,0 +1,151 @@
+================================================================================
+KIWI - SecureMailScope
+Problem Statement: SIH26159 - AI-Assisted Cryptographic Security Posture
+Assessment for Secure Email Communications
+Organization: National Technical Research Organisation (NTRO)
+Theme: Blockchain & Cybersecurity | Category: Software
+================================================================================
+
+TAGLINE
+-------
+Email that proves its security.
+
+SUMMARY (short)
+---------------
+KIWI is a passive network forensic framework that analyzes captured SMTP,
+IMAP, and POP3 traffic (PCAP files) and automatically assesses the
+cryptographic security posture of email infrastructure. It reconstructs
+complete TCP streams and TLS handshakes, detects STARTTLS upgrades and
+downgrade attempts, extracts and analyzes X.509 certificates, and evaluates
+every session against a deterministic 37-rule security catalog to produce a
+reproducible posture score (A-F), prioritized findings with typed evidence,
+and exportable forensic reports (JSON/PDF/HTML) wrapped in a self-verifying
+SHA-256 envelope. An optional AI layer classifies risk, flags anomalous TLS
+behavior, and writes remediation guidance - but it only explains findings;
+the deterministic rule engine is always the verdict authority. Uniquely, KIWI
+is also a working desktop mail client, so endpoint-level TLS evidence fills
+the blind spots (e.g. TLS 1.3 encrypted certificates) that purely passive
+tools cannot see. Runs fully offline; MPL-2.0 open source.
+
+DESCRIPTION (detailed)
+----------------------
+
+THE PROBLEM
+Email remains critical infrastructure for governments, enterprises, and
+institutions, yet large parts of the deployed SMTP/IMAP/POP3 base still run
+with obsolete TLS versions, weak cipher suites, broken or absent STARTTLS,
+and expired or misconfigured certificates. These weaknesses enable downgrade
+attacks, man-in-the-middle interception, and passive surveillance. Existing
+tools fall short in one direction or the other: Wireshark and Zeek decode
+packets but never produce a security verdict; SSLyze and testssl.sh produce
+verdicts but only by actively probing a live server - useless when all an
+analyst has is a capture file from an incident. No existing tool passively
+converts captured email traffic into a scored, prioritized, evidence-backed
+cryptographic posture assessment.
+
+THE SOLUTION
+KIWI answers SIH26159 with an eight-stage deterministic analysis pipeline,
+implemented in a Rust workspace and surfaced through a desktop application:
+
+  1. PCAP ingest - .pcap/.pcapng parsing, bounds-first, untrusted-input safe;
+     malformed/truncated frames are counted, never fatal.
+  2. Decode - Ethernet/IPv4/TCP; everything else is a counted skip with a
+     reason, never silently dropped.
+  3. TCP stream reassembly - ordered per-direction streams,
+     first-seen-wins overlap resolution, sequence gaps flagged and reported
+     as explicit limitations rather than guessed.
+  4. Role resolution - well-known mail ports (25/465/587/143/993/110/995),
+     then protocol greeting content (220 / +OK / * OK), then TCP initiator -
+     catches servers on nonstandard ports.
+  5. Protocol identification - native SMTP, IMAP, and POP3 fingerprinting;
+     bidirectional line interleaving by covering frame rebuilds the real
+     conversation.
+  6. STARTTLS analysis - full state machine: advertised, requested,
+     accepted, handshake completed. Positive indicators (application data
+     before TLS, plaintext AUTH after upgrade request) distinguish a real
+     downgrade/strip attack from mere misconfiguration.
+  7. TLS handshake + certificate analysis - negotiated version, cipher suite
+     (IANA), key-exchange mechanism (forward-secrecy assessment), session
+     resumption, SNI/ALPN; X.509 chains leaf-first with expiry, key
+     algorithm/size, and signature algorithm.
+  8. Rule engine + scoring - 37 deterministic rules across transport,
+     STARTTLS, TLS version, cipher, key exchange, certificate,
+     authentication, and capture-integrity categories. Severity points
+     (0-40) x fixed confidence multipliers (0.5/0.85/1.0), integer
+     arithmetic only - no floats, no clock, no RNG - so identical input
+     always produces a byte-identical report. Deductions cap at 100;
+     remainder maps to grade A-F.
+
+AI ROLE (AI EXPLAINS, NEVER ASSERTS)
+An optional AI layer performs risk classification, anomalous-TLS callouts,
+threat prioritization, and remediation narrative - the AI/ML functions the
+problem statement requires. Mechanically, AI text must cite the deterministic
+finding keys it grounds in; the report builder drops citations to nonexistent
+findings and records an ai-uncited-keys limitation, so a hallucinated finding
+can never enter the report. When AI is disabled or offline, the entire
+assessment still works deterministically.
+
+UNIQUE DIFFERENTIATOR - THE ENDPOINT VANTAGE
+KIWI is the only entry that is also a working mail client (real SMTP/IMAP/
+POP3, unified inbox, composer, contacts - built on a Tauri 2 + React shell).
+Because TLS 1.3 encrypts certificates and handshake details from on-path
+observers, purely passive tools go blind exactly where modern deployments
+are strongest. KIWI's mail engine captures a TlsObservation at the endpoint -
+the actual negotiated version, cipher, key exchange, and peer certificate
+chain - and feeds it through the same rule engine. Passive where possible,
+endpoint truth where passive is blind.
+
+EVIDENCE AND TRUST MODEL
+- Every finding carries typed evidence: frame numbers, stream offsets,
+  redacted excerpts. Evidence-less findings are dropped and counted.
+- Redaction is contractual: credentials, tokens, message bodies, and private
+  keys are structurally excluded; certificate bytes are referenced by digest
+  only.
+- Reports are canonical bytes inside a self-verifying SHA-256 export
+  envelope; internal mutations land in a hash-chained audit log verified on
+  open - tampering surfaces as an explicit corrupt state, never hidden.
+- Re-scan diffing (new / resolved / unchanged / severity changed) proves
+  remediation, closing the identify -> fix -> verify loop.
+- Honest rendering: unknown state renders grey, never a fabricated green;
+  absent data renders absent.
+
+TECH STACK
+Rust 2024 workspace (10 crates, unsafe forbidden workspace-wide), Tauri 2
+desktop shell, React 18 + TypeScript + Vite dashboard, SQLite + FTS5
+local-first storage, Node + PostgreSQL organization/admin plane, React
+Native authenticator scaffold (QR pairing, keystore-bound keys,
+challenge-response). Fully offline-capable, single ~30MB binary, MPL-2.0.
+
+DELIVERABLES MAPPING (PS -> KIWI)
+- SMTP/IMAP/POP3 identification -> native protocol fingerprinting
+- STARTTLS detection + validation -> positive-indicator state machine
+- TCP/TLS reconstruction -> stream reassembly + handshake parser
+- X.509 extraction/validation -> chain analysis + honest "chain-unverified"
+  limitation from captures (endpoint supplies ground truth)
+- Weak crypto / deprecated versions -> 37-rule deterministic catalog
+- Forward secrecy -> key-exchange classification
+- AI risk scoring + anomaly detection -> grounded, cited, non-authoritative
+- Prioritized findings -> worst-first ordering, stable keys, re-scan diff
+- Reports JSON/PDF/HTML -> canonical JSON + view renderers, SHA-256 envelope
+- Dashboard -> desktop Security Center (findings, events, audit, exports)
+
+TARGET USERS AND IMPACT
+SOC analysts, digital-forensics and incident-response teams, enterprise and
+government mail administrators, and auditors. KIWI turns raw captures into
+prioritized, evidence-backed findings in seconds; gives admins concrete
+remediation; gives auditors tamper-evident reports; and gives India an
+offline-capable, open-source, zero-data-egress assessment tool suited to
+air-gapped environments.
+
+VALIDATION
+Developed end-to-end against real local mail servers (Mailpit for SMTP/POP3,
+GreenMail for IMAP in Docker) plus the synthetic PCAP dataset attached to
+the problem statement; CI-gated (cargo test/clippy/fmt, TypeScript
+typecheck, vitest, headless-browser smoke) on every commit.
+
+STATUS
+Working prototype. Core deterministic engine, desktop client, security
+surfaces, forensics pipeline, and export pipeline are implemented and
+tested; organization plane and mobile authenticator exist as functional
+services/scaffolds with clearly documented remaining scope.
+================================================================================

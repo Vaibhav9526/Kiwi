@@ -1,0 +1,92 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: Arial, Helvetica, sans-serif;
+    background: #0e1730;
+    width: 1600px;
+    padding: 40px;
+  }
+  .card {
+    border-radius: 14px; overflow: hidden;
+    border: 6px solid #d9f0a8;
+    box-shadow: 0 24px 64px rgba(0,0,0,.5);
+    background: #f4fbdf;
+  }
+  .thead {
+    display: grid; grid-template-columns: 24% 40% 36%;
+    background: #0e1730; color: #d9f0a8;
+  }
+  .thead div {
+    padding: 20px 30px; font-size: 23px; font-weight: 800;
+    letter-spacing: 1px; text-transform: uppercase;
+  }
+  .thead div:first-child {
+    display: flex; align-items: center; gap: 12px;
+    font-size: 26px; color: #ffffff;
+  }
+  .thead .dot { width: 16px; height: 16px; border-radius: 50%;
+    background: #8dd400; box-shadow: 0 0 14px #8dd40088; }
+  .row {
+    display: grid; grid-template-columns: 24% 40% 36%;
+    border-top: 2px solid #0e1730;
+  }
+  .row:nth-child(odd)  { background: #d9f0a8; }
+  .row:nth-child(even) { background: #eaf7c6; }
+  .row > div { padding: 26px 30px; font-size: 21px; line-height: 1.32; }
+  .who {
+    font-weight: 800; color: #0e1730; font-size: 24px;
+    display: flex; align-items: center; gap: 14px;
+    border-right: 2px solid #0e1730;
+  }
+  .who .ic {
+    width: 46px; height: 46px; border-radius: 12px; flex: none;
+    background: #0e1730; color: #d9f0a8;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 24px;
+  }
+  .impact { color: #131f3d; font-weight: 600; border-right: 2px solid #0e1730; }
+  .impact b { color: #0e1730; }
+  .benefit { color: #131f3d; font-weight: 600; }
+  .benefit b { color: #1e5c00; }
+  .pill {
+    display: inline-block; background: #0e1730; color: #d9f0a8;
+    border-radius: 999px; padding: 3px 14px; font-size: 15px;
+    font-weight: 800; letter-spacing: .6px; text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="thead">
+    <div><span class="dot"></span>Feasibility</div>
+    <div>Why It Works</div>
+    <div>Proof / Status</div>
+  </div>
+  <div class="row">
+    <div class="who"><span class="ic">⚙</span>Technical</div>
+    <div class="impact"><b>Core engine already exists</b> — own async SMTP/IMAP/POP3 clients in Rust, Tauri desktop shell, local SQLite store</div>
+    <div class="benefit"><span class="pill">Built</span><br><b>Working client today</b> — sync, send, search and security scoring running end-to-end</div>
+  </div>
+  <div class="row">
+    <div class="who"><span class="ic">🎙</span>Zapi Voice AI</div>
+    <div class="impact"><b>Commands map onto existing actions</b> — send, summarize, reply, delete all exposed through one command layer</div>
+    <div class="benefit"><span class="pill">Designed</span><br><b>No new infrastructure</b> — voice intents reuse the same IPC the UI already calls</div>
+  </div>
+  <div class="row">
+    <div class="who"><span class="ic">📶</span>Operational</div>
+    <div class="impact"><b>Fully local-first</b> — mail store, search and audit live on-device; works with any standard mail provider</div>
+    <div class="benefit"><span class="pill">Proven</span><br><b>No cloud dependency</b> — SQLite + OS keyring, functions where connectivity is poor</div>
+  </div>
+  <div class="row">
+    <div class="who"><span class="ic">💰</span>Economic</div>
+    <div class="impact"><b>100% open-source stack</b> — Rust, Tauri, React, SQLite; zero per-seat licensing</div>
+    <div class="benefit"><span class="pill">MPL-2.0</span><br><b>Near-zero rollout cost</b> — runs on ordinary hardware, deployable at institutional scale</div>
+  </div>
+</div>
+</body>
+</html>

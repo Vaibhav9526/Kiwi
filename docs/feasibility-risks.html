@@ -1,0 +1,51 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { font-family: Arial, Helvetica, sans-serif; padding: 32px; background:#fff; color:#111; }
+  h2 { margin: 0 0 12px; font-size: 22px; }
+  table { border-collapse: collapse; margin-bottom: 36px; width: 100%; }
+  th, td { border: 1.5px solid #333; padding: 10px 14px; font-size: 15px; text-align: left; vertical-align: top; }
+  th { background: #dbe5f1; font-size: 16px; }
+  .sec td { font-weight: 700; }
+  .sec .t { color: #c00000; }
+  .sec .o { color: #2e9e44; }
+  .sec .l { color: #7030a0; }
+</style>
+</head>
+<body>
+
+<h2>Feasibility</h2>
+<table>
+  <tr><th style="width:24%">Feasibility</th><th>Details</th></tr>
+  <tr class="sec"><td class="t">Technical</td><td>
+    Real mail protocols + TLS capture — already working.<br>
+    Rule-based forensics &amp; audit logs — practical on desktop.<br>
+    Sandboxed link protection — a realistic security design.
+  </td></tr>
+  <tr class="sec"><td class="o">Operational</td><td>
+    Works like a normal mail client — security runs in the background.<br>
+    Local-first storage + automated test servers — easy to deploy, easy to verify.
+  </td></tr>
+  <tr class="sec"><td class="l">Legal</td><td>
+    Claims are evidence-based and privacy-safe.<br>
+    Logs &amp; audit trails — compliance and accountability built in.
+  </td></tr>
+</table>
+
+<h2>Challenges / Risks &amp; Mitigation</h2>
+<table>
+  <tr><th style="width:26%">Challenge / Risk</th><th style="width:32%">Impact</th><th>Mitigation</th></tr>
+  <tr><td>False security impressions</td><td>Users trust vague green indicators</td><td>Evidence-based trust — fail-closed, never assumed</td></tr>
+  <tr><td>Incomplete evidence</td><td>Uncertain security decisions</td><td>Missing data marked "unknown" — no unsafe assumptions</td></tr>
+  <tr><td>Phishing &amp; malicious links</td><td>Top email attack vector</td><td>Click-gate + sandbox for risky destinations</td></tr>
+  <tr><td>Audit tampering</td><td>Security history becomes unreliable</td><td>Hash-chained audit logs detect every change</td></tr>
+  <tr><td>Compromised UI layer</td><td>Weak frontend could fake trust state</td><td>Trust logic locked in the Rust IPC layer</td></tr>
+  <tr><td>High complexity</td><td>Hard to build &amp; maintain securely</td><td>Modular design — mail, forensics, auth, sandbox</td></tr>
+  <tr><td>Privacy concerns</td><td>Security tools over-collect data</td><td>Metadata limited to mail-flow &amp; policy — never bodies</td></tr>
+  <tr><td>AI overreach</td><td>AI may seem too authoritative</td><td>AI explains; the deterministic rule engine decides</td></tr>
+</table>
+
+</body>
+</html>

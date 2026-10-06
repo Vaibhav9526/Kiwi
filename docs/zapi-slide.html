@@ -1,0 +1,130 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: Arial, Helvetica, sans-serif;
+    background: #0e1730;
+    width: 1920px; height: 1080px;
+    padding: 14px;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: 55% 1fr;
+    grid-template-rows: 60% 1fr;
+    gap: 10px;
+    width: 100%; height: 100%;
+  }
+  .panel {
+    background: #d9f0a8;
+    border-radius: 3px;
+    padding: 40px 46px;
+    color: #131f3d;
+    overflow: hidden;
+  }
+  .panel h2 {
+    font-size: 38px; font-weight: 800; letter-spacing: .4px;
+    margin-bottom: 12px; color: #0e1730;
+  }
+  .panel h3 {
+    font-size: 29px; font-weight: 800; color: #0e1730;
+    margin: 26px 0 12px;
+  }
+  .panel p { font-size: 24px; line-height: 1.4; font-weight: 600; }
+  .panel ul { list-style: none; }
+  .panel li {
+    font-size: 23.5px; line-height: 1.38; font-weight: 600;
+    padding-left: 26px; position: relative; margin-bottom: 10px;
+  }
+  .panel li::before { content: "•"; position: absolute; left: 2px; }
+  .panel li.arrow::before { content: "►"; font-size: 18px; left: 0; top: 4px; }
+  .panel li b { color: #0e1730; }
+
+  /* right side: navy panel holding the app screenshot */
+  .shot-panel {
+    grid-column: 2; grid-row: 1 / span 2;
+    background: #0e1730;
+    border: 10px solid #d9f0a8;
+    border-radius: 3px;
+    padding: 26px;
+    display: flex; flex-direction: column; gap: 20px;
+  }
+  .win {
+    background: #ffffff; border-radius: 10px; overflow: hidden;
+    box-shadow: 0 18px 50px rgba(0,0,0,.55);
+  }
+  .win-bar {
+    height: 34px; background: #e8e8e8; display: flex; align-items: center;
+    gap: 7px; padding: 0 14px;
+  }
+  .win-bar i { width: 11px; height: 11px; border-radius: 50%; display:block; }
+  .win-bar i:nth-child(1){ background:#ff5f57; }
+  .win-bar i:nth-child(2){ background:#febc2e; }
+  .win-bar i:nth-child(3){ background:#28c840; }
+  .win-bar span { margin-left: 12px; font-size: 13px; color: #666; font-weight: 700; }
+  .win .crop { height: 440px; overflow: hidden; }
+  .win img { width: 100%; display: block; }
+  .voice {
+    background: #16224a; border: 1px solid #2a3c72; border-radius: 12px;
+    padding: 18px 22px;
+  }
+  .voice .cmd { display: flex; align-items: center; gap: 14px; }
+  .mic {
+    width: 44px; height: 44px; border-radius: 50%; background: #8dd400;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 22px; flex: none; box-shadow: 0 0 18px #8dd40066;
+  }
+  .voice .say { color: #eaf1ff; font-size: 21px; font-weight: 700; font-style: italic; }
+  .voice .resp {
+    margin-top: 12px; padding-top: 12px; border-top: 1px dashed #33477f;
+    color: #9fb3e8; font-size: 17px; font-weight: 600;
+  }
+  .voice .resp b { color: #d9f0a8; }
+  .caption {
+    color: #6e80b8; font-size: 14px; font-weight: 700;
+    text-align: center; letter-spacing: .6px; text-transform: uppercase;
+  }
+</style>
+</head>
+<body>
+<div class="grid">
+  <div class="panel">
+    <h2>ZAPI — Voice-First AI Inside KIWI Mail</h2>
+    <p>An AI assistant built into the mail client that runs on voice commands — send mail, reach any feature, and clear the inbox without touching the keyboard.</p>
+    <h3>What Zapi Does</h3>
+    <ul>
+      <li><b>Send mail by voice</b> — "Reply to Sam: I'll be there at 5" — dictated, composed, sent</li>
+      <li><b>Summarizes all your mail</b> — one command turns a full inbox into a spoken brief</li>
+      <li><b>Auto-replies to typical mail</b> — routine questions answered without you</li>
+      <li><b>Deletes useless mail</b> — noise gone on command, inbox stays clean</li>
+      <li><b>Every feature by voice</b> — search, open, archive, flag — the whole client, hands-free</li>
+    </ul>
+  </div>
+  <div class="panel">
+    <h3>Why It Matters</h3>
+    <ul>
+      <li class="arrow"><b>Hands-free triage:</b> inbox zero while you cook, drive, or code — mail stops being a screen-bound chore.</li>
+      <li class="arrow"><b>Accessibility first:</b> the whole mailbox stays usable when typing is hard or impossible.</li>
+      <li class="arrow"><b>Attention back:</b> summaries replace scrolling; auto-replies kill routine interruptions.</li>
+      <li class="arrow"><b>Zero context switch:</b> speak a command from anywhere in the app — no menus, no shortcuts to memorize.</li>
+    </ul>
+  </div>
+  <div class="shot-panel">
+    <div class="win">
+      <div class="win-bar"><i></i><i></i><i></i><span>KIWI Mail — Desktop</span></div>
+      <div class="crop"><img src="file:///C:/Users/VAIBHAV/AppData/Local/Temp/kiwi-current-shots/mail.png" alt=""></div>
+    </div>
+    <div class="voice">
+      <div class="cmd">
+        <div class="mic">🎙</div>
+        <div class="say">"Hey Zapi — summarize my inbox and reply to the invoice mail."</div>
+      </div>
+      <div class="resp"><b>Zapi:</b> 4 unread summarized. Draft sent to billing@provider.test. 2 promo mails deleted.</div>
+    </div>
+    <div class="caption">KIWI Mail desktop · voice assistant Zapi</div>
+  </div>
+</div>
+</body>
+</html>

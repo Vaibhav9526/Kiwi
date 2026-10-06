@@ -1,0 +1,64 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { font-family: Arial, Helvetica, sans-serif; padding: 32px; background:#fff; color:#111; }
+  h2 { margin: 24px 0 12px; font-size: 22px; }
+  table { border-collapse: collapse; margin-bottom: 36px; width: 100%; }
+  th, td { border: 1.5px solid #333; padding: 10px 14px; font-size: 15px; text-align: left; vertical-align: top; }
+  th { background: #dbe5f1; font-size: 16px; }
+  td b { display: block; margin-bottom: 4px; }
+  td ul { margin: 0; padding-left: 18px; }
+  td li { margin-bottom: 3px; }
+  .y { color:#1e7a1e; font-weight:700; } .n { color:#c00000; font-weight:700; } .p { color:#b45f00; font-weight:700; }
+</style>
+</head>
+<body>
+
+<h2>Impact on Target Audience</h2>
+<table>
+  <tr><th style="width:22%">Impact on Target Audience</th><th style="width:39%">Benefits of the Solution</th><th>Key Outcomes</th></tr>
+  <tr>
+    <td><b>1. Everyday Mail Users</b><ul><li>Voice send, read &amp; triage</li><li>Honest Secure / Attention verdicts</li><li>One-tap link &amp; attachment detonation</li><li>Disposable inbox for sign-ups</li></ul></td>
+    <td><b>Social and Everyday Impact</b><ul><li>Removes the typing &amp; click tax</li><li>Voice-first accessibility by default</li><li>Multilingual voice (Indic + EN)</li><li>Low-effort triage</li></ul></td>
+    <td><b>Trusted Information</b><ul><li>Evidence-backed verification</li><li>Clear verification status</li><li>Traceable updates and corrections</li></ul></td>
+  </tr>
+  <tr>
+    <td><b>2. Organisations &amp; Admins</b><ul><li>Orgs, domains, users &amp; roles</li><li>Recipient-domain outbound policy</li><li>Mail-flow metadata — never bodies</li><li>Shared, clinical &amp; kiosk desks</li></ul></td>
+    <td><b>Better Decision-Making</b><ul><li>Real TLS facts per session</li><li>Deterministic findings, not vibes</li><li>AI explains, never asserts</li><li>Re-scan diff flags regressions</li></ul></td>
+    <td><b>Faster Response</b><ul><li>Prioritized emergency requests</li><li>Live crisis visibility</li><li>Reduced response delays</li></ul></td>
+  </tr>
+  <tr>
+    <td><b>3. Security Teams &amp; CERT</b><ul><li>Passive PCAP + endpoint TLS evidence</li><li>A–F posture score, seen or spoken</li><li>Voice-driven forensic triage</li><li>Sealed incident reports</li></ul></td>
+    <td><b>Trust &amp; Compliance</b><ul><li>Hash-chained, genesis-verified audit</li><li>SHA-256 sealed, self-verifying reports</li><li>Every claim evidence-backed</li><li>Missing data renders missing</li></ul></td>
+    <td><b>Efficient Resource Use</b><ul><li>Faster request assignment</li><li>Reduced response delays</li><li>Data-driven decisions</li></ul></td>
+  </tr>
+  <tr>
+    <td><b>4. Persons with Disabilities</b><ul><li>Compose → send fully by voice</li><li>Read-aloud mail + spoken verdicts</li><li>Blind, motor-impaired &amp; RSI users</li><li>No mouse or keyboard needed</li></ul></td>
+    <td><b>Operationally Proven</b><ul><li>10-crate Rust workspace, CI-gated</li><li>3 protocols: SMTP · IMAP · POP3</li><li>~30 MB native, unsigned alpha</li><li>Gates never hide a failure</li></ul></td>
+    <td><b>Resilient Communication</b><ul><li>Offline safety guidance</li><li>Internet → SMS → Bluetooth/Wi-Fi</li><li>Continued access during outages</li></ul></td>
+  </tr>
+</table>
+
+<h2>Capability Comparison</h2>
+<table>
+  <tr><th style="width:34%">Capability</th><th>Wireshark</th><th>Zeek</th><th>SSLyze / testssl.sh</th><th>KIWI</th></tr>
+  <tr><td>Passive PCAP analysis — no live probing</td><td class="y">✓</td><td class="y">✓</td><td class="n">✗ active scans only</td><td class="y">✓</td></tr>
+  <tr><td>Email-aware: SMTP · IMAP · POP3 + STARTTLS</td><td class="p">~ decode only</td><td class="p">~ scripts needed</td><td class="n">✗</td><td class="y">✓ native</td></tr>
+  <tr><td>Auto posture score + ranked findings</td><td class="n">✗</td><td class="n">✗</td><td class="p">~ grade only</td><td class="y">✓ rule-based score</td></tr>
+  <tr><td>AI risk classification + anomaly detection</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td><td class="y">✓ explains, never asserts</td></tr>
+  <tr><td>Endpoint vantage + self-verifying report</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td><td class="y">✓ SHA-256 envelope</td></tr>
+</table>
+
+<h2>Why KIWI Wins</h2>
+<table>
+  <tr><th style="width:8%">#</th><th>Why KIWI Wins</th></tr>
+  <tr><td><b>1</b></td><td><b>Proves security, not claims it</b> — real TLS, certificate and STARTTLS evidence per session; users get honest verdicts, admins get suggested fixes.</td></tr>
+  <tr><td><b>2</b></td><td><b>Org-wide control</b> — domain policies, audited actions, mail-flow metadata; risky sends blocked before they leave.</td></tr>
+  <tr><td><b>3</b></td><td><b>Voice-first access</b> — send, read and triage mail by speech; opens email to blind, motor-impaired and RSI users.</td></tr>
+  <tr><td><b>4</b></td><td><b>Sovereign and offline</b> — local-first, MPL-2.0, no data egress; works on air-gapped networks and with AI off.</td></tr>
+</table>
+
+</body>
+</html>

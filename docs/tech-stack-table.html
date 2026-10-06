@@ -1,0 +1,64 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: "Segoe UI", system-ui, sans-serif;
+    background: #0d1117;
+    padding: 56px;
+    width: 1600px;
+  }
+  .card {
+    background: #161b22;
+    border: 1px solid #2b323b;
+    border-radius: 20px;
+    overflow: hidden;
+    box-shadow: 0 24px 64px rgba(0,0,0,.5);
+  }
+  .head {
+    padding: 30px 40px;
+    border-bottom: 1px solid #2b323b;
+    display: flex; align-items: center; gap: 16px;
+    background: linear-gradient(135deg, #14250f 0%, #161b22 55%);
+  }
+  .dot { width: 18px; height: 18px; border-radius: 50%;
+         background: #8dd400; box-shadow: 0 0 18px #8dd40088; }
+  .head h1 { font-size: 30px; font-weight: 700; color: #eef2f6; letter-spacing: .2px; }
+  .head span { font-size: 15px; color: #8b949e; margin-left: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  tr { border-bottom: 1px solid #21262d; }
+  tr:last-child { border-bottom: none; }
+  tr:hover { background: #1c2129; }
+  td { padding: 24px 40px; font-size: 21px; color: #d7dde4; }
+  td.layer {
+    width: 30%; font-weight: 600; color: #8dd400;
+    border-right: 1px solid #21262d;
+    letter-spacing: .3px;
+  }
+  td .tag {
+    display:inline-block; padding: 3px 12px; margin: 3px 6px 3px 0;
+    border: 1px solid #3a4350; border-radius: 999px;
+    background: #21262d; color: #c9d1d9; font-size: 18px;
+  }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="head"><div class="dot"></div><h1>KIWI Mail — Technology Stack</h1><span>2 × 10</span></div>
+  <table>
+    <tr><td class="layer">Desktop Shell</td><td>Tauri 2 · React 18 · TypeScript · Vite 6</td></tr>
+    <tr><td class="layer">Mail Engine</td><td>kiwi-mail — custom async SMTP / IMAP / POP3 clients (Rust + Tokio)</td></tr>
+    <tr><td class="layer">MIME &amp; Auth</td><td>mail-parser · kiwi-mailauth (DKIM · SPF · DMARC)</td></tr>
+    <tr><td class="layer">Local Store</td><td>SQLite via rusqlite (bundled) · full-text search</td></tr>
+    <tr><td class="layer">TLS</td><td>rustls · tokio-rustls · webpki-roots</td></tr>
+    <tr><td class="layer">Device Pairing</td><td>kiwi-pair — NaCl-encrypted sync (tweetnacl)</td></tr>
+    <tr><td class="layer">Secrets</td><td>OS keyring (Windows / Apple / Secret Service) · zeroize</td></tr>
+    <tr><td class="layer">Sanitizing</td><td>ammonia HTML sanitizer · kiwi-sandbox isolation</td></tr>
+    <tr><td class="layer">Mobile Companion</td><td>React Native 0.76 · TypeScript · Vitest</td></tr>
+    <tr><td class="layer">Infra &amp; CI</td><td>Docker Compose · GitHub Actions · PowerShell tooling</td></tr>
+  </table>
+</div>
+</body>
+</html>

@@ -1,0 +1,86 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body {
+    font-family: Arial, Helvetica, sans-serif;
+    background: #0e1730;
+    width: 1600px;
+    padding: 40px;
+  }
+  .card {
+    border-radius: 14px; overflow: hidden;
+    border: 6px solid #d9f0a8;
+    box-shadow: 0 24px 64px rgba(0,0,0,.5);
+    background: #f4fbdf;
+  }
+  .thead {
+    display: grid; grid-template-columns: 24% 40% 36%;
+    background: #0e1730; color: #d9f0a8;
+  }
+  .thead div {
+    padding: 20px 30px; font-size: 23px; font-weight: 800;
+    letter-spacing: 1px; text-transform: uppercase;
+  }
+  .thead div:first-child {
+    display: flex; align-items: center; gap: 12px;
+    font-size: 26px; color: #ffffff;
+  }
+  .thead .dot { width: 16px; height: 16px; border-radius: 50%;
+    background: #8dd400; box-shadow: 0 0 14px #8dd40088; }
+  .row {
+    display: grid; grid-template-columns: 24% 40% 36%;
+    border-top: 2px solid #0e1730;
+  }
+  .row:nth-child(odd)  { background: #d9f0a8; }
+  .row:nth-child(even) { background: #eaf7c6; }
+  .row > div { padding: 26px 30px; font-size: 21px; line-height: 1.32; }
+  .who {
+    font-weight: 800; color: #0e1730; font-size: 24px;
+    display: flex; align-items: center; gap: 14px;
+    border-right: 2px solid #0e1730;
+  }
+  .who .ic {
+    width: 46px; height: 46px; border-radius: 12px; flex: none;
+    background: #0e1730; color: #d9f0a8;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 24px;
+  }
+  .impact { color: #131f3d; font-weight: 600; border-right: 2px solid #0e1730; }
+  .impact b { color: #0e1730; }
+  .benefit { color: #131f3d; font-weight: 600; }
+  .benefit b { color: #1e5c00; }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="thead">
+    <div><span class="dot"></span>Impact &amp; Benefits</div>
+    <div>Impact</div>
+    <div>Benefit</div>
+  </div>
+  <div class="row">
+    <div class="who"><span class="ic">♿</span>Accessibility Users</div>
+    <div class="impact"><b>Every feature by voice</b> — send, read, search, delete, all of it hands-free through Zapi</div>
+    <div class="benefit"><b>Independent email</b> for people who can't type or use a mouse — no compromise client</div>
+  </div>
+  <div class="row">
+    <div class="who"><span class="ic">⚡</span>Busy Professionals</div>
+    <div class="impact"><b>Inbox summarized in one command;</b> typical mail auto-replied, useless mail deleted</div>
+    <div class="benefit"><b>Inbox zero in minutes</b> — attention back, mail stops being a screen-bound chore</div>
+  </div>
+  <div class="row">
+    <div class="who"><span class="ic">🔒</span>Security &amp; Privacy</div>
+    <div class="impact"><b>Every session scored 0–100</b> by deterministic rules; TLS evidence captured, never inferred</div>
+    <div class="benefit"><b>"Encrypted" becomes provable</b> — downgrades and stripping visible to real users</div>
+  </div>
+  <div class="row">
+    <div class="who"><span class="ic">🏢</span>Organizations</div>
+    <div class="impact"><b>Hash-sealed audit trail,</b> exportable findings, verifiable reports</div>
+    <div class="benefit"><b>Compliance without trust</b> — auditors verify the evidence, not the vendor</div>
+  </div>
+</div>
+</body>
+</html>

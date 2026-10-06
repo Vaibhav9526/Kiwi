@@ -1,0 +1,10 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "devfolio": {
+      "type": "remote",
+      "url": "https://mcp.devfolio.co/mcp",
+      "enabled": true
+    }
+  }
+}
